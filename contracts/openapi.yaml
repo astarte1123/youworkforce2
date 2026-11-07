@@ -1,0 +1,38 @@
+openapi: 3.0.3
+info:
+  title: YouWorkforce Core API
+  version: 0.1.0
+  description: >
+    Dominio Rust. Control plane (superadmin) + tenant plane. Tenant risolto da Host /
+    X-Tenant-Slug (browser) o X-Ingest-Token (macchina). Sessione via cookie yw_session.
+servers:
+  - url: http://localhost:8081   # via console proxy
+paths:
+  /api/superadmin/login: { post: { summary: Login superadmin, responses: { '200': { description: ok, sets yw_session } } } }
+  /api/superadmin/tenants:
+    get:  { summary: Lista tenant (super), responses: { '200': { description: ok } } }
+    post: { summary: Crea tenant + primo admin + righe moduli, responses: { '200': { description: ok } } }
+  /api/superadmin/tenants/{id}/modules:
+    post: { summary: Imposta stato modulo (no deploy); blocca disattivazione se toglie percorso essenziale, responses: { '200': {description: ok}, '409': {description: bloccato} } }
+  /api/login: { post: { summary: Login utente tenant, responses: { '200': {description: ok} } } }
+  /api/me: { get: { summary: Sessione corrente } }
+  /api/modules: { get: { summary: Moduli del tenant con stato } }
+  /api/sites: { get: { summary: Sedi del tenant } }
+  /api/events:
+    post:
+      summary: Ingress evento normalizzato (macchina). Tenant da X-Ingest-Token.
+      description: Idempotente su (tenant,source,idem_key). Critici -> incidente + outbox nella stessa tx.
+      responses: { '200': {description: ok}, '401': {description: token errato} }
+  /api/sos: { post: { summary: SOS da PWA lavoratore (sessione), responses: { '200': {description: incidente aperto} } } }
+  /api/incidents: { get: { summary: Coda incidenti del tenant } }
+  /api/incidents/{id}/timeline: { get: { summary: Timeline (notify_requested, goalert_ack, human_ack, transition) } }
+  /api/incidents/{id}/ack: { post: { summary: Presa in carico (operatore/admin) } }
+  /api/incidents/{id}/close: { post: { summary: Chiusura con esito } }
+  /api/checkins: { post: { summary: Avvia timer check-in durevole } }
+  /api/checkins/{id}/confirm: { post: { summary: Conferma presenza } }
+  /api/stream: { get: { summary: SSE incidenti del tenant (scope da sessione) } }
+  /api/_test/advance: { post: { summary: Avanza l'orologio controllabile (solo TEST_CLOCK=1) } }
+components:
+  securitySchemes:
+    session: { type: apiKey, in: cookie, name: yw_session }
+    ingest:  { type: apiKey, in: header, name: X-Ingest-Token }

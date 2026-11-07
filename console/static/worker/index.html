@@ -1,0 +1,63 @@
+<!doctype html><html lang="it"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lavoratore · YouWorkforce</title><link rel="manifest" href="/worker/manifest.webmanifest">
+<link rel="stylesheet" href="/style.css"></head><body>
+<header><h1>App lavoratore</h1><span class="badge sim" id="net">—</span></header>
+<main style="max-width:480px">
+<div class="card" id="loginCard">
+  <h2>Accesso</h2>
+  <label>Tenant</label><input id="slug" value="acme">
+  <label>Email</label><input id="email" value="mario@acme.loneworker.eu">
+  <label>Password</label><input id="pw" type="password" value="demo">
+  <button class="big" onclick="login()">Entra</button>
+  <p class="mut" id="msg"></p>
+</div>
+
+<div id="app" style="display:none">
+  <div class="card">
+    <button class="sos" onclick="sos()">🆘 SOS</button>
+    <p class="mut">Il canale SOS è indipendente da dettatura e documenti.</p>
+  </div>
+  <div class="card">
+    <h2>Check-in sicurezza</h2>
+    <div class="row"><div><label>Scadenza (min)</label><input id="min" type="number" value="1"></div>
+    <div style="flex:0"><label>&nbsp;</label><button onclick="startCheckin()">Avvia</button></div></div>
+    <p class="mut" id="ciMsg"></p>
+    <button class="ghost" id="confirmBtn" style="display:none;width:100%;margin-top:8px" onclick="confirmCheckin()">Conferma presenza</button>
+  </div>
+  <div class="card">
+    <button class="big ghost" onclick="stub('Chiedi ai documenti')">📄 Chiedi ai documenti</button>
+    <button class="big ghost" onclick="stub('Detta una nota')">🎤 Detta una nota</button>
+    <button class="big ghost" onclick="stub('Inizia turno')">▶️ Inizia turno</button>
+    <button class="big ghost" onclick="stub('Termina turno')">⏹️ Termina turno</button>
+    <p class="mut">RAG YouWorker.ai, STT e registro turni: backlog (Prompt 8/9) — non contrattualizzati in questa build. Input manuale resta sempre disponibile.</p>
+  </div>
+  <div class="card"><h2>Log</h2><div class="log" id="log"></div></div>
+</div>
+</main>
+<script>
+let SLUG='';
+const api=(p,o={})=>fetch('/api'+p,{credentials:'include',headers:{'content-type':'application/json','x-tenant-slug':SLUG,...(o.headers||{})},...o})
+  .then(async r=>({ok:r.ok,status:r.status,body:await r.json().catch(()=>({}))}));
+const logln=t=>log.textContent=(new Date().toLocaleTimeString()+'  '+t+'\n')+log.textContent;
+function netState(){net.textContent=navigator.onLine?'online':'offline (bozza locale)';}
+addEventListener('online',netState);addEventListener('offline',netState);netState();
+async function login(){SLUG=slug.value.trim();
+  const r=await api('/login',{method:'POST',body:JSON.stringify({email:email.value,password:pw.value})});
+  if(r.ok){loginCard.style.display='none';app.style.display='block';logln('accesso ok: '+r.body.role);}
+  else msg.textContent='Credenziali errate';}
+async function sos(){
+  let pos={};try{const p=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{timeout:3000}));
+    pos={lat:p.coords.latitude,lon:p.coords.longitude};}catch(e){}
+  const r=await api('/sos',{method:'POST',body:JSON.stringify(pos)});
+  logln(r.ok?('SOS inviato → incidente '+r.body.incident_id.slice(0,8)+' (corr '+r.body.correlation.slice(0,8)+')'):'SOS errore '+r.status);}
+let ciId=null;
+async function startCheckin(){const r=await api('/checkins',{method:'POST',body:JSON.stringify({minutes:Number(min.value)})});
+  if(r.ok){ciId=r.body.id;ciMsg.textContent='Check-in attivo, scade '+new Date(r.body.due_at).toLocaleTimeString();
+    confirmBtn.style.display='block';logln('check-in avviato');}}
+async function confirmCheckin(){if(!ciId)return;const r=await api('/checkins/'+ciId+'/confirm',{method:'POST'});
+  ciMsg.textContent=r.body.ok?'Presenza confermata':'già scaduto → incidente aperto';confirmBtn.style.display='none';logln('check-in confermato: '+r.body.ok);}
+function stub(name){logln('['+name+'] SIMULATO — flusso non attivo in questa build');}
+if('serviceWorker' in navigator) navigator.serviceWorker.register('/worker/sw.js').catch(()=>{});
+</script>
+</body></html>

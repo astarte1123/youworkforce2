@@ -1,0 +1,6 @@
+node_modules/
+target/
+.env
+*.log
+console.exe
+core.exe

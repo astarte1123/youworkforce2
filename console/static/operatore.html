@@ -1,0 +1,64 @@
+<!doctype html><html lang="it"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Centrale · YouWorkforce</title><link rel="stylesheet" href="/style.css"></head><body>
+<header><h1>Centrale operativa</h1><span class="badge" id="liveBadge">offline</span><a href="/" style="margin-left:auto">home</a></header>
+<main>
+<div class="card" id="loginCard">
+  <h2>Accesso cliente</h2>
+  <div class="row">
+    <div><label>Tenant (slug)</label><input id="slug" value="acme"></div>
+    <div><label>Email</label><input id="email" value="operatore@acme.loneworker.eu"></div>
+    <div><label>Password</label><input id="pw" type="password" value="demo"></div>
+    <div style="flex:0"><label>&nbsp;</label><button onclick="login()">Entra</button></div>
+  </div>
+  <p class="mut" id="msg"></p>
+</div>
+
+<div id="app" style="display:none">
+  <div class="card">
+    <h2>Coda incidenti <span class="mut" id="who"></span></h2>
+    <table><thead><tr><th>Tipo</th><th>Sede</th><th>Stato</th><th>Pr.</th><th>Correlazione</th><th></th></tr></thead>
+    <tbody id="rows"></tbody></table>
+  </div>
+  <div class="card"><h2>Timeline incidente</h2><div class="log" id="tl">seleziona un incidente…</div></div>
+  <div class="card"><h2>Live SSE</h2><div class="log" id="sse"></div></div>
+</div>
+</main>
+<script>
+let SLUG='';
+const api=(p,o={})=>fetch('/api'+p,{credentials:'include',headers:{'content-type':'application/json','x-tenant-slug':SLUG,...(o.headers||{})},...o})
+  .then(async r=>({ok:r.ok,status:r.status,body:await r.json().catch(()=>({}))}));
+async function login(){
+  SLUG=slug.value.trim();
+  const r=await api('/login',{method:'POST',body:JSON.stringify({email:email.value,password:pw.value})});
+  if(r.ok){loginCard.style.display='none';app.style.display='block';who.textContent='('+r.body.role+' @ '+r.body.tenant+')';
+    load();connectSSE();} else msg.textContent='Credenziali errate';
+}
+async function load(){
+  const r=await api('/incidents');
+  if(!r.ok)return;
+  rows.innerHTML=r.body.map(i=>`<tr>
+    <td>${i.etype}</td><td>${i.site||'—'}</td>
+    <td><span class="state ${i.state}">${i.state}</span></td><td>${i.priority}</td>
+    <td class="mut">${i.correlation.slice(0,8)}</td>
+    <td>${btns(i)} <button class="ghost" onclick="timeline('${i.id}')">timeline</button></td></tr>`).join('')
+    || '<tr><td colspan=6 class="mut">nessun incidente</td></tr>';
+}
+function btns(i){
+  if(i.state==='aperto') return `<button onclick="ack('${i.id}')">prendi in carico</button>`;
+  if(i.state==='preso_in_carico') return `<button onclick="close_('${i.id}')">chiudi</button>`;
+  return `<span class="mut">${i.outcome||''}</span>`;
+}
+async function ack(id){await api('/incidents/'+id+'/ack',{method:'POST'});load();}
+async function close_(id){const o=prompt('Esito chiusura?','risolto sul posto');if(o==null)return;
+  await api('/incidents/'+id+'/close',{method:'POST',body:JSON.stringify({outcome:o})});load();timeline(id);}
+async function timeline(id){const r=await api('/incidents/'+id+'/timeline');
+  tl.textContent=r.ok?r.body.map(e=>'• '+e.kind+' '+JSON.stringify(e.detail||{})).join('\n'):'errore';}
+function connectSSE(){
+  const es=new EventSource('/api/stream',{withCredentials:true});
+  es.onopen=()=>{liveBadge.textContent='live';liveBadge.className='badge';};
+  es.onerror=()=>{liveBadge.textContent='flusso interrotto';liveBadge.className='badge sim';};
+  es.onmessage= e=>{sse.textContent=(new Date().toLocaleTimeString()+'  '+e.data+'\n')+sse.textContent;load();};
+}
+</script>
+</body></html>

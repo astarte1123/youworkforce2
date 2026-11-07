@@ -1,0 +1,11 @@
+{
+  "name": "YouWorkforce Lavoratore",
+  "short_name": "YW Worker",
+  "start_url": "/worker/",
+  "display": "standalone",
+  "background_color": "#0f1420",
+  "theme_color": "#0f1420",
+  "icons": [
+    { "src": "/worker/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

@@ -1,0 +1,31 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgres:18
+        env: { POSTGRES_PASSWORD: postgres, POSTGRES_DB: youworkforce }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.25" }
+      - name: build core
+        run: cargo build --release
+        working-directory: core
+      - name: build console
+        run: go build -o /tmp/console .
+        working-directory: console
+      - name: run core + smoke
+        env:
+          YW_DB_OWNER: postgres://postgres:postgres@localhost:5432/youworkforce
+          YW_DB_RT: postgres://app_rt:app_rt_pw@localhost:5432/youworkforce
+        run: |
+          ./core/target/release/yw-core & sleep 8
+          bash qa/smoke.sh

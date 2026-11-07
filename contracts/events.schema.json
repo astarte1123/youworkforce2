@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "YouWorkforce normalized event v1",
+  "description": "Contract line 46. Tenant/site/device resolved server-side; body is never authoritative for tenant.",
+  "type": "object",
+  "required": ["etype", "source_event", "origin_ts", "correlation"],
+  "properties": {
+    "etype": {
+      "type": "string",
+      "enum": ["sos","man_down","immobilita","mancato_checkin","device_offline","batteria","soglia_ambientale","recupero_sensore"]
+    },
+    "source_event": { "type": "string", "description": "repeatable id from the source" },
+    "idem_key": { "type": "string", "description": "stable dedup key per tenant/source; defaults to source_event" },
+    "device_external_id": { "type": ["string","null"] },
+    "site_name": { "type": ["string","null"] },
+    "origin_ts": { "type": "string", "format": "date-time" },
+    "lat": { "type": ["number","null"] },
+    "lon": { "type": ["number","null"] },
+    "accuracy_m": { "type": ["number","null"] },
+    "correlation": { "type": "string" },
+    "payload": { "type": ["object","null"], "description": "reference to original payload" }
+  },
+  "notes": [
+    "Idempotency is enforced by UNIQUE(tenant_id, source, idem_key).",
+    "A stale GPS must be presented as last-known position with timestamp, not current.",
+    "Critical etypes (sos, man_down, immobilita, mancato_checkin) open an incident + outbox notify in one transaction."
+  ]
+}

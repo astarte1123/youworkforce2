@@ -1,0 +1,58 @@
+# YouWorkforce — local reproducible pilot profile (Docker Compose).
+# Base profile = Workforce + Sicurezza (SOS chain) with GoAlert SIMULATO.
+# Optional connectors (goalert real, thingsboard) behind compose profiles, OFF by default.
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: youworkforce
+    ports: ["5432:5432"]
+    volumes: ["db_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d youworkforce"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  core:
+    build: ./core
+    environment:
+      YW_DB_OWNER: postgres://postgres:postgres@db:5432/youworkforce
+      YW_DB_RT: postgres://app_rt:app_rt_pw@db:5432/youworkforce
+      YW_BIND: 0.0.0.0:8080
+      TEST_CLOCK: "1"               # enables /api/_test/advance (pilot: set 0)
+      # GOALERT_BASE: http://goalert:8081   # set to switch GoAlert to UPSTREAM REALE
+      RUST_LOG: info,sqlx=warn
+    depends_on:
+      db: { condition: service_healthy }
+    ports: ["8080:8080"]
+
+  console:
+    build: ./console
+    environment:
+      YW_CORE_URL: http://core:8080
+      YW_CONSOLE_BIND: 0.0.0.0:8081
+    depends_on: [core]
+    ports: ["8081:8081"]
+
+  # ---- Optional: real GoAlert (profile "goalert") ----
+  goalert-db:
+    image: postgres:18
+    profiles: ["goalert"]
+    environment:
+      POSTGRES_USER: goalert
+      POSTGRES_PASSWORD: goalert
+      POSTGRES_DB: goalert
+    volumes: ["goalert_db:/var/lib/postgresql/data"]
+  goalert:
+    image: goalert/goalert:v0.33.0   # pin a verified release before pilot use
+    profiles: ["goalert"]
+    command: ["goalert", "--db-url", "postgres://goalert:goalert@goalert-db:5432/goalert?sslmode=disable", "--listen", "0.0.0.0:8081"]
+    depends_on: [goalert-db]
+    ports: ["8082:8081"]
+
+volumes:
+  db_data:
+  goalert_db:

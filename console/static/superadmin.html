@@ -1,0 +1,71 @@
+<!doctype html><html lang="it"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Superadmin · YouWorkforce</title><link rel="stylesheet" href="/style.css"></head><body>
+<header><h1>Piano di controllo</h1><span class="badge">tenants.loneworker.eu</span><a href="/" style="margin-left:auto">home</a></header>
+<main>
+<div class="card" id="loginCard">
+  <h2>Accesso superadmin</h2>
+  <div class="row">
+    <div><label>Email</label><input id="email" value="admin@loneworker.eu"></div>
+    <div><label>Password</label><input id="pw" type="password" value="admin"></div>
+    <div style="flex:0"><label>&nbsp;</label><button onclick="login()">Entra</button></div>
+  </div>
+  <p class="mut" id="loginMsg"></p>
+</div>
+
+<div id="app" style="display:none">
+  <div class="card">
+    <h2>Crea tenant (senza deploy)</h2>
+    <div class="row">
+      <div><label>Slug</label><input id="slug" placeholder="acme2"></div>
+      <div><label>Nome</label><input id="name" placeholder="Acme 2 Srl"></div>
+      <div><label>Admin email</label><input id="aemail" placeholder="admin@acme2.loneworker.eu"></div>
+      <div><label>Admin password</label><input id="apw" value="demo"></div>
+      <div style="flex:0"><label>&nbsp;</label><button onclick="createTenant()">Crea</button></div>
+    </div>
+    <p class="mut" id="ctMsg"></p>
+  </div>
+  <div class="card">
+    <h2>Tenant e moduli</h2>
+    <div id="tenants" class="mut">…</div>
+  </div>
+</div>
+</main>
+<script>
+const api=(p,o={})=>fetch('/api'+p,{credentials:'include',...o}).then(async r=>({ok:r.ok,status:r.status,body:await r.json().catch(()=>({}))}));
+const MODS=['loneworker','goalert','traccar','iot','thingsboard','workforce','interventi','consuntivi','assistant','blues'];
+async function login(){
+  const r=await api('/superadmin/login',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({email:email.value,password:pw.value})});
+  if(r.ok){loginCard.style.display='none';app.style.display='block';loadTenants();}
+  else loginMsg.textContent='Credenziali errate';
+}
+async function createTenant(){
+  const r=await api('/superadmin/tenants',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({slug:slug.value,name:name.value,admin_email:aemail.value,admin_password:apw.value})});
+  ctMsg.textContent=r.ok?('Creato: '+r.body.slug):('Errore: '+(r.body.error||r.status));
+  if(r.ok) loadTenants();
+}
+async function loadTenants(){
+  const r=await api('/superadmin/tenants');
+  const el=document.getElementById('tenants');
+  if(!r.ok){el.textContent='errore';return;}
+  el.innerHTML=r.body.map(t=>`<div class="card" style="background:#0d1322">
+     <b>${t.name}</b> <span class="mut">(${t.slug})</span>
+     <div style="margin-top:8px">${MODS.map(m=>moduleToggle(t.id,m)).join('')}</div></div>`).join('');
+}
+function moduleToggle(tid,code){
+  return `<span class="pill">${code}
+    <select onchange="setMod('${tid}','${code}',this.value)" style="width:auto;display:inline-block;padding:1px 4px">
+      <option value="">—</option><option value="attivo">attivo</option>
+      <option value="da_configurare">da_configurare</option><option value="degradato">degradato</option>
+      <option value="non_abilitato">non_abilitato</option></select></span>`;
+}
+async function setMod(tid,code,state){
+  if(!state)return;
+  const r=await api('/superadmin/tenants/'+tid+'/modules',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({module_code:code,state})});
+  if(!r.ok) alert('Bloccato: '+(r.body.error||r.status));
+}
+</script>
+</body></html>
