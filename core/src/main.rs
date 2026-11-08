@@ -71,6 +71,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sos", post(api::worker_sos))
         .route("/api/checkins", post(api::create_checkin))
         .route("/api/checkins/:id/confirm", post(api::confirm_checkin))
+        .route("/api/shifts/start", post(api::shift_start))
+        .route("/api/shifts/end", post(api::shift_end))
+        .route("/api/shifts/current", get(api::shift_current))
+        .route("/api/diary", post(api::diary_create).get(api::diary_list))
         // Prompt 9: ordini
         .route("/api/orders", post(api::create_order).get(api::list_orders))
         .route("/api/orders/:id/assign", post(api::order_assign))

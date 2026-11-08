@@ -11,7 +11,7 @@
 | `workforce` | Forza lavoro e turni | prodotto | parziale (assegnazione manuale) | — |
 | `interventi` | Interventi e cantieri | prodotto | **implementato** (ordini) | assegnazione manuale |
 | `consuntivi` | Ore, spese, consuntivi | prodotto | **implementato** (righe+spese+CSV) | fonte dati dichiarata; **no AI** |
-| `assistant` | YouWorker.ai + diario vocale | prodotto | **AI lettura implementata** (SIMULATO); voce/RAG backlog | provider intercambiabile |
+| `assistant` | YouWorker.ai + diario vocale | prodotto | **AI lettura** (SIMULATO) + **diario/turni** (Prompt 8) con **dettatura browser**; RAG/STT server backlog | provider intercambiabile |
 | `qualifiche`,`prevenzione` | — | prodotto | `available=false` ("non disponibile in questa release") | — |
 
 ## Regole invarianti

@@ -18,11 +18,18 @@
     border-radius:14px;font-weight:600;cursor:pointer;color:var(--fg);text-align:left}
   .act:active{background:var(--surface2)} .act svg{width:22px;height:22px;color:var(--brand-ink)}
   .act .ic{width:42px;height:42px;border-radius:12px;background:var(--brand-soft);display:flex;align-items:center;justify-content:center;flex:none}
+  .tag.warn{background:rgba(245,158,11,.18);color:#b45309}
+  .chip.warn{background:rgba(245,158,11,.18);color:#b45309}
+  .modal{position:fixed;inset:0;z-index:50;background:rgba(2,6,23,.55);display:flex;align-items:flex-end;justify-content:center}
+  .sheet{width:100%;max-width:460px;background:var(--surface);border-radius:18px 18px 0 0;padding:16px 16px 26px;
+    border-top:1px solid var(--line);max-height:88vh;overflow:auto}
+  .sheet textarea{width:100%;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--fg);padding:10px;font:inherit;resize:vertical}
+  #micBtn.on{background:var(--bad);color:#fff;border-color:transparent}
 </style></head><body>
 <div id="root"></div>
 <script src="/app.js"></script>
 <script>
-let ME=null, CI=null, CITimer=null;
+let ME=null, CI=null, CITimer=null, ORDERS=[];
 (async function(){ try{ME=await api('/me'); if(ME.is_super||!ME.tenant_id)ME=null;}catch(e){ME=null;} ME?app():login(); })();
 
 function login(){
@@ -53,20 +60,20 @@ function app(){
 
     <div class="card"><div class="card-b" id="ciBox"></div></div>
 
+    <div><h3 style="margin:4px 2px 10px">Turno</h3><div class="card"><div class="card-b" id="shiftBox"></div></div></div>
+
     <div><h3 style="margin:4px 2px 10px">Oggi · ordini assegnati</h3><div id="orders" class="col"></div></div>
 
     <div><h3 style="margin:4px 2px 10px">Azioni</h3><div class="col" style="gap:10px">
-      <button class="act" onclick="stub('Chiedi ai documenti')"><span class="ic">${ICON.doc}</span>
+      <button class="act" onclick="openNote()"><span class="ic">${ICON.mic}</span>
+        <span class="grow">Detta una nota di lavoro</span><span class="tag" id="noteBadge"></span></button>
+      <button class="act" onclick="askDocs()"><span class="ic">${ICON.doc}</span>
         <span class="grow">Chiedi ai documenti</span><span class="tag sim">RAG backlog</span></button>
-      <button class="act" onclick="stub('Detta una nota')"><span class="ic">${ICON.mic}</span>
-        <span class="grow">Detta una nota di lavoro</span><span class="tag sim">STT backlog</span></button>
-      <button class="act" onclick="stub('Inizia turno')"><span class="ic">${ICON.play}</span>
-        <span class="grow">Inizia turno</span><span class="tag sim">registro backlog</span></button>
-      <button class="act" onclick="stub('Termina turno')"><span class="ic">${ICON.stop}</span>
-        <span class="grow">Termina turno</span><span class="tag sim">registro backlog</span></button>
-    </div><div class="small mut center" style="margin-top:8px">Input manuale sempre disponibile. Voce/documenti/turni non attivi in questa build.</div></div>
+    </div>
+    <div class="small mut center" style="margin-top:8px">Input manuale sempre disponibile. La dettatura usa il riconoscimento vocale del browser; se assente o negato, scrivi a mano.</div>
+    <div id="diaryList" class="col" style="gap:8px;margin-top:10px"></div></div>
   </div>`;
-  renderCheckin(); loadOrders();
+  renderCheckin(); loadOrders(); renderShift(); loadDiary(); flushNotes();
 }
 async function out(){ location.reload(); }
 
@@ -104,7 +111,7 @@ async function confirmCI(){ if(!CI)return; try{ const r=await api('/checkins/'+C
 
 // ---- orders ----
 async function loadOrders(){
-  const box=$('#orders'); const O=await api('/orders').catch(()=>[]);
+  const box=$('#orders'); const O=await api('/orders').catch(()=>[]); ORDERS=O;
   const mine=O.filter(o=>['assegnato','in_corso'].includes(o.state));
   if(!mine.length){ box.innerHTML='<div class="card pad mut center">Nessun ordine per oggi</div>'; return; }
   box.innerHTML=mine.map(o=>`<div class="card pad">
@@ -118,7 +125,86 @@ async function oAct(id,act,v){ try{ await api('/orders/'+id+'/'+act,{method:'POS
 async function oComplete(id,v){ const o=prompt('Esito intervento?','completato'); if(o==null)return;
   try{ await api('/orders/'+id+'/complete',{method:'POST',body:JSON.stringify({version:v,outcome:o})}); toast('Completato','ok'); loadOrders(); }catch(e){toast(e.message,'bad');} }
 
-function stub(n){ toast(n+': non attivo in questa build (backlog)','warn'); }
+// ---- Prompt 8: turni (server-confirmed) ----
+async function renderShift(){
+  const b=$('#shiftBox'); if(!b)return; let s=null; try{ s=await api('/shifts/current'); }catch(e){}
+  if(s&&s.active){
+    const t=new Date(s.started_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
+    b.innerHTML=`<div class="spread"><b>Turno in corso</b><span class="chip s-attivo">confermato dal server</span></div>
+      <div class="small mut" style="margin:6px 0 12px">Iniziato alle ${t}</div>
+      <button class="btn block" onclick="shiftEnd()">${ICON.stop} Termina turno</button>`;
+  } else {
+    b.innerHTML=`<div class="spread"><b>Turno</b><span class="chip">non iniziato</span></div>
+      <button class="btn block" style="margin-top:10px" onclick="shiftStart()">${ICON.play} Inizia turno</button>`;
+  }
+}
+async function shiftStart(){ try{ const r=await api('/shifts/start',{method:'POST',body:'{}'});
+  toast(r.reused?'Turno già in corso':'Turno iniziato (confermato dal server)','ok'); renderShift(); }catch(e){toast(e.message,'bad');} }
+async function shiftEnd(){ try{ await api('/shifts/end',{method:'POST'}); toast('Turno terminato (confermato dal server)','ok'); renderShift(); }catch(e){toast(e.message,'bad');} }
+
+// ---- Prompt 8: nota di lavoro (dettatura browser + fallback offline) ----
+let REC=null, dictationUsed=false;
+function openNote(){
+  dictationUsed=false;
+  const opts=(ORDERS||[]).map(o=>`<option value="${o.id}">${esc(o.title)}</option>`).join('');
+  const m=document.createElement('div'); m.className='modal'; m.id='noteModal';
+  m.onclick=(e)=>{ if(e.target===m) closeNote(); };
+  m.innerHTML=`<div class="sheet">
+    <div class="spread"><b>Nota di lavoro</b><button class="btn-ico btn ghost" onclick="closeNote()">✕</button></div>
+    <div class="field" style="margin-top:8px"><label>Testo (voce o manuale)</label>
+      <textarea id="noteBody" rows="4" placeholder="Scrivi o usa il microfono…"></textarea></div>
+    <div class="row" style="gap:8px;align-items:center;margin-bottom:6px">
+      <button class="btn ghost" id="micBtn" onclick="toggleDictation()">${ICON.mic} Detta</button>
+      <span class="small mut grow" id="micState"></span></div>
+    ${(ORDERS||[]).length?`<div class="field"><label>Collega a ordine (opzionale)</label><select id="noteOrder"><option value="">—</option>${opts}</select></div>`:''}
+    <button class="btn block lg" style="margin-top:10px" onclick="saveNote()">Salva nota</button>
+  </div>`;
+  document.body.appendChild(m);
+}
+function closeNote(){ stopDictation(); const m=$('#noteModal'); if(m)m.remove(); }
+function toggleDictation(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  const st=$('#micState');
+  if(!SR){ st.textContent='Riconoscimento vocale non disponibile — scrivi a mano'; return; }
+  if(REC){ stopDictation(); return; }
+  REC=new SR(); REC.lang='it-IT'; REC.interimResults=true; REC.continuous=true;
+  const ta=$('#noteBody'); const base=ta.value;
+  REC.onresult=(e)=>{ let txt=''; for(let i=0;i<e.results.length;i++) txt+=e.results[i][0].transcript; ta.value=(base?base+' ':'')+txt; dictationUsed=true; };
+  REC.onerror=(e)=>{ st.textContent='Microfono: '+e.error+' — scrivi a mano'; stopDictation(); };
+  REC.onend=()=>{ const b=$('#micBtn'); if(b)b.classList.remove('on'); };
+  try{ REC.start(); $('#micBtn').classList.add('on'); st.textContent='In ascolto…'; }
+  catch(e){ st.textContent='Microfono non avviabile'; REC=null; }
+}
+function stopDictation(){ if(REC){ try{REC.stop();}catch(e){} REC=null; } const b=$('#micBtn'); if(b)b.classList.remove('on'); const s=$('#micState'); if(s&&s.textContent==='In ascolto…')s.textContent=''; }
+async function saveNote(){
+  const ta=$('#noteBody'); const body=(ta.value||'').trim(); if(!body){ toast('Nota vuota','warn'); return; }
+  const sel=$('#noteOrder'); const wo=sel&&sel.value?sel.value:null;
+  const note={ body, work_order_id:wo, source:dictationUsed?'voce':'manuale',
+    idem_key:'n-'+Date.now()+'-'+Math.random().toString(36).slice(2,7) };
+  closeNote(); await sendNote(note);
+}
+async function sendNote(note){
+  try{ const r=await api('/diary',{method:'POST',body:JSON.stringify(note)});
+    toast(r.deduplicated?'Nota già registrata':'Nota salvata (server)','ok'); loadDiary();
+  }catch(e){ queueNote(note); toast('Offline: nota salvata sul dispositivo, invio appena possibile','warn'); loadDiary(); }
+}
+function pend(){ try{return JSON.parse(localStorage.getItem('yw_notes')||'[]');}catch(e){return [];} }
+function setPend(a){ try{localStorage.setItem('yw_notes',JSON.stringify(a));}catch(e){} }
+function queueNote(n){ const a=pend(); a.push(n); setPend(a); }
+async function flushNotes(){ let a=pend(); if(!a.length)return; const keep=[];
+  for(const n of a){ try{ await api('/diary',{method:'POST',body:JSON.stringify(n)}); }catch(e){ keep.push(n); } }
+  setPend(keep); loadDiary(); }
+function updateNoteBadge(){ const b=$('#noteBadge'); if(!b)return; const n=pend().length; b.textContent=n?n+' offline':''; b.className='tag'+(n?' warn':''); }
+async function loadDiary(){
+  const box=$('#diaryList'); if(!box)return;
+  const server=await api('/diary').catch(()=>[]);
+  const off=pend().map(n=>`<div class="card pad"><div class="spread"><span class="small">${esc(n.body.slice(0,60))}</span><span class="chip warn">in attesa (offline)</span></div></div>`).join('');
+  const sv=server.slice(0,5).map(e=>`<div class="card pad"><div class="spread"><span class="small">${esc(e.body.slice(0,60))}</span><span class="chip ${e.source==='voce'?'s-attivo':''}">${e.source} · salvata</span></div></div>`).join('');
+  box.innerHTML=off+sv; updateNoteBadge();
+}
+function askDocs(){ toast('Chiedi ai documenti: RAG non implementato in questa build (backlog). L\'assistente in sola lettura è in console.','warn'); }
+window.addEventListener('online', flushNotes);
+
 if('serviceWorker' in navigator) navigator.serviceWorker.register('/worker/sw.js').catch(()=>{});
 </script>
 </body></html>

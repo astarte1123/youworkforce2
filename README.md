@@ -17,11 +17,12 @@ GoAlert come unico motore di escalation. LoneWorker è un modulo di prodotto.
 - **Ordini di lavoro** (Prompt 9): bozza→assegnato→in_corso→completato→annullato, con concorrenza ottimistica (versione), RBAC e isolamento.
 - **Consuntivi** (Prompt 9): bozza→in_revisione→da_correggere→approvato; righe ore + spese, calcolo deterministico in centesimi, doppia approvazione bloccata, **export CSV**.
 - **Assistente AI** (Prompt 7, sola lettura): widget NL nella console con strumenti tipizzati eseguiti da Rust (check-in scaduti, sensori offline, storia incidente, ordini, moduli degradati). Tenant/permessi dal contesto autenticato; azioni critiche rifiutate; provider intercambiabile (ora pianificatore locale **SIMULATO**). Si abilita per tenant dal superadmin.
+- **App lavoratore (Prompt 8)**: PWA con turni **confermati dal server** (inizio/fine idempotenti), **nota di lavoro dettata** (STT del browser via Web Speech, fallback manuale) con re-invio deduplicato e **coda offline** con indicatori distinti; SOS resta indipendente da voce/documenti. "Chiedi ai documenti" (RAG) = backlog dichiarato.
 - **UI**: design system completo (chiaro/scuro, responsive), console SPA (dashboard, centrale live, ordini, consuntivi, moduli) con drawer e toast; PWA lavoratore mobile-first.
 
 ## Non implementato (backlog, dichiarato)
-Prompt 8 (voce/diario/documenti), 10 (parità/migrazione legacy). Blues/OpenDuty reali.
-Consegna fisica notifiche GoAlert (SMS/voce) e firmware badge hardware: da cablare per sito.
+Prompt 10 (parità/migrazione legacy). RAG "chiedi ai documenti" e STT lato server.
+Blues/OpenDuty reali. SMS/voce (Twilio) e firmware badge hardware: da cablare per sito.
 
 ## Avvio — Docker Compose (profilo base)
 ```bash

@@ -572,6 +572,103 @@ pub async fn confirm_checkin(State(st): State<AppState>, h: HeaderMap, Path(id):
     Ok(Json(json!({"ok":n>0})))
 }
 
+// ======================= Prompt 8: turni + diario operativo =======================
+// Turni server-confirmed; diario con nota dettata (STT lato browser) o manuale.
+// Input manuale sempre disponibile; la dettatura NON è un prerequisito.
+type Dt = chrono::DateTime<chrono::Utc>;
+
+pub async fn shift_start(State(st): State<AppState>, h: HeaderMap, Json(b): Json<serde_json::Value>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    if !module_active(&st, tid, "workforce").await { return Err(err(StatusCode::FORBIDDEN, "modulo workforce non abilitato")); }
+    let note = b.get("note").and_then(|v| v.as_str());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // idempotent: an already-open shift is returned instead of erroring (double-tap safe)
+    let existing: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.shifts WHERE user_id=$1 AND state='in_corso'")
+        .bind(s.user_id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let (id, started, reused): (Uuid, Dt, bool) = if let Some(id) = existing {
+        let started: Dt = sqlx::query_scalar("SELECT started_at FROM app.shifts WHERE id=$1").bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
+        (id, started, true)
+    } else {
+        let row = sqlx::query("INSERT INTO app.shifts(tenant_id,user_id,note) VALUES($1,$2,$3) RETURNING id, started_at")
+            .bind(tid).bind(s.user_id).bind(note).fetch_one(&mut *tx).await.map_err(ise)?;
+        (row.get("id"), row.get("started_at"), false)
+    };
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":id,"state":"in_corso","started_at":started,"reused":reused})))
+}
+
+pub async fn shift_end(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let row = sqlx::query("UPDATE app.shifts SET state='terminato', ended_at=now() WHERE user_id=$1 AND state='in_corso' RETURNING id, started_at, ended_at")
+        .bind(s.user_id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    match row {
+        Some(r) => Ok(Json(json!({"id":r.get::<Uuid,_>("id"),"state":"terminato","started_at":r.get::<Dt,_>("started_at"),"ended_at":r.get::<Dt,_>("ended_at")}))),
+        None => Err(err(StatusCode::CONFLICT, "nessun turno aperto")),
+    }
+}
+
+pub async fn shift_current(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let row = sqlx::query("SELECT id, started_at FROM app.shifts WHERE user_id=$1 AND state='in_corso'")
+        .bind(s.user_id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(match row {
+        Some(r) => json!({"active":true,"id":r.get::<Uuid,_>("id"),"started_at":r.get::<Dt,_>("started_at")}),
+        None => json!({"active":false}),
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct DiaryReq { pub body: String, pub work_order_id: Option<Uuid>, pub source: Option<String>, pub idem_key: Option<String> }
+pub async fn diary_create(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DiaryReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    if !module_active(&st, tid, "workforce").await { return Err(err(StatusCode::FORBIDDEN, "modulo workforce non abilitato")); }
+    let body = b.body.trim();
+    if body.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nota vuota")); }
+    let source = match b.source.as_deref() { Some("voce") => "voce", _ => "manuale" };
+    let idem = b.idem_key.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| Uuid::new_v4().to_string());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query(
+        "INSERT INTO app.diary_entries(tenant_id,user_id,work_order_id,body,source,idem_key)
+         VALUES($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (tenant_id,user_id,idem_key) DO NOTHING
+         RETURNING id, created_at")
+        .bind(tid).bind(s.user_id).bind(b.work_order_id).bind(body).bind(source).bind(&idem)
+        .fetch_optional(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    match row {
+        Some(r) => Ok(Json(json!({"id":r.get::<Uuid,_>("id"),"created_at":r.get::<Dt,_>("created_at"),"source":source,"deduplicated":false}))),
+        None => Ok(Json(json!({"deduplicated":true,"idem_key":idem}))),
+    }
+}
+
+pub async fn diary_list(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let all = matches!(s.role.as_str(), "operatore"|"responsabile"|"tenant_admin"|"auditor");
+    let sql = if all {
+        "SELECT d.id,d.body,d.source,d.created_at,d.work_order_id,u.email AS author
+         FROM app.diary_entries d JOIN app.users u ON u.id=d.user_id ORDER BY d.created_at DESC LIMIT 100"
+    } else {
+        "SELECT d.id,d.body,d.source,d.created_at,d.work_order_id,u.email AS author
+         FROM app.diary_entries d JOIN app.users u ON u.id=d.user_id WHERE d.user_id=$1 ORDER BY d.created_at DESC LIMIT 100"
+    };
+    let q = sqlx::query(sql);
+    let q = if all { q } else { q.bind(s.user_id) };
+    let rows = q.fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id": r.get::<Uuid,_>("id"), "body": r.get::<String,_>("body"), "source": r.get::<String,_>("source"),
+        "created_at": r.get::<Dt,_>("created_at"), "work_order_id": r.try_get::<Uuid,_>("work_order_id").ok(),
+        "author": r.get::<String,_>("author") })).collect();
+    Ok(Json(json!(out)))
+}
+
 // ----------------------------- SSE -----------------------------
 pub async fn stream(State(st): State<AppState>, h: HeaderMap)
     -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, (StatusCode, String)> {
