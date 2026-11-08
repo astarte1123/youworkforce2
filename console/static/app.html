@@ -1,0 +1,325 @@
+<!doctype html><html lang="it"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Console · YouWorkforce</title>
+<link rel="stylesheet" href="/app.css">
+</head><body>
+<div id="root"></div>
+<div id="scrim" class="scrim"></div>
+<aside id="drawer" class="drawer"></aside>
+<script src="/app.js"></script>
+<script>
+let ME=null, SSE=null, CACHE={};
+const can = r => ME && r.includes(ME.role);
+const NAV = [
+  {k:'dashboard', t:'Dashboard', ico:'home', roles:null},
+  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor']},
+  {k:'ordini',    t:'Ordini di lavoro', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor']},
+  {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor']},
+  {k:'moduli',    t:'Moduli', ico:'sliders', roles:['tenant_admin']},
+];
+const visibleNav = ()=>NAV.filter(n=>!n.roles||n.roles.includes(ME.role));
+
+// ---------------- boot ----------------
+(async function(){
+  try{ ME = await api('/me'); if(ME.is_super||!ME.tenant_id){ME=null;} }catch(e){ ME=null; }
+  if(ME) renderShell(); else renderLogin();
+})();
+
+// ---------------- login ----------------
+function renderLogin(){
+  document.body.classList.add('login-bg');
+  $('#root').innerHTML = `
+  <div style="min-height:100vh;display:grid;place-items:center;padding:20px;background:
+     radial-gradient(1200px 600px at 10% -10%, var(--brand-soft), transparent),
+     radial-gradient(900px 500px at 110% 110%, var(--info-soft), transparent), var(--bg)">
+    <div class="card" style="width:400px;max-width:100%">
+      <div class="card-b">
+        <div class="row" style="gap:10px;margin-bottom:6px"><div class="logo">${ICON.logomark}</div>
+          <div><h1 style="font-size:19px">YouWorkforce</h1><div class="small mut">Console cliente</div></div>
+          <span class="tag sim" style="margin-left:auto">DEMO</span></div>
+        <div class="divider" style="margin:14px 0 16px"></div>
+        <div class="col">
+          <div class="field"><label>Tenant</label><input id="slug" value="${store.slug}"></div>
+          <div class="field"><label>Email</label><input id="email" placeholder="operatore@acme.loneworker.eu"></div>
+          <div class="field"><label>Password</label><input id="pw" type="password" value="demo"></div>
+          <button class="btn block lg" id="go">Accedi</button>
+          <div class="small" id="msg" style="color:var(--bad);min-height:18px"></div>
+        </div>
+        <div class="divider" style="margin:4px 0 12px"></div>
+        <div class="small mut" style="margin-bottom:6px">Accesso rapido demo (password <b>demo</b>):</div>
+        <div class="row" style="gap:6px">
+          ${['operatore','pianificatore','responsabile','mario','admin'].map(u=>
+            `<button class="btn ghost sm" onclick="quick('${u}')">${u}</button>`).join('')}
+        </div>
+      </div>
+    </div>
+  </div>`;
+  $('#go').onclick=doLogin;
+  $('#pw').onkeydown=e=>{if(e.key==='Enter')doLogin();};
+}
+function quick(u){ $('#email').value = u+'@acme.loneworker.eu'; $('#pw').value='demo'; doLogin(); }
+async function doLogin(){
+  store.slug=$('#slug').value.trim();
+  try{ await api('/login',{method:'POST',body:JSON.stringify({email:$('#email').value.trim(),password:$('#pw').value})});
+    ME = await api('/me'); document.body.classList.remove('login-bg'); renderShell();
+  }catch(e){ $('#msg').textContent='Credenziali non valide'; }
+}
+async function logout(){ try{SSE&&SSE.close()}catch(e){} ME=null; location.hash=''; renderLogin(); }
+
+// ---------------- shell ----------------
+function renderShell(){
+  $('#root').innerHTML = `
+  <div class="shell">
+    <aside class="side">
+      <div class="brand"><div class="logo">${ICON.logomark}</div> YouWorkforce</div>
+      <nav id="nav">${visibleNav().map(n=>`<a data-k="${n.k}"><span class="ico">${ICON[n.ico]}</span>${n.t}</a>`).join('')}</nav>
+      <div class="foot">
+        <div class="row"><div class="ava">${initials(ME.email)}</div>
+          <div class="grow" style="min-width:0"><div class="small" style="font-weight:650;overflow:hidden;text-overflow:ellipsis">${esc(ME.email.split('@')[0])}</div>
+          <div class="chip" style="padding:1px 7px">${esc(ME.role)}</div></div></div>
+      </div>
+    </aside>
+    <div style="display:flex;flex-direction:column;min-width:0">
+      <div class="topbar">
+        <strong id="pageTitle">Dashboard</strong>
+        <span class="chip">${esc(store.slug)}</span>
+        <div class="grow"></div>
+        <span id="liveWrap"></span>
+        <button class="btn-ico btn ghost" title="Tema" onclick="toggleTheme()">${ICON.moon}</button>
+        <button class="btn-ico btn ghost" title="Esci" onclick="logout()">${ICON.logout}</button>
+      </div>
+      <div class="content"><div id="view"></div></div>
+    </div>
+  </div>`;
+  $('#nav').onclick=e=>{const a=e.target.closest('a[data-k]'); if(a){location.hash='#/'+a.dataset.k;}};
+  window.onhashchange=route;
+  if(can(['operatore','tenant_admin','auditor'])) connectSSE();
+  route();
+}
+function setActive(k){ $$('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.k===k));
+  const n=NAV.find(x=>x.k===k); if(n&&$('#pageTitle'))$('#pageTitle').textContent=n.t; }
+
+function route(){
+  let k=(location.hash.replace('#/','')||'dashboard');
+  if(!visibleNav().some(n=>n.k===k)) k=visibleNav()[0].k;
+  setActive(k); const v=$('#view'); v.innerHTML='<div class="col"><div class="skel" style="height:90px"></div><div class="skel" style="height:260px"></div></div>';
+  ({dashboard:vDashboard,centrale:vCentrale,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli}[k]||vDashboard)(v);
+}
+
+// ---------------- SSE ----------------
+function connectSSE(){
+  try{SSE&&SSE.close()}catch(e){}
+  SSE=new EventSource('/api/stream',{withCredentials:true});
+  const w=()=>$('#liveWrap');
+  SSE.onopen =()=>{ if(w())w().innerHTML='<span class="live on">live</span>'; };
+  SSE.onerror=()=>{ if(w())w().innerHTML='<span class="live off">flusso interrotto</span>'; };
+  SSE.onmessage=e=>{ let d={};try{d=JSON.parse(e.data)}catch(_){}
+    if(d.type==='incident_opened') toast('Nuovo incidente: '+(d.etype||'')+' — '+(d.correlation||'').slice(0,8),'bad');
+    const k=location.hash.replace('#/','')||'dashboard';
+    if(k==='centrale'||k==='dashboard') route();
+  };
+}
+
+// ---------------- Dashboard ----------------
+async function vDashboard(v){
+  const jobs=[];
+  const incs = can(['operatore','tenant_admin','auditor']) ? api('/incidents').catch(()=>[]) : Promise.resolve(null);
+  const ords = can(['pianificatore','tenant_admin','lavoratore','auditor']) ? api('/orders').catch(()=>[]) : Promise.resolve(null);
+  const tss  = can(['lavoratore','responsabile','tenant_admin','auditor']) ? api('/timesheets').catch(()=>[]) : Promise.resolve(null);
+  const [I,O,T] = await Promise.all([incs,ords,tss]);
+  const openInc=(I||[]).filter(x=>x.state!=='chiuso').length;
+  const inCorso=(O||[]).filter(x=>x.state==='in_corso'||x.state==='assegnato').length;
+  const inRev=(T||[]).filter(x=>x.state==='in_revisione').length;
+  const kpis=[];
+  if(I)kpis.push(kpi('alert','Incidenti aperti',openInc,openInc?'pri3':''));
+  if(O)kpis.push(kpi('clipboard','Ordini attivi',inCorso));
+  if(T)kpis.push(kpi('receipt','Consuntivi in revisione',inRev));
+  kpis.push(kpi('shield','Ruolo',ME.role,'', true));
+  v.innerHTML=`<div class="grid g4" style="margin-bottom:18px">${kpis.join('')}</div>
+    <div class="grid g2">
+      ${I?card('Incidenti recenti', (I.slice(0,6).map(incRow).join('')||emptyRow('Nessun incidente')), 'centrale'):''}
+      ${O?card('Ordini recenti', (O.slice(0,6).map(ordRow).join('')||emptyRow('Nessun ordine')), 'ordini'):''}
+    </div>`;
+  bindRows(v);
+}
+function kpi(ico,label,n,cls='',small){return `<div class="kpi"><div class="ico">${ICON[ico]}</div>
+  <div class="n ${cls}" style="${small?'font-size:18px':''}">${esc(n)}</div><div class="l">${label}</div></div>`;}
+function card(title,inner,gotoK){return `<div class="card"><div class="card-h"><h2>${title}</h2>
+  ${gotoK?`<a onclick="location.hash='#/${gotoK}'">apri →</a>`:''}</div>
+  <table class="table"><tbody>${inner}</tbody></table></div>`;}
+function emptyRow(t){return `<tr><td class="empty" style="padding:26px">${t}</td></tr>`;}
+function incRow(i){return `<tr class="clk" data-inc="${i.id}"><td><b>${esc(i.etype)}</b><div class="small mut">${esc(i.site||'—')}</div></td>
+  <td>${chip(i.state)}</td></tr>`;}
+function ordRow(o){return `<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b><div class="small mut">${esc(o.site||'—')} · ${esc(o.assignee||'non assegnato')}</div></td>
+  <td>${chip(o.state)}</td></tr>`;}
+function bindRows(v){
+  $$('[data-inc]',v).forEach(r=>r.onclick=()=>openIncident(r.dataset.inc));
+  $$('[data-ord]',v).forEach(r=>r.onclick=()=>openOrder(r.dataset.ord));
+  $$('[data-ts]',v).forEach(r=>r.onclick=()=>openTimesheet(r.dataset.ts));
+}
+
+// ---------------- Centrale ----------------
+async function vCentrale(v){
+  const I=await api('/incidents').catch(()=>[]);
+  v.innerHTML=`<div class="page-h"><div><h1>Centrale allarmi</h1><div class="mut">${I.length} incidenti · aggiornamento live</div></div></div>
+  <div class="card"><table class="table"><thead><tr><th>Tipo</th><th>Sede</th><th>Stato</th><th>Priorità</th><th>Correlazione</th></tr></thead>
+  <tbody>${I.map(i=>`<tr class="clk" data-inc="${i.id}">
+    <td><b>${esc(i.etype)}</b></td><td>${esc(i.site||'—')}</td><td>${chip(i.state)}</td>
+    <td class="sev pri${i.priority}">${'●'.repeat(i.priority)}</td>
+    <td class="mono small mut">${esc((i.correlation||'').slice(0,8))}</td></tr>`).join('')
+    ||`<tr><td colspan="5" class="empty">${ICON.check}<div>Nessun incidente aperto</div></td></tr>`}</tbody></table></div>`;
+  bindRows(v);
+}
+async function openIncident(id){
+  const [list,tl]=await Promise.all([api('/incidents'),api('/incidents/'+id+'/timeline').catch(()=>[])]);
+  const i=list.find(x=>x.id===id)||{};
+  const acts = (i.state==='aperto'&&can(['operatore','tenant_admin']))?`<button class="btn block" onclick="incAck('${id}')">Prendi in carico</button>`
+    :(i.state==='preso_in_carico'&&can(['operatore','tenant_admin']))?`<button class="btn ok block" onclick="incClose('${id}')">Chiudi con esito</button>`
+    :`<div class="chip">${esc(i.outcome||'nessuna azione disponibile')}</div>`;
+  drawer(`Incidente · ${esc(i.etype)}`, `
+    <div class="row" style="margin-bottom:14px">${chip(i.state)}<span class="chip">prio ${i.priority}</span><span class="chip">${esc(i.site||'—')}</span></div>
+    <div class="small mut">Correlazione</div><div class="mono" style="margin-bottom:16px">${esc(i.correlation)}</div>
+    <div style="margin-bottom:16px">${acts}</div>
+    <h3 style="margin-bottom:10px">Timeline</h3>
+    <ul class="timeline">${tl.map(e=>`<li><div class="t">${esc(e.kind.replace(/_/g,' '))}</div>
+      <div class="small mut">${esc(JSON.stringify(e.detail||{}))}</div></li>`).join('')||'<li class="mut">—</li>'}</ul>`);
+}
+async function incAck(id){ try{await api('/incidents/'+id+'/ack',{method:'POST'}); toast('Preso in carico','ok'); closeDrawer(); route(); }catch(e){toast(e.message,'bad');} }
+async function incClose(id){ const o=prompt('Esito chiusura?','risolto sul posto'); if(o==null)return;
+  try{await api('/incidents/'+id+'/close',{method:'POST',body:JSON.stringify({outcome:o})}); toast('Incidente chiuso','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
+
+// ---------------- Ordini ----------------
+async function vOrdini(v){
+  const O=await api('/orders').catch(()=>[]);
+  const canCreate=can(['pianificatore','tenant_admin']);
+  v.innerHTML=`<div class="page-h"><div><h1>Ordini di lavoro</h1><div class="mut">${O.length} ordini</div></div>
+    ${canCreate?`<button class="btn" onclick="newOrder()">+ Nuovo ordine</button>`:''}</div>
+  <div class="card"><table class="table"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Stato</th></tr></thead>
+  <tbody>${O.map(o=>`<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b></td><td>${esc(o.site||'—')}</td>
+    <td>${esc(o.assignee||'—')}</td><td>${chip(o.state)}</td></tr>`).join('')
+    ||`<tr><td colspan="4" class="empty">${ICON.clipboard}<div>Nessun ordine</div></td></tr>`}</tbody></table></div>`;
+  bindRows(v);
+}
+async function newOrder(){
+  const sites=await api('/sites').catch(()=>[]);
+  drawer('Nuovo ordine', `
+    <div class="col">
+      <div class="field"><label>Titolo</label><input id="o_title" placeholder="Manutenzione quadro elettrico"></div>
+      <div class="field"><label>Sede</label><select id="o_site"><option value="">—</option>${sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Istruzioni</label><textarea id="o_instr"></textarea></div>
+      <button class="btn block" id="o_save">Crea ordine (bozza)</button>
+    </div>`);
+  $('#o_save').onclick=async()=>{ try{
+    await api('/orders',{method:'POST',body:JSON.stringify({title:$('#o_title').value,site_id:$('#o_site').value||null,instructions:$('#o_instr').value||null})});
+    toast('Ordine creato','ok'); closeDrawer(); route(); }catch(e){toast(e.message,'bad');} };
+}
+async function openOrder(id){
+  const planner=can(['pianificatore','tenant_admin']);
+  const [O,users]=await Promise.all([api('/orders'), planner?api('/users').catch(()=>[]):Promise.resolve([])]);
+  const o=O.find(x=>x.id===id)||{};
+  const workers=(users||[]).filter(u=>u.role==='lavoratore');
+  const mine = o.assignee===ME.email;
+  let acts='';
+  if(planner && (o.state==='bozza'||o.state==='assegnato'))
+    acts+=`<div class="field"><label>Assegna a</label><select id="asg"><option value="">— scegli —</option>
+      ${workers.map(w=>`<option value="${w.id}">${esc(w.email.split('@')[0])}</option>`).join('')}</select></div>
+      <button class="btn block" onclick="ordAssign('${id}',${o.version})">Assegna</button>`;
+  if((mine||planner)&&o.state==='assegnato') acts+=`<button class="btn block" onclick="ordAct('${id}','start',${o.version})">${ICON.play} Avvia</button>`;
+  if((mine||planner)&&o.state==='in_corso') acts+=`<button class="btn ok block" onclick="ordComplete('${id}',${o.version})">${ICON.check} Completa</button>`;
+  if(planner&&['bozza','assegnato','in_corso'].includes(o.state)) acts+=`<button class="btn ghost block" onclick="ordCancel('${id}',${o.version})">Annulla</button>`;
+  drawer('Ordine · '+esc(o.title), `
+    <div class="row" style="margin-bottom:14px">${chip(o.state)}<span class="chip">${esc(o.site||'—')}</span><span class="chip">v${o.version}</span></div>
+    <div class="small mut">Assegnatario</div><div style="margin-bottom:12px">${esc(o.assignee||'non assegnato')}</div>
+    <div class="small mut">Istruzioni</div><div style="margin-bottom:16px">${esc(o.instructions||'—')}</div>
+    ${o.outcome?`<div class="small mut">Esito</div><div style="margin-bottom:16px">${esc(o.outcome)}</div>`:''}
+    <div class="col">${acts||'<div class="chip">nessuna azione disponibile</div>'}</div>`);
+}
+async function ordAssign(id,v){ const u=$('#asg').value.trim(); if(!u)return toast('inserisci user id','warn');
+  try{await api('/orders/'+id+'/assign',{method:'POST',body:JSON.stringify({version:v,user_id:u})}); toast('Assegnato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
+async function ordAct(id,act,v){ try{await api('/orders/'+id+'/'+act,{method:'POST',body:JSON.stringify({version:v})}); toast('Aggiornato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
+async function ordComplete(id,v){ const o=prompt('Esito?','completato'); if(o==null)return;
+  try{await api('/orders/'+id+'/complete',{method:'POST',body:JSON.stringify({version:v,outcome:o})}); toast('Completato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
+async function ordCancel(id,v){ const r=prompt('Motivo annullamento?'); if(r==null)return;
+  try{await api('/orders/'+id+'/cancel',{method:'POST',body:JSON.stringify({version:v,reason:r})}); toast('Annullato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
+
+// ---------------- Consuntivi ----------------
+async function vConsuntivi(v){
+  const T=await api('/timesheets').catch(()=>[]);
+  const canCreate=can(['lavoratore','tenant_admin']);
+  v.innerHTML=`<div class="page-h"><div><h1>Consuntivi</h1><div class="mut">${T.length} consuntivi</div></div>
+    ${canCreate?`<button class="btn" onclick="newTS()">+ Nuovo consuntivo</button>`:''}</div>
+  <div class="card"><table class="table"><thead><tr><th>Addetto</th><th>Ordine</th><th>Stato</th></tr></thead>
+  <tbody>${T.map(t=>`<tr class="clk" data-ts="${t.id}"><td><b>${esc(t.owner.split('@')[0])}</b></td>
+    <td>${esc(t.order_title||'—')}</td><td>${chip(t.state)}</td></tr>`).join('')
+    ||`<tr><td colspan="3" class="empty">${ICON.receipt}<div>Nessun consuntivo</div></td></tr>`}</tbody></table></div>`;
+  bindRows(v);
+}
+async function newTS(){
+  try{ const r=await api('/timesheets',{method:'POST',body:JSON.stringify({})}); toast('Consuntivo creato','ok'); route(); openTimesheet(r.id);}catch(e){toast(e.message,'bad');}
+}
+async function openTimesheet(id){
+  const d=await api('/timesheets/'+id);
+  const owner = d.owner===ME.email; const approver=can(['responsabile','tenant_admin']);
+  const editable = owner && ['bozza','da_correggere'].includes(d.state);
+  const t=d.total;
+  let lineForm = editable ? `
+    <div class="divider"></div><h3 style="margin:8px 0">Aggiungi riga</h3>
+    <div class="row"><div class="field grow"><label>Attività</label><input id="l_act"></div>
+      <div class="field" style="flex:0 0 130px"><label>Data</label><input id="l_date" type="date" value="${new Date().toISOString().slice(0,10)}"></div></div>
+    <div class="row"><div class="field"><label>Minuti</label><input id="l_min" type="number" value="60"></div>
+      <div class="field"><label>Tariffa €/h</label><input id="l_rate" type="number" step="0.01" placeholder="es. 35.00"></div>
+      <div class="field" style="flex:0"><label>&nbsp;</label><button class="btn" onclick="addLine('${id}')">+ riga</button></div></div>
+    <div class="row"><div class="field grow"><label>Spesa (descr.)</label><input id="e_desc"></div>
+      <div class="field"><label>Importo €</label><input id="e_amt" type="number" step="0.01"></div>
+      <div class="field" style="flex:0"><label>&nbsp;</label><button class="btn ghost" onclick="addExp('${id}')">+ spesa</button></div></div>` : '';
+  let acts='';
+  if(owner&&['bozza','da_correggere'].includes(d.state)) acts+=`<button class="btn block" onclick="tsSubmit('${id}')">Invia in revisione</button>`;
+  if(approver&&d.state==='in_revisione'){ acts+=`<button class="btn ok block" onclick="tsApprove('${id}')">Approva</button>
+    <button class="btn warn block" onclick="tsReqChanges('${id}')">Chiedi correzioni</button>`; }
+  acts+=`<a class="btn ghost block center" href="/api/timesheets/${id}/export.csv" target="_blank">Esporta CSV</a>`;
+  drawer('Consuntivo · '+esc(d.owner.split('@')[0]), `
+    <div class="row" style="margin-bottom:14px">${chip(d.state)}${d.order_title?`<span class="chip">${esc(d.order_title)}</span>`:''}</div>
+    ${d.note?`<div class="card pad" style="background:var(--warn-soft);margin-bottom:14px"><b>Nota responsabile:</b> ${esc(d.note)}</div>`:''}
+    <table class="table"><thead><tr><th>Attività</th><th>Data</th><th>Min</th><th>€/h</th></tr></thead>
+    <tbody>${d.lines.map(l=>`<tr><td>${esc(l.activity)}</td><td class="small">${l.work_date}</td><td>${l.minutes}</td>
+      <td>${l.rate_cents==null?'<span class="chip s-da_correggere">no tariffa</span>':fmtEUR(l.rate_cents)}</td></tr>`).join('')||emptyRow('nessuna riga')}</tbody></table>
+    ${d.expenses.length?`<h3 style="margin:14px 0 8px">Spese</h3><table class="table"><tbody>${d.expenses.map(e=>
+      `<tr><td>${esc(e.description)} ${e.has_receipt?'📎':''}</td><td class="nowrap">${fmtEUR(e.amount_cents)}</td></tr>`).join('')}</tbody></table>`:''}
+    <div class="card pad" style="margin-top:14px"><div class="spread"><span class="mut">Ore</span><b>${fmtMin(t.minutes)}</b></div>
+      <div class="spread"><span class="mut">Manodopera</span><b>${fmtEUR(t.labor_cents)}</b></div>
+      <div class="spread"><span class="mut">Spese</span><b>${fmtEUR(t.expense_cents)}</b></div>
+      <div class="divider"></div><div class="spread"><b>Totale</b><b style="font-size:18px">${fmtEUR(t.total_cents)}</b></div>
+      ${t.missing_rate?`<div class="small" style="color:var(--warn);margin-top:6px">⚠ Alcune righe senza tariffa: nessun costo attribuito.</div>`:''}</div>
+    ${lineForm}
+    <div class="col" style="margin-top:16px">${acts}</div>`);
+}
+async function addLine(id){ const rate=$('#l_rate').value; try{
+  await api('/timesheets/'+id+'/lines',{method:'POST',body:JSON.stringify({activity:$('#l_act').value,work_date:$('#l_date').value,
+    minutes:Number($('#l_min').value),rate_cents:rate?Math.round(Number(rate)*100):null})});
+  toast('Riga aggiunta','ok'); openTimesheet(id);}catch(e){toast(e.message,'bad');} }
+async function addExp(id){ try{
+  await api('/timesheets/'+id+'/expenses',{method:'POST',body:JSON.stringify({description:$('#e_desc').value,amount_cents:Math.round(Number($('#e_amt').value)*100)})});
+  toast('Spesa aggiunta','ok'); openTimesheet(id);}catch(e){toast(e.message,'bad');} }
+async function tsSubmit(id){ try{await api('/timesheets/'+id+'/submit',{method:'POST'}); toast('Inviato in revisione','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
+async function tsApprove(id){ try{await api('/timesheets/'+id+'/approve',{method:'POST'}); toast('Approvato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
+async function tsReqChanges(id){ const n=prompt('Cosa correggere?'); if(n==null)return;
+  try{await api('/timesheets/'+id+'/request-changes',{method:'POST',body:JSON.stringify({note:n})}); toast('Rimandato per correzioni','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
+
+// ---------------- Moduli ----------------
+async function vModuli(v){
+  const M=await api('/modules').catch(()=>[]);
+  v.innerHTML=`<div class="page-h"><div><h1>Moduli</h1><div class="mut">Abilitazione commerciale gestita dal superadmin. Qui vedi lo stato.</div></div></div>
+  <div class="grid g3">${M.map(m=>`<div class="card pad">
+    <div class="spread"><b>${esc(m.name)}</b>${chip(m.state)}</div>
+    <div class="small mut" style="margin-top:6px">${esc(m.code)} · ${esc(m.kind)}</div>
+    ${!m.available?'<div class="small" style="color:var(--warn);margin-top:6px">non disponibile in questa release</div>':''}
+  </div>`).join('')}</div>`;
+}
+
+// ---------------- drawer ----------------
+function drawer(title,html){ $('#drawer').innerHTML=`<div class="dh"><h2>${title}</h2>
+  <button class="btn-ico btn ghost" onclick="closeDrawer()">${ICON.x}</button></div><div class="db">${html}</div>`;
+  $('#drawer').classList.add('open'); $('#scrim').classList.add('open'); $('#scrim').onclick=closeDrawer; }
+function closeDrawer(){ $('#drawer').classList.remove('open'); $('#scrim').classList.remove('open'); }
+</script>
+</body></html>

@@ -1,63 +1,124 @@
 <!doctype html><html lang="it"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Lavoratore · YouWorkforce</title><link rel="manifest" href="/worker/manifest.webmanifest">
-<link rel="stylesheet" href="/style.css"></head><body>
-<header><h1>App lavoratore</h1><span class="badge sim" id="net">—</span></header>
-<main style="max-width:480px">
-<div class="card" id="loginCard">
-  <h2>Accesso</h2>
-  <label>Tenant</label><input id="slug" value="acme">
-  <label>Email</label><input id="email" value="mario@acme.loneworker.eu">
-  <label>Password</label><input id="pw" type="password" value="demo">
-  <button class="big" onclick="login()">Entra</button>
-  <p class="mut" id="msg"></p>
-</div>
-
-<div id="app" style="display:none">
-  <div class="card">
-    <button class="sos" onclick="sos()">🆘 SOS</button>
-    <p class="mut">Il canale SOS è indipendente da dettatura e documenti.</p>
-  </div>
-  <div class="card">
-    <h2>Check-in sicurezza</h2>
-    <div class="row"><div><label>Scadenza (min)</label><input id="min" type="number" value="1"></div>
-    <div style="flex:0"><label>&nbsp;</label><button onclick="startCheckin()">Avvia</button></div></div>
-    <p class="mut" id="ciMsg"></p>
-    <button class="ghost" id="confirmBtn" style="display:none;width:100%;margin-top:8px" onclick="confirmCheckin()">Conferma presenza</button>
-  </div>
-  <div class="card">
-    <button class="big ghost" onclick="stub('Chiedi ai documenti')">📄 Chiedi ai documenti</button>
-    <button class="big ghost" onclick="stub('Detta una nota')">🎤 Detta una nota</button>
-    <button class="big ghost" onclick="stub('Inizia turno')">▶️ Inizia turno</button>
-    <button class="big ghost" onclick="stub('Termina turno')">⏹️ Termina turno</button>
-    <p class="mut">RAG YouWorker.ai, STT e registro turni: backlog (Prompt 8/9) — non contrattualizzati in questa build. Input manuale resta sempre disponibile.</p>
-  </div>
-  <div class="card"><h2>Log</h2><div class="log" id="log"></div></div>
-</div>
-</main>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<title>Lavoratore · YouWorkforce</title>
+<link rel="manifest" href="/worker/manifest.webmanifest">
+<link rel="stylesheet" href="/app.css">
+<style>
+  body{background:var(--bg)}
+  .wrap{max-width:460px;margin:0 auto;padding:14px 14px 30px}
+  .whead{position:sticky;top:0;z-index:10;background:var(--bg);padding:12px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line)}
+  .sosbtn{width:100%;border:none;border-radius:20px;background:linear-gradient(160deg,#ff5468,#d81e36);color:#fff;
+    padding:26px;font-size:22px;font-weight:800;letter-spacing:.02em;cursor:pointer;box-shadow:0 10px 30px rgba(216,30,54,.4);
+    display:flex;align-items:center;justify-content:center;gap:12px}
+  .sosbtn:active{transform:scale(.98)}
+  .sosbtn svg{width:30px;height:30px}
+  .count{font-size:34px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.02em}
+  .act{display:flex;align-items:center;gap:12px;width:100%;padding:16px;border:1px solid var(--line);background:var(--surface);
+    border-radius:14px;font-weight:600;cursor:pointer;color:var(--fg);text-align:left}
+  .act:active{background:var(--surface2)} .act svg{width:22px;height:22px;color:var(--brand-ink)}
+  .act .ic{width:42px;height:42px;border-radius:12px;background:var(--brand-soft);display:flex;align-items:center;justify-content:center;flex:none}
+</style></head><body>
+<div id="root"></div>
+<script src="/app.js"></script>
 <script>
-let SLUG='';
-const api=(p,o={})=>fetch('/api'+p,{credentials:'include',headers:{'content-type':'application/json','x-tenant-slug':SLUG,...(o.headers||{})},...o})
-  .then(async r=>({ok:r.ok,status:r.status,body:await r.json().catch(()=>({}))}));
-const logln=t=>log.textContent=(new Date().toLocaleTimeString()+'  '+t+'\n')+log.textContent;
-function netState(){net.textContent=navigator.onLine?'online':'offline (bozza locale)';}
-addEventListener('online',netState);addEventListener('offline',netState);netState();
-async function login(){SLUG=slug.value.trim();
-  const r=await api('/login',{method:'POST',body:JSON.stringify({email:email.value,password:pw.value})});
-  if(r.ok){loginCard.style.display='none';app.style.display='block';logln('accesso ok: '+r.body.role);}
-  else msg.textContent='Credenziali errate';}
+let ME=null, CI=null, CITimer=null;
+(async function(){ try{ME=await api('/me'); if(ME.is_super||!ME.tenant_id)ME=null;}catch(e){ME=null;} ME?app():login(); })();
+
+function login(){
+  $('#root').innerHTML=`<div class="wrap" style="min-height:100vh;display:flex;flex-direction:column;justify-content:center">
+    <div class="row" style="gap:10px;justify-content:center;margin-bottom:18px"><div class="logo">${ICON.logomark}</div>
+      <strong style="font-size:18px">App lavoratore</strong></div>
+    <div class="card"><div class="card-b col">
+      <div class="field"><label>Tenant</label><input id="slug" value="${store.slug}"></div>
+      <div class="field"><label>Email</label><input id="email" value="mario@acme.loneworker.eu"></div>
+      <div class="field"><label>Password</label><input id="pw" type="password" value="demo"></div>
+      <button class="btn block lg" id="go">Accedi</button>
+      <div class="small center" id="msg" style="color:var(--bad);min-height:16px"></div>
+    </div></div></div>`;
+  $('#go').onclick=async()=>{ store.slug=$('#slug').value.trim(); try{
+    await api('/login',{method:'POST',body:JSON.stringify({email:$('#email').value.trim(),password:$('#pw').value})});
+    ME=await api('/me'); app(); }catch(e){ $('#msg').textContent='Credenziali non valide'; } };
+}
+
+function app(){
+  $('#root').innerHTML=`
+  <div class="whead"><div class="logo" style="width:26px;height:26px">${ICON.logomark}</div>
+    <strong class="grow">Ciao, ${esc(ME.email.split('@')[0])}</strong>
+    <button class="btn-ico btn ghost" onclick="toggleTheme()">${ICON.moon}</button>
+    <button class="btn-ico btn ghost" onclick="out()">${ICON.logout}</button></div>
+  <div class="wrap col" style="gap:16px">
+    <button class="sosbtn" onclick="sos()">${ICON.sos} SOS</button>
+    <div class="small mut center" style="margin-top:-6px">Il canale SOS è indipendente da dettatura e documenti.</div>
+
+    <div class="card"><div class="card-b" id="ciBox"></div></div>
+
+    <div><h3 style="margin:4px 2px 10px">Oggi · ordini assegnati</h3><div id="orders" class="col"></div></div>
+
+    <div><h3 style="margin:4px 2px 10px">Azioni</h3><div class="col" style="gap:10px">
+      <button class="act" onclick="stub('Chiedi ai documenti')"><span class="ic">${ICON.doc}</span>
+        <span class="grow">Chiedi ai documenti</span><span class="tag sim">RAG backlog</span></button>
+      <button class="act" onclick="stub('Detta una nota')"><span class="ic">${ICON.mic}</span>
+        <span class="grow">Detta una nota di lavoro</span><span class="tag sim">STT backlog</span></button>
+      <button class="act" onclick="stub('Inizia turno')"><span class="ic">${ICON.play}</span>
+        <span class="grow">Inizia turno</span><span class="tag sim">registro backlog</span></button>
+      <button class="act" onclick="stub('Termina turno')"><span class="ic">${ICON.stop}</span>
+        <span class="grow">Termina turno</span><span class="tag sim">registro backlog</span></button>
+    </div><div class="small mut center" style="margin-top:8px">Input manuale sempre disponibile. Voce/documenti/turni non attivi in questa build.</div></div>
+  </div>`;
+  renderCheckin(); loadOrders();
+}
+async function out(){ location.reload(); }
+
+// ---- SOS ----
 async function sos(){
-  let pos={};try{const p=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{timeout:3000}));
-    pos={lat:p.coords.latitude,lon:p.coords.longitude};}catch(e){}
-  const r=await api('/sos',{method:'POST',body:JSON.stringify(pos)});
-  logln(r.ok?('SOS inviato → incidente '+r.body.incident_id.slice(0,8)+' (corr '+r.body.correlation.slice(0,8)+')'):'SOS errore '+r.status);}
-let ciId=null;
-async function startCheckin(){const r=await api('/checkins',{method:'POST',body:JSON.stringify({minutes:Number(min.value)})});
-  if(r.ok){ciId=r.body.id;ciMsg.textContent='Check-in attivo, scade '+new Date(r.body.due_at).toLocaleTimeString();
-    confirmBtn.style.display='block';logln('check-in avviato');}}
-async function confirmCheckin(){if(!ciId)return;const r=await api('/checkins/'+ciId+'/confirm',{method:'POST'});
-  ciMsg.textContent=r.body.ok?'Presenza confermata':'già scaduto → incidente aperto';confirmBtn.style.display='none';logln('check-in confermato: '+r.body.ok);}
-function stub(name){logln('['+name+'] SIMULATO — flusso non attivo in questa build');}
+  let pos={}; try{ const p=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{timeout:3000}));
+    pos={lat:p.coords.latitude,lon:p.coords.longitude}; }catch(e){}
+  try{ const r=await api('/sos',{method:'POST',body:JSON.stringify(pos)});
+    toast('SOS inviato → centrale allertata','bad'); }catch(e){ toast('SOS errore: '+e.message,'bad'); }
+}
+
+// ---- check-in ----
+function renderCheckin(){
+  const b=$('#ciBox');
+  if(!CI){ b.innerHTML=`<div class="spread" style="margin-bottom:10px"><b>Check-in sicurezza</b>${ICON.shield}</div>
+    <div class="row"><div class="field grow"><label>Scadenza (min)</label><input id="min" type="number" value="5" min="1"></div>
+      <div class="field" style="flex:0"><label>&nbsp;</label><button class="btn" onclick="startCI()">Avvia</button></div></div>`;
+    return; }
+  b.innerHTML=`<div class="spread"><b>Check-in attivo</b><span class="chip s-attivo">in corso</span></div>
+    <div class="center" style="margin:14px 0"><div class="count" id="cd">--:--</div><div class="small mut">tempo rimanente</div></div>
+    <button class="btn ok block" onclick="confirmCI()">${ICON.check} Conferma presenza</button>`;
+  tickCI();
+}
+async function startCI(){ try{ const r=await api('/checkins',{method:'POST',body:JSON.stringify({minutes:Number($('#min').value)})});
+  CI={id:r.id,due:new Date(r.due_at).getTime()}; renderCheckin(); toast('Check-in avviato','ok');
+}catch(e){ toast(e.message,'bad'); } }
+function tickCI(){ clearInterval(CITimer); CITimer=setInterval(()=>{ if(!CI)return clearInterval(CITimer);
+  let s=Math.max(0,Math.round((CI.due-Date.now())/1000)); const cd=$('#cd'); if(!cd)return clearInterval(CITimer);
+  cd.textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
+  cd.style.color = s<=30 ? 'var(--bad)' : (s<=60?'var(--warn)':'var(--fg)');
+  if(s<=0){ clearInterval(CITimer); cd.textContent='SCADUTO'; cd.style.color='var(--bad)'; toast('Check-in scaduto: incidente aperto','bad'); } },1000); }
+async function confirmCI(){ if(!CI)return; try{ const r=await api('/checkins/'+CI.id+'/confirm',{method:'POST'});
+  if(r.ok) toast('Presenza confermata','ok'); else toast('Già scaduto','warn');
+  CI=null; clearInterval(CITimer); renderCheckin(); }catch(e){ toast(e.message,'bad'); } }
+
+// ---- orders ----
+async function loadOrders(){
+  const box=$('#orders'); const O=await api('/orders').catch(()=>[]);
+  const mine=O.filter(o=>['assegnato','in_corso'].includes(o.state));
+  if(!mine.length){ box.innerHTML='<div class="card pad mut center">Nessun ordine per oggi</div>'; return; }
+  box.innerHTML=mine.map(o=>`<div class="card pad">
+    <div class="spread"><b>${esc(o.title)}</b>${chip(o.state)}</div>
+    <div class="small mut" style="margin:4px 0 10px">${esc(o.site||'—')} ${o.instructions?'· '+esc(o.instructions):''}</div>
+    ${o.state==='assegnato'?`<button class="btn block" onclick="oAct('${o.id}','start',${o.version})">${ICON.play} Avvia intervento</button>`:''}
+    ${o.state==='in_corso'?`<button class="btn ok block" onclick="oComplete('${o.id}',${o.version})">${ICON.check} Completa</button>`:''}
+  </div>`).join('');
+}
+async function oAct(id,act,v){ try{ await api('/orders/'+id+'/'+act,{method:'POST',body:JSON.stringify({version:v})}); toast('Avviato','ok'); loadOrders(); }catch(e){toast(e.message,'bad');} }
+async function oComplete(id,v){ const o=prompt('Esito intervento?','completato'); if(o==null)return;
+  try{ await api('/orders/'+id+'/complete',{method:'POST',body:JSON.stringify({version:v,outcome:o})}); toast('Completato','ok'); loadOrders(); }catch(e){toast(e.message,'bad');} }
+
+function stub(n){ toast(n+': non attivo in questa build (backlog)','warn'); }
 if('serviceWorker' in navigator) navigator.serviceWorker.register('/worker/sw.js').catch(()=>{});
 </script>
 </body></html>

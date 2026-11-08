@@ -1,4 +1,4 @@
-use axum::{extract::{State, Path}, http::{HeaderMap, StatusCode, header}, response::{IntoResponse, sse::{Sse, Event as SseEvent}}, Json};
+use axum::{extract::{State, Path}, http::{HeaderMap, StatusCode, header}, response::{IntoResponse, Response, sse::{Sse, Event as SseEvent}}, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::Row;
@@ -109,6 +109,18 @@ pub async fn list_tenants(State(st): State<AppState>, h: HeaderMap) -> R {
     Ok(Json(json!(out)))
 }
 
+pub async fn super_list_modules(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
+    require_super(&st, &h).await?;
+    let rows = sqlx::query(
+        "SELECT m.code,m.name,m.kind,m.available,tm.state
+         FROM app.modules_catalog m LEFT JOIN app.tenant_modules tm ON tm.module_code=m.code AND tm.tenant_id=$1
+         ORDER BY m.kind,m.code").bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "code": r.get::<String,_>("code"), "name": r.get::<String,_>("name"), "kind": r.get::<String,_>("kind"),
+        "available": r.get::<bool,_>("available"), "state": r.try_get::<String,_>("state").ok().unwrap_or("non_abilitato".into()) })).collect();
+    Ok(Json(json!(out)))
+}
+
 #[derive(Deserialize)]
 pub struct SetModule { pub module_code: String, pub state: String }
 
@@ -187,6 +199,16 @@ pub async fn list_sites(State(st): State<AppState>, h: HeaderMap) -> R {
     let rows = sqlx::query("SELECT id,name FROM app.sites ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name")})).collect();
+    Ok(Json(json!(out)))
+}
+
+pub async fn list_users(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT id,email,role FROM app.users ORDER BY role,email").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id": r.get::<Uuid,_>("id"), "email": r.get::<String,_>("email"), "role": r.get::<String,_>("role") })).collect();
     Ok(Json(json!(out)))
 }
 
@@ -429,6 +451,298 @@ pub fn tenant_slug(st: &AppState, h: &HeaderMap) -> Option<String> {
     let suffix = format!(".{}", st.base_domain);
     host.strip_suffix(&suffix).map(|x| x.to_string())
 }
+
+// ======================= Prompt 9: ordini + consuntivi =======================
+fn is_planner(role: &str) -> bool { matches!(role, "pianificatore"|"tenant_admin") }
+fn is_approver(role: &str) -> bool { matches!(role, "responsabile"|"tenant_admin") }
+
+async fn module_active(st: &AppState, tid: Uuid, code: &str) -> bool {
+    sqlx::query_scalar::<_, String>("SELECT state FROM app.tenant_modules WHERE tenant_id=$1 AND module_code=$2")
+        .bind(tid).bind(code).fetch_optional(&st.owner_pool).await.ok().flatten()
+        .map(|s| s == "attivo").unwrap_or(false)
+}
+
+#[derive(Deserialize)]
+pub struct NewOrder { pub title: String, pub site_id: Option<Uuid>, pub instructions: Option<String>, pub assigned_user: Option<Uuid> }
+pub async fn create_order(State(st): State<AppState>, h: HeaderMap, Json(b): Json<NewOrder>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+    if !module_active(&st, tid, "interventi").await { return Err(err(StatusCode::FORBIDDEN, "modulo interventi non abilitato")); }
+    let state = if b.assigned_user.is_some() { "assegnato" } else { "bozza" };
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query(
+        "INSERT INTO app.work_orders(tenant_id,site_id,title,instructions,assigned_user,state,created_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        .bind(tid).bind(b.site_id).bind(&b.title).bind(&b.instructions).bind(b.assigned_user).bind(state).bind(s.user_id)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":row.get::<Uuid,_>("id"),"state":state})))
+}
+
+pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    // technician sees only own; planner/admin/auditor see all (RLS already scopes to tenant)
+    let rows = if s.role == "lavoratore" {
+        sqlx::query("SELECT o.id,o.title,o.state,o.version,o.outcome,o.instructions,s.name AS site,u.email AS assignee
+            FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user
+            WHERE o.assigned_user=$1 ORDER BY o.updated_at DESC").bind(s.user_id).fetch_all(&mut *tx).await
+    } else {
+        sqlx::query("SELECT o.id,o.title,o.state,o.version,o.outcome,o.instructions,s.name AS site,u.email AS assignee
+            FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user
+            ORDER BY o.updated_at DESC").fetch_all(&mut *tx).await
+    }.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id": r.get::<Uuid,_>("id"), "title": r.get::<String,_>("title"), "state": r.get::<String,_>("state"),
+        "version": r.get::<i32,_>("version"), "site": r.try_get::<String,_>("site").ok(),
+        "assignee": r.try_get::<String,_>("assignee").ok(), "outcome": r.try_get::<String,_>("outcome").ok(),
+        "instructions": r.try_get::<String,_>("instructions").ok() })).collect();
+    Ok(Json(json!(out)))
+}
+
+#[derive(Deserialize)]
+pub struct OrderAction { pub version: i32, pub user_id: Option<Uuid>, pub outcome: Option<String>, pub reason: Option<String> }
+
+async fn order_transition(st: &AppState, s: &Session, iid: Uuid, b: &OrderAction,
+    to: &str, set_sql: &str, from_states: &[&str]) -> R {
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // version check + state check inside the UPDATE (optimistic concurrency)
+    let states = from_states.iter().map(|x| format!("'{x}'")).collect::<Vec<_>>().join(",");
+    let extra = if set_sql.is_empty() { String::new() } else { format!("{set_sql}, ") };
+    let sql = format!("UPDATE app.work_orders SET {extra}state='{to}', version=version+1, updated_at=now()
+         WHERE id=$1 AND version=$2 AND state IN ({states})");
+    let q = sqlx::query(&sql).bind(iid).bind(b.version);
+    let n = q.execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    if n == 0 { let _=tx.rollback().await; return Err(err(StatusCode::CONFLICT, "versione superata o stato non valido")); }
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true,"state":to})))
+}
+
+pub async fn order_assign(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+    let uid = b.user_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "user_id richiesto"))?;
+    order_transition(&st, &s, id, &b, "assegnato",
+        &format!("assigned_user='{uid}'"), &["bozza","assegnato"]).await
+}
+pub async fn order_start(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    // only the assigned technician may start
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let owner: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.work_orders WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.flatten();
+    let _ = tx.commit().await;
+    if owner != Some(s.user_id) && !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "non assegnato a te")); }
+    order_transition(&st, &s, id, &b, "in_corso", "", &["assegnato"]).await
+}
+pub async fn order_complete(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let outcome = b.outcome.clone().unwrap_or_default().replace('\'', "''");
+    order_transition(&st, &s, id, &b, "completato", &format!("outcome='{outcome}'"), &["in_corso"]).await
+}
+pub async fn order_cancel(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+    let reason = b.reason.clone().unwrap_or_default().replace('\'', "''");
+    order_transition(&st, &s, id, &b, "annullato", &format!("cancel_reason='{reason}'"), &["bozza","assegnato","in_corso"]).await
+}
+
+// ---- consuntivi ----
+#[derive(Deserialize)]
+pub struct NewTimesheet { pub work_order_id: Option<Uuid>, pub note: Option<String> }
+pub async fn create_timesheet(State(st): State<AppState>, h: HeaderMap, Json(b): Json<NewTimesheet>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    if !module_active(&st, tid, "consuntivi").await { return Err(err(StatusCode::FORBIDDEN, "modulo consuntivi non abilitato")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.timesheets(tenant_id,work_order_id,user_id,note) VALUES($1,$2,$3,$4) RETURNING id")
+        .bind(tid).bind(b.work_order_id).bind(s.user_id).bind(&b.note).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":row.get::<Uuid,_>("id"),"state":"bozza"})))
+}
+
+pub async fn list_timesheets(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let rows = if is_approver(&s.role) || s.role=="auditor" {
+        sqlx::query("SELECT t.id,t.state,t.created_at,u.email AS owner,o.title AS order_title
+            FROM app.timesheets t JOIN app.users u ON u.id=t.user_id LEFT JOIN app.work_orders o ON o.id=t.work_order_id
+            ORDER BY t.updated_at DESC").fetch_all(&mut *tx).await
+    } else {
+        sqlx::query("SELECT t.id,t.state,t.created_at,u.email AS owner,o.title AS order_title
+            FROM app.timesheets t JOIN app.users u ON u.id=t.user_id LEFT JOIN app.work_orders o ON o.id=t.work_order_id
+            WHERE t.user_id=$1 ORDER BY t.updated_at DESC").bind(s.user_id).fetch_all(&mut *tx).await
+    }.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id": r.get::<Uuid,_>("id"), "state": r.get::<String,_>("state"),
+        "owner": r.get::<String,_>("owner"), "order_title": r.try_get::<String,_>("order_title").ok() })).collect();
+    Ok(Json(json!(out)))
+}
+
+async fn timesheet_detail(st: &AppState, tid: Uuid, id: Uuid) -> Result<Value, (StatusCode,String)> {
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let head = sqlx::query("SELECT t.id,t.state,t.note,t.user_id,u.email AS owner,o.title AS order_title
+        FROM app.timesheets t JOIN app.users u ON u.id=t.user_id LEFT JOIN app.work_orders o ON o.id=t.work_order_id WHERE t.id=$1")
+        .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "non trovato"))?;
+    let lines = sqlx::query("SELECT id,activity,work_date,minutes,rate_cents,currency FROM app.timesheet_lines WHERE timesheet_id=$1 ORDER BY work_date")
+        .bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let exps = sqlx::query("SELECT id,description,amount_cents,currency,has_receipt FROM app.expenses WHERE timesheet_id=$1")
+        .bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let mut minutes = 0i64; let mut labor = 0i64; let mut missing_rate = false;
+    let jl: Vec<Value> = lines.iter().map(|r| {
+        let m = r.get::<i32,_>("minutes") as i64; minutes += m;
+        let rate: Option<i64> = r.try_get("rate_cents").ok();
+        match rate { Some(rc) => labor += m * rc / 60, None => missing_rate = true }
+        json!({"id":r.get::<Uuid,_>("id"),"activity":r.get::<String,_>("activity"),
+            "work_date":r.get::<chrono::NaiveDate,_>("work_date").to_string(),
+            "minutes":m,"rate_cents":rate,"currency":r.get::<String,_>("currency")})
+    }).collect();
+    let mut exp_total = 0i64;
+    let je: Vec<Value> = exps.iter().map(|r| {
+        let a = r.get::<i64,_>("amount_cents"); exp_total += a;
+        json!({"id":r.get::<Uuid,_>("id"),"description":r.get::<String,_>("description"),
+            "amount_cents":a,"currency":r.get::<String,_>("currency"),"has_receipt":r.get::<bool,_>("has_receipt")})
+    }).collect();
+    Ok(json!({
+        "id": head.get::<Uuid,_>("id"), "state": head.get::<String,_>("state"),
+        "owner": head.get::<String,_>("owner"), "owner_id": head.get::<Uuid,_>("user_id"),
+        "order_title": head.try_get::<String,_>("order_title").ok(), "note": head.try_get::<String,_>("note").ok(),
+        "lines": jl, "expenses": je,
+        "total": {"minutes":minutes,"labor_cents":labor,"expense_cents":exp_total,"total_cents":labor+exp_total,"missing_rate":missing_rate}
+    }))
+}
+
+pub async fn get_timesheet(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let d = timesheet_detail(&st, s.tenant_id.unwrap(), id).await?;
+    // owner or approver/auditor
+    let owner_id = d["owner_id"].as_str().and_then(|x| Uuid::parse_str(x).ok());
+    if owner_id != Some(s.user_id) && !is_approver(&s.role) && s.role != "auditor" {
+        return Err(err(StatusCode::FORBIDDEN, "non autorizzato"));
+    }
+    Ok(Json(d))
+}
+
+#[derive(Deserialize)]
+pub struct NewLine { pub activity: String, pub work_date: String, pub minutes: i32, pub rate_cents: Option<i64>, pub currency: Option<String> }
+pub async fn add_line(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<NewLine>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    guard_owner_editable(&st, tid, id, s.user_id).await?;
+    let wd = chrono::NaiveDate::parse_from_str(&b.work_date, "%Y-%m-%d").map_err(|_| err(StatusCode::BAD_REQUEST, "data non valida"))?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.timesheet_lines(tenant_id,timesheet_id,activity,work_date,minutes,rate_cents,currency) VALUES($1,$2,$3,$4,$5,$6,$7)")
+        .bind(tid).bind(id).bind(&b.activity).bind(wd).bind(b.minutes).bind(b.rate_cents)
+        .bind(b.currency.clone().unwrap_or("EUR".into())).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+#[derive(Deserialize)]
+pub struct NewExpense { pub description: String, pub amount_cents: i64, pub currency: Option<String>, pub has_receipt: Option<bool> }
+pub async fn add_expense(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<NewExpense>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    guard_owner_editable(&st, tid, id, s.user_id).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.expenses(tenant_id,timesheet_id,description,amount_cents,currency,has_receipt) VALUES($1,$2,$3,$4,$5,$6)")
+        .bind(tid).bind(id).bind(&b.description).bind(b.amount_cents)
+        .bind(b.currency.clone().unwrap_or("EUR".into())).bind(b.has_receipt.unwrap_or(false)).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn guard_owner_editable(st: &AppState, tid: Uuid, id: Uuid, uid: Uuid) -> Result<(),(StatusCode,String)> {
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("SELECT user_id,state FROM app.timesheets WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let _ = tx.commit().await;
+    let row = row.ok_or_else(|| err(StatusCode::NOT_FOUND, "non trovato"))?;
+    if row.get::<Uuid,_>("user_id") != uid { return Err(err(StatusCode::FORBIDDEN, "non tuo")); }
+    let stt: String = row.get("state");
+    if !matches!(stt.as_str(), "bozza"|"da_correggere") { return Err(err(StatusCode::CONFLICT, "non modificabile in questo stato")); }
+    Ok(())
+}
+
+pub async fn submit_timesheet(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.timesheets SET state='in_revisione',updated_at=now() WHERE id=$1 AND user_id=$2 AND state IN ('bozza','da_correggere')")
+        .bind(id).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    if n==0 { let _=tx.rollback().await; return Err(err(StatusCode::CONFLICT,"non inviabile")); }
+    sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'submit',$3)")
+        .bind(tid).bind(id).bind(json!({"by":s.email})).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true,"state":"in_revisione"})))
+}
+
+pub async fn approve_timesheet(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !is_approver(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo responsabile")); }
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // only from in_revisione -> blocks double approval
+    let n = sqlx::query("UPDATE app.timesheets SET state='approvato',approved_by=$2,updated_at=now() WHERE id=$1 AND state='in_revisione'")
+        .bind(id).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    if n==0 { let _=tx.rollback().await; return Err(err(StatusCode::CONFLICT,"non in revisione (doppia approvazione bloccata)")); }
+    sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'approve',$3)")
+        .bind(tid).bind(id).bind(json!({"by":s.email})).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true,"state":"approvato"})))
+}
+
+#[derive(Deserialize)]
+pub struct ReqChanges { pub note: String }
+pub async fn request_changes(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<ReqChanges>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !is_approver(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo responsabile")); }
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.timesheets SET state='da_correggere',note=$2,updated_at=now() WHERE id=$1 AND state='in_revisione'")
+        .bind(id).bind(&b.note).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    if n==0 { let _=tx.rollback().await; return Err(err(StatusCode::CONFLICT,"non in revisione")); }
+    sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'request_changes',$3)")
+        .bind(tid).bind(id).bind(json!({"by":s.email,"note":b.note})).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true,"state":"da_correggere"})))
+}
+
+pub async fn export_timesheet_csv(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Response, (StatusCode,String)> {
+    let s = require_tenant(&st, &h).await?;
+    let d = timesheet_detail(&st, s.tenant_id.unwrap(), id).await?;
+    let owner_id = d["owner_id"].as_str().and_then(|x| Uuid::parse_str(x).ok());
+    if owner_id != Some(s.user_id) && !is_approver(&s.role) && s.role != "auditor" {
+        return Err(err(StatusCode::FORBIDDEN, "non autorizzato"));
+    }
+    let mut csv = String::from("tipo,descrizione,data,minuti,tariffa_cent_ora,importo_cent,valuta,giustificativo\n");
+    for l in d["lines"].as_array().unwrap_or(&vec![]) {
+        let m = l["minutes"].as_i64().unwrap_or(0);
+        let rate = l["rate_cents"].as_i64();
+        let amt = rate.map(|r| m*r/60);
+        csv.push_str(&format!("riga,{},{},{},{},{},{},\n",
+            csv_esc(l["activity"].as_str().unwrap_or("")), l["work_date"].as_str().unwrap_or(""), m,
+            rate.map(|x|x.to_string()).unwrap_or_default(), amt.map(|x|x.to_string()).unwrap_or_default(),
+            l["currency"].as_str().unwrap_or("EUR")));
+    }
+    for e in d["expenses"].as_array().unwrap_or(&vec![]) {
+        csv.push_str(&format!("spesa,{},,,,{},{},{}\n",
+            csv_esc(e["description"].as_str().unwrap_or("")), e["amount_cents"].as_i64().unwrap_or(0),
+            e["currency"].as_str().unwrap_or("EUR"), e["has_receipt"].as_bool().unwrap_or(false)));
+    }
+    let t = &d["total"];
+    csv.push_str(&format!("TOTALE,,,{},,{},EUR,\n", t["minutes"].as_i64().unwrap_or(0), t["total_cents"].as_i64().unwrap_or(0)));
+    let mut resp = csv.into_response();
+    resp.headers_mut().insert(header::CONTENT_TYPE, "text/csv; charset=utf-8".parse().unwrap());
+    resp.headers_mut().insert(header::CONTENT_DISPOSITION, format!("attachment; filename=consuntivo-{}.csv", id).parse().unwrap());
+    Ok(resp)
+}
+fn csv_esc(s: &str) -> String { if s.contains(',')||s.contains('"') { format!("\"{}\"", s.replace('"',"\"\"")) } else { s.to_string() } }
 
 // SSE stream helper module
 mod async_stream {

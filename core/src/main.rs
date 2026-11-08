@@ -53,12 +53,13 @@ async fn main() -> anyhow::Result<()> {
         // control plane
         .route("/api/superadmin/login", post(api::superadmin_login))
         .route("/api/superadmin/tenants", post(api::create_tenant).get(api::list_tenants))
-        .route("/api/superadmin/tenants/:id/modules", post(api::set_module))
+        .route("/api/superadmin/tenants/:id/modules", post(api::set_module).get(api::super_list_modules))
         // tenant plane
         .route("/api/login", post(api::tenant_login))
         .route("/api/me", get(api::me))
         .route("/api/modules", get(api::list_modules))
         .route("/api/sites", get(api::list_sites))
+        .route("/api/users", get(api::list_users))
         .route("/api/events", post(api::ingest_event))
         .route("/api/incidents", get(api::list_incidents))
         .route("/api/incidents/:id/timeline", get(api::incident_timeline))
@@ -67,6 +68,21 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sos", post(api::worker_sos))
         .route("/api/checkins", post(api::create_checkin))
         .route("/api/checkins/:id/confirm", post(api::confirm_checkin))
+        // Prompt 9: ordini
+        .route("/api/orders", post(api::create_order).get(api::list_orders))
+        .route("/api/orders/:id/assign", post(api::order_assign))
+        .route("/api/orders/:id/start", post(api::order_start))
+        .route("/api/orders/:id/complete", post(api::order_complete))
+        .route("/api/orders/:id/cancel", post(api::order_cancel))
+        // Prompt 9: consuntivi
+        .route("/api/timesheets", post(api::create_timesheet).get(api::list_timesheets))
+        .route("/api/timesheets/:id", get(api::get_timesheet))
+        .route("/api/timesheets/:id/lines", post(api::add_line))
+        .route("/api/timesheets/:id/expenses", post(api::add_expense))
+        .route("/api/timesheets/:id/submit", post(api::submit_timesheet))
+        .route("/api/timesheets/:id/approve", post(api::approve_timesheet))
+        .route("/api/timesheets/:id/request-changes", post(api::request_changes))
+        .route("/api/timesheets/:id/export.csv", get(api::export_timesheet_csv))
         .route("/api/stream", get(api::stream))
         .route("/api/_test/advance", post(api::test_advance))
         .with_state(st);
@@ -97,6 +113,8 @@ async fn bootstrap(pool: &sqlx::PgPool) -> anyhow::Result<()> {
             FROM app.modules_catalog").bind(tid).execute(pool).await?;
         for (email, role) in [("admin@acme.loneworker.eu","tenant_admin"),
                               ("operatore@acme.loneworker.eu","operatore"),
+                              ("pianificatore@acme.loneworker.eu","pianificatore"),
+                              ("responsabile@acme.loneworker.eu","responsabile"),
                               ("mario@acme.loneworker.eu","lavoratore"),
                               ("auditor@acme.loneworker.eu","auditor")] {
             sqlx::query("INSERT INTO app.users(tenant_id,email,pass_hash,role) VALUES($1,$2,$3,$4)")

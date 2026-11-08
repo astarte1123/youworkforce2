@@ -1,16 +1,47 @@
 <!doctype html><html lang="it"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>YouWorkforce</title><link rel="stylesheet" href="/style.css"></head><body>
-<header><h1>YouWorkforce</h1><span class="badge sim">DEMO · SIMULATO</span></header>
-<main>
-<div class="card">
-  <h2>Console modulare — forza lavoro sul campo, sicurezza, IoT, assistente</h2>
-  <p class="mut">Release candidate per pilota. Verdetto onesto in questa build: <b>DEMO</b> — integrazioni esterne simulate, dichiarate. Vedi <a href="/verdetti.html">verdetti e limiti</a>.</p>
+<title>YouWorkforce</title><link rel="stylesheet" href="/app.css"></head>
+<body style="background:
+  radial-gradient(1000px 500px at 85% -10%, var(--brand-soft), transparent),
+  radial-gradient(800px 500px at -10% 110%, var(--info-soft), transparent), var(--bg)">
+<div class="content" style="max-width:1040px">
+  <div class="row" style="justify-content:space-between;margin:10px 0 28px">
+    <div class="row" style="gap:10px"><div class="logo">${L}</div><strong style="font-size:18px">YouWorkforce</strong></div>
+    <button class="btn-ico btn ghost" onclick="toggleTheme()" title="Tema">${M}</button>
+  </div>
+  <div style="max-width:620px;margin:10px 0 30px">
+    <span class="tag sim">DEMO · integrazioni esterne simulate e dichiarate</span>
+    <h1 style="font-size:34px;line-height:1.15;margin:16px 0 10px">Un solo prodotto per la forza lavoro sul campo</h1>
+    <p class="mut" style="font-size:17px">Pianificazione, interventi, sicurezza dei lavoratori isolati, IoT e consuntivi. Modulare, multitenant, con catena di allarme tracciabile. Verdetto onesto di questa build: <b>DEMO</b>.</p>
+  </div>
+  <div class="grid g3">
+    <a class="card pad" href="/app.html" style="color:inherit">
+      <div class="kpi" style="border:none;box-shadow:none;padding:0"><div class="ico">${A}</div></div>
+      <h2 style="margin-top:10px">Console cliente</h2>
+      <p class="mut small">Dashboard, centrale allarmi live, ordini di lavoro, consuntivi, moduli. Accesso per ruolo.</p>
+      <div style="color:var(--brand-ink);font-weight:600;margin-top:6px">Apri console →</div></a>
+    <a class="card pad" href="/worker/" style="color:inherit">
+      <div class="kpi" style="border:none;box-shadow:none;padding:0"><div class="ico">${S}</div></div>
+      <h2 style="margin-top:10px">App lavoratore (PWA)</h2>
+      <p class="mut small">SOS indipendente, check-in con timer, ordini del giorno, nota e documenti.</p>
+      <div style="color:var(--brand-ink);font-weight:600;margin-top:6px">Apri app →</div></a>
+    <a class="card pad" href="/superadmin.html" style="color:inherit">
+      <div class="kpi" style="border:none;box-shadow:none;padding:0"><div class="ico">${SL}</div></div>
+      <h2 style="margin-top:10px">Piano di controllo</h2>
+      <p class="mut small">Superadmin: crea tenant, nomina admin, abilita moduli senza deploy.</p>
+      <div style="color:var(--brand-ink);font-weight:600;margin-top:6px">Apri superadmin →</div></a>
+  </div>
+  <div class="card pad" style="margin-top:16px">
+    <div class="row" style="gap:20px">
+      <div><div class="small mut">Superadmin</div><b>admin@loneworker.eu</b> / admin</div>
+      <div><div class="small mut">Tenant acme (pw: demo)</div><b>operatore</b> · <b>pianificatore</b> · <b>responsabile</b> · <b>mario</b> (lavoratore)</div>
+    </div>
+  </div>
 </div>
-<div class="grid">
-  <div class="card"><h2>Piano di controllo</h2><p class="mut">Superadmin: crea tenant, nomina admin, abilita moduli senza deploy.</p><a href="/superadmin.html"><button>Apri superadmin</button></a></div>
-  <div class="card"><h2>Centrale operativa</h2><p class="mut">Operatore cliente: coda incidenti SOS, presa in carico, chiusura, live SSE.</p><a href="/operatore.html"><button>Apri centrale</button></a></div>
-  <div class="card"><h2>App lavoratore (PWA)</h2><p class="mut">SOS, check-in, inizio/fine turno, detta nota, chiedi ai documenti.</p><a href="/worker/"><button>Apri app lavoratore</button></a></div>
-  <div class="card"><h2>Credenziali demo</h2><p class="mut">Superadmin: <b>admin@loneworker.eu / admin</b><br>Tenant <b>acme</b>: operatore@acme.loneworker.eu / <b>demo</b>, mario@… (lavoratore)</p></div>
-</div>
-</main></body></html>
+<script src="/app.js"></script>
+<script>
+  document.body.innerHTML=document.body.innerHTML
+    .replaceAll('${L}',ICON.logomark).replaceAll('${M}',ICON.moon).replaceAll('${A}',ICON.alert)
+    .replaceAll('${S}',ICON.shield).replaceAll('${SL}',ICON.sliders);
+</script>
+</body></html>

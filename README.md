@@ -11,13 +11,15 @@ GoAlert come unico motore di escalation. LoneWorker è un modulo di prodotto.
 
 ## Cosa è implementato
 - **Multitenancy + isolamento** end-to-end: RLS su Postgres 18, ruolo runtime `NOBYPASSRLS`, contesto tenant legato alla transazione. Tenant da host (browser) o da credenziale (macchina), mai dal payload.
-- **Piano di controllo** (superadmin): crea tenant, nomina admin, abilita/disabilita moduli **senza deploy**; disattivazione bloccata se toglie un percorso essenziale.
+- **Piano di controllo** (superadmin): crea tenant, nomina admin, abilita/disabilita moduli **senza deploy** (switch in UI); disattivazione bloccata se toglie un percorso essenziale.
 - **Catena SOS**: ingress evento normalizzato idempotente → incidente (`aperto→preso_in_carico→intervento→chiuso`) → outbox transazionale → worker → GoAlert (SIMULATO) → timeline con correlazione. Anche SOS da PWA (sessione).
-- **Check-in** con timer durevole nel core (orologio controllabile per i test), che scade senza nuovi dati badge → `mancato_checkin`.
-- **Centrale operativa** (SSE live), **PWA lavoratore** (SOS, check-in; documenti/voce/turni = stub marcati backlog).
+- **Check-in** con timer durevole nel core (orologio controllabile per i test), che scade senza nuovi dati badge → `mancato_checkin`. In PWA con countdown live.
+- **Ordini di lavoro** (Prompt 9): bozza→assegnato→in_corso→completato→annullato, con concorrenza ottimistica (versione), RBAC e isolamento.
+- **Consuntivi** (Prompt 9): bozza→in_revisione→da_correggere→approvato; righe ore + spese, calcolo deterministico in centesimi, doppia approvazione bloccata, **export CSV**.
+- **UI**: design system completo (chiaro/scuro, responsive), console SPA (dashboard, centrale live, ordini, consuntivi, moduli) con drawer e toast; PWA lavoratore mobile-first.
 
 ## Non implementato (backlog, dichiarato)
-Prompt 7 (AI), 8 (voce/diario), 9 (workforce/ordini/consuntivi completi), 10 (parità/migrazione legacy). GoAlert/Traccar/ThingsBoard/Blues/OpenDuty reali.
+Prompt 7 (AI), 8 (voce/diario/documenti), 10 (parità/migrazione legacy). GoAlert/Traccar/ThingsBoard/Blues/OpenDuty reali.
 
 ## Avvio — Docker Compose (profilo base)
 ```bash

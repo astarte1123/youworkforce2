@@ -19,8 +19,8 @@ Esegui l'evidenza automatica: `bash qa/smoke.sh` (core su :8080). Risultati sott
 | **T10** | Connettori opzionali | **NON VERIFICATO** | ThingsBoard/OpenDuty/Blues spenti e marcati; nessuna prova di contratto reale. |
 | **T11** | Assistente AI | **NON IMPLEMENTATO** | Prompt 7 backlog. SOS completo ad AI spenta (AI non esiste nel percorso). |
 | **T12** | RAG YouWorker.ai | **NON IMPLEMENTATO** | Prompt 7/8 backlog; provider non contrattualizzato. |
-| **T13** | Voce, turni, consuntivi | **NON IMPLEMENTATO** | Prompt 8/9 backlog; PWA mostra gli stub marcati. |
-| **T14** | Lavoro assegnato e consuntivato | **NON IMPLEMENTATO** | Prompt 9 backlog. |
+| **T13** | Voce, turni, consuntivi | **PARZIALE (SIM)** | Consuntivi: calcolo deterministico (90m@35€/h+12,50€=65,00€), invio idempotente, nessun costo senza tariffa, CSV. Voce/STT/turni: backlog. |
+| **T14** | Lavoro assegnato e consuntivato | **PASS (SIM)** | Ordine creato dal pianificatore → ricevuto da mario nell'app → avviato → completato → consuntivato → approvato; RBAC, versione superata (409), doppio invio/approvazione bloccati, isolamento cross-tenant. |
 | **T15** | Matrice e dry-run legacy | **NON VERIFICATO** | Prompt 10: nessun accesso al YouWorkforce esistente; richiede input (vedi `legacy-gaps.md`). |
 
 **Regola rispettata:** nessun PASS assegnato a prova non eseguita. I NON VERIFICATO elencano la prova mancante.

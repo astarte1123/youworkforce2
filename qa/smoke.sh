@@ -75,5 +75,44 @@ echo "$MC" | grep -q mancato_checkin && ok || no "no mancato_checkin"
 say "T03 worker PWA SOS (session)"
 req POST /api/sos "$J/m" '{"lat":45.46,"lon":9.19}' | grep -q incident_id && ok || no "pwa sos"
 
+# ---- Prompt 9: ordini + consuntivi (T14) ----
+req POST /api/login "$J/pl" '{"email":"pianificatore@acme.loneworker.eu","password":"demo"}' 'x-tenant-slug: acme' >/dev/null
+req POST /api/login "$J/rs" '{"email":"responsabile@acme.loneworker.eu","password":"demo"}' 'x-tenant-slug: acme' >/dev/null
+MARIO=$(req GET /api/users "$J/pl" | sed -n 's/.*"email":"mario@acme.loneworker.eu","id":"\([^"]*\)".*/\1/p')
+
+say "T14 planner creates order"
+OID=$(req POST /api/orders "$J/pl" '{"title":"Manutenzione quadro","site_name":"Milano"}' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+[ -n "$OID" ] && ok || no "no order id"
+say "T14 lavoratore cannot create order (RBAC)"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/orders" -b "$J/m" -H 'content-type: application/json' -d '{"title":"x"}')
+[ "$code" = "403" ] && ok || no "got $code"
+say "T14 assign order to mario"
+req POST "/api/orders/$OID/assign" "$J/pl" "{\"version\":1,\"user_id\":\"$MARIO\"}" | grep -q assegnato && ok || no "assign"
+say "T05 stale version rejected on assign"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/orders/$OID/assign" -b "$J/pl" -H 'content-type: application/json' -d "{\"version\":1,\"user_id\":\"$MARIO\"}")
+[ "$code" = "409" ] && ok || no "got $code"
+say "T14 mario sees + starts order"
+req GET /api/orders "$J/m" | grep -q "$OID" || no "mario blind"
+req POST "/api/orders/$OID/start" "$J/m" '{"version":2}' | grep -q in_corso && ok || no "start"
+say "T14 mario completes order"
+req POST "/api/orders/$OID/complete" "$J/m" '{"version":3,"outcome":"ok sul posto"}' | grep -q completato && ok || no "complete"
+say "T02 globex cannot see acme order"
+req GET /api/orders "$J/gx" | grep -q "$OID" && no "LEAK" || ok
+
+say "T14 mario creates timesheet + line + expense"
+TS=$(req POST /api/timesheets "$J/m" "{\"work_order_id\":\"$OID\"}" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+req POST "/api/timesheets/$TS/lines" "$J/m" '{"activity":"riparazione","work_date":"2026-11-08","minutes":90,"rate_cents":3500}' | grep -q ok && \
+req POST "/api/timesheets/$TS/expenses" "$J/m" '{"description":"ricambi","amount_cents":1250,"has_receipt":true}' | grep -q ok && ok || no "lines"
+say "T13 deterministic total (90m@35e/h + 12.50 = 65.00)"
+req GET "/api/timesheets/$TS" "$J/m" | grep -q '"total_cents":6500' && ok || no "$(req GET /api/timesheets/$TS "$J/m")"
+say "T14 submit + approve"
+req POST "/api/timesheets/$TS/submit" "$J/m" | grep -q in_revisione && \
+req POST "/api/timesheets/$TS/approve" "$J/rs" | grep -q approvato && ok || no "approve"
+say "T14 double approval blocked"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/timesheets/$TS/approve" -b "$J/rs")
+[ "$code" = "409" ] && ok || no "got $code"
+say "T14 CSV export has total row"
+curl -s "$BASE/api/timesheets/$TS/export.csv" -b "$J/m" | grep -q "TOTALE" && ok || no "csv"
+
 echo "== $PASS passed, $FAIL failed =="
 rm -rf "$J"; exit $FAIL

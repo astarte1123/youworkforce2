@@ -1,71 +1,80 @@
 <!doctype html><html lang="it"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Superadmin · YouWorkforce</title><link rel="stylesheet" href="/style.css"></head><body>
-<header><h1>Piano di controllo</h1><span class="badge">tenants.loneworker.eu</span><a href="/" style="margin-left:auto">home</a></header>
-<main>
-<div class="card" id="loginCard">
-  <h2>Accesso superadmin</h2>
-  <div class="row">
-    <div><label>Email</label><input id="email" value="admin@loneworker.eu"></div>
-    <div><label>Password</label><input id="pw" type="password" value="admin"></div>
-    <div style="flex:0"><label>&nbsp;</label><button onclick="login()">Entra</button></div>
-  </div>
-  <p class="mut" id="loginMsg"></p>
-</div>
-
-<div id="app" style="display:none">
-  <div class="card">
-    <h2>Crea tenant (senza deploy)</h2>
-    <div class="row">
-      <div><label>Slug</label><input id="slug" placeholder="acme2"></div>
-      <div><label>Nome</label><input id="name" placeholder="Acme 2 Srl"></div>
-      <div><label>Admin email</label><input id="aemail" placeholder="admin@acme2.loneworker.eu"></div>
-      <div><label>Admin password</label><input id="apw" value="demo"></div>
-      <div style="flex:0"><label>&nbsp;</label><button onclick="createTenant()">Crea</button></div>
-    </div>
-    <p class="mut" id="ctMsg"></p>
-  </div>
-  <div class="card">
-    <h2>Tenant e moduli</h2>
-    <div id="tenants" class="mut">…</div>
-  </div>
-</div>
-</main>
+<title>Superadmin · YouWorkforce</title><link rel="stylesheet" href="/app.css"></head><body>
+<div id="root"></div>
+<script src="/app.js"></script>
 <script>
-const api=(p,o={})=>fetch('/api'+p,{credentials:'include',...o}).then(async r=>({ok:r.ok,status:r.status,body:await r.json().catch(()=>({}))}));
-const MODS=['loneworker','goalert','traccar','iot','thingsboard','workforce','interventi','consuntivi','assistant','blues'];
-async function login(){
-  const r=await api('/superadmin/login',{method:'POST',headers:{'content-type':'application/json'},
-    body:JSON.stringify({email:email.value,password:pw.value})});
-  if(r.ok){loginCard.style.display='none';app.style.display='block';loadTenants();}
-  else loginMsg.textContent='Credenziali errate';
+let TENANTS=[];
+(async function(){ try{ const me=await api('/me'); if(me.is_super) return shell(); }catch(e){} login(); })();
+
+function login(){
+  $('#root').innerHTML=`<div style="min-height:100vh;display:grid;place-items:center;padding:20px;background:
+    radial-gradient(1000px 500px at 50% -10%, var(--brand-soft), transparent), var(--bg)">
+    <div class="card" style="width:380px;max-width:100%"><div class="card-b">
+      <div class="row" style="gap:10px;margin-bottom:14px"><div class="logo">${ICON.logomark}</div>
+        <div><h1 style="font-size:18px">Piano di controllo</h1><div class="small mut">tenants.loneworker.eu</div></div></div>
+      <div class="col">
+        <div class="field"><label>Email</label><input id="email" value="admin@loneworker.eu"></div>
+        <div class="field"><label>Password</label><input id="pw" type="password" value="admin"></div>
+        <button class="btn block lg" id="go">Accedi</button>
+        <div class="small" id="msg" style="color:var(--bad);min-height:16px"></div>
+      </div></div></div></div>`;
+  $('#go').onclick=async()=>{ try{ await api('/superadmin/login',{method:'POST',
+    body:JSON.stringify({email:$('#email').value,password:$('#pw').value})}); shell();
+  }catch(e){ $('#msg').textContent='Credenziali non valide'; } };
+  $('#pw').onkeydown=e=>{if(e.key==='Enter')$('#go').click();};
 }
-async function createTenant(){
-  const r=await api('/superadmin/tenants',{method:'POST',headers:{'content-type':'application/json'},
-    body:JSON.stringify({slug:slug.value,name:name.value,admin_email:aemail.value,admin_password:apw.value})});
-  ctMsg.textContent=r.ok?('Creato: '+r.body.slug):('Errore: '+(r.body.error||r.status));
-  if(r.ok) loadTenants();
+
+async function shell(){
+  $('#root').innerHTML=`
+  <div class="topbar"><div class="logo" style="width:26px;height:26px">${ICON.logomark}</div><strong>Piano di controllo</strong>
+    <span class="chip">superadmin</span><div class="grow"></div>
+    <button class="btn-ico btn ghost" onclick="toggleTheme()">${ICON.moon}</button>
+    <button class="btn-ico btn ghost" onclick="out()">${ICON.logout}</button></div>
+  <div class="content">
+    <div class="card" style="margin-bottom:18px"><div class="card-h"><h2>Crea tenant</h2></div><div class="card-b">
+      <div class="row">
+        <div class="field grow"><label>Slug</label><input id="c_slug" placeholder="acme2"></div>
+        <div class="field grow"><label>Nome</label><input id="c_name" placeholder="Acme 2 Srl"></div>
+        <div class="field grow"><label>Admin email</label><input id="c_email" placeholder="admin@acme2.loneworker.eu"></div>
+        <div class="field"><label>Password</label><input id="c_pw" value="demo"></div>
+        <div class="field" style="flex:0"><label>&nbsp;</label><button class="btn" id="c_go">Crea</button></div>
+      </div></div></div>
+    <h2 style="margin-bottom:12px">Tenant</h2>
+    <div id="list" class="col"></div>
+  </div>`;
+  $('#c_go').onclick=create; load();
 }
-async function loadTenants(){
-  const r=await api('/superadmin/tenants');
-  const el=document.getElementById('tenants');
-  if(!r.ok){el.textContent='errore';return;}
-  el.innerHTML=r.body.map(t=>`<div class="card" style="background:#0d1322">
-     <b>${t.name}</b> <span class="mut">(${t.slug})</span>
-     <div style="margin-top:8px">${MODS.map(m=>moduleToggle(t.id,m)).join('')}</div></div>`).join('');
+async function out(){ location.reload(); }
+async function create(){ try{
+  await api('/superadmin/tenants',{method:'POST',body:JSON.stringify({slug:$('#c_slug').value,name:$('#c_name').value,
+    admin_email:$('#c_email').value,admin_password:$('#c_pw').value})});
+  toast('Tenant creato','ok'); load(); }catch(e){ toast(e.message,'bad'); } }
+
+async function load(){
+  TENANTS=await api('/superadmin/tenants').catch(()=>[]);
+  const mods=await Promise.all(TENANTS.map(t=>api('/superadmin/tenants/'+t.id+'/modules').catch(()=>[])));
+  $('#list').innerHTML=TENANTS.map((t,i)=>tenantCard(t,mods[i])).join('')||'<div class="empty">nessun tenant</div>';
 }
-function moduleToggle(tid,code){
-  return `<span class="pill">${code}
-    <select onchange="setMod('${tid}','${code}',this.value)" style="width:auto;display:inline-block;padding:1px 4px">
-      <option value="">—</option><option value="attivo">attivo</option>
-      <option value="da_configurare">da_configurare</option><option value="degradato">degradato</option>
-      <option value="non_abilitato">non_abilitato</option></select></span>`;
+function tenantCard(t,mods){
+  return `<div class="card"><div class="card-h">
+    <div class="row" style="gap:10px"><div class="ava">${initials(t.name)}</div>
+      <div><b>${esc(t.name)}</b><div class="small mut mono">${esc(t.slug)}.loneworker.eu</div></div></div>
+    </div><div class="card-b"><div class="grid g3">
+    ${mods.map(m=>`<div class="row" style="justify-content:space-between;padding:8px 10px;border:1px solid var(--line);border-radius:10px">
+      <div style="min-width:0"><div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis">${esc(m.name)}</div>
+        <div class="small faint">${chip(m.state)}</div></div>
+      ${m.available?`<label class="switch"><input type="checkbox" ${m.state==='attivo'?'checked':''}
+        onchange="toggle('${t.id}','${m.code}',this)"><span class="sl"></span></label>`
+        :'<span class="tag">N/D</span>'}
+    </div>`).join('')}
+    </div></div></div>`;
 }
-async function setMod(tid,code,state){
-  if(!state)return;
-  const r=await api('/superadmin/tenants/'+tid+'/modules',{method:'POST',headers:{'content-type':'application/json'},
-    body:JSON.stringify({module_code:code,state})});
-  if(!r.ok) alert('Bloccato: '+(r.body.error||r.status));
+async function toggle(tid,code,cb){
+  const state=cb.checked?'attivo':'non_abilitato';
+  try{ await api('/superadmin/tenants/'+tid+'/modules',{method:'POST',body:JSON.stringify({module_code:code,state})});
+    toast(code+' → '+state,'ok'); load();
+  }catch(e){ cb.checked=!cb.checked; toast('Bloccato: '+e.message,'bad'); }
 }
 </script>
 </body></html>
