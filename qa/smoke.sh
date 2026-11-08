@@ -3,6 +3,9 @@
 # Evidence profile: SIMULATO. Covers T01/T02/T03/T04/T05/T06 priority chains.
 BASE="${BASE:-http://localhost:8080}"
 J=$(mktemp -d); PASS=0; FAIL=0
+# Unique per-run keys so the SOS chain is reproducible against a persistent DB
+# (fixed idem keys would be deduplicated on a re-run and fail the cascade).
+RUN="${RUN:-$(date +%s)-$$-$RANDOM}"; SOS="SOS-$RUN"; CORR="corr-sos-$RUN"
 say(){ printf '%-58s' "$1"; }
 ok(){ echo "PASS"; PASS=$((PASS+1)); }
 no(){ echo "FAIL  ($1)"; FAIL=$((FAIL+1)); }
@@ -31,13 +34,13 @@ req POST /api/login "$J/m" '{"email":"mario@acme.loneworker.eu","password":"demo
 
 # ---- T03 SOS chain (machine ingress) ----
 say "T03 ingest SOS (acme badge)"
-R=$(req POST /api/events "$J/noauth" '{"etype":"sos","source_event":"SOS-1","device_external_id":"BADGE-001","site_name":"Milano","correlation":"corr-sos-1"}' 'x-ingest-token: acme-ingest-token')
+R=$(req POST /api/events "$J/noauth" "{\"etype\":\"sos\",\"source_event\":\"$SOS\",\"idem_key\":\"$SOS\",\"device_external_id\":\"BADGE-001\",\"site_name\":\"Milano\",\"correlation\":\"$CORR\"}" 'x-ingest-token: acme-ingest-token')
 echo "$R" | grep -q incident_id && ok || no "$R"
 IID=$(echo "$R" | sed -n 's/.*"incident_id":"\([^"]*\)".*/\1/p')
 
 # ---- T05 idempotency ----
 say "T05 idempotent re-ingest (no 2nd incident)"
-R=$(req POST /api/events "$J/noauth" '{"etype":"sos","source_event":"SOS-1","idem_key":"SOS-1","correlation":"corr-sos-1"}' 'x-ingest-token: acme-ingest-token')
+R=$(req POST /api/events "$J/noauth" "{\"etype\":\"sos\",\"source_event\":\"$SOS\",\"idem_key\":\"$SOS\",\"correlation\":\"$CORR\"}" 'x-ingest-token: acme-ingest-token')
 echo "$R" | grep -q '"deduplicated":true' && ok || no "$R"
 
 # ---- T02 isolation ----

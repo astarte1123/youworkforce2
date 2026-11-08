@@ -9,13 +9,14 @@ La catena critica è riproducibile su una macchina pulita e i simulatori sono di
 
 Evidenza: `qa/smoke.sh`.
 
-## PILOTA CONTROLLATO — **NON RAGGIUNTO** (ma GoAlert ora reale)
+## PILOTA CONTROLLATO — **NON RAGGIUNTO** (ma GoAlert e Traccar ora reali)
 Fatto in questa build:
 - **GoAlert v0.35.0 reale** integrato: il core crea allarmi reali sul servizio con policy di escalation a **2 livelli** (oncall1→oncall2) e correlazione tracciata. Evidenza `qa/goalert-e2e.sh` (6/6). Routing per-tenant via chiave di integrazione.
+- **Traccar v6.17.0 reale** integrato come sorgente badge: device (protocollo OsmAnd) → Traccar → *event forwarding* → adapter core `/api/ingress/traccar` → stessa catena SOS normalizzata → incidente → GoAlert reale. Due upstream reali in catena. Mapping allarmi `sos→sos`, `fallDown→man_down`. Tenant dal token di ingest (mai dal body). Evidenza `qa/traccar-e2e.sh` (8/8).
 
 Mancano ancora per il perimetro:
 - **Consegna reale** delle notifiche (SMS/voce/webhook) e verifica/contact-method del 2° reperibile: cablare il trasporto di test per sito.
-- Sorgente badge **reale** (Traccar + firmware), con prova di recupero eventi.
+- **Firmware badge hardware reale** (il server Traccar è reale; manca il dispositivo fisico sul campo e la distinzione perdita-rete vera).
 - Procedura operatori concordata e prova sul sito.
 Condizioni per partire: vedi `offerta-pilota.md`.
 

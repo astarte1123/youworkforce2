@@ -56,6 +56,21 @@ services:
     depends_on: [goalert-db]
     ports: ["8082:8081"]
 
+  # ---- Optional: real Traccar badge source (profile "traccar") ----
+  # device (OsmAnd) -> Traccar -> event forwarding -> core /api/ingress/traccar.
+  # See qa/run-traccar.sh (registers device BADGE-001) and qa/traccar-e2e.sh (8/8).
+  traccar:
+    image: traccar/traccar:6.17.0   # verified in this repo (UPSTREAM REALE)
+    profiles: ["traccar"]
+    environment:
+      CONFIG_USE_ENVIRONMENT_VARIABLES: "true"
+      EVENT_FORWARD_URL: "http://core:8080/api/ingress/traccar?token=acme-ingest-token"
+    ports:
+      - "8083:8082"     # Traccar web UI / API
+      - "5055:5055"     # OsmAnd protocol (device feed)
+      - "5055:5055/udp"
+    depends_on: [core]
+
 volumes:
   db_data:
   goalert_db:

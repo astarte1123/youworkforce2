@@ -4,7 +4,7 @@
 |---|---|---|---|---|
 | `loneworker` | Lone Worker e centrale allarmi | prodotto | **implementato** | sorgente evento (badge/PWA) + `goalert` |
 | `goalert` | GoAlert escalation | connettore | **UPSTREAM REALE** (v0.35.0, EP 2 livelli); SIMULATO se `GOALERT_BASE` off | — (prerequisito dei percorsi di escalation) |
-| `traccar` | Traccar badge | connettore | contratto + sim | ingest token |
+| `traccar` | Traccar badge | connettore | **UPSTREAM REALE** (v6.17.0, event forwarding → `/api/ingress/traccar`; alarm sos→sos, fallDown→man_down) | ingest token |
 | `iot` | Dispositivi e IoT | prodotto | ingest HTTP + sim | — (può lavorare senza loneworker) |
 | `thingsboard` | ThingsBoard industriale | connettore | **off / esterno** (BUSL) | iot |
 | `blues` | Blues sperimentale | connettore | **off** (replay) | — |

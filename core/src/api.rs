@@ -250,19 +250,56 @@ pub async fn ingest_event(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     let idem = b.idem_key.clone().unwrap_or_else(|| b.source_event.clone());
     if idem.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "idem key required")); }
     let correlation = b.correlation.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
-    let now = st.clock.now();
 
+    persist_ingest(&st, tid, Normalized {
+        source,
+        source_event: b.source_event.clone(),
+        idem,
+        etype: b.etype.clone(),
+        device_external_id: b.device_external_id.clone(),
+        site_name: b.site_name.clone(),
+        lat: b.lat, lon: b.lon, accuracy_m: b.accuracy_m,
+        correlation,
+        payload: b.payload.clone().unwrap_or(json!({})),
+    }).await
+}
+
+/// A source-neutral normalized ingress. Every machine source (direct badge HTTP,
+/// Traccar adapter, …) maps onto this shape so the SOS chain stays single-path.
+pub struct Normalized {
+    pub source: String,
+    pub source_event: String,
+    pub idem: String,
+    pub etype: String,
+    pub device_external_id: Option<String>,
+    pub site_name: Option<String>,
+    pub lat: Option<f64>, pub lon: Option<f64>, pub accuracy_m: Option<f64>,
+    pub correlation: String,
+    pub payload: Value,
+}
+
+/// Persist a normalized event idempotently; open an incident + outbox notify
+/// (one transaction, contract line 48) when the mapped etype is critical.
+pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
+    let now = st.clock.now();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
 
     // resolve device/site within tenant (optional)
-    let device_id: Option<Uuid> = if let Some(ext) = &b.device_external_id {
+    let device_id: Option<Uuid> = if let Some(ext) = &n.device_external_id {
         sqlx::query_scalar("SELECT id FROM app.devices WHERE source=$1 AND external_id=$2")
-            .bind(&source).bind(ext).fetch_optional(&mut *tx).await.map_err(ise)?
+            .bind(&n.source).bind(ext).fetch_optional(&mut *tx).await.map_err(ise)?
     } else { None };
-    let site_id: Option<Uuid> = if let Some(sn) = &b.site_name {
+    // site: explicit name wins; otherwise inherit the device's home site
+    let mut site_id: Option<Uuid> = if let Some(sn) = &n.site_name {
         sqlx::query_scalar("SELECT id FROM app.sites WHERE name=$1")
             .bind(sn).fetch_optional(&mut *tx).await.map_err(ise)?
     } else { None };
+    if site_id.is_none() {
+        if let Some(did) = device_id {
+            site_id = sqlx::query_scalar("SELECT site_id FROM app.devices WHERE id=$1")
+                .bind(did).fetch_optional(&mut *tx).await.map_err(ise)?.flatten();
+        }
+    }
 
     // idempotent insert
     let ev = sqlx::query(
@@ -270,43 +307,106 @@ pub async fn ingest_event(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
          ON CONFLICT (tenant_id,source,idem_key) DO NOTHING
          RETURNING id")
-        .bind(tid).bind(&source).bind(&b.source_event).bind(&idem).bind(site_id).bind(device_id)
-        .bind(&b.etype).bind(now).bind(now).bind(b.lat).bind(b.lon).bind(b.accuracy_m)
-        .bind(b.payload.clone().unwrap_or(json!({}))).bind(&correlation)
+        .bind(tid).bind(&n.source).bind(&n.source_event).bind(&n.idem).bind(site_id).bind(device_id)
+        .bind(&n.etype).bind(now).bind(now).bind(n.lat).bind(n.lon).bind(n.accuracy_m)
+        .bind(n.payload.clone()).bind(&n.correlation)
         .fetch_optional(&mut *tx).await.map_err(ise)?;
 
     let Some(ev) = ev else {
         tx.commit().await.map_err(ise)?;
-        return Ok(Json(json!({"deduplicated":true,"correlation":correlation})));
+        return Ok(Json(json!({"deduplicated":true,"correlation":n.correlation})));
     };
     let eid: Uuid = ev.get("id");
 
     let mut incident_id: Option<Uuid> = None;
-    if CRITICAL.contains(&b.etype.as_str()) {
+    if CRITICAL.contains(&n.etype.as_str()) {
         let irow = sqlx::query(
             "INSERT INTO app.incidents(tenant_id,event_id,site_id,etype,correlation,priority)
              VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
-            .bind(tid).bind(eid).bind(site_id).bind(&b.etype).bind(&correlation)
-            .bind(if b.etype=="sos" {3} else {2})
+            .bind(tid).bind(eid).bind(site_id).bind(&n.etype).bind(&n.correlation)
+            .bind(if n.etype=="sos" {3} else {2})
             .fetch_one(&mut *tx).await.map_err(ise)?;
         let iid: Uuid = irow.get("id");
         incident_id = Some(iid);
         // timeline + outbox notify request in the SAME transaction (contract line 48)
         sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'notify_requested',$3)")
-            .bind(tid).bind(iid).bind(json!({"etype":b.etype})).execute(&mut *tx).await.map_err(ise)?;
+            .bind(tid).bind(iid).bind(json!({"etype":n.etype,"source":n.source})).execute(&mut *tx).await.map_err(ise)?;
         sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_notify',$2)")
             .bind(tid).bind(json!({
-                "incident_id": iid, "summary": format!("{} [{}] @ {}", b.etype, correlation, b.site_name.clone().unwrap_or("-".into())),
-                "dedup": correlation, "integration_key": ""}))
+                "incident_id": iid, "summary": format!("{} [{}] @ {} (src:{})", n.etype, n.correlation, n.site_name.clone().unwrap_or("-".into()), n.source),
+                "dedup": n.correlation, "integration_key": ""}))
             .execute(&mut *tx).await.map_err(ise)?;
     }
     tx.commit().await.map_err(ise)?;
 
     if let Some(iid) = incident_id {
         let _ = st.bus.send(TenantEvent { tenant_id: tid, payload: json!({
-            "type":"incident_opened","incident_id":iid,"etype":b.etype,"correlation":correlation}) });
+            "type":"incident_opened","incident_id":iid,"etype":n.etype,"correlation":n.correlation}) });
     }
-    Ok(Json(json!({"event_id":eid,"incident_id":incident_id,"correlation":correlation})))
+    Ok(Json(json!({"event_id":eid,"incident_id":incident_id,"correlation":n.correlation})))
+}
+
+// ----------------------------- Traccar adapter (UPSTREAM REALE) -----------------------------
+/// Receives Traccar *event forwarding* webhooks and maps them onto the same
+/// normalized SOS chain. Tenant is derived from the ingest token (header
+/// `X-Ingest-Token` or `?token=`), NEVER from the forwarded body. Traccar's
+/// device `uniqueId` must match a registered device's external_id (source
+/// `traccar`). Alarm mapping:
+///   alarm=sos      -> sos       (critical)
+///   alarm=fallDown -> man_down  (critical, lone-worker fall detection)
+///   other alarm    -> device_alarm (recorded, non-critical)
+///   deviceOffline  -> device_offline
+///   else           -> traccar_event
+pub async fn ingest_traccar(
+    State(st): State<AppState>,
+    h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>,
+    Json(b): Json<Value>,
+) -> R {
+    let token = h.get("x-ingest-token").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+        .or_else(|| q.get("token").cloned())
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing ingest token"))?;
+    let trow = sqlx::query("SELECT tenant_id,source FROM app.ingest_tokens WHERE token=$1")
+        .bind(&token).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
+    let tid: Uuid = trow.get("tenant_id");
+    let source: String = trow.get("source");
+
+    let ev = b.get("event");
+    let dev = b.get("device");
+    let pos = b.get("position");
+
+    let unique_id = dev.and_then(|d| d.get("uniqueId")).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let lat = pos.and_then(|p| p.get("latitude")).and_then(|v| v.as_f64());
+    let lon = pos.and_then(|p| p.get("longitude")).and_then(|v| v.as_f64());
+    let evt_type = ev.and_then(|e| e.get("type")).and_then(|v| v.as_str()).unwrap_or("");
+    let alarm = ev.and_then(|e| e.get("attributes")).and_then(|a| a.get("alarm")).and_then(|v| v.as_str())
+        .or_else(|| pos.and_then(|p| p.get("attributes")).and_then(|a| a.get("alarm")).and_then(|v| v.as_str()));
+    let evt_id = ev.and_then(|e| e.get("id")).map(|v| v.to_string())
+        .or_else(|| pos.and_then(|p| p.get("id")).map(|v| v.to_string()))
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+    let etype = match (evt_type, alarm) {
+        (_, Some("sos")) => "sos",
+        (_, Some("fallDown")) => "man_down",
+        (_, Some(_)) => "device_alarm",
+        ("deviceOffline", _) => "device_offline",
+        (t, _) if !t.is_empty() => "traccar_event",
+        _ => "traccar_event",
+    }.to_string();
+
+    let source_event = format!("traccar-evt-{}", evt_id);
+    persist_ingest(&st, tid, Normalized {
+        source,
+        source_event: source_event.clone(),
+        idem: source_event.clone(),
+        etype,
+        device_external_id: unique_id,
+        site_name: None,
+        lat, lon, accuracy_m: None,
+        correlation: source_event,
+        payload: b.clone(),
+    }).await
 }
 
 // ----------------------------- incidents -----------------------------

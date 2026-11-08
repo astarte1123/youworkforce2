@@ -20,7 +20,8 @@ GoAlert come unico motore di escalation. LoneWorker è un modulo di prodotto.
 - **UI**: design system completo (chiaro/scuro, responsive), console SPA (dashboard, centrale live, ordini, consuntivi, moduli) con drawer e toast; PWA lavoratore mobile-first.
 
 ## Non implementato (backlog, dichiarato)
-Prompt 7 (AI), 8 (voce/diario/documenti), 10 (parità/migrazione legacy). GoAlert/Traccar/ThingsBoard/Blues/OpenDuty reali.
+Prompt 8 (voce/diario/documenti), 10 (parità/migrazione legacy). ThingsBoard/Blues/OpenDuty reali.
+Consegna fisica notifiche GoAlert (SMS/voce) e firmware badge hardware: da cablare per sito.
 
 ## Avvio — Docker Compose (profilo base)
 ```bash
@@ -61,6 +62,19 @@ KEY=$KEY GA_PASS=goalertadmin1 bash qa/goalert-e2e.sh    # 6/6: allarme reale cr
 Console GoAlert: http://localhost:8082 (admin / goalertadmin1). La chiave per-tenant si
 imposta via superadmin: `POST /api/superadmin/tenants/{id}/goalert`.
 **Consegna reale** (SMS/voce/webhook) del 2° livello = da cablare per sito (trasporto di test).
+
+## Traccar REALE — sorgente badge (UPSTREAM REALE)
+Traccar v6.17.0 vero. Il device parla il protocollo OsmAnd; Traccar genera l'evento
+di allarme e lo inoltra (event forwarding) all'adapter del core, che lo mappa sulla
+stessa catena SOS. Due upstream reali in catena: Traccar → core → GoAlert.
+```bash
+bash qa/run-traccar.sh        # avvia Traccar, registra il device BADGE-001, imposta il forwarding
+bash qa/traccar-e2e.sh        # 8/8: OsmAnd SOS -> incidente -> GoAlert (UPSTREAM REALE)
+# invio manuale di un SOS da "device":
+curl "http://localhost:5055/?id=BADGE-001&lat=45.47&lon=9.19&timestamp=$(date +%s)&alarm=sos"
+```
+Console Traccar: http://localhost:8083. Mapping allarmi: `sos→sos`, `fallDown→man_down`.
+Il tenant deriva dal token di ingest (`?token=` o header `X-Ingest-Token`), **mai dal body**.
 
 ## Credenziali demo (recapiti di prova)
 | Ruolo | Dominio/slug | Utente | Password |
