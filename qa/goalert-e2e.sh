@@ -17,32 +17,31 @@ gql '{"query":"{ escalationPolicies(input:{first:5}){ nodes{ name steps{ stepNum
 
 # core: superadmin sets acme per-tenant key
 curl -s -c "$J/s" -X POST "$BASE/api/superadmin/login" -H 'content-type: application/json' -d '{"email":"admin@loneworker.eu","password":"admin"}' >/dev/null
+SCSRF=$(awk '$6=="yw_csrf"{print $7}' "$J/s" 2>/dev/null | tail -1)
 TID=$(curl -s -b "$J/s" "$BASE/api/superadmin/tenants" | sed -n 's/.*{"id":"\([^"]*\)","name":"Acme[^}]*}.*/\1/p')
 [ -z "$TID" ] && TID=$(curl -s -b "$J/s" "$BASE/api/superadmin/tenants" | sed -n 's/.*"id":"\([^"]*\)","name":"Acme.*/\1/p')
 say "set acme GoAlert integration key (per-tenant routing)"
-curl -s -b "$J/s" -X POST "$BASE/api/superadmin/tenants/$TID/goalert" -H 'content-type: application/json' -d "{\"integration_key\":\"$KEY\"}" | grep -q '"ok":true' && ok || no "set key"
+curl -s -b "$J/s" -X POST "$BASE/api/superadmin/tenants/$TID/goalert" -H 'content-type: application/json' -H "x-csrf-token: $SCSRF" -d "{\"integration_key\":\"$KEY\"}" | grep -q '"ok":true' && ok || no "set key"
 
-# count alerts before
-before=$(gql '{"query":"{ alerts(input:{first:50}){ nodes{ alertID } } }"}' | grep -o '"alertID"' | wc -l)
-
-# trigger SOS via core ingress (real badge path)
+# trigger SOS via core ingress (real badge path) with a UNIQUE correlation
 CORR="e2e-$(date +%s)"
 say "core ingress SOS -> outbox -> real GoAlert"
 curl -s -X POST "$BASE/api/events" -H 'x-ingest-token: acme-ingest-token' -H 'content-type: application/json' \
   -d "{\"etype\":\"sos\",\"source_event\":\"$CORR\",\"site_name\":\"Milano\",\"correlation\":\"$CORR\"}" | grep -q incident_id && ok || no "ingress"
 
-# wait for worker to drain outbox + alert to appear
-after=0
-for i in 1 2 3 4 5 6; do sleep 2
-  after=$(gql '{"query":"{ alerts(input:{first:50}){ nodes{ alertID summary } } }"}' | grep -o '"alertID"' | wc -l)
-  [ "$after" -gt "$before" ] && break
+# wait for the worker to drain the outbox and the NEW alert (by correlation) to appear
+# in GoAlert. A raw count delta is unreliable (the alerts list is page-capped), so we
+# search for our unique correlation directly.
+found=0
+for i in 1 2 3 4 5 6 7 8; do sleep 2
+  gql "{\"query\":\"{ alerts(input:{first:50,search:\\\"$CORR\\\"}){ nodes{ alertID summary } } }\"}" | grep -q "$CORR" && { found=1; break; }
 done
-say "new REAL alert created in GoAlert ($before -> $after)"
-[ "$after" -gt "$before" ] && ok || no "no new alert"
+say "new REAL alert created in GoAlert (by correlation)"
+[ "$found" = "1" ] && ok || no "no new alert for $CORR"
 
 # the alert summary carries our correlation
 say "alert summary carries correlation"
-gql '{"query":"{ alerts(input:{first:50}){ nodes{ summary service{ name } } } }"}' | grep -q "$CORR" && ok || no "no corr in GoAlert"
+gql "{\"query\":\"{ alerts(input:{first:50,search:\\\"$CORR\\\"}){ nodes{ summary service{ name } } } }\"}" | grep -q "$CORR" && ok || no "no corr in GoAlert"
 
 # core incident timeline shows goalert_ack with UPSTREAM REALE
 curl -s -c "$J/op" -X POST "$BASE/api/login" -H 'content-type: application/json' -H 'x-tenant-slug: acme' -d '{"email":"operatore@acme.loneworker.eu","password":"demo"}' >/dev/null

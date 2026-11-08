@@ -50,11 +50,46 @@ async fn persist_session(state: &AppState, tok: &str, s: &Session) {
         .execute(&state.owner_pool).await;
 }
 
-fn set_cookie_header(tok: &str) -> HeaderMap {
+/// Session cookie (HttpOnly) + CSRF cookie (readable by JS for the double-submit header).
+fn set_cookie_header(tok: &str, csrf: &str) -> HeaderMap {
     let mut m = HeaderMap::new();
-    m.insert(header::SET_COOKIE,
+    m.append(header::SET_COOKIE,
         format!("yw_session={tok}; Path=/; HttpOnly; SameSite=Lax").parse().unwrap());
+    m.append(header::SET_COOKIE,
+        format!("yw_csrf={csrf}; Path=/; SameSite=Lax").parse().unwrap());
     m
+}
+
+fn cookie_val(raw: &str, name: &str) -> Option<String> {
+    for part in raw.split(';') {
+        let p = part.trim();
+        if let Some(v) = p.strip_prefix(&format!("{name}=")) { return Some(v.to_string()); }
+    }
+    None
+}
+
+/// CSRF guard (double-submit): mutating, cookie-authenticated requests must carry
+/// an `X-CSRF-Token` header equal to the `yw_csrf` cookie. Machine ingress (ingest
+/// token, no session cookie), login and logout are exempt.
+pub async fn csrf_guard(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let method = req.method().clone();
+    let safe = matches!(method, axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS);
+    let path = req.uri().path().to_string();
+    let exempt = safe
+        || path == "/api/login" || path == "/api/superadmin/login" || path == "/api/logout"
+        || path == "/api/events" || path.starts_with("/api/ingress/")
+        || path == "/api/_test/advance" || path == "/health";
+    if exempt { return next.run(req).await; }
+    let raw = req.headers().get(header::COOKIE).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    if cookie_val(&raw, "yw_session").is_none() {
+        return next.run(req).await; // not cookie-authenticated (machine/token) -> CSRF N/A
+    }
+    let cookie = cookie_val(&raw, "yw_csrf");
+    let header = req.headers().get("x-csrf-token").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    match (cookie, header) {
+        (Some(c), Some(h)) if !c.is_empty() && c == h => next.run(req).await,
+        _ => (StatusCode::FORBIDDEN, Json(json!({"error":"csrf token mismatch"}))).into_response(),
+    }
 }
 
 // --------------------- login rate limiting (anti brute-force) ---------------------
@@ -132,10 +167,11 @@ pub async fn superadmin_login(State(st): State<AppState>, h: HeaderMap, Json(b):
                         .bind(auth::hash_password(&b.password)).bind(id).execute(&st.owner_pool).await;
                 }
                 let tok = auth::new_token();
+                let csrf = auth::new_token();
                 let sess = Session { user_id: id, tenant_id: None, email: b.email.clone(),
                     role: "superadmin".into(), is_super: true };
                 persist_session(&st, &tok, &sess).await;
-                (StatusCode::OK, set_cookie_header(&tok), Json(json!({"ok":true,"role":"superadmin"}))).into_response()
+                (StatusCode::OK, set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"role":"superadmin","csrf":csrf}))).into_response()
             } else {
                 rl_fail(&st, &key).await;
                 (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad credentials"}))).into_response()
@@ -260,9 +296,10 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
                     let _ = tx2.commit().await;
                 }
             }
+            let csrf = auth::new_token();
             let sess = Session { user_id: uid, tenant_id: Some(tid), email: b.email.clone(), role: role.clone(), is_super: false };
             persist_session(&st, &tok, &sess).await;
-            (StatusCode::OK, set_cookie_header(&tok), Json(json!({"ok":true,"role":role,"tenant":slug}))).into_response()
+            (StatusCode::OK, set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"role":role,"tenant":slug,"csrf":csrf}))).into_response()
         }
         _ => {
             rl_fail(&st, &key).await;
@@ -281,7 +318,8 @@ pub async fn logout(State(st): State<AppState>, h: HeaderMap) -> impl IntoRespon
         let _ = sqlx::query("DELETE FROM app.sessions WHERE token=$1").bind(&tok).execute(&st.owner_pool).await;
     }
     let mut m = HeaderMap::new();
-    m.insert(header::SET_COOKIE, "yw_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".parse().unwrap());
+    m.append(header::SET_COOKIE, "yw_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".parse().unwrap());
+    m.append(header::SET_COOKIE, "yw_csrf=; Path=/; SameSite=Lax; Max-Age=0".parse().unwrap());
     (StatusCode::OK, m, Json(json!({"ok":true})))
 }
 

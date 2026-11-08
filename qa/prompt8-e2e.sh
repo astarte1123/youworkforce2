@@ -12,7 +12,8 @@ jq_get(){ python -c "import sys,json;print(json.load(sys.stdin).get('$1',''))"; 
 M=$(mktemp); G=$(mktemp)
 curl -s -c "$M" -X POST "$BASE/api/login" -H 'content-type: application/json' -H 'x-tenant-slug: acme' \
   -d '{"email":"mario@acme.loneworker.eu","password":"demo"}' >/dev/null
-mario(){ curl -s -b "$M" -H 'x-tenant-slug: acme' "$@"; }
+csrfh(){ awk '$6=="yw_csrf"{print $7}' "$1" 2>/dev/null | tail -1; }
+mario(){ curl -s -b "$M" -H 'x-tenant-slug: acme' -H "x-csrf-token: $(csrfh "$M")" "$@"; }
 
 # clean slate: end any open shift
 mario -X POST "$BASE/api/shifts/end" >/dev/null 2>&1 || true
@@ -35,21 +36,21 @@ mario -X POST "$BASE/api/diary" -H 'content-type: application/json' -d '{"body":
 L=$(mario "$BASE/api/diary")
 echo "$L" | grep -q '"source":"voce"' && ok "lista diario contiene la nota vocale" || no "diary list" "$L"
 echo "$L" | grep -q 'nota vuota' && no "empty guard" "accepted empty" || true
-EMPTY=$(curl -s -o /dev/null -w "%{http_code}" -b "$M" -H 'x-tenant-slug: acme' -X POST "$BASE/api/diary" -H 'content-type: application/json' -d '{"body":"   "}')
+EMPTY=$(curl -s -o /dev/null -w "%{http_code}" -b "$M" -H 'x-tenant-slug: acme' -H "x-csrf-token: $(csrfh "$M")" -X POST "$BASE/api/diary" -H 'content-type: application/json' -d '{"body":"   "}')
 [ "$EMPTY" = "400" ] && ok "nota vuota rifiutata (400)" || no "empty note" "$EMPTY"
 
 echo "== fine turno =="
 E=$(mario -X POST "$BASE/api/shifts/end")
 [ "$(echo "$E" | jq_get state)" = "terminato" ] && ok "fine turno -> terminato" || no "end" "$E"
-E2=$(curl -s -o /dev/null -w "%{http_code}" -b "$M" -H 'x-tenant-slug: acme' -X POST "$BASE/api/shifts/end")
+E2=$(curl -s -o /dev/null -w "%{http_code}" -b "$M" -H 'x-tenant-slug: acme' -H "x-csrf-token: $(csrfh "$M")" -X POST "$BASE/api/shifts/end")
 [ "$E2" = "409" ] && ok "fine turno senza turno aperto -> 409" || no "double end" "$E2"
 
 echo "== gating modulo (globex: workforce non attivo) =="
 curl -s -c "$G" -X POST "$BASE/api/login" -H 'content-type: application/json' -H 'x-tenant-slug: globex' \
   -d '{"email":"admin@globex.loneworker.eu","password":"demo"}' >/dev/null
-GC=$(curl -s -o /dev/null -w "%{http_code}" -b "$G" -H 'x-tenant-slug: globex' -X POST "$BASE/api/diary" -H 'content-type: application/json' -d '{"body":"x"}')
+GC=$(curl -s -o /dev/null -w "%{http_code}" -b "$G" -H 'x-tenant-slug: globex' -H "x-csrf-token: $(csrfh "$G")" -X POST "$BASE/api/diary" -H 'content-type: application/json' -d '{"body":"x"}')
 [ "$GC" = "403" ] && ok "diario bloccato su globex (modulo off) -> 403" || no "module gating" "$GC"
-GS=$(curl -s -o /dev/null -w "%{http_code}" -b "$G" -H 'x-tenant-slug: globex' -X POST "$BASE/api/shifts/start" -H 'content-type: application/json' -d '{}')
+GS=$(curl -s -o /dev/null -w "%{http_code}" -b "$G" -H 'x-tenant-slug: globex' -H "x-csrf-token: $(csrfh "$G")" -X POST "$BASE/api/shifts/start" -H 'content-type: application/json' -d '{}')
 [ "$GS" = "403" ] && ok "turni bloccati su globex (modulo off) -> 403" || no "shift gating" "$GS"
 
 echo "== $PASS passed, $FAIL failed =="

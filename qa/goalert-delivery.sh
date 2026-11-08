@@ -80,8 +80,9 @@ KEY=$(gid "$(gql "{\"query\":\"mutation{ createIntegrationKey(input:{serviceID:\
 S=$(mktemp)
 curl -s -c "$S" -X POST "$CORE/api/superadmin/login" -H 'content-type: application/json' \
   -d '{"email":"admin@loneworker.eu","password":"admin"}' >/dev/null
+SCSRF=$(awk '$6=="yw_csrf"{print $7}' "$S" 2>/dev/null | tail -1)
 ACME=$(curl -s -b "$S" "$CORE/api/superadmin/tenants" | python -c "import sys,json;print([t['id'] for t in json.load(sys.stdin) if t['slug']=='acme'][0])")
-curl -s -b "$S" -X POST "$CORE/api/superadmin/tenants/$ACME/goalert" -H 'content-type: application/json' \
+curl -s -b "$S" -X POST "$CORE/api/superadmin/tenants/$ACME/goalert" -H 'content-type: application/json' -H "x-csrf-token: $SCSRF" \
   -d "{\"integration_key\":\"$KEY\"}" | grep -q '"ok":true' && ok "acme routed to the delivery service" || no "set goalert key failed"
 
 # 5) fire a REAL core SOS and confirm GoAlert delivers it to the external receiver

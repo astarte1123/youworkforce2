@@ -23,13 +23,17 @@ BEFORE=$(incs | python -c "import sys,json;print(' '.join(i['correlation'] for i
 
 TS=$(date +%s)
 echo "== 1) send OsmAnd SOS to real Traccar =="
+# Traccar emits an 'alarm' event only on a STATE CHANGE: send a clean position first
+# (no alarm) so the following SOS is a transition that generates a fresh event.
+curl -s -o /dev/null -m 5 "$OSMAND/?id=BADGE-001&lat=45.4668&lon=9.1905&timestamp=$((TS-2))"
+sleep 2
 code=$(curl -s -o /dev/null -w "%{http_code}" -m 5 "$OSMAND/?id=BADGE-001&lat=45.4668&lon=9.1905&timestamp=$TS&alarm=sos")
 [ "$code" = "200" ] && ok "Traccar accepted OsmAnd position (200)" || no "OsmAnd http=$code"
 
 echo "== 2) Traccar emits alarm event, forwards it, core opens a NEW incident =="
 NEWCORR=""
-for i in $(seq 1 10); do
-  sleep 2
+for i in $(seq 1 20); do
+  sleep 3
   CUR=$(incs | python -c "import sys,json;print(' '.join(i['correlation'] for i in json.load(sys.stdin) if 'traccar-evt' in i['correlation']))")
   for c in $CUR; do case " $BEFORE " in *" $c "*) : ;; *) NEWCORR="$c";; esac; done
   [ -n "$NEWCORR" ] && break

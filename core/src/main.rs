@@ -93,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/assistant", post(api::assistant_query))
         .route("/api/stream", get(api::stream))
         .route("/api/_test/advance", post(api::test_advance))
+        .layer(axum::middleware::from_fn(api::csrf_guard))
         .with_state(st);
 
     let bind = env("YW_BIND", "0.0.0.0:8080");

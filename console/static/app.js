@@ -4,8 +4,11 @@ const store = {
   set slug(v){ try{localStorage.setItem('yw_slug',v)}catch(e){} },
 };
 // tenant slug header is needed only at /api/login; everything else uses the cookie.
+function csrfToken(){ const m=document.cookie.match(/(?:^|;\s*)yw_csrf=([^;]+)/); return m?decodeURIComponent(m[1]):''; }
 async function api(path, opts={}){
   const headers = {'content-type':'application/json','x-tenant-slug':store.slug, ...(opts.headers||{})};
+  const method=(opts.method||'GET').toUpperCase();
+  if(!['GET','HEAD','OPTIONS'].includes(method)){ const t=csrfToken(); if(t) headers['x-csrf-token']=t; }
   const r = await fetch('/api'+path, {credentials:'include', headers, ...opts});
   let body=null; const ct=r.headers.get('content-type')||'';
   if(ct.includes('json')) body = await r.json().catch(()=>null);

@@ -9,9 +9,12 @@ RUN="${RUN:-$(date +%s)-$$-$RANDOM}"; SOS="SOS-$RUN"; CORR="corr-sos-$RUN"
 say(){ printf '%-58s' "$1"; }
 ok(){ echo "PASS"; PASS=$((PASS+1)); }
 no(){ echo "FAIL  ($1)"; FAIL=$((FAIL+1)); }
+# read the (non-HttpOnly) CSRF cookie from a curl jar for the double-submit header
+csrfh(){ awk '$6=="yw_csrf"{print $7}' "$1" 2>/dev/null | tail -1; }
 # curl helper: method path jar [data] [extra-header]
 req(){ local m=$1 p=$2 jar=$3 data=$4 hdr=$5
   curl -s -X "$m" "$BASE$p" -c "$jar" -b "$jar" -H 'content-type: application/json' \
+    -H "x-csrf-token: $(csrfh "$jar")" \
     ${hdr:+-H "$hdr"} ${data:+-d "$data"}; }
 
 echo "== YouWorkforce smoke =="
@@ -64,7 +67,7 @@ say "T03 operatore close"
 req POST "/api/incidents/$IID/close" "$J/op" '{"outcome":"risolto test"}' | grep -q '"ok":true' && ok || no "close"
 say "T02 auditor role cannot ack (RBAC)"
 req POST /api/login "$J/aud" '{"email":"auditor@acme.loneworker.eu","password":"demo"}' 'x-tenant-slug: acme' >/dev/null
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/incidents/$IID/ack" -b "$J/aud")
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/incidents/$IID/ack" -b "$J/aud" -H "x-csrf-token: $(csrfh "$J/aud")")
 [ "$code" = "403" ] || [ "$code" = "409" ] && ok || no "got $code"
 
 # ---- T04 check-in timer via controllable clock ----
@@ -87,12 +90,12 @@ say "T14 planner creates order"
 OID=$(req POST /api/orders "$J/pl" '{"title":"Manutenzione quadro","site_name":"Milano"}' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 [ -n "$OID" ] && ok || no "no order id"
 say "T14 lavoratore cannot create order (RBAC)"
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/orders" -b "$J/m" -H 'content-type: application/json' -d '{"title":"x"}')
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/orders" -b "$J/m" -H 'content-type: application/json' -H "x-csrf-token: $(csrfh "$J/m")" -d '{"title":"x"}')
 [ "$code" = "403" ] && ok || no "got $code"
 say "T14 assign order to mario"
 req POST "/api/orders/$OID/assign" "$J/pl" "{\"version\":1,\"user_id\":\"$MARIO\"}" | grep -q assegnato && ok || no "assign"
 say "T05 stale version rejected on assign"
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/orders/$OID/assign" -b "$J/pl" -H 'content-type: application/json' -d "{\"version\":1,\"user_id\":\"$MARIO\"}")
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/orders/$OID/assign" -b "$J/pl" -H 'content-type: application/json' -H "x-csrf-token: $(csrfh "$J/pl")" -d "{\"version\":1,\"user_id\":\"$MARIO\"}")
 [ "$code" = "409" ] && ok || no "got $code"
 say "T14 mario sees + starts order"
 req GET /api/orders "$J/m" | grep -q "$OID" || no "mario blind"
@@ -112,7 +115,7 @@ say "T14 submit + approve"
 req POST "/api/timesheets/$TS/submit" "$J/m" | grep -q in_revisione && \
 req POST "/api/timesheets/$TS/approve" "$J/rs" | grep -q approvato && ok || no "approve"
 say "T14 double approval blocked"
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/timesheets/$TS/approve" -b "$J/rs")
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/timesheets/$TS/approve" -b "$J/rs" -H "x-csrf-token: $(csrfh "$J/rs")")
 [ "$code" = "409" ] && ok || no "got $code"
 say "T14 CSV export has total row"
 curl -s "$BASE/api/timesheets/$TS/export.csv" -b "$J/m" | grep -q "TOTALE" && ok || no "csv"
@@ -126,7 +129,7 @@ req POST /api/assistant "$J/op" '{"q":"chiudi il SOS adesso"}' | grep -q '"inten
 say "T11 AI checkin query cites period"
 req POST /api/assistant "$J/op" '{"q":"check-in scaduti al sito Milano"}' | grep -q '"intent":"checkins_scaduti"' && ok || no "intent"
 say "T11 AI gated: globex (module off) -> 403"
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/assistant" -b "$J/gx" -H 'content-type: application/json' -d '{"q":"ordini"}')
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/assistant" -b "$J/gx" -H 'content-type: application/json' -H "x-csrf-token: $(csrfh "$J/gx")" -d '{"q":"ordini"}')
 [ "$code" = "403" ] && ok || no "got $code"
 say "T11 AI unknown -> clarify (no guess)"
 req POST /api/assistant "$J/op" '{"q":"xyzzy qwerty"}' | grep -q '"intent":"clarify"' && ok || no "no clarify"
