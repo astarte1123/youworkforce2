@@ -1,6 +1,5 @@
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::broadcast;
 use uuid::Uuid;
 use crate::clock::Clock;
 
@@ -9,7 +8,6 @@ pub struct AppState {
     pub owner_pool: sqlx::PgPool,   // control-plane writes + worker (system), bypasses per-request tenant ctx
     pub rt_pool: sqlx::PgPool,      // app_rt role: RLS enforced, used for tenant-scoped requests
     pub clock: Arc<Clock>,
-    pub sessions: Arc<Mutex<HashMap<String, Session>>>,
     pub bus: broadcast::Sender<TenantEvent>,
     pub http: reqwest::Client,
     pub goalert_base: Option<String>,

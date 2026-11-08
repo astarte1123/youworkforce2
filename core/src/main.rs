@@ -1,11 +1,10 @@
 mod state; mod clock; mod auth; mod db; mod goalert; mod worker; mod api;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use axum::{routing::{get, post}, Router, Json};
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::broadcast;
 use uuid::Uuid;
 use state::AppState;
 
@@ -38,7 +37,6 @@ async fn main() -> anyhow::Result<()> {
     let st = AppState {
         owner_pool, rt_pool,
         clock: Arc::new(clock::Clock::new(env("TEST_CLOCK","1")=="1")),
-        sessions: Arc::new(Mutex::new(HashMap::new())),
         bus,
         http: reqwest::Client::new(),
         goalert_base: std::env::var("GOALERT_BASE").ok().filter(|s| !s.is_empty()),
@@ -58,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
         // tenant plane
         .route("/api/login", post(api::tenant_login))
         .route("/api/me", get(api::me))
+        .route("/api/logout", post(api::logout))
         .route("/api/modules", get(api::list_modules))
         .route("/api/sites", get(api::list_sites))
         .route("/api/users", get(api::list_users))

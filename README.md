@@ -118,7 +118,8 @@ qa/          smoke test, matrice accettazione, runbook, verdetti, offerta pilota
 ```
 
 ## Sicurezza / limiti noti (demo-grade, da irrobustire per pilota)
-- Password: **argon2id** (PHC) con verifica retro-compatibile e re-hash al login (`qa/auth-hardening.sh`). Sessioni ancora in memoria → store persistente per il pilota.
+- Password: **argon2id** (PHC) con verifica retro-compatibile e re-hash al login (`qa/auth-hardening.sh`).
+- Sessioni: **persistenti su DB** (sopravvivono al riavvio), con scadenza 12h e **logout server-side** (`qa/session-hardening.sh`). Cookie `HttpOnly; SameSite=Lax`; richieste JSON (preflight) mitigano CSRF di base — token CSRF esplicito e TLS/MFA restano per il pilota.
 - Nessun TLS/MFA/CSRF configurati nel profilo locale; richiesti per il pilota.
 - `TEST_CLOCK=1` espone `/api/_test/advance`: **disabilitare** (`TEST_CLOCK=0`) fuori dai test.
 - GoAlert SIMULATO: un ack locale non prova la consegna reale.

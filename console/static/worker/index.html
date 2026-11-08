@@ -75,7 +75,7 @@ function app(){
   </div>`;
   renderCheckin(); loadOrders(); renderShift(); loadDiary(); flushNotes();
 }
-async function out(){ location.reload(); }
+async function out(){ try{ await api('/logout',{method:'POST'}); }catch(e){} location.reload(); }
 
 // ---- SOS ----
 async function sos(){

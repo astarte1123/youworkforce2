@@ -25,7 +25,29 @@ fn get_cookie(h: &HeaderMap, name: &str) -> Option<String> {
 
 async fn session_of(state: &AppState, h: &HeaderMap) -> Option<Session> {
     let tok = get_cookie(h, "yw_session")?;
-    state.sessions.lock().await.get(&tok).cloned()
+    // persistent sessions: survive core restarts; expired rows are ignored.
+    let r = sqlx::query(
+        "SELECT user_id, tenant_id, email, role, is_super
+         FROM app.sessions WHERE token=$1 AND expires_at > now()")
+        .bind(&tok).fetch_optional(&state.owner_pool).await.ok().flatten()?;
+    Some(Session {
+        user_id: r.get("user_id"),
+        tenant_id: r.try_get::<Option<Uuid>, _>("tenant_id").ok().flatten(),
+        email: r.get("email"),
+        role: r.get("role"),
+        is_super: r.get("is_super"),
+    })
+}
+
+/// Persist a new session (12h TTL). Opportunistic cleanup of expired rows.
+async fn persist_session(state: &AppState, tok: &str, s: &Session) {
+    let _ = sqlx::query("DELETE FROM app.sessions WHERE expires_at <= now()")
+        .execute(&state.owner_pool).await;
+    let _ = sqlx::query(
+        "INSERT INTO app.sessions(token,user_id,tenant_id,email,role,is_super,expires_at)
+         VALUES($1,$2,$3,$4,$5,$6, now() + interval '12 hours')")
+        .bind(tok).bind(s.user_id).bind(s.tenant_id).bind(&s.email).bind(&s.role).bind(s.is_super)
+        .execute(&state.owner_pool).await;
 }
 
 fn set_cookie_header(tok: &str) -> HeaderMap {
@@ -66,9 +88,9 @@ pub async fn superadmin_login(State(st): State<AppState>, Json(b): Json<LoginReq
                         .bind(auth::hash_password(&b.password)).bind(id).execute(&st.owner_pool).await;
                 }
                 let tok = auth::new_token();
-                st.sessions.lock().await.insert(tok.clone(), Session {
-                    user_id: id, tenant_id: None, email: b.email.clone(),
-                    role: "superadmin".into(), is_super: true });
+                let sess = Session { user_id: id, tenant_id: None, email: b.email.clone(),
+                    role: "superadmin".into(), is_super: true };
+                persist_session(&st, &tok, &sess).await;
                 (StatusCode::OK, set_cookie_header(&tok), Json(json!({"ok":true,"role":"superadmin"}))).into_response()
             } else { (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad credentials"}))).into_response() }
         }
@@ -185,8 +207,8 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
                     let _ = tx2.commit().await;
                 }
             }
-            st.sessions.lock().await.insert(tok.clone(), Session {
-                user_id: uid, tenant_id: Some(tid), email: b.email.clone(), role: role.clone(), is_super: false });
+            let sess = Session { user_id: uid, tenant_id: Some(tid), email: b.email.clone(), role: role.clone(), is_super: false };
+            persist_session(&st, &tok, &sess).await;
             (StatusCode::OK, set_cookie_header(&tok), Json(json!({"ok":true,"role":role,"tenant":slug}))).into_response()
         }
         _ => (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad credentials"}))).into_response(),
@@ -196,6 +218,15 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
 pub async fn me(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = session_of(&st, &h).await.ok_or_else(|| err(StatusCode::UNAUTHORIZED, "no session"))?;
     Ok(Json(json!({"email":s.email,"role":s.role,"is_super":s.is_super,"tenant_id":s.tenant_id})))
+}
+
+pub async fn logout(State(st): State<AppState>, h: HeaderMap) -> impl IntoResponse {
+    if let Some(tok) = get_cookie(&h, "yw_session") {
+        let _ = sqlx::query("DELETE FROM app.sessions WHERE token=$1").bind(&tok).execute(&st.owner_pool).await;
+    }
+    let mut m = HeaderMap::new();
+    m.insert(header::SET_COOKIE, "yw_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".parse().unwrap());
+    (StatusCode::OK, m, Json(json!({"ok":true})))
 }
 
 pub async fn list_modules(State(st): State<AppState>, h: HeaderMap) -> R {
