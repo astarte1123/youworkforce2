@@ -1,13 +1,23 @@
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use std::time::Instant;
+use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 use crate::clock::Clock;
+
+/// Fixed-window login throttle entry (in-memory, per instance).
+pub struct RlEntry {
+    pub count: u32,
+    pub reset_at: Instant,
+    pub blocked_until: Option<Instant>,
+}
 
 #[derive(Clone)]
 pub struct AppState {
     pub owner_pool: sqlx::PgPool,   // control-plane writes + worker (system), bypasses per-request tenant ctx
     pub rt_pool: sqlx::PgPool,      // app_rt role: RLS enforced, used for tenant-scoped requests
     pub clock: Arc<Clock>,
+    pub login_rl: Arc<Mutex<HashMap<String, RlEntry>>>,  // brute-force throttle per email(+ip)
     pub bus: broadcast::Sender<TenantEvent>,
     pub http: reqwest::Client,
     pub goalert_base: Option<String>,

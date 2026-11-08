@@ -5,7 +5,7 @@ use sqlx::Row;
 use std::convert::Infallible;
 use uuid::Uuid;
 use futures::stream::Stream;
-use crate::state::{AppState, Session, TenantEvent};
+use crate::state::{AppState, Session, TenantEvent, RlEntry};
 use crate::{auth, db};
 
 type R = Result<Json<Value>, (StatusCode, String)>;
@@ -57,6 +57,47 @@ fn set_cookie_header(tok: &str) -> HeaderMap {
     m
 }
 
+// --------------------- login rate limiting (anti brute-force) ---------------------
+const RL_MAX: u32 = 5;
+const RL_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+const RL_BLOCK: std::time::Duration = std::time::Duration::from_secs(300);
+
+fn rl_key(h: &HeaderMap, email: &str) -> String {
+    let ip = h.get("x-forwarded-for").and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next()).map(|s| s.trim().to_string())
+        .or_else(|| h.get("x-real-ip").and_then(|v| v.to_str().ok()).map(|s| s.to_string()))
+        .unwrap_or_default();
+    format!("{}|{}", email.to_lowercase(), ip)
+}
+
+/// Some(retry_after_secs) if the key is currently blocked.
+async fn rl_check(st: &AppState, key: &str) -> Option<u64> {
+    let m = st.login_rl.lock().await;
+    if let Some(e) = m.get(key) {
+        if let Some(b) = e.blocked_until {
+            let now = std::time::Instant::now();
+            if b > now { return Some((b - now).as_secs() + 1); }
+        }
+    }
+    None
+}
+
+async fn rl_fail(st: &AppState, key: &str) {
+    let now = std::time::Instant::now();
+    let mut m = st.login_rl.lock().await;
+    let e = m.entry(key.to_string()).or_insert(RlEntry { count: 0, reset_at: now + RL_WINDOW, blocked_until: None });
+    if now > e.reset_at { e.count = 0; e.reset_at = now + RL_WINDOW; e.blocked_until = None; }
+    e.count += 1;
+    if e.count >= RL_MAX { e.blocked_until = Some(now + RL_BLOCK); }
+}
+
+async fn rl_clear(st: &AppState, key: &str) { st.login_rl.lock().await.remove(key); }
+
+fn too_many(retry_after: u64) -> Response {
+    (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, retry_after.to_string())],
+     Json(json!({"error":"too many attempts","retry_after":retry_after}))).into_response()
+}
+
 async fn require_tenant(state: &AppState, h: &HeaderMap) -> Result<Session, (StatusCode, String)> {
     let s = session_of(state, h).await.ok_or_else(|| err(StatusCode::UNAUTHORIZED, "no session"))?;
     if s.is_super || s.tenant_id.is_none() {
@@ -75,7 +116,9 @@ async fn require_super(state: &AppState, h: &HeaderMap) -> Result<Session, (Stat
 #[derive(Deserialize)]
 pub struct LoginReq { pub email: String, pub password: String }
 
-pub async fn superadmin_login(State(st): State<AppState>, Json(b): Json<LoginReq>) -> impl IntoResponse {
+pub async fn superadmin_login(State(st): State<AppState>, h: HeaderMap, Json(b): Json<LoginReq>) -> impl IntoResponse {
+    let key = rl_key(&h, &b.email);
+    if let Some(ra) = rl_check(&st, &key).await { return too_many(ra); }
     let row = sqlx::query("SELECT id, pass_hash FROM app.superadmins WHERE email=$1")
         .bind(&b.email).fetch_optional(&st.owner_pool).await;
     match row {
@@ -83,6 +126,7 @@ pub async fn superadmin_login(State(st): State<AppState>, Json(b): Json<LoginReq
             let id: Uuid = r.get("id");
             let hash: String = r.get("pass_hash");
             if auth::verify_password(&b.password, &hash) {
+                rl_clear(&st, &key).await;
                 if auth::needs_rehash(&hash) {
                     let _ = sqlx::query("UPDATE app.superadmins SET pass_hash=$1 WHERE id=$2")
                         .bind(auth::hash_password(&b.password)).bind(id).execute(&st.owner_pool).await;
@@ -92,9 +136,15 @@ pub async fn superadmin_login(State(st): State<AppState>, Json(b): Json<LoginReq
                     role: "superadmin".into(), is_super: true };
                 persist_session(&st, &tok, &sess).await;
                 (StatusCode::OK, set_cookie_header(&tok), Json(json!({"ok":true,"role":"superadmin"}))).into_response()
-            } else { (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad credentials"}))).into_response() }
+            } else {
+                rl_fail(&st, &key).await;
+                (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad credentials"}))).into_response()
+            }
         }
-        _ => (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad credentials"}))).into_response(),
+        _ => {
+            rl_fail(&st, &key).await;
+            (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad credentials"}))).into_response()
+        }
     }
 }
 
@@ -191,6 +241,8 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
         .fetch_optional(&st.owner_pool).await.ok().flatten();
     let Some(trow) = trow else { return (StatusCode::NOT_FOUND, Json(json!({"error":"tenant not found"}))).into_response() };
     let tid: Uuid = trow.get("id");
+    let key = format!("{}|{}", slug, rl_key(&h, &b.email));
+    if let Some(ra) = rl_check(&st, &key).await { return too_many(ra); }
     // user lookup under tenant context
     let mut tx = match db::begin_tenant(&st.rt_pool, tid).await { Ok(t)=>t, Err(_)=>return ise_resp() };
     let urow = sqlx::query("SELECT id,pass_hash,role FROM app.users WHERE email=$1")
@@ -198,6 +250,7 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     let _ = tx.commit().await;
     match urow {
         Some(r) if auth::verify_password(&b.password, &r.get::<String,_>("pass_hash")) => {
+            rl_clear(&st, &key).await;
             let tok = auth::new_token();
             let uid: Uuid = r.get("id"); let role: String = r.get("role");
             if auth::needs_rehash(&r.get::<String,_>("pass_hash")) {
@@ -211,7 +264,10 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
             persist_session(&st, &tok, &sess).await;
             (StatusCode::OK, set_cookie_header(&tok), Json(json!({"ok":true,"role":role,"tenant":slug}))).into_response()
         }
-        _ => (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad credentials"}))).into_response(),
+        _ => {
+            rl_fail(&st, &key).await;
+            (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad credentials"}))).into_response()
+        }
     }
 }
 

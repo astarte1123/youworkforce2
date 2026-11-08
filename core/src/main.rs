@@ -37,6 +37,7 @@ async fn main() -> anyhow::Result<()> {
     let st = AppState {
         owner_pool, rt_pool,
         clock: Arc::new(clock::Clock::new(env("TEST_CLOCK","1")=="1")),
+        login_rl: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         bus,
         http: reqwest::Client::new(),
         goalert_base: std::env::var("GOALERT_BASE").ok().filter(|s| !s.is_empty()),
