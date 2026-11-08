@@ -382,6 +382,10 @@ pub async fn ingest_event(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
     let tid: Uuid = trow.get("tenant_id");
     let source: String = trow.get("source");
+    // modular per-tenant: a disabled module refuses new ingress too (history stays readable)
+    if !module_active(&st, tid, "loneworker").await {
+        return Err(err(StatusCode::FORBIDDEN, "modulo loneworker non abilitato"));
+    }
 
     let idem = b.idem_key.clone().unwrap_or_else(|| b.source_event.clone());
     if idem.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "idem key required")); }
@@ -507,6 +511,9 @@ pub async fn ingest_traccar(
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
     let tid: Uuid = trow.get("tenant_id");
     let source: String = trow.get("source");
+    if !module_active(&st, tid, "traccar").await {
+        return Err(err(StatusCode::FORBIDDEN, "modulo traccar non abilitato"));
+    }
 
     let ev = b.get("event");
     let dev = b.get("device");
@@ -565,6 +572,9 @@ pub async fn ingest_thingsboard(
         .bind(&token).fetch_optional(&st.owner_pool).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
     let tid: Uuid = trow.get("tenant_id");
+    if !module_active(&st, tid, "thingsboard").await {
+        return Err(err(StatusCode::FORBIDDEN, "modulo thingsboard non abilitato"));
+    }
     let device = q.get("device").cloned().filter(|s| !s.is_empty());
 
     let temp = b.get("temperature").and_then(|v| v.as_f64());
