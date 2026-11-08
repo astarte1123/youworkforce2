@@ -52,11 +52,11 @@ async fn drain_outbox(st: &AppState) -> anyhow::Result<()> {
                 sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'goalert_ack',$3)")
                     .bind(tid).bind(iid).bind(detail).execute(&st.owner_pool).await?;
             }
-            let _ = st.bus.send(TenantEvent{tenant_id:tid,payload:json!({"type":"notify_sent","incident_id":incident_id})});
+            crate::api::publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"notify_sent","incident_id":incident_id})}).await;
         } else if attempts >= 6 {
             sqlx::query("UPDATE app.outbox SET state='error' WHERE id=$1").bind(id).execute(&st.owner_pool).await?;
             // operational alarm for stuck events (contract line 48): surfaced as degraded on the bus
-            let _ = st.bus.send(TenantEvent{tenant_id:tid,payload:json!({"type":"notify_failed","incident_id":incident_id})});
+            crate::api::publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"notify_failed","incident_id":incident_id})}).await;
         } else {
             sqlx::query("UPDATE app.outbox SET state='pending' WHERE id=$1").bind(id).execute(&st.owner_pool).await?;
         }
@@ -92,7 +92,7 @@ async fn sweep_checkins(st: &AppState) -> anyhow::Result<()> {
         sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_notify',$2)")
             .bind(tid).bind(json!({"incident_id":iid,"summary":format!("mancato_checkin [{}]",correlation),"dedup":correlation,"integration_key":""}))
             .execute(&st.owner_pool).await?;
-        let _ = st.bus.send(TenantEvent{tenant_id:tid,payload:json!({"type":"incident_opened","incident_id":iid,"etype":"mancato_checkin"})});
+        crate::api::publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"incident_opened","incident_id":iid,"etype":"mancato_checkin"})}).await;
     }
     Ok(())
 }

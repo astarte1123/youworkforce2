@@ -5,7 +5,7 @@ use sqlx::Row;
 use std::convert::Infallible;
 use uuid::Uuid;
 use futures::stream::Stream;
-use crate::state::{AppState, Session, TenantEvent, RlEntry};
+use crate::state::{AppState, Session, TenantEvent};
 use crate::{auth, db};
 
 type R = Result<Json<Value>, (StatusCode, String)>;
@@ -92,11 +92,9 @@ pub async fn csrf_guard(req: axum::extract::Request, next: axum::middleware::Nex
     }
 }
 
-// --------------------- login rate limiting (anti brute-force) ---------------------
-const RL_MAX: u32 = 5;
-const RL_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
-const RL_BLOCK: std::time::Duration = std::time::Duration::from_secs(300);
-
+// --------------------- login rate limiting (anti brute-force, shared store) ---------------------
+// State lives in app.login_throttle so the limit is enforced across all core instances.
+// Fixed window: 5 failures / 300s per key -> block 300s.
 fn rl_key(h: &HeaderMap, email: &str) -> String {
     let ip = h.get("x-forwarded-for").and_then(|v| v.to_str().ok())
         .and_then(|s| s.split(',').next()).map(|s| s.trim().to_string())
@@ -107,30 +105,43 @@ fn rl_key(h: &HeaderMap, email: &str) -> String {
 
 /// Some(retry_after_secs) if the key is currently blocked.
 async fn rl_check(st: &AppState, key: &str) -> Option<u64> {
-    let m = st.login_rl.lock().await;
-    if let Some(e) = m.get(key) {
-        if let Some(b) = e.blocked_until {
-            let now = std::time::Instant::now();
-            if b > now { return Some((b - now).as_secs() + 1); }
-        }
+    let b: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT blocked_until FROM app.login_throttle WHERE key=$1")
+            .bind(key).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
+    if let Some(b) = b {
+        let now = chrono::Utc::now();
+        if b > now { return Some((b - now).num_seconds().max(0) as u64 + 1); }
     }
     None
 }
 
 async fn rl_fail(st: &AppState, key: &str) {
-    let now = std::time::Instant::now();
-    let mut m = st.login_rl.lock().await;
-    let e = m.entry(key.to_string()).or_insert(RlEntry { count: 0, reset_at: now + RL_WINDOW, blocked_until: None });
-    if now > e.reset_at { e.count = 0; e.reset_at = now + RL_WINDOW; e.blocked_until = None; }
-    e.count += 1;
-    if e.count >= RL_MAX { e.blocked_until = Some(now + RL_BLOCK); }
+    let _ = sqlx::query(
+        "INSERT INTO app.login_throttle(key,count,reset_at,blocked_until)
+         VALUES($1, 1, now() + interval '300 seconds', NULL)
+         ON CONFLICT(key) DO UPDATE SET
+           count = CASE WHEN now() > login_throttle.reset_at THEN 1 ELSE login_throttle.count + 1 END,
+           reset_at = CASE WHEN now() > login_throttle.reset_at THEN now() + interval '300 seconds' ELSE login_throttle.reset_at END,
+           blocked_until = CASE WHEN (CASE WHEN now() > login_throttle.reset_at THEN 1 ELSE login_throttle.count + 1 END) >= 5
+                                THEN now() + interval '300 seconds' ELSE login_throttle.blocked_until END,
+           updated_at = now()")
+        .bind(key).execute(&st.owner_pool).await;
 }
 
-async fn rl_clear(st: &AppState, key: &str) { st.login_rl.lock().await.remove(key); }
+async fn rl_clear(st: &AppState, key: &str) {
+    let _ = sqlx::query("DELETE FROM app.login_throttle WHERE key=$1").bind(key).execute(&st.owner_pool).await;
+}
 
 fn too_many(retry_after: u64) -> Response {
     (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, retry_after.to_string())],
      Json(json!({"error":"too many attempts","retry_after":retry_after}))).into_response()
+}
+
+/// Publish a live event to ALL instances via Postgres NOTIFY; each instance's
+/// LISTEN task re-broadcasts it into its local SSE bus.
+pub async fn publish_event(st: &AppState, ev: TenantEvent) {
+    let msg = json!({"tenant_id": ev.tenant_id, "payload": ev.payload}).to_string();
+    let _ = sqlx::query("SELECT pg_notify('yw_events', $1)").bind(msg).execute(&st.owner_pool).await;
 }
 
 async fn require_tenant(state: &AppState, h: &HeaderMap) -> Result<Session, (StatusCode, String)> {
@@ -480,8 +491,8 @@ pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
     tx.commit().await.map_err(ise)?;
 
     if let Some(iid) = incident_id {
-        let _ = st.bus.send(TenantEvent { tenant_id: tid, payload: json!({
-            "type":"incident_opened","incident_id":iid,"etype":n.etype,"correlation":n.correlation}) });
+        publish_event(st, TenantEvent { tenant_id: tid, payload: json!({
+            "type":"incident_opened","incident_id":iid,"etype":n.etype,"correlation":n.correlation}) }).await;
     }
     Ok(Json(json!({"event_id":eid,"incident_id":incident_id,"correlation":n.correlation})))
 }
@@ -641,7 +652,7 @@ pub async fn ack_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): P
     sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'human_ack',$3)")
         .bind(tid).bind(iid).bind(json!({"by":s.email})).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    let _ = st.bus.send(TenantEvent{tenant_id:tid,payload:json!({"type":"incident_ack","incident_id":iid})});
+    publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"incident_ack","incident_id":iid})}).await;
     Ok(Json(json!({"ok":true})))
 }
 
@@ -660,7 +671,7 @@ pub async fn close_incident(State(st): State<AppState>, h: HeaderMap, Path(iid):
     sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'transition',$3)")
         .bind(tid).bind(iid).bind(json!({"to":"chiuso","outcome":b.outcome,"by":s.email})).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    let _ = st.bus.send(TenantEvent{tenant_id:tid,payload:json!({"type":"incident_closed","incident_id":iid})});
+    publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"incident_closed","incident_id":iid})}).await;
     Ok(Json(json!({"ok":true})))
 }
 
@@ -691,7 +702,7 @@ pub async fn worker_sos(State(st): State<AppState>, h: HeaderMap, Json(b): Json<
         .bind(tid).bind(json!({"incident_id":iid,"summary":format!("SOS [{}] {}",correlation,s.email),"dedup":correlation,"integration_key":""}))
         .execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    let _ = st.bus.send(TenantEvent{tenant_id:tid,payload:json!({"type":"incident_opened","incident_id":iid,"etype":"sos","correlation":correlation})});
+    publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"incident_opened","incident_id":iid,"etype":"sos","correlation":correlation})}).await;
     Ok(Json(json!({"incident_id":iid,"correlation":correlation})))
 }
 

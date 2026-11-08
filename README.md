@@ -121,7 +121,8 @@ qa/          smoke test, matrice accettazione, runbook, verdetti, offerta pilota
 - Password: **argon2id** (PHC) con verifica retro-compatibile e re-hash al login (`qa/auth-hardening.sh`).
 - Sessioni: **persistenti su DB** (sopravvivono al riavvio), con scadenza 12h e **logout server-side** (`qa/session-hardening.sh`). Cookie `HttpOnly; SameSite=Lax`.
 - **CSRF**: protezione double-submit sulle mutazioni cookie-autenticate (header `X-CSRF-Token` deve combaciare col cookie `yw_csrf`); ingress macchina e login/logout esenti (`qa/csrf-hardening.sh`). TLS/MFA restano per il pilota.
-- **Rate-limit login**: 5 tentativi errati / 5 min per chiave (slug·email·IP) → `429 Retry-After` (`qa/ratelimit-hardening.sh`). In memoria per-istanza; per cluster usare uno store condiviso.
+- **Rate-limit login**: 5 tentativi errati / 5 min per chiave (slug·email·IP) → `429 Retry-After` (`qa/ratelimit-hardening.sh`). Store **condiviso su DB** (`app.login_throttle`) → valido anche multi-istanza.
+- **Scalabilità multi-istanza**: core **stateless** (sessioni e throttle su DB), isolamento RLS, worker outbox con `FOR UPDATE SKIP LOCKED` (sicuro in concorrenza), eventi live SSE via **Postgres LISTEN/NOTIFY** → più istanze core condividono gli eventi (`qa/sse-scale.sh`). Resta da scalare il solo Postgres (replica/partizione per tenant).
 - Nessun TLS/MFA/CSRF configurati nel profilo locale; richiesti per il pilota.
 - `TEST_CLOCK=1` espone `/api/_test/advance`: **disabilitare** (`TEST_CLOCK=0`) fuori dai test.
 - GoAlert SIMULATO: un ack locale non prova la consegna reale.

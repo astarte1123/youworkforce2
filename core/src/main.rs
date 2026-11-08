@@ -6,7 +6,7 @@ use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::broadcast;
 use uuid::Uuid;
-use state::AppState;
+use state::{AppState, TenantEvent};
 
 fn env(k: &str, d: &str) -> String { std::env::var(k).unwrap_or_else(|_| d.to_string()) }
 
@@ -37,7 +37,6 @@ async fn main() -> anyhow::Result<()> {
     let st = AppState {
         owner_pool, rt_pool,
         clock: Arc::new(clock::Clock::new(env("TEST_CLOCK","1")=="1")),
-        login_rl: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         bus,
         http: reqwest::Client::new(),
         goalert_base: std::env::var("GOALERT_BASE").ok().filter(|s| !s.is_empty()),
@@ -46,6 +45,36 @@ async fn main() -> anyhow::Result<()> {
     };
 
     tokio::spawn(worker::run(st.clone()));
+
+    // Multi-instance live events: re-broadcast Postgres NOTIFY('yw_events') into the
+    // local SSE bus, so SSE clients on ANY core instance receive events from all.
+    {
+        let bus = st.bus.clone();
+        let url = owner_url.clone();
+        tokio::spawn(async move {
+            loop {
+                match sqlx::postgres::PgListener::connect(&url).await {
+                    Ok(mut listener) => {
+                        if listener.listen("yw_events").await.is_err() {
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await; continue;
+                        }
+                        tracing::info!("listening on NOTIFY yw_events");
+                        while let Ok(n) = listener.recv().await {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(n.payload()) {
+                                if let Some(tid) = v.get("tenant_id").and_then(|x| x.as_str())
+                                    .and_then(|s| Uuid::parse_str(s).ok()) {
+                                    let payload = v.get("payload").cloned().unwrap_or(json!({}));
+                                    let _ = bus.send(TenantEvent { tenant_id: tid, payload });
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {}
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await; // reconnect
+            }
+        });
+    }
 
     let app = Router::new()
         .route("/health", get(|| async { Json(json!({"ok":true})) }))
