@@ -1,0 +1,21 @@
+{
+  "_note": "FIXTURE DICHIARATA — dati sintetici, NON di un cliente reale. Usata solo per provare il meccanismo di dry-run/riconciliazione.",
+  "sites": [
+    {"legacy_id": "S-001", "name": "Milano Centro"},
+    {"legacy_id": "S-002", "name": "Torino Nord"},
+    {"legacy_id": "S-002", "name": "Torino Nord (duplicato)"},
+    {"legacy_id": "", "name": "Sede senza id"}
+  ],
+  "users": [
+    {"legacy_id": "U-001", "email": "mario.rossi@acme.example", "role": "lavoratore"},
+    {"legacy_id": "U-002", "email": "lucia.bianchi@acme.example", "role": "pianificatore"},
+    {"legacy_id": "U-003", "email": "non-una-email", "role": "lavoratore"},
+    {"legacy_id": "U-001", "email": "mario.rossi.bis@acme.example", "role": "lavoratore"}
+  ],
+  "devices": [
+    {"legacy_id": "D-001", "external_id": "BADGE-1001", "site_legacy_id": "S-001"},
+    {"legacy_id": "D-002", "external_id": "BADGE-1002", "site_legacy_id": "S-002"},
+    {"legacy_id": "D-003", "external_id": "BADGE-1003", "site_legacy_id": "S-999"},
+    {"legacy_id": "D-004", "external_id": "", "site_legacy_id": "S-001"}
+  ]
+}

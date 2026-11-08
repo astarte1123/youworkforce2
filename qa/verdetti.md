@@ -24,8 +24,12 @@ Mancano ancora per il perimetro:
 Condizioni per partire: vedi `offerta-pilota.md`.
 
 ## PRODUZIONE — **NON RAGGIUNTO**
-Richiede inoltre: parità/sostituzione concordata delle funzioni legacy (Prompt 10),
-piano di migrazione e rollback verificato, evidenza sul sito, supporto/licenze,
+Fatto in questa build per Prompt 10: matrice di parità con lacune + elenco input necessari
+(`qa/legacy-gaps.md`) e **dry-run del meccanismo** di migrazione idempotente su fixture
+dichiarata (`qa/legacy-dryrun.py`). **Non** è parità di cliente: nessun accesso al legacy.
+
+Richiede inoltre: parità/sostituzione **concordata** delle funzioni legacy con evidenza reale,
+piano di migrazione e **rollback verificato** sul cliente, evidenza sul sito, supporto/licenze,
 collaudo dei guasti, autorizzazione al passaggio operativo.
 
 > Le 48 ore non attestano parità né autorizzano la sostituzione in produzione.
