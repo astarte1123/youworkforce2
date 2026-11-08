@@ -15,8 +15,10 @@ Fatto in questa build:
 - **Traccar v6.17.0 reale** integrato come sorgente badge: device (protocollo OsmAnd) → Traccar → *event forwarding* → adapter core `/api/ingress/traccar` → stessa catena SOS normalizzata → incidente → GoAlert reale. Due upstream reali in catena. Mapping allarmi `sos→sos`, `fallDown→man_down`. Tenant dal token di ingest (mai dal body). Evidenza `qa/traccar-e2e.sh` (8/8).
 - **ThingsBoard v3.8.1 reale** integrato come sorgente IoT: telemetria device → *Rule Engine* reale (nodo REST API Call aggiunto alla Root Rule Chain) → adapter core `/api/ingress/thingsboard` → gate di severità (soglia → `sensore_critico`) → incidente → GoAlert reale. Tre upstream reali. Evidenza `qa/thingsboard-e2e.sh` (8/8). ThingsBoard CE è BUSL: istanza esterna.
 
+- **Consegna reale della notifica di 2° livello**: contact-method **webhook verificato** end-to-end (il codice di verifica è consegnato e letto dal receiver reale) e allarme core → GoAlert → escalation → **il receiver esterno riceve davvero** la notifica con la correlazione del core. Recapito di test (nessun numero reale), come da vincolo. Evidenza `qa/goalert-delivery.sh` (10/10).
+
 Mancano ancora per il perimetro:
-- **Consegna reale** delle notifiche (SMS/voce/webhook) e verifica/contact-method del 2° reperibile: cablare il trasporto di test per sito.
+- Trasporto **SMS/voce** reale (Twilio) per il sito: il motore e la consegna via webhook sono provati; il canale telefonico richiede provider+credenziali del cliente.
 - **Firmware badge hardware reale** (il server Traccar è reale; manca il dispositivo fisico sul campo e la distinzione perdita-rete vera).
 - Procedura operatori concordata e prova sul sito.
 Condizioni per partire: vedi `offerta-pilota.md`.

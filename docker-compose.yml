@@ -46,6 +46,14 @@ services:
       POSTGRES_PASSWORD: goalert
       POSTGRES_DB: goalert
     volumes: ["goalert_db:/var/lib/postgresql/data"]
+  # Test recipient for REAL notification delivery (webhook transport, no real phone).
+  # qa/goalert-delivery.sh verifies a webhook contact method and proves GoAlert
+  # actually delivers the alert here. Internal only (no host port needed).
+  webhook:
+    image: mendhak/http-https-echo:latest
+    profiles: ["goalert"]
+    environment:
+      HTTP_PORT: "8080"
   goalert:
     image: goalert/goalert:v0.35.0   # verified in this repo (UPSTREAM REALE)
     profiles: ["goalert"]

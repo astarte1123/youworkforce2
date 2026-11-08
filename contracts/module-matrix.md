@@ -3,7 +3,7 @@
 | Codice | Nome | Tipo | Stato build | Dipendenze capacità |
 |---|---|---|---|---|
 | `loneworker` | Lone Worker e centrale allarmi | prodotto | **implementato** | sorgente evento (badge/PWA) + `goalert` |
-| `goalert` | GoAlert escalation | connettore | **UPSTREAM REALE** (v0.35.0, EP 2 livelli); SIMULATO se `GOALERT_BASE` off | — (prerequisito dei percorsi di escalation) |
+| `goalert` | GoAlert escalation | connettore | **UPSTREAM REALE** (v0.35.0, EP 2 livelli, **consegna webhook verificata** via `qa/goalert-delivery.sh`); SIMULATO se `GOALERT_BASE` off | — (prerequisito dei percorsi di escalation) |
 | `traccar` | Traccar badge | connettore | **UPSTREAM REALE** (v6.17.0, event forwarding → `/api/ingress/traccar`; alarm sos→sos, fallDown→man_down) | ingest token |
 | `iot` | Dispositivi e IoT | prodotto | ingest HTTP + **ThingsBoard reale** | — (può lavorare senza loneworker) |
 | `thingsboard` | ThingsBoard industriale | connettore | **UPSTREAM REALE** (v3.8.1, Rule Engine → `/api/ingress/thingsboard`; soglia → `sensore_critico`); BUSL, istanza esterna | iot |

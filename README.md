@@ -61,7 +61,13 @@ KEY=$KEY GA_PASS=goalertadmin1 bash qa/goalert-e2e.sh    # 6/6: allarme reale cr
 ```
 Console GoAlert: http://localhost:8082 (admin / goalertadmin1). La chiave per-tenant si
 imposta via superadmin: `POST /api/superadmin/tenants/{id}/goalert`.
-**Consegna reale** (SMS/voce/webhook) del 2° livello = da cablare per sito (trasporto di test).
+
+**Consegna reale del 2° livello** (webhook, recapito di prova — nessun numero reale):
+```bash
+bash qa/goalert-delivery.sh   # 10/10: contact-method webhook verificato + allarme core consegnato davvero al receiver
+```
+Catena: core SOS → GoAlert → escalation → contact-method **verificato** → il receiver esterno
+riceve la notifica con la correlazione del core. Trasporto **SMS/voce** (Twilio) = provider del cliente.
 
 ## Traccar REALE — sorgente badge (UPSTREAM REALE)
 Traccar v6.17.0 vero. Il device parla il protocollo OsmAnd; Traccar genera l'evento
