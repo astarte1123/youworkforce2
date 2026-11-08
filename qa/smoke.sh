@@ -114,5 +114,19 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/timesheets/$TS/
 say "T14 CSV export has total row"
 curl -s "$BASE/api/timesheets/$TS/export.csv" -b "$J/m" | grep -q "TOTALE" && ok || no "csv"
 
+# ---- Prompt 7: assistente AI (T11) ----
+say "T11 AI read query returns source+provider"
+R=$(req POST /api/assistant "$J/op" '{"q":"ricostruisci l'\''ultimo allarme"}')
+echo "$R" | grep -q '"provider":"SIMULATO"' && echo "$R" | grep -q '"intent":"incidente_storia"' && ok || no "$R"
+say "T11 AI refuses critical action (close SOS)"
+req POST /api/assistant "$J/op" '{"q":"chiudi il SOS adesso"}' | grep -q '"intent":"critical_refused"' && ok || no "no refusal"
+say "T11 AI checkin query cites period"
+req POST /api/assistant "$J/op" '{"q":"check-in scaduti al sito Milano"}' | grep -q '"intent":"checkins_scaduti"' && ok || no "intent"
+say "T11 AI gated: globex (module off) -> 403"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/assistant" -b "$J/gx" -H 'content-type: application/json' -d '{"q":"ordini"}')
+[ "$code" = "403" ] && ok || no "got $code"
+say "T11 AI unknown -> clarify (no guess)"
+req POST /api/assistant "$J/op" '{"q":"xyzzy qwerty"}' | grep -q '"intent":"clarify"' && ok || no "no clarify"
+
 echo "== $PASS passed, $FAIL failed =="
 rm -rf "$J"; exit $FAIL

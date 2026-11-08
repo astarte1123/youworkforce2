@@ -744,6 +744,136 @@ pub async fn export_timesheet_csv(State(st): State<AppState>, h: HeaderMap, Path
 }
 fn csv_esc(s: &str) -> String { if s.contains(',')||s.contains('"') { format!("\"{}\"", s.replace('"',"\"\"")) } else { s.to_string() } }
 
+// ======================= Prompt 7: assistente AI (sola lettura) =======================
+// Il modello PROPONE un'operazione strutturata (intent); Rust la valida ed esegue con
+// gli stessi servizi/permessi della UI. Tenant/identità dal contesto autenticato, MAI
+// dagli argomenti del modello => impossibile una query cross-tenant. Nessun accesso del
+// modello a SQL/shell/credenziali. Azioni critiche => rimando alla procedura manuale.
+// Provider intercambiabile: qui pianificatore locale deterministico (profilo SIMULATO).
+
+#[derive(Deserialize)]
+pub struct AssistantReq { pub q: String }
+
+pub async fn assistant_query(State(st): State<AppState>, h: HeaderMap, Json(b): Json<AssistantReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    if !module_active(&st, tid, "assistant").await {
+        return Err(err(StatusCode::FORBIDDEN, "assistente non abilitato per questo tenant"));
+    }
+    let q = b.q.to_lowercase();
+    // audit of the operational request (minimal data, not the raw prompt indiscriminately)
+    let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,$2,'assistant_query',$3)")
+        .bind(tid).bind(&s.email).bind(json!({"len":b.q.len()})).execute(&st.owner_pool).await;
+
+    // --- critical-intent guardrail: never act, point to manual procedure ---
+    let critical = ["chiudi","annulla","silenzia","spegni","disattiva","ferma","tacita"];
+    let on_safety = ["sos","allarme","allarmi","protezione","escalation","reperib","emergenz","incident"];
+    if critical.iter().any(|w| q.contains(w)) && on_safety.iter().any(|w| q.contains(w)) {
+        return Ok(Json(json!({
+            "provider":"SIMULATO","intent":"critical_refused",
+            "answer":"Operazione critica sulla catena di sicurezza. L'assistente non la esegue: usa la procedura manuale autorizzata in centrale (presa in carico / chiusura con esito). Il percorso SOS non dipende dall'assistente.",
+            "sources":[],"period":null })));
+    }
+
+    let has = |ws: &[&str]| ws.iter().any(|w| q.contains(w));
+    let now = st.clock.now();
+
+    // --- intent routing (local deterministic planner) ---
+    if has(&["check-in","check in","checkin","scadut","mancato"]) {
+        let site = match_site(&st, tid, &q).await?;
+        let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+        let rows = sqlx::query(
+            "SELECT i.id,i.correlation,i.opened_at,s.name AS site FROM app.incidents i
+             LEFT JOIN app.sites s ON s.id=i.site_id
+             WHERE i.etype='mancato_checkin' AND i.state<>'chiuso' AND ($1::uuid IS NULL OR i.site_id=$1)
+             ORDER BY i.opened_at DESC").bind(site.0).fetch_all(&mut *tx).await.map_err(ise)?;
+        tx.commit().await.map_err(ise)?;
+        let srcs: Vec<Value> = rows.iter().map(|r| json!({"type":"incident","id":r.get::<Uuid,_>("id"),
+            "site":r.try_get::<String,_>("site").ok(),"at":r.get::<chrono::DateTime<chrono::Utc>,_>("opened_at").to_rfc3339()})).collect();
+        let ans = if rows.is_empty() {
+            format!("Nessun check-in scaduto aperto{}. (zero eventi, non dati mancanti)", site.1.map(|n| format!(" al sito {n}")).unwrap_or_default())
+        } else { format!("{} check-in scaduti aperti{}.", rows.len(), site.1.map(|n| format!(" al sito {n}")).unwrap_or_default()) };
+        return Ok(Json(json!({"provider":"SIMULATO","intent":"checkins_scaduti","answer":ans,"sources":srcs,"period":"incidenti aperti"})));
+    }
+
+    if has(&["sensor","offline","non comunica","comunica"]) {
+        let hours: i64 = 1;
+        let since = now - chrono::Duration::hours(hours);
+        let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+        let rows = sqlx::query(
+            "SELECT e.id,e.device_id,e.origin_ts,d.external_id FROM app.events e
+             LEFT JOIN app.devices d ON d.id=e.device_id
+             WHERE e.etype='device_offline' AND e.origin_ts>=$1 ORDER BY e.origin_ts DESC")
+            .bind(since).fetch_all(&mut *tx).await.map_err(ise)?;
+        tx.commit().await.map_err(ise)?;
+        let srcs: Vec<Value> = rows.iter().map(|r| json!({"type":"event","id":r.get::<Uuid,_>("id"),
+            "device":r.try_get::<String,_>("external_id").ok()})).collect();
+        let ans = if rows.is_empty() { format!("Nessun sensore offline nell'ultima ora. (zero eventi)") }
+                  else { format!("{} sensori senza comunicazione nell'ultima ora.", rows.len()) };
+        return Ok(Json(json!({"provider":"SIMULATO","intent":"sensori_offline","answer":ans,"sources":srcs,"period":format!("ultime {hours}h")})));
+    }
+
+    if has(&["sequenza","storia","cronologia","ultimo esito","allarme","incidente","ricostruisci"]) {
+        let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+        let inc = sqlx::query("SELECT id,etype,state,correlation,outcome FROM app.incidents ORDER BY opened_at DESC LIMIT 1")
+            .fetch_optional(&mut *tx).await.map_err(ise)?;
+        let (ans, srcs) = if let Some(i) = inc {
+            let iid: Uuid = i.get("id");
+            let tl = sqlx::query("SELECT kind,at FROM app.incident_timeline WHERE incident_id=$1 ORDER BY at").bind(iid)
+                .fetch_all(&mut *tx).await.map_err(ise)?;
+            let seq: Vec<String> = tl.iter().map(|r| r.get::<String,_>("kind")).collect();
+            (format!("Ultimo incidente: {} ({}). Sequenza: {}. Esito verificato: {}.",
+                i.get::<String,_>("etype"), i.get::<String,_>("state"), seq.join(" → "),
+                i.try_get::<String,_>("outcome").ok().unwrap_or("nessuno".into())),
+             vec![json!({"type":"incident","id":iid,"correlation":i.get::<String,_>("correlation")})])
+        } else { ("Nessun incidente registrato.".into(), vec![]) };
+        tx.commit().await.map_err(ise)?;
+        return Ok(Json(json!({"provider":"SIMULATO","intent":"incidente_storia","answer":ans,"sources":srcs,"period":"ultimo incidente"})));
+    }
+
+    if has(&["modul","degrad"]) {
+        if !matches!(s.role.as_str(), "tenant_admin"|"auditor") {
+            return Err(err(StatusCode::FORBIDDEN, "metadati moduli non consentiti a questo ruolo"));
+        }
+        let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+        let rows = sqlx::query("SELECT module_code,state FROM app.tenant_modules WHERE state IN ('degradato','in_disattivazione')")
+            .fetch_all(&mut *tx).await.map_err(ise)?;
+        tx.commit().await.map_err(ise)?;
+        let srcs: Vec<Value> = rows.iter().map(|r| json!({"type":"module","code":r.get::<String,_>("module_code"),"state":r.get::<String,_>("state")})).collect();
+        let ans = if rows.is_empty() { "Nessun modulo degradato.".to_string() } else { format!("{} moduli in stato degradato/in disattivazione.", rows.len()) };
+        return Ok(Json(json!({"provider":"SIMULATO","intent":"moduli_degradati","answer":ans,"sources":srcs,"period":"stato attuale"})));
+    }
+
+    if has(&["ordin","intervent","lavoro assegnat"]) {
+        if !module_active(&st, tid, "interventi").await {
+            return Ok(Json(json!({"provider":"SIMULATO","intent":"ordini_aperti","answer":"Modulo interventi non abilitato: dato non disponibile.","sources":[],"period":null})));
+        }
+        let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+        let rows = sqlx::query("SELECT id,title,state FROM app.work_orders WHERE state IN ('assegnato','in_corso') ORDER BY updated_at DESC").fetch_all(&mut *tx).await.map_err(ise)?;
+        tx.commit().await.map_err(ise)?;
+        let srcs: Vec<Value> = rows.iter().map(|r| json!({"type":"order","id":r.get::<Uuid,_>("id"),"title":r.get::<String,_>("title"),"state":r.get::<String,_>("state")})).collect();
+        let ans = if rows.is_empty() { "Nessun ordine attivo.".into() } else { format!("{} ordini attivi.", rows.len()) };
+        return Ok(Json(json!({"provider":"SIMULATO","intent":"ordini_aperti","answer":ans,"sources":srcs,"period":"attivi"})));
+    }
+
+    // no confident intent -> ask for clarification (never guess an operation)
+    Ok(Json(json!({"provider":"SIMULATO","intent":"clarify",
+        "answer":"Non ho abbastanza elementi. Prova: «check-in scaduti al sito Milano», «sensori che non comunicano», «ricostruisci l'ultimo allarme», «ordini attivi», «moduli degradati».",
+        "sources":[],"period":null})))
+}
+
+/// Resolve an optional site mentioned in the query to a tenant site id (within scope).
+async fn match_site(st: &AppState, tid: Uuid, q: &str) -> Result<(Option<Uuid>, Option<String>), (StatusCode,String)> {
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT id,name FROM app.sites").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    for r in rows {
+        let name: String = r.get("name");
+        if q.contains(&name.to_lowercase()) { return Ok((Some(r.get::<Uuid,_>("id")), Some(name))); }
+    }
+    Ok((None, None))
+}
+
 // SSE stream helper module
 mod async_stream {
     use super::*;

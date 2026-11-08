@@ -83,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/timesheets/:id/approve", post(api::approve_timesheet))
         .route("/api/timesheets/:id/request-changes", post(api::request_changes))
         .route("/api/timesheets/:id/export.csv", get(api::export_timesheet_csv))
+        .route("/api/assistant", post(api::assistant_query))
         .route("/api/stream", get(api::stream))
         .route("/api/_test/advance", post(api::test_advance))
         .with_state(st);
@@ -109,7 +110,7 @@ async fn bootstrap(pool: &sqlx::PgPool) -> anyhow::Result<()> {
         let tid: Uuid = sqlx::query_scalar("INSERT INTO app.tenants(slug,name) VALUES('acme','Acme SpA') RETURNING id")
             .fetch_one(pool).await?;
         sqlx::query("INSERT INTO app.tenant_modules(tenant_id,module_code,state)
-            SELECT $1, code, CASE WHEN code IN ('loneworker','goalert','traccar','consuntivi','interventi','workforce') THEN 'attivo' ELSE 'non_abilitato' END
+            SELECT $1, code, CASE WHEN code IN ('loneworker','goalert','traccar','consuntivi','interventi','workforce','assistant') THEN 'attivo' ELSE 'non_abilitato' END
             FROM app.modules_catalog").bind(tid).execute(pool).await?;
         for (email, role) in [("admin@acme.loneworker.eu","tenant_admin"),
                               ("operatore@acme.loneworker.eu","operatore"),

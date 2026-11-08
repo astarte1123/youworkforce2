@@ -90,8 +90,21 @@ function renderShell(){
       </div>
       <div class="content"><div id="view"></div></div>
     </div>
+  </div>
+  <button id="fab" class="hide" onclick="toggleAI()" title="Assistente"
+    style="position:fixed;right:22px;bottom:22px;z-index:45;width:56px;height:56px;border-radius:50%;border:none;
+    background:linear-gradient(135deg,var(--brand),#7aa2ff);color:#fff;box-shadow:var(--sh-lg);cursor:pointer;font-size:22px">✦</button>
+  <div id="ai" class="card hide" style="position:fixed;right:22px;bottom:90px;z-index:46;width:min(400px,92vw);max-height:70vh;display:flex;flex-direction:column">
+    <div class="card-h"><div class="row" style="gap:8px"><b>Assistente</b><span class="tag sim">SIMULATO · sola lettura</span></div>
+      <button class="btn-ico btn ghost" onclick="toggleAI()">✕</button></div>
+    <div id="aiLog" class="card-b" style="overflow:auto;flex:1;display:flex;flex-direction:column;gap:10px">
+      <div class="small mut">Chiedi in linguaggio naturale. Es: «check-in scaduti al sito Milano», «ricostruisci l'ultimo allarme», «ordini attivi».</div></div>
+    <div class="card-h" style="border-top:1px solid var(--line);border-bottom:none">
+      <input id="aiQ" placeholder="Scrivi una domanda…" onkeydown="if(event.key==='Enter')askAI()">
+      <button class="btn" onclick="askAI()">Invia</button></div>
   </div>`;
   $('#nav').onclick=e=>{const a=e.target.closest('a[data-k]'); if(a){location.hash='#/'+a.dataset.k;}};
+  api('/modules').then(M=>{ if((M||[]).some(m=>m.code==='assistant'&&m.state==='attivo')) $('#fab').classList.remove('hide'); }).catch(()=>{});
   window.onhashchange=route;
   if(can(['operatore','tenant_admin','auditor'])) connectSSE();
   route();
@@ -314,6 +327,23 @@ async function vModuli(v){
     <div class="small mut" style="margin-top:6px">${esc(m.code)} · ${esc(m.kind)}</div>
     ${!m.available?'<div class="small" style="color:var(--warn);margin-top:6px">non disponibile in questa release</div>':''}
   </div>`).join('')}</div>`;
+}
+
+// ---------------- assistant ----------------
+function toggleAI(){ $('#ai').classList.toggle('hide'); if(!$('#ai').classList.contains('hide')) $('#aiQ').focus(); }
+function aiBubble(html,me){ const log=$('#aiLog');
+  log.append(el(`<div style="align-self:${me?'flex-end':'flex-start'};max-width:90%;background:${me?'var(--brand-soft)':'var(--surface2)'};
+    border:1px solid var(--line);border-radius:12px;padding:10px 12px">${html}</div>`));
+  log.scrollTop=log.scrollHeight; }
+async function askAI(){
+  const q=$('#aiQ').value.trim(); if(!q)return; $('#aiQ').value='';
+  aiBubble(esc(q),true);
+  const wait=el('<div class="small mut" style="align-self:flex-start">…</div>'); $('#aiLog').append(wait);
+  try{ const r=await api('/assistant',{method:'POST',body:JSON.stringify({q})}); wait.remove();
+    const src=(r.sources||[]).length?`<div class="small mut" style="margin-top:6px">Fonti: ${r.sources.map(s=>`<span class="tag">${esc(s.type)}${s.site?' · '+esc(s.site):''}${s.title?' · '+esc(s.title):''}</span>`).join(' ')}</div>`:'';
+    const per=r.period?`<span class="tag">${esc(r.period)}</span>`:'';
+    aiBubble(`${esc(r.answer)}<div class="small mut" style="margin-top:6px">${per} <span class="tag sim">${esc(r.provider)}</span></div>${src}`,false);
+  }catch(e){ wait.remove(); aiBubble('<span style="color:var(--bad)">'+esc(e.message)+'</span>',false); }
 }
 
 // ---------------- drawer ----------------

@@ -16,6 +16,7 @@ GoAlert come unico motore di escalation. LoneWorker è un modulo di prodotto.
 - **Check-in** con timer durevole nel core (orologio controllabile per i test), che scade senza nuovi dati badge → `mancato_checkin`. In PWA con countdown live.
 - **Ordini di lavoro** (Prompt 9): bozza→assegnato→in_corso→completato→annullato, con concorrenza ottimistica (versione), RBAC e isolamento.
 - **Consuntivi** (Prompt 9): bozza→in_revisione→da_correggere→approvato; righe ore + spese, calcolo deterministico in centesimi, doppia approvazione bloccata, **export CSV**.
+- **Assistente AI** (Prompt 7, sola lettura): widget NL nella console con strumenti tipizzati eseguiti da Rust (check-in scaduti, sensori offline, storia incidente, ordini, moduli degradati). Tenant/permessi dal contesto autenticato; azioni critiche rifiutate; provider intercambiabile (ora pianificatore locale **SIMULATO**). Si abilita per tenant dal superadmin.
 - **UI**: design system completo (chiaro/scuro, responsive), console SPA (dashboard, centrale live, ordini, consuntivi, moduli) con drawer e toast; PWA lavoratore mobile-first.
 
 ## Non implementato (backlog, dichiarato)

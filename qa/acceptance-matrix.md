@@ -17,7 +17,7 @@ Esegui l'evidenza automatica: `bash qa/smoke.sh` (core su :8080). Risultati sott
 | **T08** | Separazione del carico | **NON VERIFICATO** | nessun test di carico eseguito; nessun numero vale come SLA. |
 | **T09** | Distribuzione verificabile | **PARZIALE** | Compose + Dockerfile + migrazioni + nessun segreto reale nel repo. SBOM/licenze: da generare in CI. |
 | **T10** | Connettori opzionali | **NON VERIFICATO** | ThingsBoard/OpenDuty/Blues spenti e marcati; nessuna prova di contratto reale. |
-| **T11** | Assistente AI | **NON IMPLEMENTATO** | Prompt 7 backlog. SOS completo ad AI spenta (AI non esiste nel percorso). |
+| **T11** | Assistente AI isolato e facoltativo | **PASS (SIM)** | Query in lettura con fonti/periodo; tenant dal contesto (no cross-tenant); azioni critiche rifiutate con rimando a procedura manuale; gating per modulo (globex→403); nessuna ipotesi su intent incerto. Provider = pianificatore locale **SIMULATO**; provider reale NON VERIFICATO. SOS completo ad AI spenta (AI fuori dal percorso). |
 | **T12** | RAG YouWorker.ai | **NON IMPLEMENTATO** | Prompt 7/8 backlog; provider non contrattualizzato. |
 | **T13** | Voce, turni, consuntivi | **PARZIALE (SIM)** | Consuntivi: calcolo deterministico (90m@35€/h+12,50€=65,00€), invio idempotente, nessun costo senza tariffa, CSV. Voce/STT/turni: backlog. |
 | **T14** | Lavoro assegnato e consuntivato | **PASS (SIM)** | Ordine creato dal pianificatore → ricevuto da mario nell'app → avviato → completato → consuntivato → approvato; RBAC, versione superata (409), doppio invio/approvazione bloccati, isolamento cross-tenant. |
