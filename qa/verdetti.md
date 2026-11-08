@@ -9,9 +9,12 @@ La catena critica è riproducibile su una macchina pulita e i simulatori sono di
 
 Evidenza: `qa/smoke.sh`.
 
-## PILOTA CONTROLLATO — **NON RAGGIUNTO**
-Mancano, come richiesto dal perimetro:
-- GoAlert **reale** con due livelli, canali controllati e rilettura delle prese in carico.
+## PILOTA CONTROLLATO — **NON RAGGIUNTO** (ma GoAlert ora reale)
+Fatto in questa build:
+- **GoAlert v0.35.0 reale** integrato: il core crea allarmi reali sul servizio con policy di escalation a **2 livelli** (oncall1→oncall2) e correlazione tracciata. Evidenza `qa/goalert-e2e.sh` (6/6). Routing per-tenant via chiave di integrazione.
+
+Mancano ancora per il perimetro:
+- **Consegna reale** delle notifiche (SMS/voce/webhook) e verifica/contact-method del 2° reperibile: cablare il trasporto di test per sito.
 - Sorgente badge **reale** (Traccar + firmware), con prova di recupero eventi.
 - Procedura operatori concordata e prova sul sito.
 Condizioni per partire: vedi `offerta-pilota.md`.

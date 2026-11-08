@@ -3,7 +3,7 @@
 | Codice | Nome | Tipo | Stato build | Dipendenze capacità |
 |---|---|---|---|---|
 | `loneworker` | Lone Worker e centrale allarmi | prodotto | **implementato** | sorgente evento (badge/PWA) + `goalert` |
-| `goalert` | GoAlert escalation | connettore | **SIMULATO** (reale via profilo) | — (prerequisito dei percorsi di escalation) |
+| `goalert` | GoAlert escalation | connettore | **UPSTREAM REALE** (v0.35.0, EP 2 livelli); SIMULATO se `GOALERT_BASE` off | — (prerequisito dei percorsi di escalation) |
 | `traccar` | Traccar badge | connettore | contratto + sim | ingest token |
 | `iot` | Dispositivi e IoT | prodotto | ingest HTTP + sim | — (può lavorare senza loneworker) |
 | `thingsboard` | ThingsBoard industriale | connettore | **off / esterno** (BUSL) | iot |

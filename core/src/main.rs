@@ -54,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/superadmin/login", post(api::superadmin_login))
         .route("/api/superadmin/tenants", post(api::create_tenant).get(api::list_tenants))
         .route("/api/superadmin/tenants/:id/modules", post(api::set_module).get(api::super_list_modules))
+        .route("/api/superadmin/tenants/:id/goalert", post(api::super_set_goalert))
         // tenant plane
         .route("/api/login", post(api::tenant_login))
         .route("/api/me", get(api::me))

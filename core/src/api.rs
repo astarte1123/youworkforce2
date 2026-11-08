@@ -142,6 +142,18 @@ pub async fn set_module(State(st): State<AppState>, h: HeaderMap, Path(tid): Pat
     Ok(Json(json!({"ok":true})))
 }
 
+#[derive(Deserialize)]
+pub struct SetGoalert { pub integration_key: String }
+pub async fn super_set_goalert(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetGoalert>) -> R {
+    require_super(&st, &h).await?;
+    sqlx::query("INSERT INTO app.goalert_services(tenant_id,integration_key) VALUES($1,$2)
+        ON CONFLICT (tenant_id) DO UPDATE SET integration_key=EXCLUDED.integration_key, updated_at=now()")
+        .bind(tid).bind(&b.integration_key).execute(&st.owner_pool).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,'superadmin','set_goalert_key',$2)")
+        .bind(tid).bind(json!({"len":b.integration_key.len()})).execute(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+
 // ----------------------------- tenant plane -----------------------------
 pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Json<LoginReq>) -> impl IntoResponse {
     // tenant resolved from Host (or X-Tenant-Slug for local dev)
@@ -284,7 +296,7 @@ pub async fn ingest_event(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
             .bind(tid).bind(iid).bind(json!({"etype":b.etype})).execute(&mut *tx).await.map_err(ise)?;
         sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_notify',$2)")
             .bind(tid).bind(json!({
-                "incident_id": iid, "summary": format!("{} @ {:?}", b.etype, b.site_name),
+                "incident_id": iid, "summary": format!("{} [{}] @ {}", b.etype, correlation, b.site_name.clone().unwrap_or("-".into())),
                 "dedup": correlation, "integration_key": ""}))
             .execute(&mut *tx).await.map_err(ise)?;
     }
@@ -388,7 +400,7 @@ pub async fn worker_sos(State(st): State<AppState>, h: HeaderMap, Json(b): Json<
     sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'notify_requested',$3)")
         .bind(tid).bind(iid).bind(json!({"etype":"sos","by":s.email})).execute(&mut *tx).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_notify',$2)")
-        .bind(tid).bind(json!({"incident_id":iid,"summary":format!("SOS {}",s.email),"dedup":correlation,"integration_key":""}))
+        .bind(tid).bind(json!({"incident_id":iid,"summary":format!("SOS [{}] {}",correlation,s.email),"dedup":correlation,"integration_key":""}))
         .execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let _ = st.bus.send(TenantEvent{tenant_id:tid,payload:json!({"type":"incident_opened","incident_id":iid,"etype":"sos","correlation":correlation})});

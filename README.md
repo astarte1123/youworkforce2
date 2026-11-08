@@ -46,8 +46,21 @@ cd ../console && go run .   # :8081
 
 ## Test end-to-end (evidenza)
 ```bash
-bash qa/smoke.sh            # 17 prove: T01/T02/T03/T04/T05/T06  → 17 passed, 0 failed
+bash qa/smoke.sh            # 34 prove (T01..T06, T11, T13, T14) → 34 passed, 0 failed (GoAlert SIMULATO)
 ```
+
+## GoAlert REALE (UPSTREAM REALE)
+GoAlert v0.35.0 vero, con policy di escalation a 2 livelli. Il core crea allarmi reali.
+```bash
+bash qa/run-goalert.sh                      # avvia GoAlert + DB, migra, crea utenti (admin/oncall1/oncall2)
+KEY=$(bash qa/goalert-setup.sh | sed -n 's/^KEY=//p')   # crea EP(2 livelli)+servizio+chiave generica
+# avvia il core con GOALERT_BASE puntato a GoAlert:
+#   export GOALERT_BASE=http://localhost:8082  (poi cargo run --release)
+KEY=$KEY GA_PASS=goalertadmin1 bash qa/goalert-e2e.sh    # 6/6: allarme reale creato in GoAlert
+```
+Console GoAlert: http://localhost:8082 (admin / goalertadmin1). La chiave per-tenant si
+imposta via superadmin: `POST /api/superadmin/tenants/{id}/goalert`.
+**Consegna reale** (SMS/voce/webhook) del 2° livello = da cablare per sito (trasporto di test).
 
 ## Credenziali demo (recapiti di prova)
 | Ruolo | Dominio/slug | Utente | Password |

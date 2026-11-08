@@ -47,9 +47,12 @@ services:
       POSTGRES_DB: goalert
     volumes: ["goalert_db:/var/lib/postgresql/data"]
   goalert:
-    image: goalert/goalert:v0.33.0   # pin a verified release before pilot use
+    image: goalert/goalert:v0.35.0   # verified in this repo (UPSTREAM REALE)
     profiles: ["goalert"]
-    command: ["goalert", "--db-url", "postgres://goalert:goalert@goalert-db:5432/goalert?sslmode=disable", "--listen", "0.0.0.0:8081"]
+    # migrate + seed users once: see qa/run-goalert.sh. Then qa/goalert-setup.sh prints the
+    # integration KEY; set it per-tenant via superadmin API. Core: GOALERT_BASE=http://goalert:8081
+    command: ["goalert", "--db-url", "postgres://goalert:goalert@goalert-db:5432/goalert?sslmode=disable",
+              "--listen", "0.0.0.0:8081", "--public-url", "http://localhost:8082", "--disable-https-redirect"]
     depends_on: [goalert-db]
     ports: ["8082:8081"]
 

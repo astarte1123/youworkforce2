@@ -38,7 +38,11 @@ async fn drain_outbox(st: &AppState) -> anyhow::Result<()> {
         let attempts: i32 = r.get("attempts");
         let summary = payload.get("summary").and_then(|v| v.as_str()).unwrap_or("incident");
         let dedup = payload.get("dedup").and_then(|v| v.as_str()).unwrap_or("");
-        let key = payload.get("integration_key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        // Per-tenant GoAlert integration key (tenant-aware routing, Prompt 5).
+        // Fall back to a key embedded in the payload, else SIMULATO.
+        let key: String = sqlx::query_scalar("SELECT integration_key FROM app.goalert_services WHERE tenant_id=$1")
+            .bind(tid).fetch_optional(&st.owner_pool).await?
+            .unwrap_or_else(|| payload.get("integration_key").and_then(|v| v.as_str()).unwrap_or("").to_string());
         let incident_id = payload.get("incident_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok());
 
         let (ok, detail) = goalert::request_notification(&st.http, &st.goalert_base, &key, summary, dedup).await;
@@ -86,7 +90,7 @@ async fn sweep_checkins(st: &AppState) -> anyhow::Result<()> {
         sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'notify_requested',$3)")
             .bind(tid).bind(iid).bind(json!({"etype":"mancato_checkin"})).execute(&st.owner_pool).await?;
         sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_notify',$2)")
-            .bind(tid).bind(json!({"incident_id":iid,"summary":"mancato_checkin","dedup":correlation,"integration_key":""}))
+            .bind(tid).bind(json!({"incident_id":iid,"summary":format!("mancato_checkin [{}]",correlation),"dedup":correlation,"integration_key":""}))
             .execute(&st.owner_pool).await?;
         let _ = st.bus.send(TenantEvent{tenant_id:tid,payload:json!({"type":"incident_opened","incident_id":iid,"etype":"mancato_checkin"})});
     }
