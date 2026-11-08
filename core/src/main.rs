@@ -63,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/users", get(api::list_users))
         .route("/api/events", post(api::ingest_event))
         .route("/api/ingress/traccar", post(api::ingest_traccar))
+        .route("/api/ingress/thingsboard", post(api::ingest_thingsboard))
         .route("/api/incidents", get(api::list_incidents))
         .route("/api/incidents/:id/timeline", get(api::incident_timeline))
         .route("/api/incidents/:id/ack", post(api::ack_incident))

@@ -71,6 +71,21 @@ services:
       - "5055:5055/udp"
     depends_on: [core]
 
+  # ---- Optional: real ThingsBoard IoT (profile "thingsboard") ----
+  # device telemetry -> ThingsBoard Rule Engine (REST API Call node) -> core
+  # /api/ingress/thingsboard. The rule-chain node + default-profile device are
+  # provisioned by qa/run-thingsboard.sh (requires python). e2e: qa/thingsboard-e2e.sh (8/8).
+  # NOTE: ThingsBoard CE is BUSL-licensed — run as an external/standalone instance.
+  thingsboard:
+    image: thingsboard/tb-postgres:3.8.1   # verified in this repo (UPSTREAM REALE)
+    profiles: ["thingsboard"]
+    ports:
+      - "8084:9090"     # web UI / REST / HTTP device API
+      - "1883:1883"     # MQTT device transport
+      - "7070:7070"     # edge/transport
+    volumes: ["tb_data:/data"]
+
 volumes:
   db_data:
   goalert_db:
+  tb_data:

@@ -11,7 +11,7 @@ use crate::{auth, db};
 type R = Result<Json<Value>, (StatusCode, String)>;
 fn err(c: StatusCode, m: &str) -> (StatusCode, String) { (c, m.to_string()) }
 
-const CRITICAL: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin"];
+const CRITICAL: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin", "sensore_critico"];
 
 // ----------------------------- helpers -----------------------------
 fn get_cookie(h: &HeaderMap, name: &str) -> Option<String> {
@@ -405,6 +405,48 @@ pub async fn ingest_traccar(
         site_name: None,
         lat, lon, accuracy_m: None,
         correlation: source_event,
+        payload: b.clone(),
+    }).await
+}
+
+// ----------------------------- ThingsBoard adapter (UPSTREAM REALE) -----------------------------
+/// Receives forwards from a ThingsBoard Rule Engine "REST API Call" node and maps
+/// them onto the same normalized chain. Tenant from the ingest token (header or
+/// `?token=`), NEVER from the body. `?device=<name>` carries the TB device name.
+/// The ThingsBoard rule chain decides WHAT to forward; the core decides severity:
+/// an explicit alarm flag or a temperature threshold breach -> `sensore_critico`
+/// (critical -> incident -> GoAlert); anything else is stored as `telemetria`.
+pub async fn ingest_thingsboard(
+    State(st): State<AppState>,
+    h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>,
+    Json(b): Json<Value>,
+) -> R {
+    let token = h.get("x-ingest-token").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+        .or_else(|| q.get("token").cloned())
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing ingest token"))?;
+    let trow = sqlx::query("SELECT tenant_id,source FROM app.ingest_tokens WHERE token=$1")
+        .bind(&token).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
+    let tid: Uuid = trow.get("tenant_id");
+    let device = q.get("device").cloned().filter(|s| !s.is_empty());
+
+    let temp = b.get("temperature").and_then(|v| v.as_f64());
+    let alarm_flag = b.get("alarm").and_then(|v| v.as_bool()).unwrap_or(false)
+        || b.get("critical").and_then(|v| v.as_bool()).unwrap_or(false);
+    let critical = alarm_flag || temp.map(|t| t >= 90.0).unwrap_or(false);
+    let etype = if critical { "sensore_critico" } else { "telemetria" }.to_string();
+
+    let corr = format!("tb-{}-{}", device.clone().unwrap_or_else(|| "dev".into()), Uuid::new_v4());
+    persist_ingest(&st, tid, Normalized {
+        source: "thingsboard".into(),
+        source_event: corr.clone(),
+        idem: corr.clone(),
+        etype,
+        device_external_id: device,
+        site_name: None,
+        lat: None, lon: None, accuracy_m: None,
+        correlation: corr,
         payload: b.clone(),
     }).await
 }

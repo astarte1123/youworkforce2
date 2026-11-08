@@ -1,7 +1,7 @@
 # Matrice di accettazione — stato in questa build
 
 Macchina di prova: Windows 11 + Docker (Postgres 18 in container), core/console nativi.
-Profilo evidenza predominante: **SIMULATO**, con due connettori **UPSTREAM REALE** (GoAlert v0.35.0, Traccar v6.17.0). Nessun firmware/badge hardware, nessun sito pilota.
+Profilo evidenza predominante: **SIMULATO**, con tre connettori **UPSTREAM REALE** (GoAlert v0.35.0, Traccar v6.17.0, ThingsBoard v3.8.1). Nessun firmware/badge hardware, nessun sito pilota.
 
 Esegui l'evidenza automatica: `bash qa/smoke.sh` (core su :8080). Risultati sotto riferiti a quel test.
 
@@ -16,7 +16,7 @@ Esegui l'evidenza automatica: `bash qa/smoke.sh` (core su :8080). Risultati sott
 | **T07** | Guasti e operazioni | **NON VERIFICATO** | runbook scritti (`runbooks.md`); ripristino PostgreSQL non ancora misurato. |
 | **T08** | Separazione del carico | **NON VERIFICATO** | nessun test di carico eseguito; nessun numero vale come SLA. |
 | **T09** | Distribuzione verificabile | **PARZIALE** | Compose + Dockerfile + migrazioni + nessun segreto reale nel repo. SBOM/licenze: da generare in CI. |
-| **T10** | Connettori opzionali | **PARZIALE (UPSTREAM REALE)** | **Traccar v6.17.0 reale** collegato via event forwarding → adapter `/api/ingress/traccar`, tenant dal token (mai dal body), device per `uniqueId`. Evidenza `qa/traccar-e2e.sh` (8/8). ThingsBoard/OpenDuty/Blues restano spenti e marcati; nessuna prova di contratto reale. |
+| **T10** | Connettori opzionali | **PARZIALE (UPSTREAM REALE)** | **Traccar v6.17.0** (event forwarding → `/api/ingress/traccar`, device per `uniqueId`) — `qa/traccar-e2e.sh` (8/8). **ThingsBoard v3.8.1** (Rule Engine REST API Call node → `/api/ingress/thingsboard`, gate soglia → `sensore_critico`) — `qa/thingsboard-e2e.sh` (8/8). Tenant sempre dal token di ingest, mai dal body. OpenDuty/Blues restano spenti e marcati. |
 | **T11** | Assistente AI isolato e facoltativo | **PASS (SIM)** | Query in lettura con fonti/periodo; tenant dal contesto (no cross-tenant); azioni critiche rifiutate con rimando a procedura manuale; gating per modulo (globex→403); nessuna ipotesi su intent incerto. Provider = pianificatore locale **SIMULATO**; provider reale NON VERIFICATO. SOS completo ad AI spenta (AI fuori dal percorso). |
 | **T12** | RAG YouWorker.ai | **NON IMPLEMENTATO** | Prompt 7/8 backlog; provider non contrattualizzato. |
 | **T13** | Voce, turni, consuntivi | **PARZIALE (SIM)** | Consuntivi: calcolo deterministico (90m@35€/h+12,50€=65,00€), invio idempotente, nessun costo senza tariffa, CSV. Voce/STT/turni: backlog. |

@@ -20,7 +20,7 @@ GoAlert come unico motore di escalation. LoneWorker è un modulo di prodotto.
 - **UI**: design system completo (chiaro/scuro, responsive), console SPA (dashboard, centrale live, ordini, consuntivi, moduli) con drawer e toast; PWA lavoratore mobile-first.
 
 ## Non implementato (backlog, dichiarato)
-Prompt 8 (voce/diario/documenti), 10 (parità/migrazione legacy). ThingsBoard/Blues/OpenDuty reali.
+Prompt 8 (voce/diario/documenti), 10 (parità/migrazione legacy). Blues/OpenDuty reali.
 Consegna fisica notifiche GoAlert (SMS/voce) e firmware badge hardware: da cablare per sito.
 
 ## Avvio — Docker Compose (profilo base)
@@ -75,6 +75,17 @@ curl "http://localhost:5055/?id=BADGE-001&lat=45.47&lon=9.19&timestamp=$(date +%
 ```
 Console Traccar: http://localhost:8083. Mapping allarmi: `sos→sos`, `fallDown→man_down`.
 Il tenant deriva dal token di ingest (`?token=` o header `X-Ingest-Token`), **mai dal body**.
+
+## ThingsBoard REALE — sorgente IoT (UPSTREAM REALE)
+ThingsBoard CE v3.8.1 vero. La telemetria del device attraversa il **Rule Engine** reale;
+un nodo *REST API Call* (aggiunto alla Root Rule Chain) inoltra al core, che applica il
+gate di severità: oltre soglia → `sensore_critico` → incidente → GoAlert.
+```bash
+bash qa/run-thingsboard.sh    # avvia TB, cabla il nodo REST nella rule chain, crea device SENSOR-DEF (richiede python)
+bash qa/thingsboard-e2e.sh    # 8/8: telemetria critica -> incidente -> GoAlert; non-critica -> nessun incidente
+```
+Console ThingsBoard: http://localhost:8084 (tenant@thingsboard.org / tenant).
+ThingsBoard CE è **BUSL**: eseguirlo come istanza esterna/standalone.
 
 ## Credenziali demo (recapiti di prova)
 | Ruolo | Dominio/slug | Utente | Password |
