@@ -61,6 +61,10 @@ pub async fn superadmin_login(State(st): State<AppState>, Json(b): Json<LoginReq
             let id: Uuid = r.get("id");
             let hash: String = r.get("pass_hash");
             if auth::verify_password(&b.password, &hash) {
+                if auth::needs_rehash(&hash) {
+                    let _ = sqlx::query("UPDATE app.superadmins SET pass_hash=$1 WHERE id=$2")
+                        .bind(auth::hash_password(&b.password)).bind(id).execute(&st.owner_pool).await;
+                }
                 let tok = auth::new_token();
                 st.sessions.lock().await.insert(tok.clone(), Session {
                     user_id: id, tenant_id: None, email: b.email.clone(),
@@ -174,6 +178,13 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
         Some(r) if auth::verify_password(&b.password, &r.get::<String,_>("pass_hash")) => {
             let tok = auth::new_token();
             let uid: Uuid = r.get("id"); let role: String = r.get("role");
+            if auth::needs_rehash(&r.get::<String,_>("pass_hash")) {
+                if let Ok(mut tx2) = db::begin_tenant(&st.rt_pool, tid).await {
+                    let _ = sqlx::query("UPDATE app.users SET pass_hash=$1 WHERE id=$2")
+                        .bind(auth::hash_password(&b.password)).bind(uid).execute(&mut *tx2).await;
+                    let _ = tx2.commit().await;
+                }
+            }
             st.sessions.lock().await.insert(tok.clone(), Session {
                 user_id: uid, tenant_id: Some(tid), email: b.email.clone(), role: role.clone(), is_super: false });
             (StatusCode::OK, set_cookie_header(&tok), Json(json!({"ok":true,"role":role,"tenant":slug}))).into_response()

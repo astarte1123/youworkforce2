@@ -1,23 +1,40 @@
 use rand::Rng;
 use sha2::{Sha256, Digest};
+use argon2::{Argon2, PasswordHasher, PasswordVerifier};
+use argon2::password_hash::{SaltString, PasswordHash, rand_core::OsRng};
 
-/// Demo-grade password hashing (sha256 + random salt). NOTE: for a pilot replace
-/// with argon2id. Format: "<salt_hex>:<hash_hex>".
+/// Password hashing: argon2id (PHC string). Verification also accepts the legacy
+/// demo format ("<salt_hex>:<sha256_hex>") so pre-existing seeded users keep working
+/// and are transparently upgradeable on next set.
 pub fn hash_password(pw: &str) -> String {
-    let salt: [u8; 16] = rand::thread_rng().gen();
-    let salt_hex = hex::encode(salt);
-    let h = hash_with_salt(pw, &salt_hex);
-    format!("{salt_hex}:{h}")
+    let salt = SaltString::generate(&mut OsRng);
+    Argon2::default()
+        .hash_password(pw.as_bytes(), &salt)
+        .expect("argon2 hash")
+        .to_string()
 }
 
 pub fn verify_password(pw: &str, stored: &str) -> bool {
-    let Some((salt_hex, hash_hex)) = stored.split_once(':') else { return false };
-    let computed = hash_with_salt(pw, salt_hex);
-    // constant-time-ish compare
-    computed.as_bytes().ct_eq(hash_hex.as_bytes())
+    if stored.starts_with("$argon2") {
+        match PasswordHash::new(stored) {
+            Ok(ph) => Argon2::default().verify_password(pw.as_bytes(), &ph).is_ok(),
+            Err(_) => false,
+        }
+    } else {
+        // legacy demo format: "<salt_hex>:<sha256_hex>"
+        let Some((salt_hex, hash_hex)) = stored.split_once(':') else { return false };
+        let computed = legacy_hash_with_salt(pw, salt_hex);
+        computed.as_bytes().ct_eq(hash_hex.as_bytes())
+    }
 }
 
-fn hash_with_salt(pw: &str, salt_hex: &str) -> String {
+/// True when a stored hash is in the legacy format and should be re-hashed with
+/// argon2id after a successful login (opportunistic upgrade).
+pub fn needs_rehash(stored: &str) -> bool {
+    !stored.starts_with("$argon2")
+}
+
+fn legacy_hash_with_salt(pw: &str, salt_hex: &str) -> String {
     let mut h = Sha256::new();
     h.update(salt_hex.as_bytes());
     h.update(pw.as_bytes());
