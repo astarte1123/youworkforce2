@@ -469,9 +469,8 @@ async function vMappa(v){
 // PIANTINE (indoor): planimetrie con beacon posizionati, geofence indoor, allarmi/dispositivi indoor.
 async function vPiantine(v){
   const admin=can(['tenant_admin']);
-  v.innerHTML=`<div class="page-h"><div><h1>Piantine</h1><div class="mut" id="mapSub">—</div></div>
-    <div class="row" style="gap:8px">${admin?`<button class="btn ghost small" onclick="configIndoor()">⚙ Configura indoor</button>`:''}</div></div>
-    <div class="row" id="mapCtl" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px"></div>
+  v.innerHTML=`<div class="page-h"><div><h1>Piantine</h1><div class="mut" id="mapSub">—</div></div></div>
+    <div class="row" id="mapCtl" style="gap:10px;flex-wrap:nowrap;align-items:flex-end;margin-bottom:10px;overflow-x:auto"></div>
     <div class="grid" style="grid-template-columns:1fr 300px;gap:16px">
       <div class="card" style="padding:0;overflow:hidden"><div id="map" style="height:68vh;width:100%"></div></div>
       <div class="card pad" style="height:72vh;overflow:auto" id="mapSide"></div></div>`;
