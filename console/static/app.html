@@ -9,6 +9,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js" referrerpolicy="no-referrer"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" referrerpolicy="no-referrer"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js" referrerpolicy="no-referrer"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet-geoman/2.14.2/leaflet-geoman.min.css" referrerpolicy="no-referrer">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet-geoman/2.14.2/leaflet-geoman.min.js" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" referrerpolicy="no-referrer"></script>
 </head><body>
 <div id="root"></div>
 <div id="scrim" class="scrim"></div>
@@ -421,7 +424,8 @@ async function vMappa(v){
   v.innerHTML=`<div class="page-h"><div><h1>Mappa</h1><div class="mut" id="mapSub">—</div></div>
     <div class="row" style="gap:8px">
       ${alarmsOn?`<button class="btn ghost small ${MAPMODE==='allarmi'?'ok':''}" onclick="setMapMode('allarmi')">🚨 Allarmi</button>
-        <button class="btn ghost small ${MAPMODE==='dispositivi'?'ok':''}" onclick="setMapMode('dispositivi')">📟 Dispositivi</button>`:''}
+        <button class="btn ghost small ${MAPMODE==='dispositivi'?'ok':''}" onclick="setMapMode('dispositivi')">📟 Dispositivi</button>
+        <button class="btn ghost small ${MAPMODE==='indoor'?'ok':''}" onclick="setMapMode('indoor')">🏭 Indoor</button>`:''}
       ${admin&&alarmsOn?`<button class="btn ghost small" onclick="beaconAdmin()">⚙ Zone indoor</button>`:''}
     </div></div>
     <div class="row" id="mapCtl" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px"></div>
@@ -429,7 +433,7 @@ async function vMappa(v){
       <div class="card" style="padding:0;overflow:hidden"><div id="map" style="height:68vh;width:100%"></div></div>
       <div class="card pad" style="height:72vh;overflow:auto" id="mapSide"></div></div>`;
   if(typeof L==='undefined'){ $('#map').innerHTML='<div class="pad mut">Libreria mappa non disponibile (serve connessione).</div>'; return; }
-  setTimeout(()=>{ initMap(); (MAPMODE==='allarmi'?renderAlarms:renderDevices)(admin); },60);
+  setTimeout(()=>{ if(MAPMODE==='indoor'){ renderIndoor(admin); } else { initMap(); (MAPMODE==='allarmi'?renderAlarms:renderDevices)(admin); } },60);
 }
 function initMap(){
   if(MAP){ try{MAP.remove();}catch(e){} MAP=null; }
@@ -495,7 +499,9 @@ async function renderDevices(admin){
   $('#mapSub').textContent='dispositivi live · geofence · presenza';
   const [D0,GF,PR]=await Promise.all([api('/devices').catch(()=>[]),api('/geofences').catch(()=>[]),api('/presence').catch(()=>[])]);
   const D=D0.filter(d=>d.last_lat!=null&&d.last_lon!=null);
-  $('#mapCtl').innerHTML=admin?`<button class="btn ghost small" id="addGf">+ Geofence (cerchio)</button>`:'';
+  $('#mapCtl').innerHTML=admin?`<span class="small mut">Disegna geofence:</span>
+    <button class="btn ghost small" id="fhBtn" onclick="toggleFreehand(this)">✎ Mano libera</button>
+    <span class="small mut">(o usa gli strumenti ⬡ in alto a sinistra sulla mappa)</span>`:'';
   GFLAYER=L.layerGroup().addTo(MAP); GF.forEach(g=>drawGeofence(g,admin));
   CLUSTER=(typeof L.markerClusterGroup==='function')?L.markerClusterGroup({maxClusterRadius:50}):L.layerGroup();
   const pts=[];
@@ -507,9 +513,160 @@ async function renderDevices(admin){
   $('#mapSide').innerHTML=`<h2 style="margin-bottom:8px">Presenza</h2>${PR.length?PR.map(p=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
     <b class="small">${esc(p.device||p.external_id)}</b><div class="small mut">${esc(p.geofence)} · da ${new Date(p.since).toLocaleTimeString('it-IT')}</div>
     ${p.user?`<div class="small mut">👤 ${esc(p.user)}</div>`:''}</div>`).join(''):'<div class="small mut">Nessun dispositivo dentro una geofence.</div>'}`;
-  if(admin){ const btn=$('#addGf'); if(btn) btn.onclick=()=>{ ADDMODE=!ADDMODE; btn.classList.toggle('ok',ADDMODE);
-      toast(ADDMODE?'Clicca sulla mappa per il centro del cerchio':'Modifica geofence annullata','ok'); };
-    MAP.on('click',e=>{ if(!ADDMODE)return; ADDMODE=false; const b=$('#addGf'); if(b)b.classList.remove('ok'); addCircle(e.latlng.lat,e.latlng.lng); }); }
+  if(admin) setupGeofenceTools(MAP,{geo:true});
+}
+// Strumenti di disegno geofence (Geoman) — riusabili su mappa outdoor (geo) e indoor (xy).
+// onSave opzionale: se assente, salva una geofence outdoor via /geofences.
+function setupGeofenceTools(map, opts){
+  opts=opts||{};
+  if(map.pm){
+    map.pm.addControls({position:'topleft', drawCircle:true, drawRectangle:true, drawPolygon:true,
+      drawMarker:false, drawPolyline:false, drawCircleMarker:false, drawText:false,
+      editMode:true, dragMode:true, cutPolygon:false, removalMode:true, rotateMode:false});
+    map.pm.setGlobalOptions({snappable:true, templineStyle:{color:'#2563eb'}, hintlineStyle:{color:'#2563eb',dashArray:'5,5'}});
+    map.off('pm:create');
+    map.on('pm:create', async (e)=>{
+      const geom=geomFromLayer(e.layer, e.shape, opts); map.removeLayer(e.layer);
+      if(!geom){ toast('Forma non valida','bad'); return; }
+      const name=prompt('Nome della geofence?'); if(!name){ return; }
+      const kind = geom.radius!=null ? 'circle':'polygon';
+      if(opts.onSave){ opts.onSave(name, kind, geom); return; }
+      try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind,geom})}); toast('Geofence creata','ok'); route(); }
+      catch(err){ toast(err.message,'bad'); }
+    });
+  }
+}
+function geomFromLayer(layer, shape, opts){
+  const xy = opts && opts.xy;                 // indoor: coordinate immagine (lat=y, lng=x)
+  const pt = ll => xy ? [ll.lng, ll.lat] : [ll.lat, ll.lng];
+  if(shape==='Circle'){ const c=layer.getLatLng(), r=layer.getRadius();
+    return xy ? {cx:c.lng, cy:c.lat, radius:r} : {lat:c.lat, lon:c.lng, radius:Math.round(r)}; }
+  const ll=(layer.getLatLngs&&layer.getLatLngs()[0])||[]; const pts=ll.map(pt);
+  if(pts.length<3) return null; return {points:pts};
+}
+let FH=null;
+function toggleFreehand(btn){
+  if(FH){ endFreehand(); return; }
+  if(!MAP){ return; } btn.classList.add('ok'); MAP.dragging.disable(); MAP.getContainer().style.cursor='crosshair';
+  let pts=[], line=null, drawing=false, last=null;
+  const far=(a,b)=>{ const p1=MAP.latLngToContainerPoint(a), p2=MAP.latLngToContainerPoint(b); return p1.distanceTo(p2)>6; };
+  const onDown=(e)=>{ drawing=true; pts=[e.latlng]; last=e.latlng; if(line)MAP.removeLayer(line);
+    line=L.polyline(pts,{color:'#2563eb',weight:2}).addTo(MAP); };
+  const onMove=(e)=>{ if(!drawing)return; if(last&&!far(last,e.latlng))return; pts.push(e.latlng); last=e.latlng; line.setLatLngs(pts); };
+  const onUp=async()=>{ if(!drawing)return; drawing=false; if(line)MAP.removeLayer(line);
+    if(pts.length>=3){ const geom={points:pts.map(p=>[p.lat,p.lng])}; const name=prompt('Nome della geofence (mano libera)?');
+      if(name){ try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind:'polygon',geom})}); toast('Geofence creata','ok'); route(); }catch(e){toast(e.message,'bad');} } }
+    endFreehand();
+  };
+  FH={onDown,onMove,onUp}; MAP.on('mousedown',onDown); MAP.on('mousemove',onMove); MAP.on('mouseup',onUp);
+  toast('Tieni premuto e traccia il perimetro con il mouse','ok');
+}
+function endFreehand(){ if(!FH||!MAP)return; MAP.off('mousedown',FH.onDown); MAP.off('mousemove',FH.onMove); MAP.off('mouseup',FH.onUp);
+  MAP.dragging.enable(); MAP.getContainer().style.cursor=''; FH=null; const b=document.getElementById('fhBtn'); if(b)b.classList.remove('ok'); }
+// ---- Modalità INDOOR (piantine caricate: immagine o PDF) ----
+// CRS.Simple: coordinate in PIXEL immagine. latlng = [y, x]. Beacon (x,y). Geofence
+// indoor: polygon points=[[x,y],...], circle={cx,cy,radius} (unità pixel).
+let FPMAP=null, FPSEL=null;
+function beaconIcon(){ return L.divIcon({className:'',iconSize:[22,22],iconAnchor:[11,11],
+  html:`<div style="background:#2563eb;border:2px solid #fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.4)">📡</div>`}); }
+async function fpImageUrl(id){ const r=await fetch('/api/floorplans/'+id+'/image',{headers:{'x-tenant-slug':store.slug},credentials:'include'}); if(!r.ok) throw new Error('immagine piantina non disponibile'); const b=await r.blob(); return URL.createObjectURL(b); }
+async function renderIndoor(admin){
+  $('#mapSub').textContent='piantine indoor · beacon · geofence';
+  let FP=[]; try{ FP=await api('/floorplans'); }catch(e){}
+  window._FP=FP; window._fpAdmin=admin; window._bkPlace=false;
+  $('#mapCtl').innerHTML=`<div class="field"><label>Piantina</label><select id="fpSel" onchange="fpOpen()">${FP.length?FP.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join(''):'<option value="">— nessuna —</option>'}</select></div>`
+    +(admin?`<button class="btn ghost small" onclick="fpUpload()">+ Carica piantina</button>
+      <button class="btn ghost small" id="bkPlaceBtn" onclick="fpPlaceBeacon(this)">📍 Posiziona beacon</button>
+      <button class="btn ghost small" onclick="fpDeleteCurrent()">🗑 Elimina piantina</button>`:'');
+  if(FP.length){ fpOpen(); }
+  else {
+    if(FPMAP){ try{FPMAP.remove();}catch(e){} FPMAP=null; }
+    $('#map').innerHTML=`<div class="pad mut" style="height:68vh;display:flex;align-items:center;justify-content:center;text-align:center">Nessuna piantina indoor.${admin?' Carica una mappa (immagine o PDF) con “+ Carica piantina”.':''}</div>`;
+    $('#mapSide').innerHTML='';
+  }
+}
+async function fpOpen(){
+  const id=$('#fpSel')?.value; if(!id) return; FPSEL=id;
+  const f=(window._FP||[]).find(x=>x.id===id); if(!f) return;
+  // ricrea il contenitore mappa (Leaflet lo marca "usato")
+  if(FPMAP){ try{FPMAP.remove();}catch(e){} FPMAP=null; }
+  const host=$('#map'); host.innerHTML='';
+  try{
+    FPMAP=L.map('map',{crs:L.CRS.Simple, minZoom:-4, zoomControl:true});
+    const w=f.width, h=f.height, bounds=[[0,0],[h,w]];
+    const url=await fpImageUrl(id);
+    L.imageOverlay(url, bounds).addTo(FPMAP);
+    FPMAP.fitBounds(bounds);
+    const [B,GFs]=await Promise.all([api('/beacons').catch(()=>[]),api('/geofences').catch(()=>[])]);
+    const beacons=(B||[]).filter(b=>b.floorplan_id===id && b.x!=null && b.y!=null);
+    const bl=L.layerGroup().addTo(FPMAP);
+    beacons.forEach(b=> L.marker([b.y,b.x],{icon:beaconIcon()})
+      .bindPopup(`<b>📡 ${esc(b.zone_name)}</b><br><span style="color:#666">beacon ${esc(b.beacon_uid)}</span>${window._fpAdmin?`<br><a href="#" onclick="beaconDel('${b.id}');return false">Elimina</a>`:''}`).addTo(bl));
+    const gfs=(GFs||[]).filter(g=>g.floorplan_id===id); const gl=L.layerGroup().addTo(FPMAP);
+    gfs.forEach(g=>drawIndoorGeofence(g,gl));
+    $('#mapSide').innerHTML=`<h2 style="margin-bottom:8px">${esc(f.name)}</h2>
+      <div class="small mut">${beacons.length} beacon · ${gfs.length} geofence · ${w}×${h}px</div>
+      ${window._fpAdmin?'<div class="small mut" style="margin-top:10px">• <b>📍 Posiziona beacon</b>: poi clicca sulla piantina.<br>• Disegna geofence con gli strumenti ⬡ in alto a sinistra (cerchio, rettangolo, poligono).</div>':''}`;
+    if(window._fpAdmin){
+      setupGeofenceTools(FPMAP,{xy:true, onSave:(name,kind,geom)=> saveIndoorGeofence(name,kind,geom,id)});
+      FPMAP.on('click',e=>{ if(window._bkPlace) fpBeaconAt(e.latlng, id); });
+    }
+  }catch(e){ host.innerHTML='<div class="pad" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
+}
+function drawIndoorGeofence(g,lg){
+  let layer=null;
+  if(g.kind==='circle'&&g.geom.radius){ layer=L.circle([g.geom.cy,g.geom.cx],{radius:g.geom.radius,color:'#16a34a',fillOpacity:0.1}); }
+  else if(g.kind==='polygon'&&g.geom.points){ layer=L.polygon(g.geom.points.map(p=>[p[1],p[0]]),{color:'#16a34a',fillOpacity:0.1}); }
+  if(!layer)return;
+  layer.bindPopup(`<b>${esc(g.name)}</b>${window._fpAdmin?`<br><a href="#" onclick="gfDel('${g.id}');return false">Elimina</a>`:''}`);
+  layer.addTo(lg);
+}
+async function saveIndoorGeofence(name,kind,geom,fid){
+  try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind,geom,floorplan_id:fid})}); toast('Geofence creata','ok'); fpOpen(); }
+  catch(e){ toast(e.message,'bad'); }
+}
+function fpPlaceBeacon(btn){ window._bkPlace=!window._bkPlace; btn.classList.toggle('ok',window._bkPlace);
+  toast(window._bkPlace?'Clicca sulla piantina dove si trova il beacon':'Posizionamento annullato','ok'); }
+async function fpBeaconAt(latlng, fid){
+  window._bkPlace=false; const b=document.getElementById('bkPlaceBtn'); if(b)b.classList.remove('ok');
+  const uid=prompt('Beacon UID (es. 100-200 o UUID):'); if(!uid)return;
+  const zone=prompt('Nome zona (es. Reparto presse):'); if(!zone)return;
+  try{ await api('/beacons',{method:'POST',body:JSON.stringify({beacon_uid:uid.trim(),zone_name:zone.trim(),floorplan_id:fid,x:latlng.lng,y:latlng.lat})});
+    toast('Beacon posizionato','ok'); fpOpen(); }catch(e){ toast(e.message,'bad'); }
+}
+async function fpDeleteCurrent(){ const id=$('#fpSel')?.value; if(!id)return; if(!confirm('Eliminare questa piantina? (i beacon restano, perdono la posizione)'))return;
+  try{ await api('/floorplans/'+id,{method:'DELETE'}); toast('Piantina eliminata','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
+function imgDims(file){ return new Promise((res,rej)=>{ const img=new Image(); img.onload=()=>{res({w:img.naturalWidth,h:img.naturalHeight}); URL.revokeObjectURL(img.src);}; img.onerror=()=>rej(new Error('immagine non valida')); img.src=URL.createObjectURL(file); }); }
+async function pdfToPng(file){
+  if(!window.pdfjsLib){ throw new Error('libreria PDF non caricata'); }
+  try{ pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }catch(e){}
+  const buf=await file.arrayBuffer();
+  const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+  const page=await pdf.getPage(1);
+  const scale=Math.min(3, 2000/page.getViewport({scale:1}).width);
+  const viewport=page.getViewport({scale:Math.max(1,scale)});
+  const canvas=document.createElement('canvas'); canvas.width=Math.round(viewport.width); canvas.height=Math.round(viewport.height);
+  await page.render({canvasContext:canvas.getContext('2d'), viewport}).promise;
+  const blob=await new Promise(r=>canvas.toBlob(r,'image/png'));
+  return {blob, w:canvas.width, h:canvas.height};
+}
+function fpUpload(){
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*,application/pdf';
+  inp.onchange=async()=>{ const file=inp.files&&inp.files[0]; if(!file)return;
+    const name=prompt('Nome della piantina:', file.name.replace(/\.[^.]+$/,'')); if(!name)return;
+    try{
+      let blob, w, h, ct;
+      if(file.type==='application/pdf'){ const r=await pdfToPng(file); blob=r.blob; w=r.w; h=r.h; ct='image/png'; }
+      else { const dim=await imgDims(file); w=dim.w; h=dim.h; blob=file; ct=file.type||'image/png'; }
+      if(!w||!h){ toast('Dimensioni immagine non leggibili','bad'); return; }
+      const q=new URLSearchParams({name, width:w, height:h}).toString();
+      const res=await fetch('/api/floorplans?'+q,{method:'POST',credentials:'include',
+        headers:{'x-tenant-slug':store.slug,'x-csrf-token':csrfToken(),'content-type':ct}, body:blob});
+      if(!res.ok){ const t=await res.text().catch(()=>''); toast('Upload fallito ('+res.status+') '+t,'bad'); return; }
+      toast('Piantina caricata','ok'); route();
+    }catch(e){ toast(e.message||'errore upload','bad'); }
+  };
+  inp.click();
 }
 // ---- Admin: zone indoor (beacon) ----
 async function beaconAdmin(){

@@ -180,6 +180,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/alarms/map", get(api::alarms_map))
         .route("/api/beacons", get(api::list_beacons).post(api::save_beacon))
         .route("/api/beacons/:id", axum::routing::delete(api::delete_beacon))
+        .route("/api/floorplans", get(api::list_floorplans).post(api::create_floorplan))
+        .route("/api/floorplans/:id", axum::routing::delete(api::delete_floorplan))
+        .route("/api/floorplans/:id/image", get(api::get_floorplan_image))
         .route("/api/ingress/thingsboard", post(api::ingest_thingsboard))
         .route("/api/incidents", get(api::list_incidents))
         .route("/api/incidents/:id/timeline", get(api::incident_timeline))
@@ -219,6 +222,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/stream", get(api::stream))
         .route("/api/_test/advance", post(api::test_advance))
         .layer(axum::middleware::from_fn(api::csrf_guard))
+        .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024)) // upload piantine indoor
         .with_state(st);
 
     let bind = env("YW_BIND", "0.0.0.0:8080");

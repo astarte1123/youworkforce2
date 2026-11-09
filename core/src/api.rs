@@ -2035,28 +2035,35 @@ pub async fn list_geofences(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     require_module(&st, s.tenant_id.unwrap(), "traccar").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT g.id,g.name,g.kind,g.geom,g.site_id,si.name AS site
+    let rows = sqlx::query("SELECT g.id,g.name,g.kind,g.geom,g.site_id,g.floorplan_id,si.name AS site
         FROM app.geofences g LEFT JOIN app.sites si ON si.id=g.site_id ORDER BY g.name").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({
         "id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"kind":r.get::<String,_>("kind"),
-        "geom":r.get::<Value,_>("geom"),"site_id":r.try_get::<Uuid,_>("site_id").ok(),"site":r.try_get::<String,_>("site").ok() })).collect();
+        "geom":r.get::<Value,_>("geom"),"site_id":r.try_get::<Uuid,_>("site_id").ok(),"site":r.try_get::<String,_>("site").ok(),
+        "floorplan_id":r.try_get::<Uuid,_>("floorplan_id").ok() })).collect();
     Ok(Json(json!(out)))
 }
 #[derive(Deserialize)]
-pub struct GeofenceReq { pub name: String, pub kind: String, pub geom: Value, pub site_id: Option<Uuid> }
+pub struct GeofenceReq { pub name: String, pub kind: String, pub geom: Value, pub site_id: Option<Uuid>, pub floorplan_id: Option<Uuid> }
 pub async fn create_geofence(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GeofenceReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    // indoor (geom in coordinate immagine): cerchio={cx,cy,radius}, poligono={points}
+    let indoor = b.floorplan_id.is_some();
     match b.kind.as_str() {
-        "circle" => { if b.geom.get("radius").and_then(|v|v.as_f64()).is_none() || b.geom.get("lat").is_none() { return Err(err(StatusCode::BAD_REQUEST, "cerchio: lat/lon/radius richiesti")); } }
+        "circle" => {
+            let has_geo = b.geom.get("radius").and_then(|v|v.as_f64()).is_some() && b.geom.get("lat").is_some();
+            let has_xy  = b.geom.get("radius").and_then(|v|v.as_f64()).is_some() && b.geom.get("cx").is_some();
+            if !(if indoor { has_xy } else { has_geo }) { return Err(err(StatusCode::BAD_REQUEST, "cerchio: coordinate/raggio richiesti")); }
+        }
         "polygon" => { if b.geom.get("points").and_then(|v|v.as_array()).map(|a| a.len()<3).unwrap_or(true) { return Err(err(StatusCode::BAD_REQUEST, "poligono: almeno 3 punti")); } }
         _ => return Err(err(StatusCode::BAD_REQUEST, "kind non valido (circle|polygon)")),
     }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let row = sqlx::query("INSERT INTO app.geofences(tenant_id,name,kind,geom,site_id) VALUES($1,$2,$3,$4,$5) RETURNING id")
-        .bind(tid).bind(b.name.trim()).bind(&b.kind).bind(&b.geom).bind(b.site_id)
+    let row = sqlx::query("INSERT INTO app.geofences(tenant_id,name,kind,geom,site_id,floorplan_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(&b.kind).bind(&b.geom).bind(b.site_id).bind(b.floorplan_id)
         .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "nome gia' presente"))?;
     tx.commit().await.map_err(ise)?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id");
@@ -2417,6 +2424,7 @@ pub async fn alarms_map(State(st): State<AppState>, h: HeaderMap,
 pub struct BeaconReq {
     pub id: Option<Uuid>, pub beacon_uid: String, pub zone_name: String,
     pub site_id: Option<Uuid>, pub lat: Option<f64>, pub lon: Option<f64>, pub floor: Option<String>,
+    pub floorplan_id: Option<Uuid>, pub x: Option<f64>, pub y: Option<f64>,
 }
 pub async fn list_beacons(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
@@ -2426,7 +2434,7 @@ pub async fn list_beacons(State(st): State<AppState>, h: HeaderMap) -> R {
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let rows = sqlx::query(
-        "SELECT b.id,b.beacon_uid,b.zone_name,b.site_id,b.lat,b.lon,b.floor,s.name AS site
+        "SELECT b.id,b.beacon_uid,b.zone_name,b.site_id,b.lat,b.lon,b.floor,b.floorplan_id,b.x,b.y,s.name AS site
          FROM app.beacons b LEFT JOIN app.sites s ON s.id=b.site_id ORDER BY b.zone_name")
         .fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
@@ -2436,6 +2444,8 @@ pub async fn list_beacons(State(st): State<AppState>, h: HeaderMap) -> R {
         "site_id": r.try_get::<Uuid,_>("site_id").ok(), "site": r.try_get::<String,_>("site").ok(),
         "lat": r.try_get::<f64,_>("lat").ok(), "lon": r.try_get::<f64,_>("lon").ok(),
         "floor": r.try_get::<String,_>("floor").ok(),
+        "floorplan_id": r.try_get::<Uuid,_>("floorplan_id").ok(),
+        "x": r.try_get::<f64,_>("x").ok(), "y": r.try_get::<f64,_>("y").ok(),
     })).collect();
     Ok(Json(json!(out)))
 }
@@ -2449,14 +2459,16 @@ pub async fn save_beacon(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // upsert per (tenant, beacon_uid): un beacon = una zona
     let row = sqlx::query(
-        "INSERT INTO app.beacons(tenant_id,beacon_uid,zone_name,site_id,lat,lon,floor)
-         VALUES($1,$2,$3,$4,$5,$6,$7)
+        "INSERT INTO app.beacons(tenant_id,beacon_uid,zone_name,site_id,lat,lon,floor,floorplan_id,x,y)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
          ON CONFLICT (tenant_id,beacon_uid) DO UPDATE SET
             zone_name=EXCLUDED.zone_name, site_id=EXCLUDED.site_id,
-            lat=EXCLUDED.lat, lon=EXCLUDED.lon, floor=EXCLUDED.floor
+            lat=EXCLUDED.lat, lon=EXCLUDED.lon, floor=EXCLUDED.floor,
+            floorplan_id=EXCLUDED.floorplan_id, x=EXCLUDED.x, y=EXCLUDED.y
          RETURNING id")
         .bind(tid).bind(b.beacon_uid.trim()).bind(b.zone_name.trim())
         .bind(b.site_id).bind(b.lat).bind(b.lon).bind(b.floor.as_deref())
+        .bind(b.floorplan_id).bind(b.x).bind(b.y)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "beacon_save", json!({"beacon_uid":b.beacon_uid,"zone":b.zone_name})).await;
@@ -2471,6 +2483,75 @@ pub async fn delete_beacon(State(st): State<AppState>, h: HeaderMap, Path(id): P
     tx.commit().await.map_err(ise)?;
     if n == 0 { return Err(err(StatusCode::NOT_FOUND, "beacon inesistente")); }
     audit(&st, tid, &s.email, "beacon_delete", json!({"id":id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ============ Piantine indoor — upload immagine + CRUD ============
+pub async fn list_floorplans(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor"|"responsabile") {
+        return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato"));
+    }
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT f.id,f.name,f.site_id,f.width,f.height,f.content_type,s.name AS site
+        FROM app.floorplans f LEFT JOIN app.sites s ON s.id=f.site_id ORDER BY f.name").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id": r.get::<Uuid,_>("id"), "name": r.get::<String,_>("name"),
+        "site_id": r.try_get::<Uuid,_>("site_id").ok(), "site": r.try_get::<String,_>("site").ok(),
+        "width": r.get::<i32,_>("width"), "height": r.get::<i32,_>("height"),
+        "content_type": r.get::<String,_>("content_type"),
+    })).collect();
+    Ok(Json(json!(out)))
+}
+/// Upload piantina: body = bytes immagine (PDF rasterizzato a PNG lato client).
+/// Metadati in query (name, width, height, site_id); content-type dall'header.
+pub async fn create_floorplan(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>,
+    body: axum::body::Bytes) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
+    let tid = s.tenant_id.unwrap();
+    let name = q.get("name").map(|x| x.trim().to_string()).filter(|x| !x.is_empty())
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "nome richiesto"))?;
+    let width: i32 = q.get("width").and_then(|x| x.parse().ok()).unwrap_or(0);
+    let height: i32 = q.get("height").and_then(|x| x.parse().ok()).unwrap_or(0);
+    if width <= 0 || height <= 0 { return Err(err(StatusCode::BAD_REQUEST, "dimensioni immagine richieste")); }
+    if body.len() < 10 { return Err(err(StatusCode::BAD_REQUEST, "immagine vuota")); }
+    if body.len() > 20_000_000 { return Err(err(StatusCode::BAD_REQUEST, "immagine troppo grande (max 20MB)")); }
+    let ct = h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("image/png").to_string();
+    let site_id = q.get("site_id").and_then(|x| Uuid::parse_str(x).ok());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.floorplans(tenant_id,name,site_id,content_type,width,height,image)
+        VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        .bind(tid).bind(&name).bind(site_id).bind(&ct).bind(width).bind(height).bind(body.as_ref())
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "floorplan_create", json!({"name":name,"bytes":body.len()})).await;
+    Ok(Json(json!({"id": row.get::<Uuid,_>("id")})))
+}
+pub async fn get_floorplan_image(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>)
+    -> Result<Response,(StatusCode,String)> {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("SELECT image,content_type FROM app.floorplans WHERE id=$1")
+        .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let _ = tx.commit().await;
+    let row = row.ok_or_else(|| err(StatusCode::NOT_FOUND, "piantina inesistente"))?;
+    let img: Vec<u8> = row.get("image"); let ct: String = row.get("content_type");
+    Ok(([(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, "private, max-age=3600".to_string())], img).into_response())
+}
+pub async fn delete_floorplan(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.floorplans WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n == 0 { return Err(err(StatusCode::NOT_FOUND, "inesistente")); }
+    audit(&st, tid, &s.email, "floorplan_delete", json!({"id":id})).await;
     Ok(Json(json!({"ok":true})))
 }
 
