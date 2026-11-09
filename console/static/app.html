@@ -116,7 +116,10 @@ function renderShell(){
   $('#root').innerHTML = `
   <div class="shell">
     <aside class="side">
-      <div class="brand"><div class="logo">${brandMark()}</div> ${brandName()}</div>
+      <div class="brand"><div style="display:flex;flex-direction:column;align-items:flex-end">
+        <div class="logo">${brandMark()}</div>
+        <div style="font-size:7.5px;line-height:1;color:var(--faint);font-weight:700;letter-spacing:.03em;margin-top:3px;white-space:nowrap">Powered by YouCo</div>
+      </div> ${brandName()}</div>
       <nav id="nav">${visibleNav().map(n=>`<a data-k="${n.k}"><span class="ico">${ICON[n.ico]}</span>${n.t}</a>`).join('')}</nav>
       <div class="foot">
         <div class="row"><div class="ava">${initials(ME.email)}</div>
