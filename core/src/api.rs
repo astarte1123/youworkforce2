@@ -548,6 +548,73 @@ pub async fn traccar_status(State(st): State<AppState>, h: HeaderMap) -> R {
     })))
 }
 
+/// P2 — "Verifica & collega" dal pannello: forza un poll immediato, verifica la
+/// catena end-to-end (Traccar raggiungibile -> device sincronizzati nel nostro DB)
+/// e restituisce la config di forwarding (fast-path opzionale) pronta da copiare.
+/// Il pull non richiede config lato Traccar oltre alle credenziali: quindi il
+/// collegamento e' "nostro" anche senza toccare la UI di Traccar.
+pub async fn traccar_verify(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "traccar").await?;
+    if traccar_conn(&st, tid).await.is_none() {
+        return Err(err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata (superadmin)"));
+    }
+    // garantisce un token di ingest 'traccar' (serve per il forward fast-path)
+    let token: String = match sqlx::query_scalar::<_,String>("SELECT token FROM app.ingest_tokens WHERE tenant_id=$1 AND source='traccar' ORDER BY created_at LIMIT 1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)? {
+        Some(t) => t,
+        None => {
+            let t = format!("traccar-{}", &auth::new_token()[..24]);
+            sqlx::query("INSERT INTO app.ingest_tokens(token,tenant_id,source) VALUES($1,$2,'traccar')")
+                .bind(&t).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
+            t
+        }
+    };
+    // poll immediato (aggiorna raggiungibilita' + sync device)
+    let poll_err = crate::worker::poll_now(&st, tid).await.err().map(|e| e.to_string());
+    // stato fresco
+    let row = sqlx::query("SELECT reachable,last_ok_at,device_count,online_count,last_error FROM app.traccar_poll_state WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let reachable = row.as_ref().map(|r| r.get::<bool,_>("reachable")).unwrap_or(false);
+    let device_count = row.as_ref().map(|r| r.get::<i32,_>("device_count")).unwrap_or(0);
+    let online_count = row.as_ref().map(|r| r.get::<i32,_>("online_count")).unwrap_or(0);
+    let last_error = row.as_ref().and_then(|r| r.try_get::<String,_>("last_error").ok());
+    // specchio: quanti nostri device traccar hanno una posizione recente nel DB
+    let mirror = sqlx::query("SELECT count(*)::int total, count(*) FILTER (WHERE last_pos_at > now() - interval '15 minutes')::int fresh
+         FROM app.devices WHERE tenant_id=$1 AND source='traccar'")
+        .bind(tid).fetch_one(&st.owner_pool).await.map_err(ise)?;
+    let mirror_total: i32 = mirror.get("total");
+    let mirror_fresh: i32 = mirror.get("fresh");
+    let ingress = std::env::var("YW_INGRESS_BASE").unwrap_or_else(|_| "http://host.docker.internal:8080".into());
+    let ev_url = format!("{ingress}/api/ingress/traccar?token={token}");
+    let pos_url = format!("{ingress}/api/ingress/traccar/position?token={token}");
+    let verdict = if reachable { "collegato" } else { "irraggiungibile" };
+    audit(&st, tid, &s.email, "traccar_verify", json!({"reachable":reachable,"devices":device_count})).await;
+    Ok(Json(json!({
+        "verdict": verdict,
+        "reachable": reachable,
+        "device_count": device_count,
+        "online_count": online_count,
+        "mirror_total": mirror_total,
+        "mirror_fresh": mirror_fresh,
+        "last_error": last_error,
+        "poll_error": poll_err,
+        "pull_note": "Il pull via API non richiede config lato Traccar: basta la connessione (base URL + credenziali) impostata dal superadmin.",
+        "forward": {
+            "ingest_token": token,
+            "event_forward_url": ev_url,
+            "position_forward_url": pos_url,
+            "env": {
+                "EVENT_FORWARD_URL": ev_url,
+                "FORWARD_URL": pos_url,
+                "FORWARD_ENABLE": "true"
+            },
+            "note": "Fast-path opzionale a bassa latenza: queste env vanno impostate all'avvio del container Traccar (il forward non e' riconfigurabile a runtime via API)."
+        }
+    })))
+}
+
 // ====== Config trasporto notifiche GoAlert, gestita DA YouWorkforce ======
 // L'admin configura tutto dal nostro pannello; noi spingiamo la config a GoAlert via GraphQL.
 // NB: in GoAlert OSS la config è per-istanza (globale), non per-tenant.

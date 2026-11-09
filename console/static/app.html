@@ -808,7 +808,29 @@ function traccarHealthCard(s){
     </div>
     ${s.last_error?`<div class="small" style="color:var(--bad);margin-top:8px">⚠ ${esc(s.last_error)}</div>`:''}
     <div class="small mut" style="margin-top:8px">Pull via API Traccar: recupera eventi persi (backfill da cursore) e rileva il silenzio dei badge anche se Traccar non invia <i>deviceOffline</i>. Il forwarding resta come percorso rapido.</div>
+    ${can(['tenant_admin'])?`<div class="row" style="gap:8px;margin-top:10px"><button class="btn ghost small" onclick="trVerify(this)">Verifica collegamento</button></div><div id="trVerifyOut"></div>`:''}
   </div>`;
+}
+async function trVerify(btn){
+  const out=$('#trVerifyOut'); if(btn){btn.disabled=true;btn.textContent='Verifico…';}
+  try{
+    const r=await api('/traccar/verify',{method:'POST'});
+    const okc=r.reachable?'s-attivo':'s-critico';
+    out.innerHTML=`<div class="card pad" style="margin-top:10px;background:var(--bg2)">
+      <div class="spread"><b>Esito: <span class="chip ${okc}">${esc(r.verdict)}</span></b></div>
+      <div class="small" style="margin-top:8px">Device su Traccar: <b>${r.online_count}/${r.device_count} online</b> · specchiati nel nostro DB (pos. recente): <b>${r.mirror_fresh}/${r.mirror_total}</b></div>
+      ${r.last_error?`<div class="small" style="color:var(--bad);margin-top:6px">⚠ ${esc(r.last_error)}</div>`:''}
+      <div class="small mut" style="margin-top:8px">${esc(r.pull_note)}</div>
+      <details style="margin-top:8px"><summary class="small">Forward fast-path (opzionale) — env Traccar</summary>
+        <div class="small mut" style="margin:6px 0">${esc(r.forward.note)}</div>
+        <pre class="mono small" style="white-space:pre-wrap;background:var(--card);padding:8px;border-radius:8px">EVENT_FORWARD_URL=${esc(r.forward.env.EVENT_FORWARD_URL)}
+FORWARD_URL=${esc(r.forward.env.FORWARD_URL)}
+FORWARD_ENABLE=true</pre>
+        <button class="btn ghost small" onclick="navigator.clipboard&&navigator.clipboard.writeText('EVENT_FORWARD_URL=${esc(r.forward.env.EVENT_FORWARD_URL)}\\nFORWARD_URL=${esc(r.forward.env.FORWARD_URL)}\\nFORWARD_ENABLE=true')&&toast('Copiato','ok')">copia env</button>
+      </details></div>`;
+    toast(r.reachable?'Traccar collegato':'Traccar irraggiungibile', r.reachable?'ok':'bad');
+  }catch(e){ toast(e.message,'bad'); }
+  finally{ if(btn){btn.disabled=false;btn.textContent='Verifica collegamento';} }
 }
 async function tokNew(){ const src=$('#tkSrc').value;
   try{const r=await api('/ingest-tokens',{method:'POST',body:JSON.stringify({source:src})}); toast('Token creato','ok'); route();

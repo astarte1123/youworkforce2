@@ -61,6 +61,25 @@ async fn traccar_poll(st: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Forza un ciclo di poll per un tenant, ignorando la cadenza (usato dall'azione
+/// "Verifica collegamento" del pannello). Ritorna errore solo se la connessione
+/// manca; i problemi di raggiungibilita' finiscono in traccar_poll_state.
+pub async fn poll_now(st: &AppState, tid: Uuid) -> anyhow::Result<()> {
+    let now = st.clock.now();
+    let c = sqlx::query("SELECT base_url,username,password,silence_after_s FROM app.traccar_connections WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await?
+        .ok_or_else(|| anyhow::anyhow!("connessione Traccar non configurata"))?;
+    let state = sqlx::query("SELECT last_ok_at,last_event_id FROM app.traccar_poll_state WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await?;
+    let last_ok: Option<DateTime<Utc>> = state.as_ref().and_then(|s| s.try_get::<DateTime<Utc>,_>("last_ok_at").ok());
+    let last_event_id: i64 = state.as_ref().map(|s| s.get::<i64,_>("last_event_id")).unwrap_or(0);
+    let base: String = c.get("base_url");
+    let user: String = c.get("username");
+    let pass: String = c.get("password");
+    let silence_after: i32 = c.get("silence_after_s");
+    poll_tenant(st, tid, &base, &user, &pass, last_ok, last_event_id, silence_after, now).await
+}
+
 async fn mark_poll(st: &AppState, tid: Uuid, reachable: bool, last_event_id: i64,
     dc: Option<i32>, oc: Option<i32>, last_error: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<()> {
     sqlx::query(

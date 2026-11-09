@@ -68,5 +68,13 @@ AGAIN=$(incids | python -c "import sys,json;print(len([x for x in json.load(sys.
 status | python -c 'import sys,json;d=json.load(sys.stdin);print("online",d.get("online_count"),"/",d.get("device_count"),"lag",d.get("lag_seconds"),"cursore",d.get("last_event_id"))'
 ok "stato salute aggiornato (card Connettori)"
 
+# 7) P2 "Verifica & collega": poll immediato + verdetto + config forward pronta
+CS=$(awk '$6=="yw_csrf"{print $7}' "$JA" | tail -1)
+V=$(curl -s -b "$JA" -H 'x-tenant-slug: acme' -H "x-csrf-token: $CS" -X POST "$BASE/api/traccar/verify")
+echo "$V" | python -c 'import sys,json;d=json.load(sys.stdin);exit(0 if d.get("verdict")=="collegato" and d.get("reachable") else 1)' \
+  && ok "verify: verdetto 'collegato' (poll on-demand dal pannello)" || no "verify verdict" "$V"
+echo "$V" | python -c 'import sys,json;d=json.load(sys.stdin);f=d.get("forward",{});exit(0 if f.get("ingest_token") and "token=" in f.get("event_forward_url","") else 1)' \
+  && ok "verify: config forward con token pronta (fast-path opzionale)" || no "verify forward" "$V"
+
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

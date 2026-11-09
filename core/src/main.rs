@@ -126,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/ingest-tokens/:token", axum::routing::delete(api::delete_ingest_token))
         .route("/api/connectors", get(api::list_connectors))
         .route("/api/traccar/status", get(api::traccar_status))
+        .route("/api/traccar/verify", post(api::traccar_verify))
         .route("/api/events", post(api::ingest_event))
         .route("/api/ingress/traccar", post(api::ingest_traccar))
         .route("/api/ingress/traccar/position", post(api::ingest_traccar_position))
