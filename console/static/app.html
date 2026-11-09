@@ -625,6 +625,9 @@ function beaconIcon(){ return L.divIcon({className:'',iconSize:[22,22],iconAncho
   html:`<div style="background:#2563eb;border:2px solid #fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.4)">📡</div>`}); }
 function deviceIndoorIcon(){ return L.divIcon({className:'',iconSize:[24,24],iconAnchor:[12,12],
   html:`<div style="background:#0f766e;border:2px solid #fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 4px rgba(0,0,0,.4)">📟</div>`}); }
+// dispositivo posizionato MANUALMENTE (punto fisso): quadrato ambra, distinto dal live (cerchio teal)
+function devicePlacedIcon(){ return L.divIcon({className:'',iconSize:[24,24],iconAnchor:[12,12],
+  html:`<div style="background:#b45309;border:2px solid #fff;border-radius:6px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 4px rgba(0,0,0,.4)">📟</div>`}); }
 async function fpImageUrl(id){ const r=await fetch('/api/floorplans/'+id+'/image',{headers:{'x-tenant-slug':store.slug},credentials:'include'}); if(!r.ok) throw new Error('immagine piantina non disponibile'); const b=await r.blob(); return URL.createObjectURL(b); }
 async function renderIndoor(admin,selectId){
   $('#mapSub').textContent='piantine indoor · beacon · geofence';
@@ -634,7 +637,10 @@ async function renderIndoor(admin,selectId){
   $('#mapCtl').innerHTML=`<div class="field"><label>Piantina</label><select id="fpSel" onchange="fpOpen()">${FP.length?FP.map(f=>`<option value="${f.id}" ${f.id===sel?'selected':''}>${esc(f.name)}</option>`).join(''):'<option value="">— nessuna —</option>'}</select></div>`
     +(admin&&FP.length?`<div class="field"><label>Posiziona beacon registrato</label>
         <div class="row" style="gap:6px"><select id="bkPlaceSel"><option value="">— scegli —</option></select>
-        <button class="btn ghost small" id="bkPlaceBtn" onclick="fpArmPlace(this)">📍 sulla mappa</button></div></div>`:'')
+        <button class="btn ghost small" id="bkPlaceBtn" onclick="fpArmPlace(this,'beacon')">📍 sulla mappa</button></div></div>`:'')
+    +(admin&&FP.length?`<div class="field"><label>Posiziona dispositivo</label>
+        <div class="row" style="gap:6px"><select id="devPlaceSel"><option value="">— scegli —</option></select>
+        <button class="btn ghost small" id="devPlaceBtn" onclick="fpArmPlace(this,'device')">📍 sulla mappa</button></div></div>`:'')
     +(admin?`<button class="btn ghost small" onclick="configIndoor()">⚙ Configura indoor</button>`:'');
   if(FP.length){ fpOpen(); }
   else {
@@ -656,19 +662,31 @@ async function fpOpen(){
     const url=await fpImageUrl(id);
     L.imageOverlay(url, bounds).addTo(FPMAP);
     FPMAP.fitBounds(bounds);
-    const [B,GFs]=await Promise.all([api('/beacons').catch(()=>[]),api('/geofences').catch(()=>[])]);
+    const [B,GFs,DV]=await Promise.all([api('/beacons').catch(()=>[]),api('/geofences').catch(()=>[]),api('/devices').catch(()=>[])]);
     window._allBeacons=B||[];
     const beacons=(B||[]).filter(b=>b.floorplan_id===id && b.x!=null && b.y!=null);
     const bl=L.layerGroup().addTo(FPMAP);
     beacons.forEach(b=> L.marker([b.y,b.x],{icon:beaconIcon()})
       .bindPopup(`<b>📡 ${esc(b.zone_name)}</b><br><span style="color:#666">beacon ${esc(b.beacon_uid)}</span>${window._fpAdmin?`<br><a href="#" onclick="beaconUnplace('${b.id}');return false">Rimuovi dalla piantina</a>`:''}`).addTo(bl));
-    // popola il selettore di posizionamento SOLO coi beacon registrati dal tenant
+    // dispositivi posizionati MANUALMENTE su questa piantina (punto fisso)
+    const devLabel=d=>esc(d.label||d.external_id||'dispositivo');
+    const placedDevs=(DV||[]).filter(d=>d.floorplan_id===id && d.fp_x!=null && d.fp_y!=null);
+    const pdl=L.layerGroup().addTo(FPMAP);
+    placedDevs.forEach(d=> L.marker([d.fp_y,d.fp_x],{icon:devicePlacedIcon()})
+      .bindPopup(`<b>📟 ${devLabel(d)}</b><br><span style="color:#666">${esc(d.model_name||d.source||'')}${d.user_email?(' · 👤 '+esc(d.user_email)):''}</span>${window._fpAdmin?`<br><a href="#" onclick="deviceUnplace('${d.id}');return false">Rimuovi dalla piantina</a>`:''}`).addTo(pdl));
+    // popola i selettori di posizionamento (SOLO entita' gia' registrate dal tenant)
     const sel=document.getElementById('bkPlaceSel');
     if(sel){ sel.innerHTML='<option value="">— scegli beacon —</option>'+(B||[]).map(b=>{
       const here=b.floorplan_id===id&&b.x!=null; const elsewhere=b.floorplan_id&&b.floorplan_id!==id;
       return `<option value="${b.id}">${esc(b.beacon_uid)} · ${esc(b.zone_name)}${here?' (già qui)':elsewhere?' (altra piantina)':''}</option>`;
     }).join('');
       if(!(B||[]).length) sel.innerHTML='<option value="">nessun beacon registrato</option>'; }
+    const dsel=document.getElementById('devPlaceSel');
+    if(dsel){ dsel.innerHTML='<option value="">— scegli dispositivo —</option>'+(DV||[]).map(d=>{
+      const here=d.floorplan_id===id&&d.fp_x!=null; const elsewhere=d.floorplan_id&&d.floorplan_id!==id;
+      return `<option value="${d.id}">${devLabel(d)}${d.model_name?(' · '+esc(d.model_name)):''}${here?' (già qui)':elsewhere?' (altra piantina)':''}</option>`;
+    }).join('');
+      if(!(DV||[]).length) dsel.innerHTML='<option value="">nessun dispositivo registrato</option>'; }
     const gfs=(GFs||[]).filter(g=>g.floorplan_id===id); const gl=L.layerGroup().addTo(FPMAP);
     gfs.forEach(g=>drawIndoorGeofence(g,gl));
     // allarmi INDOOR avvenuti su questa piantina (match beacon posizionato), ultimi 7 giorni
@@ -692,9 +710,9 @@ async function fpOpen(){
           .bindPopup(`<b>📟 ${esc(d.device||'dispositivo')}</b><br>${d.person?('👤 '+esc(d.person)+'<br>'):''}🏭 ${esc(d.zone)}<br><span style="color:#666">ultima posizione indoor: ${new Date(d.at).toLocaleString('it-IT')}</span>`).addTo(dl); });
     }catch(e){}
     $('#mapSide').innerHTML=`<h2 style="margin-bottom:8px">${esc(f.name)}</h2>
-      <div class="small mut">${beacons.length} beacon · ${gfs.length} geofence · ${(devHere||[]).length} dispositivi indoor · ${w}×${h}px</div>
+      <div class="small mut">${beacons.length} beacon · ${placedDevs.length} dispositivi fissi · ${gfs.length} geofence · ${(devHere||[]).length} indoor (live) · ${w}×${h}px</div>
       ${alarmsHere.length?`<div class="small" style="color:var(--bad);margin-top:8px">🚨 ${alarmsHere.length} allarme/i su questa piantina (ultimi 7gg)</div>`:'<div class="small mut" style="margin-top:8px">Nessun allarme indoor su questa piantina negli ultimi 7gg.</div>'}
-      ${window._fpAdmin?'<div class="small mut" style="margin-top:10px">• <b>📍 Posiziona beacon</b>: scegli un beacon registrato, poi clicca sulla piantina.<br>• Disegna geofence con gli strumenti ⬡ in alto a sinistra (cerchio, rettangolo, poligono).</div>':''}`;
+      ${window._fpAdmin?'<div class="small mut" style="margin-top:10px">• <b>📍 Posiziona beacon / dispositivo</b>: scegli un\'entità registrata, poi clicca sulla piantina.<br>• Disegna geofence con gli strumenti ⬡ in alto a sinistra (cerchio, rettangolo, poligono).</div>':''}`;
     if(window._fpAdmin){
       setupGeofenceTools(FPMAP,{xy:true, onSave:(name,kind,geom)=> saveIndoorGeofence(name,kind,geom,id)});
       FPMAP.on('click',e=>{ if(window._bkPlace) fpPlaceAt(e.latlng, id); });
@@ -713,22 +731,33 @@ async function saveIndoorGeofence(name,kind,geom,fid){
   try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind,geom,floorplan_id:fid})}); toast('Geofence creata','ok'); fpOpen(); }
   catch(e){ toast(e.message,'bad'); }
 }
-// Posizionamento: si arma scegliendo un beacon GIA' registrato, poi si clicca sulla piantina.
-function fpArmPlace(btn){
-  const sel=document.getElementById('bkPlaceSel');
-  if(!sel||!sel.value){ toast('Scegli prima un beacon registrato (⚙ Configura indoor per registrarne)','bad'); return; }
-  window._bkPlace=!window._bkPlace; btn.classList.toggle('ok',window._bkPlace);
-  toast(window._bkPlace?'Clicca sulla piantina nel punto del beacon':'Posizionamento annullato','ok');
+// Posizionamento: si arma scegliendo un'entità (beacon o dispositivo) GIA' registrata,
+// poi si clicca sulla piantina. window._place = {kind:'beacon'|'device'}.
+function fpArmPlace(btn,kind){
+  const selId=kind==='device'?'devPlaceSel':'bkPlaceSel';
+  const sel=document.getElementById(selId);
+  if(!sel||!sel.value){ toast('Scegli prima '+(kind==='device'?'un dispositivo registrato':'un beacon registrato')+' (⚙ Configura indoor)','bad'); return; }
+  const on=!(window._place&&window._place.kind===kind);
+  // disarma l'altro bottone
+  ['bkPlaceBtn','devPlaceBtn'].forEach(bid=>{const b=document.getElementById(bid); if(b)b.classList.remove('ok');});
+  window._place = on?{kind}:null; window._bkPlace=on; btn.classList.toggle('ok',on);
+  toast(on?('Clicca sulla piantina nel punto del '+(kind==='device'?'dispositivo':'beacon')):'Posizionamento annullato','ok');
 }
 async function fpPlaceAt(latlng, fid){
-  const sel=document.getElementById('bkPlaceSel'); const bid=sel&&sel.value;
-  window._bkPlace=false; const b=document.getElementById('bkPlaceBtn'); if(b)b.classList.remove('ok');
-  if(!bid){ toast('Nessun beacon selezionato','bad'); return; }
-  try{ await api('/beacons/'+bid+'/place',{method:'POST',body:JSON.stringify({floorplan_id:fid,x:latlng.lng,y:latlng.lat})});
-    toast('Beacon posizionato','ok'); fpOpen(); }catch(e){ toast(e.message,'bad'); }
+  const place=window._place; window._place=null; window._bkPlace=false;
+  ['bkPlaceBtn','devPlaceBtn'].forEach(bid=>{const b=document.getElementById(bid); if(b)b.classList.remove('ok');});
+  if(!place){ return; }
+  const device=place.kind==='device';
+  const sel=document.getElementById(device?'devPlaceSel':'bkPlaceSel'); const eid=sel&&sel.value;
+  if(!eid){ toast('Niente selezionato','bad'); return; }
+  const url=(device?'/devices/':'/beacons/')+eid+'/place';
+  try{ await api(url,{method:'POST',body:JSON.stringify({floorplan_id:fid,x:latlng.lng,y:latlng.lat})});
+    toast((device?'Dispositivo':'Beacon')+' posizionato','ok'); fpOpen(); }catch(e){ toast(e.message,'bad'); }
 }
 async function beaconUnplace(bid){ if(!confirm('Rimuovere il beacon da questa piantina? (resta registrato)'))return;
   try{ await api('/beacons/'+bid+'/place',{method:'POST',body:JSON.stringify({floorplan_id:null,x:null,y:null})}); toast('Rimosso dalla piantina','ok'); fpOpen(); }catch(e){ toast(e.message,'bad'); } }
+async function deviceUnplace(did){ if(!confirm('Rimuovere il dispositivo da questa piantina? (resta registrato)'))return;
+  try{ await api('/devices/'+did+'/place',{method:'POST',body:JSON.stringify({floorplan_id:null,x:null,y:null})}); toast('Rimosso dalla piantina','ok'); fpOpen(); }catch(e){ toast(e.message,'bad'); } }
 function imgDims(file){ return new Promise((res,rej)=>{ const img=new Image(); img.onload=()=>{res({w:img.naturalWidth,h:img.naturalHeight}); URL.revokeObjectURL(img.src);}; img.onerror=()=>rej(new Error('immagine non valida')); img.src=URL.createObjectURL(file); }); }
 async function pdfToPng(file){
   if(!window.pdfjsLib){ throw new Error('libreria PDF non caricata'); }

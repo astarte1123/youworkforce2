@@ -1106,7 +1106,7 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
     let rows = sqlx::query(
         "SELECT d.id,d.external_id,d.source,d.label,d.enabled,d.config,d.site_id,d.assigned_user,
                 d.last_lat,d.last_lon,d.last_battery,d.last_pos_at,d.last_attributes,d.model_code,d.assigned_asset,
-                d.traccar_status,
+                d.traccar_status,d.floorplan_id,d.fp_x,d.fp_y,
                 s.name AS site_name, u.email AS user_email, a.name AS asset_name,
                 m.manufacturer, m.model_name, m.category, m.capabilities,
                 pr.step AS prov_step,
@@ -1139,6 +1139,8 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
         "assigned_asset": r.try_get::<Uuid,_>("assigned_asset").ok(),
         "asset_name": r.try_get::<String,_>("asset_name").ok(),
         "traccar_status": r.try_get::<String,_>("traccar_status").ok(),
+        "floorplan_id": r.try_get::<Uuid,_>("floorplan_id").ok(),
+        "fp_x": r.try_get::<f64,_>("fp_x").ok(), "fp_y": r.try_get::<f64,_>("fp_y").ok(),
         "prov_step": r.try_get::<String,_>("prov_step").ok() })).collect();
     Ok(Json(json!(out)))
 }
@@ -2749,6 +2751,19 @@ pub async fn place_beacon(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
         .bind(id).bind(b.floorplan_id).bind(b.x).bind(b.y).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n == 0 { return Err(err(StatusCode::NOT_FOUND, "beacon inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+
+// Posiziona (o rimuove: floorplan_id=null) un DISPOSITIVO del tenant su una piantina, in pixel.
+pub async fn place_device(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<BeaconPlace>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.devices SET floorplan_id=$2, fp_x=$3, fp_y=$4 WHERE id=$1")
+        .bind(id).bind(b.floorplan_id).bind(b.x).bind(b.y).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n == 0 { return Err(err(StatusCode::NOT_FOUND, "dispositivo inesistente")); }
     Ok(Json(json!({"ok":true})))
 }
 
