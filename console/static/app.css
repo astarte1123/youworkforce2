@@ -2,9 +2,9 @@
 :root{
   --bg:#f5f7fb; --bg2:#eef1f7; --surface:#ffffff; --surface2:#f8fafc;
   --fg:#0f1b2d; --mut:#5b6b85; --faint:#8a97b1; --line:#e2e8f3;
-  --brand:#2f6bff; --brand-ink:#1b4fd6; --brand-soft:#e7eeff;
+  --brand:#e2001a; --brand-ink:#b10015; --brand-soft:#fde6ea; --brand2:#ff4d88;
   --ok:#11a06b; --ok-soft:#dcf5ea; --warn:#c7820a; --warn-soft:#fdf0d4;
-  --bad:#e23b4e; --bad-soft:#fde3e6; --info:#2f84c7; --info-soft:#def0fb;
+  --bad:#c81e3a; --bad-soft:#fbe0e5; --info:#2f84c7; --info-soft:#def0fb;
   --r:14px; --r-sm:9px; --r-lg:20px; --sp:16px;
   --sh:0 1px 2px rgba(16,32,64,.06),0 6px 20px rgba(16,32,64,.06);
   --sh-lg:0 10px 40px rgba(16,32,64,.16);
@@ -14,7 +14,7 @@
 :root[data-theme="dark"],:root.dark{
   --bg:#0b1220; --bg2:#0f1726; --surface:#141d30; --surface2:#1a2436;
   --fg:#e9eef8; --mut:#9aa7c2; --faint:#6b7a99; --line:#243049;
-  --brand:#4f8cff; --brand-ink:#79a7ff; --brand-soft:#17233f;
+  --brand:#ff3b57; --brand-ink:#ff8097; --brand-soft:#3a1420; --brand2:#ff6fa3;
   --ok:#2ed896; --ok-soft:#10301f; --warn:#f2c14e; --warn-soft:#352a12;
   --bad:#ff6476; --bad-soft:#3a1720; --info:#5bb7f0; --info-soft:#12263a;
   --sh:0 1px 2px rgba(0,0,0,.4),0 6px 24px rgba(0,0,0,.35);
@@ -23,7 +23,7 @@
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
   --bg:#0b1220; --bg2:#0f1726; --surface:#141d30; --surface2:#1a2436;
   --fg:#e9eef8; --mut:#9aa7c2; --faint:#6b7a99; --line:#243049;
-  --brand:#4f8cff; --brand-ink:#79a7ff; --brand-soft:#17233f;
+  --brand:#ff3b57; --brand-ink:#ff8097; --brand-soft:#3a1420; --brand2:#ff6fa3;
   --ok:#2ed896; --ok-soft:#10301f; --warn:#f2c14e; --warn-soft:#352a12;
   --bad:#ff6476; --bad-soft:#3a1720; --info:#5bb7f0; --info-soft:#12263a;
   --sh:0 1px 2px rgba(0,0,0,.4),0 6px 24px rgba(0,0,0,.35);
@@ -131,7 +131,7 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,va
 @media(max-width:820px){.shell{grid-template-columns:1fr}.side{display:none}}
 
 /* ---- logo mark ---- */
-.logo{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--brand),#7aa2ff);display:flex;align-items:center;justify-content:center;flex:none}
+.logo{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--brand),var(--brand2));display:flex;align-items:center;justify-content:center;flex:none}
 .logo svg{width:18px;height:18px}
 
 /* ---- avatar ---- */

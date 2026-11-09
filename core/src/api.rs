@@ -82,7 +82,7 @@ async fn session_of(state: &AppState, h: &HeaderMap) -> Option<Session> {
     let tok = get_cookie(h, "yw_session")?;
     // persistent sessions: survive core restarts; expired rows are ignored.
     let r = sqlx::query(
-        "SELECT user_id, tenant_id, email, role, is_super
+        "SELECT user_id, tenant_id, email, role, is_super, impersonator
          FROM app.sessions WHERE token=$1 AND expires_at > now()")
         .bind(&tok).fetch_optional(&state.owner_pool).await.ok().flatten()?;
     Some(Session {
@@ -91,6 +91,7 @@ async fn session_of(state: &AppState, h: &HeaderMap) -> Option<Session> {
         email: r.get("email"),
         role: r.get("role"),
         is_super: r.get("is_super"),
+        impersonator: r.try_get::<Option<String>, _>("impersonator").ok().flatten(),
     })
 }
 
@@ -99,9 +100,9 @@ async fn persist_session(state: &AppState, tok: &str, s: &Session) {
     let _ = sqlx::query("DELETE FROM app.sessions WHERE expires_at <= now()")
         .execute(&state.owner_pool).await;
     let _ = sqlx::query(
-        "INSERT INTO app.sessions(token,user_id,tenant_id,email,role,is_super,expires_at)
-         VALUES($1,$2,$3,$4,$5,$6, now() + interval '12 hours')")
-        .bind(tok).bind(s.user_id).bind(s.tenant_id).bind(&s.email).bind(&s.role).bind(s.is_super)
+        "INSERT INTO app.sessions(token,user_id,tenant_id,email,role,is_super,impersonator,expires_at)
+         VALUES($1,$2,$3,$4,$5,$6,$7, now() + interval '12 hours')")
+        .bind(tok).bind(s.user_id).bind(s.tenant_id).bind(&s.email).bind(&s.role).bind(s.is_super).bind(&s.impersonator)
         .execute(&state.owner_pool).await;
 }
 
@@ -235,7 +236,7 @@ pub async fn superadmin_login(State(st): State<AppState>, h: HeaderMap, Json(b):
                 let tok = auth::new_token();
                 let csrf = auth::new_token();
                 let sess = Session { user_id: id, tenant_id: None, email: b.email.clone(),
-                    role: "superadmin".into(), is_super: true };
+                    role: "superadmin".into(), is_super: true, impersonator: None };
                 persist_session(&st, &tok, &sess).await;
                 (StatusCode::OK, set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"role":"superadmin","csrf":csrf}))).into_response()
             } else {
@@ -279,12 +280,146 @@ pub async fn create_tenant(State(st): State<AppState>, h: HeaderMap, Json(b): Js
 
 pub async fn list_tenants(State(st): State<AppState>, h: HeaderMap) -> R {
     require_super(&st, &h).await?;
-    let rows = sqlx::query("SELECT id,slug,name,created_at FROM app.tenants ORDER BY created_at")
+    // seat app mobile = utenti che usano l'app (lavoratore/reperibile); IoT = dispositivi registrati.
+    let rows = sqlx::query(
+        "SELECT t.id,t.slug,t.name,t.created_at,
+            t.mobile_app_licenses, t.iot_device_licenses,
+            t.brand_primary,t.brand_ink,t.brand_soft,t.brand_accent,(t.logo IS NOT NULL) AS has_logo,
+            (SELECT count(*) FROM app.users u WHERE u.tenant_id=t.id AND u.role IN ('lavoratore','reperibile')) AS mobile_used,
+            (SELECT count(*) FROM app.devices d WHERE d.tenant_id=t.id) AS iot_used
+         FROM app.tenants t ORDER BY t.created_at")
         .fetch_all(&st.owner_pool).await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({
-        "id": r.get::<Uuid,_>("id"), "slug": r.get::<String,_>("slug"),
-        "name": r.get::<String,_>("name") })).collect();
+        "id": r.get::<Uuid,_>("id"), "slug": r.get::<String,_>("slug"), "name": r.get::<String,_>("name"),
+        "mobile_app_licenses": r.try_get::<Option<i32>,_>("mobile_app_licenses").ok().flatten(),
+        "iot_device_licenses": r.try_get::<Option<i32>,_>("iot_device_licenses").ok().flatten(),
+        "mobile_used": r.get::<i64,_>("mobile_used"),
+        "iot_used": r.get::<i64,_>("iot_used"),
+        "brand_primary": r.try_get::<Option<String>,_>("brand_primary").ok().flatten(),
+        "brand_ink": r.try_get::<Option<String>,_>("brand_ink").ok().flatten(),
+        "brand_soft": r.try_get::<Option<String>,_>("brand_soft").ok().flatten(),
+        "brand_accent": r.try_get::<Option<String>,_>("brand_accent").ok().flatten(),
+        "has_logo": r.get::<bool,_>("has_logo"),
+    })).collect();
     Ok(Json(json!(out)))
+}
+
+// ---- superadmin: set licenze + branding del tenant (il form invia sempre tutti i campi) ----
+// licenze: null = illimitato. colori: stringa vuota = reset al default globale YouCo.
+#[derive(Deserialize)]
+pub struct TenantAdminPatch {
+    pub mobile_app_licenses: Option<i32>, pub iot_device_licenses: Option<i32>,
+    pub brand_primary: Option<String>, pub brand_ink: Option<String>,
+    pub brand_soft: Option<String>, pub brand_accent: Option<String>,
+}
+// Valida un colore CSS semplice (#rgb/#rrggbb/#rrggbbaa). Vuoto/None = reset al default.
+fn clean_color(v: &Option<String>) -> Result<Option<String>, (StatusCode,String)> {
+    match v.as_deref().map(|s| s.trim()) {
+        None | Some("") => Ok(None),
+        Some(s) => {
+            let ok = s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit())
+                && (s.len()==4 || s.len()==7 || s.len()==9);
+            if ok { Ok(Some(s.to_string())) } else { Err(err(StatusCode::BAD_REQUEST, "colore non valido (usa #rgb o #rrggbb)")) }
+        }
+    }
+}
+pub async fn super_set_tenant_admin(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<TenantAdminPatch>) -> R {
+    let s = require_super(&st, &h).await?;
+    let lic = |v: Option<i32>| v.filter(|n| *n >= 0); // negativi -> illimitato
+    let (bp, bi, bs, ba) = (clean_color(&b.brand_primary)?, clean_color(&b.brand_ink)?, clean_color(&b.brand_soft)?, clean_color(&b.brand_accent)?);
+    sqlx::query("UPDATE app.tenants SET mobile_app_licenses=$1, iot_device_licenses=$2,
+            brand_primary=$3, brand_ink=$4, brand_soft=$5, brand_accent=$6 WHERE id=$7")
+        .bind(lic(b.mobile_app_licenses)).bind(lic(b.iot_device_licenses))
+        .bind(bp).bind(bi).bind(bs).bind(ba).bind(tid)
+        .execute(&st.owner_pool).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,$2,'set_tenant_admin','{}')")
+        .bind(tid).bind(&s.email).execute(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---- superadmin: upload / serve logo del tenant ----
+pub async fn super_set_logo(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, body: axum::body::Bytes) -> R {
+    require_super(&st, &h).await?;
+    let ct = h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("image/png").to_string();
+    if body.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "file vuoto")); }
+    sqlx::query("UPDATE app.tenants SET logo=$1, logo_ct=$2 WHERE id=$3")
+        .bind(body.as_ref()).bind(&ct).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn super_del_logo(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
+    require_super(&st, &h).await?;
+    sqlx::query("UPDATE app.tenants SET logo=NULL, logo_ct=NULL WHERE id=$1").bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---- branding visibile al tenant (qualsiasi ruolo autenticato): colori + logo ----
+pub async fn branding(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let r = sqlx::query("SELECT name,brand_primary,brand_ink,brand_soft,brand_accent,(logo IS NOT NULL) AS has_logo FROM app.tenants WHERE id=$1")
+        .bind(tid).fetch_one(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({
+        "name": r.get::<String,_>("name"),
+        "brand_primary": r.try_get::<Option<String>,_>("brand_primary").ok().flatten(),
+        "brand_ink": r.try_get::<Option<String>,_>("brand_ink").ok().flatten(),
+        "brand_soft": r.try_get::<Option<String>,_>("brand_soft").ok().flatten(),
+        "brand_accent": r.try_get::<Option<String>,_>("brand_accent").ok().flatten(),
+        "has_logo": r.get::<bool,_>("has_logo"),
+    })))
+}
+async fn serve_logo(st: &AppState, tid: Uuid) -> Response {
+    let r = sqlx::query("SELECT logo,logo_ct FROM app.tenants WHERE id=$1").bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    match r.and_then(|r| { let b: Option<Vec<u8>> = r.try_get("logo").ok(); b.map(|b| (b, r.try_get::<Option<String>,_>("logo_ct").ok().flatten().unwrap_or("image/png".into()))) }) {
+        Some((bytes, ct)) => ([(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, "no-cache".into())], bytes).into_response(),
+        None => (StatusCode::NOT_FOUND, "no logo").into_response(),
+    }
+}
+pub async fn branding_logo(State(st): State<AppState>, h: HeaderMap) -> Response {
+    match require_tenant(&st, &h).await { Ok(s) => serve_logo(&st, s.tenant_id.unwrap()).await, Err(e) => e.into_response() }
+}
+pub async fn super_get_logo(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> Response {
+    match require_super(&st, &h).await { Ok(_) => serve_logo(&st, tid).await, Err(e) => e.into_response() }
+}
+
+// ---- impersonazione: il superadmin assume la sessione di un admin del tenant ----
+pub async fn super_impersonate(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> impl IntoResponse {
+    let s = match require_super(&st, &h).await { Ok(s) => s, Err(e) => return e.into_response() };
+    // usa un admin reale del tenant (user_id valido per RLS/audit); fallback: primo utente
+    let u = sqlx::query("SELECT id AS user_id,email FROM app.users WHERE tenant_id=$1 AND role='tenant_admin' ORDER BY created_at LIMIT 1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let u = match u {
+        Some(u) => u,
+        None => match sqlx::query("SELECT id AS user_id,email FROM app.users WHERE tenant_id=$1 ORDER BY created_at LIMIT 1")
+            .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten() {
+            Some(u) => u, None => return err(StatusCode::BAD_REQUEST, "il tenant non ha utenti da impersonare").into_response(),
+        }
+    };
+    let sess = Session {
+        user_id: u.get("user_id"), tenant_id: Some(tid), email: u.get("email"),
+        role: "tenant_admin".into(), is_super: false, impersonator: Some(s.email.clone()),
+    };
+    let tok = auth::new_token(); let csrf = auth::new_token();
+    persist_session(&st, &tok, &sess).await;
+    let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,$2,'impersonate_start',$3)")
+        .bind(tid).bind(&s.email).bind(json!({"as":sess.email})).execute(&st.owner_pool).await;
+    (set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"as":sess.email}))).into_response()
+}
+// stop impersonazione: riconia la sessione superadmin (senza nuovo login) e torna al control plane.
+pub async fn impersonate_stop(State(st): State<AppState>, h: HeaderMap) -> impl IntoResponse {
+    let s = match session_of(&st, &h).await { Some(s) => s, None => return err(StatusCode::UNAUTHORIZED, "no session").into_response() };
+    let imp = match &s.impersonator { Some(e) => e.clone(), None => return err(StatusCode::BAD_REQUEST, "non sei in impersonazione").into_response() };
+    // verifica che l'impersonator sia davvero un superadmin
+    let sa = sqlx::query("SELECT email FROM app.superadmins WHERE email=$1").bind(&imp).fetch_optional(&st.owner_pool).await.ok().flatten();
+    if sa.is_none() { return err(StatusCode::FORBIDDEN, "impersonator non valido").into_response(); }
+    if let Some(t) = get_cookie(&h, "yw_session") { let _ = sqlx::query("DELETE FROM app.sessions WHERE token=$1").bind(&t).execute(&st.owner_pool).await; }
+    let sess = Session { user_id: s.user_id, tenant_id: None, email: imp.clone(), role: "superadmin".into(), is_super: true, impersonator: None };
+    let tok = auth::new_token(); let csrf = auth::new_token();
+    persist_session(&st, &tok, &sess).await;
+    if let Some(tid) = s.tenant_id {
+        let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,$2,'impersonate_stop','{}')")
+            .bind(tid).bind(&imp).execute(&st.owner_pool).await;
+    }
+    (set_cookie_header(&tok, &csrf), Json(json!({"ok":true}))).into_response()
 }
 
 pub async fn super_list_modules(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
@@ -852,7 +987,7 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
                 }
             }
             let csrf = auth::new_token();
-            let sess = Session { user_id: uid, tenant_id: Some(tid), email: b.email.clone(), role: role.clone(), is_super: false };
+            let sess = Session { user_id: uid, tenant_id: Some(tid), email: b.email.clone(), role: role.clone(), is_super: false, impersonator: None };
             persist_session(&st, &tok, &sess).await;
             (StatusCode::OK, set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"role":role,"tenant":slug,"csrf":csrf}))).into_response()
         }
@@ -865,7 +1000,7 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
 
 pub async fn me(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = session_of(&st, &h).await.ok_or_else(|| err(StatusCode::UNAUTHORIZED, "no session"))?;
-    Ok(Json(json!({"email":s.email,"role":s.role,"is_super":s.is_super,"tenant_id":s.tenant_id})))
+    Ok(Json(json!({"email":s.email,"role":s.role,"is_super":s.is_super,"tenant_id":s.tenant_id,"impersonator":s.impersonator})))
 }
 
 pub async fn logout(State(st): State<AppState>, h: HeaderMap) -> impl IntoResponse {

@@ -58,8 +58,9 @@ async function load(){
 }
 function tenantCard(t,mods){
   return `<div class="card"><div class="card-h">
-    <div class="row" style="gap:10px"><div class="ava">${initials(t.name)}</div>
+    <div class="row" style="gap:10px"><div class="ava" ${t.has_logo?`style="background:#fff;padding:3px"`:''}>${t.has_logo?`<img src="/api/superadmin/tenants/${t.id}/logo" style="width:100%;height:100%;object-fit:contain">`:initials(t.name)}</div>
       <div><b>${esc(t.name)}</b><div class="small mut mono">${esc(t.slug)}.loneworker.eu</div></div></div>
+    <div class="row" style="gap:6px">${licChip('App mobile',t.mobile_used,t.mobile_app_licenses)} ${licChip('IoT',t.iot_used,t.iot_device_licenses)}</div>
     </div><div class="card-b"><div class="grid g3">
     ${mods.map(m=>`<div class="row" style="justify-content:space-between;padding:8px 10px;border:1px solid var(--line);border-radius:10px">
       <div style="min-width:0"><div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis">${esc(m.name)}</div>
@@ -69,14 +70,80 @@ function tenantCard(t,mods){
         :'<span class="tag">N/D</span>'}
     </div>`).join('')}
     </div>
-    <div class="row" style="margin-top:10px;gap:8px"><button class="btn ghost" onclick="openTools('${t.id}')">Strumenti disponibili</button>
+    <div class="row" style="margin-top:10px;gap:8px"><button class="btn" onclick="openAdmin('${t.id}')">⚙ Amministrazione</button>
+      <button class="btn ghost" onclick="impersonate('${t.id}')">👤 Impersona admin</button>
+      <button class="btn ghost" onclick="openTools('${t.id}')">Strumenti disponibili</button>
       <button class="btn ghost" onclick="gaProvision('${t.id}')">Provisiona GoAlert</button>
       <button class="btn ghost" onclick="gaConfig('${t.id}')">Trasporto notifiche</button>
       <button class="btn ghost" onclick="trConn('${t.id}')">Connessione Traccar</button>
       <button class="btn ghost" onclick="trConfig('${t.id}')">Config Traccar</button></div>
+    <div id="admin_${t.id}" style="margin-top:8px"></div>
     <div id="tools_${t.id}" style="margin-top:8px"></div>
     <div id="cfg_${t.id}" style="margin-top:8px"></div>
     </div></div>`;
+}
+function licChip(label,used,limit){
+  if(limit==null) return `<span class="chip" title="${label}: nessun limite">${label} ${used}/∞</span>`;
+  const over=used>limit;
+  return `<span class="chip ${over?'s-critico':'s-attivo'}" title="${label}: uso/licenze">${over?'⚠ ':''}${label} ${used}/${limit}</span>`;
+}
+function tenantOf(tid){ return TENANTS.find(x=>x.id===tid)||{}; }
+async function openAdmin(tid){
+  const box=document.getElementById('admin_'+tid);
+  if(box.dataset.open){ box.innerHTML=''; box.dataset.open=''; return; }
+  box.dataset.open='1';
+  const t=tenantOf(tid);
+  const ci=(id,val)=>`<input id="${id}_${tid}" type="color" value="${val||'#000000'}" style="width:46px;height:34px;padding:2px">
+    <input id="${id}t_${tid}" value="${val||''}" placeholder="default" style="width:110px" class="mono small">`;
+  box.innerHTML=`<div class="card" style="padding:14px">
+    <h3 style="margin:0 0 8px">Licenze</h3>
+    <div class="small mut" style="margin-bottom:8px">Conteggio seat app mobile (lavoratori/reperibili) e dispositivi IoT registrati. Vuoto = illimitato. Policy: si traccia e si avvisa, non si blocca.</div>
+    <div class="row" style="gap:16px">
+      <label class="small mut">Licenze app mobile <span class="chip">${t.mobile_used} in uso</span><br><input id="lm_${tid}" type="number" min="0" value="${t.mobile_app_licenses??''}" placeholder="illimitato" style="width:140px"></label>
+      <label class="small mut">Licenze dispositivi IoT <span class="chip">${t.iot_used} in uso</span><br><input id="li_${tid}" type="number" min="0" value="${t.iot_device_licenses??''}" placeholder="illimitato" style="width:140px"></label>
+    </div>
+    <h3 style="margin:16px 0 8px">Identità visiva</h3>
+    <div class="small mut" style="margin-bottom:8px">Logo e colori principali dell'app per questo tenant. Vuoto = default globale YouCo (rosso/rosa).</div>
+    <div class="row" style="gap:18px;align-items:flex-start;flex-wrap:wrap">
+      <div><div class="small mut" style="margin-bottom:4px">Logo</div>
+        <div style="width:64px;height:64px;border:1px solid var(--line);border-radius:12px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden">
+          ${t.has_logo?`<img src="/api/superadmin/tenants/${tid}/logo?ts=${Date.now()}" style="width:100%;height:100%;object-fit:contain">`:'<span class="small faint">nessuno</span>'}</div>
+        <div class="row" style="gap:6px;margin-top:6px"><input id="logo_${tid}" type="file" accept="image/*" style="width:150px" class="small">
+          <button class="btn ghost small" onclick="logoUpload('${tid}')">Carica</button>${t.has_logo?`<button class="btn ghost small" onclick="logoDel('${tid}')">✕</button>`:''}</div></div>
+      <div><div class="small mut" style="margin-bottom:4px">Colore primario (bottoni/icone)</div>${ci('cp',t.brand_primary)}
+        <div class="small mut" style="margin:8px 0 4px">Colore hover/testo</div>${ci('ck',t.brand_ink)}
+        <div class="small mut" style="margin:8px 0 4px">Sfondo tenue</div>${ci('cs',t.brand_soft)}
+        <div class="small mut" style="margin:8px 0 4px">Accento (gradiente, es. rosa)</div>${ci('ca',t.brand_accent)}</div>
+    </div>
+    <div class="row" style="gap:8px;margin-top:12px"><button class="btn" onclick="saveAdmin('${tid}')">Salva amministrazione</button>
+      <span class="small mut">I colori hanno effetto per i tenant che aprono la loro console.</span></div>
+    </div>`;
+  // sincronizza color picker <-> campo hex
+  ['cp','ck','cs','ca'].forEach(k=>{ const p=document.getElementById(k+'_'+tid), x=document.getElementById(k+'t_'+tid);
+    if(p&&x){ p.oninput=()=>x.value=p.value; x.oninput=()=>{ if(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(x.value)) p.value=x.value; }; } });
+}
+async function saveAdmin(tid){
+  const hex=k=>{ const x=document.getElementById(k+'t_'+tid).value.trim(); return x; };
+  const numv=id=>{ const v=document.getElementById(id+'_'+tid).value.trim(); return v===''?null:parseInt(v,10); };
+  const body={ mobile_app_licenses:numv('lm'), iot_device_licenses:numv('li'),
+    brand_primary:hex('cp'), brand_ink:hex('ck'), brand_soft:hex('cs'), brand_accent:hex('ca') };
+  try{ await api('/superadmin/tenants/'+tid+'/admin',{method:'POST',body:JSON.stringify(body)}); toast('Amministrazione salvata','ok'); load(); }
+  catch(e){ toast(e.message,'bad'); }
+}
+async function logoUpload(tid){
+  const f=document.getElementById('logo_'+tid).files&&document.getElementById('logo_'+tid).files[0];
+  if(!f){ toast('Scegli un file','bad'); return; }
+  try{ const res=await fetch('/api/superadmin/tenants/'+tid+'/logo',{method:'POST',credentials:'include',
+      headers:{'x-csrf-token':csrfToken(),'content-type':f.type||'image/png'}, body:f});
+    if(!res.ok) throw new Error('upload '+res.status); toast('Logo caricato','ok'); load();
+  }catch(e){ toast(e.message,'bad'); }
+}
+async function logoDel(tid){ try{ await api('/superadmin/tenants/'+tid+'/logo',{method:'DELETE'}); toast('Logo rimosso','ok'); load(); }catch(e){ toast(e.message,'bad'); } }
+async function impersonate(tid){
+  const t=tenantOf(tid);
+  if(!confirm('Impersonare l\'admin di '+(t.name||'questo tenant')+'? Entrerai nella sua console per supporto. L\'azione è tracciata.')) return;
+  try{ await api('/superadmin/tenants/'+tid+'/impersonate',{method:'POST'}); location.href='/app.html'; }
+  catch(e){ toast(e.message,'bad'); }
 }
 async function toggle(tid,code,cb){
   const state=cb.checked?'attivo':'non_abilitato';

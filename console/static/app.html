@@ -41,10 +41,24 @@ const modOk = n => !n.mod || n.mod.some(m=>ACTIVE_MODS.has(m));
 const featOk = n => !n.feat || UI_FEAT[n.feat]!==false;
 const visibleNav = ()=>NAV.filter(n=>(!n.roles||n.roles.includes(ME.role)) && modOk(n) && featOk(n));
 // carica stato moduli + feature flag UI del tenant (voci menu Mappa/Piantine configurabili dall'admin)
+let BRANDING={};
 async function loadCtx(){
   try{ const M=await api('/modules'); ACTIVE_MODS=new Set((M||[]).filter(m=>m.state==='attivo').map(m=>m.code)); }catch(e){}
   try{ const F=await api('/ui/features'); if(F&&typeof F==='object') UI_FEAT=F; }catch(e){}
+  try{ const B=await api('/branding'); if(B&&typeof B==='object'){ BRANDING=B; applyBranding(B); } }catch(e){}
 }
+// Branding per-tenant: sovrascrive i colori di base (default globale YouCo) via CSS vars su :root.
+function applyBranding(b){
+  const r=document.documentElement.style;
+  const set=(k,v)=>{ v?r.setProperty(k,v):r.removeProperty(k); };
+  set('--brand', b.brand_primary); set('--brand-ink', b.brand_ink);
+  set('--brand-soft', b.brand_soft); set('--brand2', b.brand_accent);
+}
+// Marchio: logo del tenant se caricato, altrimenti il logomark YouWorkforce.
+function brandMark(){ return BRANDING.has_logo
+  ? `<img src="/api/branding/logo" alt="logo" style="width:100%;height:100%;object-fit:contain;border-radius:inherit">`
+  : ICON.logomark; }
+function brandName(){ return esc(BRANDING.name||'YouWorkforce'); }
 
 // ---------------- boot ----------------
 (async function(){
@@ -94,13 +108,15 @@ async function doLogin(){
   }catch(e){ $('#msg').textContent='Credenziali non valide'; }
 }
 async function logout(){ try{SSE&&SSE.close()}catch(e){} try{await api('/logout',{method:'POST'});}catch(e){} ME=null; location.hash=''; renderLogin(); }
+async function stopImpersonate(){ try{SSE&&SSE.close()}catch(e){} try{ await api('/impersonate/stop',{method:'POST'}); }catch(e){ toast(e.message,'bad'); return; }
+  location.href='/superadmin.html'; }
 
 // ---------------- shell ----------------
 function renderShell(){
   $('#root').innerHTML = `
   <div class="shell">
     <aside class="side">
-      <div class="brand"><div class="logo">${ICON.logomark}</div> YouWorkforce</div>
+      <div class="brand"><div class="logo">${brandMark()}</div> ${brandName()}</div>
       <nav id="nav">${visibleNav().map(n=>`<a data-k="${n.k}"><span class="ico">${ICON[n.ico]}</span>${n.t}</a>`).join('')}</nav>
       <div class="foot">
         <div class="row"><div class="ava">${initials(ME.email)}</div>
@@ -117,12 +133,15 @@ function renderShell(){
         <button class="btn-ico btn ghost" title="Tema" onclick="toggleTheme()">${ICON.moon}</button>
         <button class="btn-ico btn ghost" title="Esci" onclick="logout()">${ICON.logout}</button>
       </div>
+      ${ME.impersonator?`<div style="background:var(--warn-soft);color:#7a5a00;border-bottom:1px solid var(--line);padding:7px 16px;font-size:13px;display:flex;align-items:center;gap:10px">
+        <b>👤 Stai impersonando</b> ${brandName()} come <b>${esc(ME.email)}</b> · supporto superadmin (${esc(ME.impersonator)})
+        <button class="btn ghost small" style="margin-left:auto" onclick="stopImpersonate()">Esci impersonazione</button></div>`:''}
       <div class="content"><div id="view"></div></div>
     </div>
   </div>
   <button id="fab" class="hide" onclick="toggleAI()" title="Assistente"
     style="position:fixed;right:22px;bottom:22px;z-index:45;width:56px;height:56px;border-radius:50%;border:none;
-    background:linear-gradient(135deg,var(--brand),#7aa2ff);color:#fff;box-shadow:var(--sh-lg);cursor:pointer;font-size:22px">✦</button>
+    background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff;box-shadow:var(--sh-lg);cursor:pointer;font-size:22px">✦</button>
   <div id="ai" class="card hide" style="position:fixed;right:22px;bottom:90px;z-index:46;width:min(400px,92vw);max-height:70vh;display:flex;flex-direction:column">
     <div class="card-h"><div class="row" style="gap:8px"><b>Assistente</b><span class="tag sim">SIMULATO · sola lettura</span></div>
       <button class="btn-ico btn ghost" onclick="toggleAI()">✕</button></div>

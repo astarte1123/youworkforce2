@@ -25,6 +25,7 @@ pub struct Session {
     pub email: String,
     pub role: String,             // "superadmin" for control plane
     pub is_super: bool,
+    pub impersonator: Option<String>, // super email when this is an impersonation session
 }
 
 #[derive(Clone, Debug)]
