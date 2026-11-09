@@ -33,7 +33,7 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
 async fn traccar_poll(st: &AppState) -> anyhow::Result<()> {
     let now = st.clock.now();
     let conns = sqlx::query(
-        "SELECT c.tenant_id, c.base_url, c.username, c.password, c.poll_interval_s, c.silence_after_s
+        "SELECT c.tenant_id, c.base_url, c.username, c.password, c.poll_interval_s, c.silence_after_s, c.conn_down_after_s
          FROM app.traccar_connections c
          JOIN app.tenant_modules m ON m.tenant_id=c.tenant_id AND m.module_code='traccar' AND m.state='attivo'
          WHERE c.poll_enabled=true")
@@ -53,10 +53,96 @@ async fn traccar_poll(st: &AppState) -> anyhow::Result<()> {
         let user: String = c.get("username");
         let pass: String = st.secrets.decrypt(&c.get::<String,_>("password"));   // P3
         let silence_after: i32 = c.get("silence_after_s");
+        let conn_down_after: i32 = c.get("conn_down_after_s");
         if let Err(e) = poll_tenant(st, tid, &base, &user, &pass, last_ok, last_event_id, silence_after, now).await {
             // marca non raggiungibile ma non interrompe gli altri tenant
             let _ = mark_poll(st, tid, false, last_event_id, None, None, Some(&e.to_string()), now).await;
         }
+        // watchdog della CONNESSIONE: se Traccar e' down oltre la soglia -> incidente + escalation.
+        let _ = conn_watchdog(st, tid, conn_down_after, now).await;
+    }
+    Ok(())
+}
+
+/// Watchdog della connessione Traccar (sicurezza): se il server e' irraggiungibile
+/// oltre `conn_down_after` secondi alza un incidente critico `traccar_conn_down`
+/// (escalation GoAlert); al ripristino lo chiude. Un episodio = un incidente.
+async fn conn_watchdog(st: &AppState, tid: Uuid, conn_down_after: i32, now: DateTime<Utc>) -> anyhow::Result<()> {
+    let Some(r) = sqlx::query("SELECT reachable,down_since,conn_incident_open,conn_incident_corr FROM app.traccar_poll_state WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await? else { return Ok(()); };
+    let reachable: bool = r.get("reachable");
+    let down_since: Option<DateTime<Utc>> = r.try_get("down_since").ok();
+    let open: bool = r.get("conn_incident_open");
+    let corr: Option<String> = r.try_get("conn_incident_corr").ok();
+
+    if !reachable {
+        let ds = match down_since {
+            Some(d) => d,
+            None => {
+                sqlx::query("UPDATE app.traccar_poll_state SET down_since=$2 WHERE tenant_id=$1")
+                    .bind(tid).bind(now).execute(&st.owner_pool).await?;
+                now
+            }
+        };
+        if (now - ds).num_seconds() >= conn_down_after as i64 {
+            // C'e' davvero un incidente APERTO per questo episodio? (non fidarsi del
+            // solo flag: persist puo' fallire, oppure un operatore puo' aver chiuso
+            // l'incidente mentre l'outage continua -> in sicurezza si ri-escalation.)
+            let has_open = match &corr {
+                Some(c) => sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.incidents WHERE tenant_id=$1 AND correlation=$2 AND state<>'chiuso'")
+                    .bind(tid).bind(c).fetch_optional(&st.owner_pool).await?.is_some(),
+                None => false,
+            };
+            if !has_open {
+                // correlazione fresca: evita che l'ON CONFLICT deduplichi contro un
+                // evento di un incidente gia' chiuso (altrimenti non si riaprirebbe).
+                let correlation = format!("traccar-conndown-{}-{}-{}", tid, ds.timestamp_millis(), now.timestamp_millis());
+                let res = crate::api::persist_ingest(st, tid, crate::api::Normalized{
+                    source: "traccar".into(),
+                    source_event: correlation.clone(),
+                    idem: correlation.clone(),
+                    etype: "traccar_conn_down".into(),
+                    device_external_id: None,
+                    site_name: None,
+                    lat: None, lon: None, accuracy_m: None,
+                    correlation: correlation.clone(),
+                    payload: json!({"watchdog":"connessione","down_since":ds,"conn_down_after_s":conn_down_after}),
+                }).await;
+                // segna aperto SOLO se l'incidente e' stato davvero creato (+ outbox).
+                let opened = matches!(&res, Ok(j) if j.0.get("incident_id").and_then(|v| v.as_str()).is_some());
+                if opened {
+                    sqlx::query("UPDATE app.traccar_poll_state SET conn_incident_open=true, conn_incident_corr=$2 WHERE tenant_id=$1")
+                        .bind(tid).bind(&correlation).execute(&st.owner_pool).await?;
+                    tracing::warn!("Traccar connessione down per tenant {tid}: incidente alzato");
+                } else {
+                    // persist fallito: non marcare aperto -> ritenta al prossimo poll.
+                    sqlx::query("UPDATE app.traccar_poll_state SET conn_incident_open=false WHERE tenant_id=$1")
+                        .bind(tid).execute(&st.owner_pool).await?;
+                    tracing::error!("Traccar conn_down: persist incidente fallito tenant {tid}, ritento");
+                }
+            }
+        }
+    } else if open {
+        // ripristino: chiudi l'incidente e chiedi a GoAlert di chiudere l'alert
+        if let Some(corr) = &corr {
+            if let Some(row) = sqlx::query("UPDATE app.incidents SET state='chiuso',outcome='connessione Traccar ripristinata',closed_at=now(),version=version+1
+                 WHERE tenant_id=$1 AND correlation=$2 AND state<>'chiuso' RETURNING id,etype")
+                .bind(tid).bind(corr).fetch_optional(&st.owner_pool).await? {
+                let iid: Uuid = row.get("id"); let etype: String = row.get("etype");
+                sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'transition',$3)")
+                    .bind(tid).bind(iid).bind(json!({"to":"chiuso","outcome":"connessione ripristinata","by":"watchdog"})).execute(&st.owner_pool).await?;
+                sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_close',$2)")
+                    .bind(tid).bind(json!({"incident_id":iid,"summary":format!("close {}",corr),"dedup":corr,"etype":etype}))
+                    .execute(&st.owner_pool).await?;
+            }
+        }
+        sqlx::query("UPDATE app.traccar_poll_state SET conn_incident_open=false, down_since=NULL, conn_incident_corr=NULL WHERE tenant_id=$1")
+            .bind(tid).execute(&st.owner_pool).await?;
+        tracing::info!("Traccar connessione ripristinata per tenant {tid}");
+    } else if down_since.is_some() {
+        // blip rientrato prima della soglia
+        sqlx::query("UPDATE app.traccar_poll_state SET down_since=NULL WHERE tenant_id=$1")
+            .bind(tid).execute(&st.owner_pool).await?;
     }
     Ok(())
 }
@@ -108,8 +194,23 @@ async fn poll_tenant(st: &AppState, tid: Uuid, base: &str, user: &str, pass: &st
     };
     let get = |path: String| st.http.get(format!("{base}{path}")).header("Cookie", &cookie).header("Accept","application/json").send();
 
-    // 1) device: id numerico -> (uniqueId, lastUpdate, status)
-    let devs: Value = get("/api/devices".into()).await?.json().await.unwrap_or(json!([]));
+    // 1) device: id numerico -> (uniqueId, lastUpdate, status).
+    // Un Traccar che AUTENTICA ma degrada (es. 5xx o body invalido su /api/devices)
+    // NON e' raggiungibile ai fini sicurezza: segnalo reachable=false cosi' il
+    // watchdog connessione scatta (altrimenti entrambi i watchdog resterebbero ciechi).
+    let dresp = get("/api/devices".into()).await?;
+    if !dresp.status().is_success() {
+        mark_poll(st, tid, false, last_event_id, None, None, Some(&format!("Traccar /api/devices {}", dresp.status())), now).await?;
+        return Ok(());
+    }
+    let devs: Value = match dresp.json().await {
+        Ok(v) => v,
+        Err(_) => { mark_poll(st, tid, false, last_event_id, None, None, Some("Traccar /api/devices: json non valido"), now).await?; return Ok(()); }
+    };
+    if !devs.is_array() {
+        mark_poll(st, tid, false, last_event_id, None, None, Some("Traccar /api/devices: risposta inattesa"), now).await?;
+        return Ok(());
+    }
     let mut id2uid: std::collections::HashMap<i64,String> = std::collections::HashMap::new();
     let mut device_count = 0i32; let mut online_count = 0i32;
     if let Some(arr) = devs.as_array() {

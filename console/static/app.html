@@ -826,8 +826,30 @@ function traccarHealthCard(s){
     </div>
     ${s.last_error?`<div class="small" style="color:var(--bad);margin-top:8px">⚠ ${esc(s.last_error)}</div>`:''}
     <div class="small mut" style="margin-top:8px">Pull via API Traccar: recupera eventi persi (backfill da cursore) e rileva il silenzio dei badge anche se Traccar non invia <i>deviceOffline</i>. Il forwarding resta come percorso rapido.</div>
-    ${can(['tenant_admin'])?`<div class="row" style="gap:8px;margin-top:10px"><button class="btn ghost small" onclick="trVerify(this)">Verifica collegamento</button></div><div id="trVerifyOut"></div>`:''}
+    ${can(['tenant_admin'])?`<div class="row" style="gap:8px;margin-top:10px"><button class="btn ghost small" onclick="trVerify(this)">Verifica collegamento</button>
+      <button class="btn ghost small" onclick="trSettings(this)">⚙ Impostazioni sicurezza</button></div>
+      <div id="trVerifyOut"></div><div id="trSettingsOut"></div>`:''}
   </div>`;
+}
+function trSettings(btn){
+  const out=$('#trSettingsOut'); if(!out)return;
+  if(out.dataset.open){ out.innerHTML=''; out.dataset.open=''; return; } out.dataset.open='1';
+  api('/traccar/settings').then(s=>{
+    if(!s.configured){ out.innerHTML='<div class="small mut" style="margin-top:8px">Connessione non configurata (superadmin).</div>'; return; }
+    out.innerHTML=`<div class="card pad" style="margin-top:10px;background:var(--bg2)">
+      <div class="small mut" style="margin-bottom:8px">Parametri di sicurezza: decidi quando un badge silente o un Traccar irraggiungibile diventano allarme.</div>
+      <label class="small mut" style="display:block;margin:4px 0">Cadenza poll (s, 5–600)<input id="ts_poll" type="number" min="5" max="600" value="${s.poll_interval_s}"></label>
+      <label class="small mut" style="display:block;margin:4px 0">Soglia silenzio badge → <b>perdita_contatto</b> (s, 0=off)<input id="ts_sil" type="number" min="0" max="86400" value="${s.silence_after_s}"></label>
+      <label class="small mut" style="display:block;margin:4px 0">Soglia down connessione → <b>traccar_conn_down</b> (s, 30–3600)<input id="ts_down" type="number" min="30" max="3600" value="${s.conn_down_after_s}"></label>
+      <label class="row small" style="gap:8px;margin:6px 0"><input type="checkbox" id="ts_en" ${s.poll_enabled?'checked':''}> Poll attivo</label>
+      <button class="btn small" onclick="trSettingsSave()">Salva impostazioni</button></div>`;
+  }).catch(e=>{ out.innerHTML='<div class="small" style="color:var(--bad)">'+esc(e.message)+'</div>'; });
+}
+async function trSettingsSave(){
+  const body={ poll_interval_s:+$('#ts_poll').value, silence_after_s:+$('#ts_sil').value,
+    conn_down_after_s:+$('#ts_down').value, poll_enabled:$('#ts_en').checked };
+  try{ await api('/traccar/settings',{method:'POST',body:JSON.stringify(body)}); toast('Impostazioni salvate','ok'); }
+  catch(e){ toast(e.message,'bad'); }
 }
 async function trVerify(btn){
   const out=$('#trVerifyOut'); if(btn){btn.disabled=true;btn.textContent='Verifico…';}
@@ -860,7 +882,8 @@ async function tokDel(t){ if(!confirm('Revocare il token? La sorgente collegata 
 async function vGruppi(v){
   const [G,users]=await Promise.all([api('/groups').catch(()=>({groups:[],routing:[]})),api('/users').catch(()=>[])]);
   v._users=users; v._groups=G.groups;
-  const ETYPES=['sos','man_down','immobilita','mancato_checkin','sensore_critico'];
+  const ETYPES=['sos','man_down','immobilita','mancato_checkin','sensore_critico',
+    'perdita_contatto','manomissione_badge','perdita_alimentazione','jamming','traccar_conn_down'];
   const routeOf=e=>(G.routing.find(r=>r.etype===e)||{}).group_id||'';
   v.innerHTML=`<div class="page-h"><div><h1>Gruppi allarme</h1><div class="mut">destinatari ed escalation per tipo di evento</div></div>
     <button class="btn" onclick="grpNew()">+ Nuovo gruppo</button></div>

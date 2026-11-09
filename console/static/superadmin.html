@@ -72,6 +72,7 @@ function tenantCard(t,mods){
     <div class="row" style="margin-top:10px;gap:8px"><button class="btn ghost" onclick="openTools('${t.id}')">Strumenti disponibili</button>
       <button class="btn ghost" onclick="gaProvision('${t.id}')">Provisiona GoAlert</button>
       <button class="btn ghost" onclick="gaConfig('${t.id}')">Trasporto notifiche</button>
+      <button class="btn ghost" onclick="trConn('${t.id}')">Connessione Traccar</button>
       <button class="btn ghost" onclick="trConfig('${t.id}')">Config Traccar</button></div>
     <div id="tools_${t.id}" style="margin-top:8px"></div>
     <div id="cfg_${t.id}" style="margin-top:8px"></div>
@@ -106,6 +107,33 @@ const CFG_GROUPS={
   'Webhook (es. Teams)':['Webhook.Enable','Webhook.AllowedURLs'],
   'Generale':['General.PublicURL'],
 };
+async function trConn(tid){
+  const box=document.getElementById('cfg_'+tid);
+  if(box.dataset.open==='trconn'){ box.innerHTML=''; box.dataset.open=''; return; }
+  box.dataset.open='trconn'; box.innerHTML='<div class="small mut">carico…</div>';
+  let c; try{ c=await api('/superadmin/tenants/'+tid+'/traccar'); }catch(e){ c={configured:false}; }
+  box.innerHTML=`<div class="card" style="padding:12px">
+    <div class="small mut" style="margin-bottom:8px">Connessione al server Traccar del tenant (base URL + credenziali). È il prerequisito di tutto il modulo: polling, comandi, sync, verifica.</div>
+    <label class="small mut" style="display:block;margin:4px 0">Base URL<input id="tc_url_${tid}" placeholder="http://host:8082" value="${esc(c.base_url||'')}"></label>
+    <label class="small mut" style="display:block;margin:4px 0">Utente<input id="tc_user_${tid}" placeholder="op@tenant.test" value="${esc(c.username||'')}"></label>
+    <label class="small mut" style="display:block;margin:4px 0">Password${c.has_password?' <span class="small">(impostata — lascia vuoto per non cambiarla)</span>':''}<input id="tc_pw_${tid}" type="password" placeholder="${c.has_password?'•••••• invariata':'password'}"></label>
+    <div class="row" style="gap:8px;margin-top:6px"><button class="btn" onclick="trConnSave('${tid}')">Salva e verifica</button>
+      ${c.configured?'<span class="chip s-attivo">configurata</span>':'<span class="chip">assente</span>'}</div>
+    <div id="tc_msg_${tid}" class="small mut" style="margin-top:6px"></div></div>`;
+}
+async function trConnSave(tid){
+  const url=document.getElementById('tc_url_'+tid).value.trim();
+  const user=document.getElementById('tc_user_'+tid).value.trim();
+  const pw=document.getElementById('tc_pw_'+tid).value;
+  const msg=document.getElementById('tc_msg_'+tid);
+  if(!url||!user){ toast('Base URL e utente obbligatori','bad'); return; }
+  try{
+    const body={base_url:url,username:user}; if(pw) body.password=pw;
+    await api('/superadmin/tenants/'+tid+'/traccar',{method:'POST',body:JSON.stringify(body)});
+    toast('Connessione salvata','ok');
+    if(msg){ msg.innerHTML='<span class="s-attivo">salvata</span> — ora l\'admin del tenant può usare “Verifica collegamento” nella pagina Connettori.'; }
+  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
+}
 async function trConfig(tid){
   const box=document.getElementById('cfg_'+tid);
   if(box.dataset.open==='tr'){ box.innerHTML=''; box.dataset.open=''; return; }

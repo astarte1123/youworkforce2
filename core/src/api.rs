@@ -12,7 +12,7 @@ type R = Result<Json<Value>, (StatusCode, String)>;
 fn err(c: StatusCode, m: &str) -> (StatusCode, String) { (c, m.to_string()) }
 
 const CRITICAL: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin", "sensore_critico",
-    "manomissione_badge", "perdita_alimentazione", "jamming", "perdita_contatto"];
+    "manomissione_badge", "perdita_alimentazione", "jamming", "perdita_contatto", "traccar_conn_down"];
 
 /// Traccar alarm -> normalized etype. Safety-first defaults for lone workers.
 /// `sos_as` lets a tenant route the SOS alarm to `sos` or `man_down`.
@@ -309,14 +309,22 @@ pub async fn set_module(State(st): State<AppState>, h: HeaderMap, Path(tid): Pat
 }
 
 #[derive(Deserialize)]
-pub struct SetTraccarConn { pub base_url: String, pub username: String, pub password: String }
+pub struct SetTraccarConn { pub base_url: String, pub username: String, pub password: Option<String> }
 pub async fn super_set_traccar(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetTraccarConn>) -> R {
     require_super(&st, &h).await?;
     let base = b.base_url.trim_end_matches('/').to_string();
-    let enc_pass = st.secrets.encrypt(&b.password);   // P3: cifrato a riposo
-    sqlx::query("INSERT INTO app.traccar_connections(tenant_id,base_url,username,password) VALUES($1,$2,$3,$4)
-        ON CONFLICT (tenant_id) DO UPDATE SET base_url=EXCLUDED.base_url,username=EXCLUDED.username,password=EXCLUDED.password,updated_at=now()")
-        .bind(tid).bind(&base).bind(&b.username).bind(&enc_pass).execute(&st.owner_pool).await.map_err(ise)?;
+    let pw = b.password.unwrap_or_default();
+    if pw.is_empty() {
+        // password invariata: aggiorna solo URL/utente (richiede connessione esistente)
+        let n = sqlx::query("UPDATE app.traccar_connections SET base_url=$2,username=$3,updated_at=now() WHERE tenant_id=$1")
+            .bind(tid).bind(&base).bind(&b.username).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+        if n == 0 { return Err(err(StatusCode::BAD_REQUEST, "password richiesta per la prima configurazione")); }
+    } else {
+        let enc_pass = st.secrets.encrypt(&pw);   // P3: cifrato a riposo
+        sqlx::query("INSERT INTO app.traccar_connections(tenant_id,base_url,username,password) VALUES($1,$2,$3,$4)
+            ON CONFLICT (tenant_id) DO UPDATE SET base_url=EXCLUDED.base_url,username=EXCLUDED.username,password=EXCLUDED.password,updated_at=now()")
+            .bind(tid).bind(&base).bind(&b.username).bind(&enc_pass).execute(&st.owner_pool).await.map_err(ise)?;
+    }
     sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,'superadmin','set_traccar_conn',$2)")
         .bind(tid).bind(json!({"base_url":base})).execute(&st.owner_pool).await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
@@ -518,9 +526,9 @@ pub async fn traccar_status(State(st): State<AppState>, h: HeaderMap) -> R {
         return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato"));
     }
     let configured = traccar_conn(&st, tid).await.is_some();
-    let cfg: Option<(bool,i32,i32)> = sqlx::query_as("SELECT poll_enabled,poll_interval_s,silence_after_s FROM app.traccar_connections WHERE tenant_id=$1")
+    let cfg: Option<(bool,i32,i32,i32)> = sqlx::query_as("SELECT poll_enabled,poll_interval_s,silence_after_s,conn_down_after_s FROM app.traccar_connections WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
-    let (poll_enabled, poll_interval_s, silence_after_s) = cfg.unwrap_or((false,30,600));
+    let (poll_enabled, poll_interval_s, silence_after_s, conn_down_after_s) = cfg.unwrap_or((false,30,600,180));
     let row = sqlx::query("SELECT last_event_id,last_poll_at,last_ok_at,reachable,last_error,device_count,online_count FROM app.traccar_poll_state WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
     let now = st.clock.now();
@@ -542,6 +550,7 @@ pub async fn traccar_status(State(st): State<AppState>, h: HeaderMap) -> R {
         "poll_enabled": poll_enabled,
         "poll_interval_s": poll_interval_s,
         "silence_after_s": silence_after_s,
+        "conn_down_after_s": conn_down_after_s,
         "reachable": reachable,
         "last_ok_at": last_ok_at,
         "last_poll_at": last_poll_at,
@@ -551,6 +560,81 @@ pub async fn traccar_status(State(st): State<AppState>, h: HeaderMap) -> R {
         "online_count": online_count,
         "last_event_id": last_event_id,
     })))
+}
+
+/// Lettura connessione Traccar del tenant per la UI superadmin (password MAI
+/// restituita, solo has_password). Include le impostazioni poll/watchdog.
+pub async fn super_get_traccar(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
+    require_super(&st, &h).await?;
+    let row = sqlx::query("SELECT base_url,username,password,poll_enabled,poll_interval_s,silence_after_s,conn_down_after_s
+         FROM app.traccar_connections WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    match row {
+        None => Ok(Json(json!({"configured":false}))),
+        Some(r) => Ok(Json(json!({
+            "configured": true,
+            "base_url": r.get::<String,_>("base_url"),
+            "username": r.get::<String,_>("username"),
+            "has_password": !r.get::<String,_>("password").is_empty(),
+            "poll_enabled": r.get::<bool,_>("poll_enabled"),
+            "poll_interval_s": r.get::<i32,_>("poll_interval_s"),
+            "silence_after_s": r.get::<i32,_>("silence_after_s"),
+            "conn_down_after_s": r.get::<i32,_>("conn_down_after_s"),
+        }))),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct TraccarSettings {
+    pub poll_enabled: Option<bool>,
+    pub poll_interval_s: Option<i32>,
+    pub silence_after_s: Option<i32>,
+    pub conn_down_after_s: Option<i32>,
+}
+/// GAP C — impostazioni operative Traccar configurabili dall'admin del tenant:
+/// cadenza poll, soglia silenzio badge (watchdog), soglia down connessione.
+/// Sono parametri di SICUREZZA: l'admin decide quando un badge silente o un
+/// Traccar irraggiungibile diventano allarme.
+pub async fn traccar_settings_get(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "traccar").await?;
+    let row = sqlx::query("SELECT poll_enabled,poll_interval_s,silence_after_s,conn_down_after_s FROM app.traccar_connections WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    match row {
+        None => Ok(Json(json!({"configured":false}))),
+        Some(r) => Ok(Json(json!({
+            "configured": true,
+            "poll_enabled": r.get::<bool,_>("poll_enabled"),
+            "poll_interval_s": r.get::<i32,_>("poll_interval_s"),
+            "silence_after_s": r.get::<i32,_>("silence_after_s"),
+            "conn_down_after_s": r.get::<i32,_>("conn_down_after_s"),
+        }))),
+    }
+}
+pub async fn traccar_settings_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<TraccarSettings>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "traccar").await?;
+    if traccar_conn(&st, tid).await.is_none() {
+        return Err(err(StatusCode::BAD_REQUEST, "configura prima la connessione Traccar (superadmin)"));
+    }
+    // bound di sicurezza: no poll troppo aggressivo, no soglie fuori scala
+    let clamp = |v: i32, lo: i32, hi: i32| v.max(lo).min(hi);
+    if let Some(v) = b.poll_enabled {
+        sqlx::query("UPDATE app.traccar_connections SET poll_enabled=$2 WHERE tenant_id=$1").bind(tid).bind(v).execute(&st.owner_pool).await.map_err(ise)?;
+    }
+    if let Some(v) = b.poll_interval_s {
+        sqlx::query("UPDATE app.traccar_connections SET poll_interval_s=$2 WHERE tenant_id=$1").bind(tid).bind(clamp(v,5,600)).execute(&st.owner_pool).await.map_err(ise)?;
+    }
+    if let Some(v) = b.silence_after_s {
+        sqlx::query("UPDATE app.traccar_connections SET silence_after_s=$2 WHERE tenant_id=$1").bind(tid).bind(clamp(v,0,86400)).execute(&st.owner_pool).await.map_err(ise)?;
+    }
+    if let Some(v) = b.conn_down_after_s {
+        sqlx::query("UPDATE app.traccar_connections SET conn_down_after_s=$2 WHERE tenant_id=$1").bind(tid).bind(clamp(v,30,3600)).execute(&st.owner_pool).await.map_err(ise)?;
+    }
+    audit(&st, tid, &s.email, "traccar_settings", json!({})).await;
+    Ok(Json(json!({"ok":true})))
 }
 
 /// P2 — "Verifica & collega" dal pannello: forza un poll immediato, verifica la
