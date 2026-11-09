@@ -709,16 +709,34 @@ function devEdit(d){
     <label class="row" style="gap:8px"><input type="checkbox" id="dEn" ${d.enabled?'checked':''}> <span>Abilitato</span></label>
     <div class="row" style="gap:8px;margin-top:8px"><button class="btn grow" onclick="devSave('${d.id||''}')">Salva</button>
       ${d.id?`<button class="btn ghost" onclick="devDel('${d.id}')">Elimina</button>`:''}</div>
-    ${(!isNew && d.source==='traccar')?`<div class="row" style="gap:8px;margin-top:8px"><button class="btn ghost small grow" onclick="devCmd('${d.id}','positionSingle')">📡 Localizza (richiedi posizione)</button></div><div id="cmdMsg" class="small mut"></div>`:''}
+    ${(!isNew && d.source==='traccar')?`<div class="card pad" style="margin-top:8px">
+       <div class="spread"><b class="small">Comandi al device</b>${d.traccar_status?`<span class="chip ${d.traccar_status==='online'?'s-attivo':'s-critico'}">${esc(d.traccar_status)}</span>`:''}</div>
+       <div class="row" id="cmdBtns" style="gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn ghost small" onclick="devCmd('${d.id}','positionSingle')">📡 Localizza</button></div>
+       <div id="cmdMsg" class="small mut" style="margin-top:6px"></div>
+       <div class="small mut" style="margin-top:8px">Storico comandi</div>
+       <div id="cmdHist" class="small mut">…</div></div>`:''}
     <div class="cfg-msg small"></div></div>`);
   if(!isNew && d.last_lat!=null && d.last_lon!=null) loadAddr(d.last_lat,d.last_lon);
+  if(!isNew && d.source==='traccar'){ devCmds(d.id); devCmdTypes(d.id); }
 }
 async function devCmd(id,type){ const m=$('#cmdMsg'); if(m){m.textContent='invio…';m.style.color='var(--mut)';}
   try{ const r=await api('/devices/'+id+'/command',{method:'POST',body:JSON.stringify({type})});
     const okv = r.traccar_status>=200 && r.traccar_status<300;
     if(m){ m.textContent = okv? 'Comando inviato a Traccar (device '+r.resolved_device_id+')' : 'Traccar '+r.traccar_status+': '+(r.traccar_body||'').slice(0,80); m.style.color = okv?'var(--ok,green)':'var(--bad)'; }
     toast(okv?'Comando inviato':'Traccar: '+r.traccar_status, okv?'ok':'warn');
+    devCmds(id);
   }catch(e){ if(m){m.textContent=e.message;m.style.color='var(--bad)';} toast(e.message,'bad'); } }
+async function devCmds(id){ const el=$('#cmdHist'); if(!el)return;
+  try{ const H=await api('/devices/'+id+'/commands');
+    el.innerHTML = H.length? H.map(c=>`<div>${new Date(c.created_at).toLocaleString('it-IT')} · <b>${esc(c.ctype)}</b> · ${c.traccar_status>=200&&c.traccar_status<300?'<span style="color:var(--ok,green)">'+esc(c.result||'ok')+'</span>':'<span style="color:var(--bad)">'+esc(c.result||('HTTP '+c.traccar_status))+'</span>'} <span class="mut">(${esc((c.actor||'').split('@')[0])})</span></div>`).join('')
+      : 'nessun comando inviato'; }catch(e){ el.textContent=e.message; } }
+async function devCmdTypes(id){ const el=$('#cmdBtns'); if(!el)return;
+  try{ const T=await api('/devices/'+id+'/command-types');
+    const known={positionSingle:'📡 Localizza',engineStop:'⛔ Stop motore',engineResume:'▶ Riavvia motore',alarmArm:'🔒 Arma',alarmDisarm:'🔓 Disarma',rebootDevice:'↻ Riavvia device'};
+    const seen=new Set(['positionSingle']);
+    (T||[]).forEach(t=>{ const ty=t.type||t; if(!ty||seen.has(ty))return; seen.add(ty);
+      el.insertAdjacentHTML('beforeend',`<button class="btn ghost small" onclick="devCmd('${id}','${esc(ty)}')">${esc(known[ty]||ty)}</button>`); });
+  }catch(e){} }
 async function loadAddr(lat,lon){ const el=$('#addr'); if(!el)return;
   try{ const r=await api('/geocode/reverse?lat='+lat+'&lon='+lon);
     el.innerHTML='📍 '+(r.address?esc(r.address):'<span class="mut">indirizzo non disponibile</span>'); }

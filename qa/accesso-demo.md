@@ -93,6 +93,10 @@ bash qa/traccar-config-e2e.sh
 # Traccar P1 pull: polling via API con cursore (recupero eventi persi) + watchdog
 # silenzio (perdita_contatto senza dipendere da deviceOffline) + salute connessione:
 bash qa/traccar-poll-e2e.sh
+# Traccar P4: sync device (stato online/offline + id Traccar) + comandi tracciati:
+bash qa/traccar-sync-e2e.sh
+# P3: segreti upstream cifrati a riposo (richiede YW_SECRET_KEY):
+bash qa/crypto-e2e.sh
 ```
 
 ## Tutte le prove automatiche (evidenza)

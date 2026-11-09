@@ -117,7 +117,22 @@ async fn poll_tenant(st: &AppState, tid: Uuid, base: &str, user: &str, pass: &st
             device_count += 1;
             let did = d.get("id").and_then(|v| v.as_i64());
             let uid = d.get("uniqueId").and_then(|v| v.as_str()).map(|s| s.to_string());
-            if d.get("status").and_then(|v| v.as_str()) == Some("online") { online_count += 1; }
+            let tstatus = d.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+            if tstatus == "online" { online_count += 1; }
+            // P4 sync: importa/aggiorna il device nel nostro inventario (stato, id Traccar).
+            if let Some(uid) = &uid {
+                let name = d.get("name").and_then(|v| v.as_str()).unwrap_or(uid.as_str());
+                let _ = sqlx::query(
+                    "INSERT INTO app.devices(tenant_id,external_id,source,label,traccar_device_id,traccar_status,updated_at)
+                     VALUES($1,$2,'traccar',$3,$4,$5,now())
+                     ON CONFLICT (tenant_id,source,external_id) DO UPDATE SET
+                       traccar_status=EXCLUDED.traccar_status,
+                       traccar_device_id=EXCLUDED.traccar_device_id,
+                       label=COALESCE(app.devices.label, EXCLUDED.label),
+                       updated_at=now()")
+                    .bind(tid).bind(uid).bind(name).bind(did).bind(tstatus)
+                    .execute(&st.owner_pool).await;
+            }
             if let (Some(did), Some(uid)) = (did, uid) { id2uid.insert(did, uid); }
         }
     }

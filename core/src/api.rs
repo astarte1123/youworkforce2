@@ -863,6 +863,7 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
     let rows = sqlx::query(
         "SELECT d.id,d.external_id,d.source,d.label,d.enabled,d.config,d.site_id,d.assigned_user,
                 d.last_lat,d.last_lon,d.last_battery,d.last_pos_at,d.last_attributes,d.model_code,d.assigned_asset,
+                d.traccar_status,
                 s.name AS site_name, u.email AS user_email, a.name AS asset_name,
                 m.manufacturer, m.model_name, m.category, m.capabilities,
                 pr.step AS prov_step,
@@ -894,6 +895,7 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
         "capabilities": r.try_get::<Vec<String>,_>("capabilities").ok(),
         "assigned_asset": r.try_get::<Uuid,_>("assigned_asset").ok(),
         "asset_name": r.try_get::<String,_>("asset_name").ok(),
+        "traccar_status": r.try_get::<String,_>("traccar_status").ok(),
         "prov_step": r.try_get::<String,_>("prov_step").ok() })).collect();
     Ok(Json(json!(out)))
 }
@@ -1789,9 +1791,60 @@ pub async fn device_command(State(st): State<AppState>, h: HeaderMap, Path(id): 
         .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar send: {e}")))?;
     let status = cr.status().as_u16();
     let body = cr.text().await.unwrap_or_default();
+    // P4: storicizza il comando con esito
+    let result = if (200..300).contains(&status) { "inviato".to_string() }
+        else { format!("errore {}: {}", status, body.chars().take(140).collect::<String>()) };
+    let _ = sqlx::query("INSERT INTO app.device_commands(tenant_id,device_id,ctype,actor,traccar_status,result) VALUES($1,$2,$3,$4,$5,$6)")
+        .bind(tid).bind(id).bind(&b.kind).bind(&s.email).bind(status as i32).bind(&result)
+        .execute(&st.owner_pool).await;
     audit(&st, tid, &s.email, "device_command", json!({"device":id,"type":b.kind,"traccar_status":status})).await;
     // relay esito Traccar (anche se il device non supporta il comando)
-    Ok(Json(json!({"resolved_device_id":dev_id,"traccar_status":status,"traccar_body":body})))
+    Ok(Json(json!({"resolved_device_id":dev_id,"traccar_status":status,"traccar_body":body,"result":result})))
+}
+
+/// P4: storico comandi inviati a un device (operatore/admin/auditor).
+pub async fn list_device_commands(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "traccar").await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let rows = sqlx::query("SELECT ctype,actor,traccar_status,result,created_at FROM app.device_commands
+         WHERE tenant_id=$1 AND device_id=$2 ORDER BY created_at DESC LIMIT 50")
+        .bind(tid).bind(id).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "ctype": r.get::<String,_>("ctype"),
+        "actor": r.get::<String,_>("actor"),
+        "traccar_status": r.try_get::<i32,_>("traccar_status").ok(),
+        "result": r.try_get::<String,_>("result").ok(),
+        "created_at": r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
+    })).collect();
+    Ok(Json(json!(out)))
+}
+
+/// P4: tipi di comando supportati dal device secondo Traccar (per popolare la UI).
+pub async fn device_command_types(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "traccar").await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let ext: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND tenant_id=$2 AND source='traccar'")
+        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let ext = ext.ok_or_else(|| err(StatusCode::NOT_FOUND, "device traccar inesistente"))?;
+    let (base,user,pass) = traccar_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata"))?;
+    // risolvi id numerico
+    let dl = st.http.get(format!("{base}/api/devices?uniqueId={ext}")).basic_auth(&user, Some(&pass)).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
+    let arr: Value = dl.json().await.unwrap_or(json!([]));
+    let dev_id = arr.as_array().and_then(|a| a.first()).and_then(|d| d.get("id")).and_then(|v| v.as_i64());
+    let types: Value = match dev_id {
+        Some(did) => match st.http.get(format!("{base}/api/commands/types?deviceId={did}"))
+            .basic_auth(&user, Some(&pass)).send().await {
+            Ok(r) => r.json::<Value>().await.unwrap_or(json!([])),
+            Err(_) => json!([]),
+        },
+        None => json!([]),
+    };
+    Ok(Json(types))
 }
 
 // ----------------------------- #3 Geofence + presenza -----------------------------

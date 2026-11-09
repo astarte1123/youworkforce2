@@ -164,6 +164,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/devices/:id/positions", get(api::list_device_positions))
         .route("/api/geocode/reverse", get(api::reverse_geocode))
         .route("/api/devices/:id/command", post(api::device_command))
+        .route("/api/devices/:id/commands", get(api::list_device_commands))
+        .route("/api/devices/:id/command-types", get(api::device_command_types))
         .route("/api/geofences", get(api::list_geofences).post(api::create_geofence))
         .route("/api/geofences/:id", axum::routing::delete(api::delete_geofence))
         .route("/api/presence", get(api::list_presence))

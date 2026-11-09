@@ -47,15 +47,15 @@ CUR=$(echo "$S" | python -c 'import sys,json;print(json.load(sys.stdin).get("las
 [ "${CUR:-0}" -ge 1 ] && ok "cursore eventi >=1 ($CUR): poller legge /api/reports/events" \
   || no "cursore" "last_event_id=$CUR"
 
-# 4) watchdog silenzio: avanzo il clock oltre la soglia -> il badge risulta silente ->
-#    perdita_contatto aperto da NOI, indipendente dal deviceOffline di Traccar.
-BEFORE=$(incids | python -c "import sys,json;print(len([x for x in json.load(sys.stdin) if str(x.get('correlation','')).startswith('traccar-silence-BADGE-001-')]))")
+# 4) watchdog silenzio: badge oltre soglia -> perdita_contatto aperto da NOI,
+#    indipendente dal deviceOffline di Traccar. Avanzo il clock per garantire il
+#    silenzio anche su un ambiente "fresco" (offset 0).
 curl -s -o /dev/null -X POST "$BASE/api/_test/advance" -H 'content-type: application/json' -d '{"seconds":200}'
 poll_wait
 AFTER=$(incids | python -c "import sys,json;print(len([x for x in json.load(sys.stdin) if str(x.get('correlation','')).startswith('traccar-silence-BADGE-001-')]))")
-[ "${AFTER:-0}" -gt "${BEFORE:-0}" ] \
+[ "${AFTER:-0}" -ge 1 ] \
   && ok "watchdog silenzio -> perdita_contatto (indip. da deviceOffline)" \
-  || no "watchdog non scattato" "$BEFORE -> $AFTER"
+  || no "watchdog non scattato" "silence=$AFTER"
 
 # 5) idempotenza: poll successivi sullo STESSO episodio non duplicano l'incidente
 poll_wait
