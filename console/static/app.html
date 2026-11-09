@@ -1223,7 +1223,7 @@ async function devTrail(id){ const el=$('#trail'); if(!el)return; el.textContent
 
 // ---------------- Connettori ----------------
 async function vConnettori(v){
-  const trOn=ACTIVE_MODS.includes('traccar');
+  const trOn=ACTIVE_MODS.has('traccar');
   const [C,T,TS]=await Promise.all([api('/connectors').catch(()=>[]),api('/ingest-tokens').catch(()=>[]),
     trOn?api('/traccar/status').catch(()=>null):Promise.resolve(null)]);
   const hint={traccar:'OsmAnd → '+location.origin.replace(/:\d+$/,':5055')+' · forwarding → /api/ingress/traccar?token=',
