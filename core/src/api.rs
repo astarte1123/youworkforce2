@@ -623,6 +623,30 @@ async fn gql_id(st: &AppState, base: &str, cookie: &str, q: &str, ptr: &str) -> 
     goalert::graphql(&st.http, base, cookie, q).await
         .and_then(|v| v.pointer(ptr).and_then(|x| x.as_str().map(String::from)))
 }
+/// Provisiona in GoAlert i recapiti dell'utente + una regola di notifica immediata.
+/// Crea solo i tipi con destinazione abilitata (EMAIL se SMTP, SMS se Twilio). Idempotente.
+async fn ensure_contact_methods(st: &AppState, base: &str, cookie: &str, guid: &str, email: &str, phone: Option<&str>, sms_on: bool, email_on: bool) -> i64 {
+    let existing = goalert::graphql(&st.http, base, cookie,
+        &format!("{{user(id:\"{guid}\"){{contactMethods{{type value}}}}}}")).await;
+    let has = |ty: &str, val: &str| existing.as_ref()
+        .and_then(|v| v.pointer("/data/user/contactMethods").and_then(|a| a.as_array()))
+        .map(|a| a.iter().any(|c| c.get("type").and_then(|x| x.as_str()) == Some(ty)
+            && c.get("value").and_then(|x| x.as_str()) == Some(val))).unwrap_or(false);
+    let mut n = 0i64;
+    if email_on && !email.is_empty() && !has("EMAIL", email) {
+        let q = format!("mutation{{createUserContactMethod(input:{{userID:\"{guid}\",name:\"YW email\",type:EMAIL,value:\"{}\",newUserNotificationRule:{{delayMinutes:0}}}}){{id}}}}", esc_gql(email));
+        if gql_id(st, base, cookie, &q, "/data/createUserContactMethod/id").await.is_some() { n += 1; }
+    }
+    if sms_on {
+        if let Some(p) = phone {
+            if !p.is_empty() && is_e164(p) && !has("SMS", p) {
+                let q = format!("mutation{{createUserContactMethod(input:{{userID:\"{guid}\",name:\"YW sms\",type:SMS,value:\"{}\",newUserNotificationRule:{{delayMinutes:0}}}}){{id}}}}", esc_gql(p));
+                if gql_id(st, base, cookie, &q, "/data/createUserContactMethod/id").await.is_some() { n += 1; }
+            }
+        }
+    }
+    n
+}
 /// Costruisce in GoAlert, in modo idempotente, la struttura che rispecchia la config
 /// del tenant: ogni Gruppo allarme -> escalation policy (step sui membri, repeat da
 /// sos_escalation) + servizio + integration key; ogni routing etype->gruppo popola
@@ -642,20 +666,30 @@ pub async fn sync_goalert(st: &AppState, tid: Uuid) -> Result<Value, (StatusCode
     let delay_min = if repeat > 0 { ((repeat + 59) / 60).max(1) } else { 15 };
     let ep_repeat = if repeat > 0 { 3 } else { 0 };
 
+    // Quali destinazioni sono abilitate su GoAlert? servono per creare i recapiti reali.
+    let cfg = goalert::graphql(&st.http, &base, &cookie, "{config(all:true){id value}}").await;
+    let cfg_on = |id: &str| cfg.as_ref()
+        .and_then(|v| v.pointer("/data/config").and_then(|a| a.as_array()))
+        .map(|a| a.iter().any(|c| c.get("id").and_then(|x| x.as_str()) == Some(id)
+            && c.get("value").and_then(|x| x.as_str()) == Some("true"))).unwrap_or(false);
+    let sms_on = cfg_on("Twilio.Enable");
+    let email_on = cfg_on("SMTP.Enable");
+
     let groups = sqlx::query("SELECT id,name,goalert_ep_id,goalert_service_id,goalert_key FROM app.alarm_groups WHERE tenant_id=$1 ORDER BY name")
         .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-    let (mut n_users, mut n_groups, mut skipped) = (0i64, 0i64, 0i64);
+    let (mut n_users, mut n_groups, mut skipped, mut n_cm, mut no_contact) = (0i64, 0i64, 0i64, 0i64, 0i64);
     for g in &groups {
         let gid: Uuid = g.get("id");
         let gname: String = g.get("name");
-        let members = sqlx::query("SELECT u.id,u.email,u.goalert_user_id FROM app.alarm_group_members m JOIN app.users u ON u.id=m.user_id WHERE m.group_id=$1 ORDER BY m.position")
+        let members = sqlx::query("SELECT u.id,u.email,u.phone,u.goalert_user_id FROM app.alarm_group_members m JOIN app.users u ON u.id=m.user_id WHERE m.group_id=$1 ORDER BY m.position")
             .bind(gid).fetch_all(&st.owner_pool).await.map_err(ise)?;
         if members.is_empty() { skipped += 1; continue; }
-        // assicura l'utente GoAlert per ogni membro
+        // assicura l'utente GoAlert per ogni membro + i suoi recapiti
         let mut uids: Vec<String> = Vec::new();
         for m in &members {
             let uid: Uuid = m.get("id");
             let email: String = m.get("email");
+            let phone: Option<String> = m.try_get("phone").ok().flatten();
             let mut g_uid: Option<String> = m.try_get("goalert_user_id").ok().flatten();
             if g_uid.is_none() {
                 let uname = format!("yw_{}_{}", &tid.to_string()[..8], &uid.to_string()[..8]);
@@ -666,6 +700,13 @@ pub async fn sync_goalert(st: &AppState, tid: Uuid) -> Result<Value, (StatusCode
                     sqlx::query("UPDATE app.users SET goalert_user_id=$1 WHERE id=$2").bind(id).bind(uid).execute(&st.owner_pool).await.map_err(ise)?;
                     n_users += 1;
                 }
+            }
+            if let Some(id) = &g_uid {
+                // recapiti reali: EMAIL (se SMTP attivo) + SMS (se Twilio attivo e telefono presente)
+                let created = ensure_contact_methods(st, &base, &cookie, id, &email, phone.as_deref(), sms_on, email_on).await;
+                n_cm += created;
+                let has_any = (email_on && !email.is_empty()) || (sms_on && phone.as_deref().map(|p| !p.is_empty()).unwrap_or(false));
+                if !has_any { no_contact += 1; }
             }
             if let Some(id) = g_uid { uids.push(id); }
         }
@@ -719,9 +760,17 @@ pub async fn sync_goalert(st: &AppState, tid: Uuid) -> Result<Value, (StatusCode
             .bind(tid).bind(&et).bind(&k).bind(&s).execute(&st.owner_pool).await.map_err(ise)?;
         n_routes += 1;
     }
-    audit(st, tid, "youworkforce", "goalert_sync", json!({"groups":n_groups,"users_created":n_users,"routes":n_routes,"skipped":skipped})).await;
+    // avviso onesto: se nessun trasporto e' attivo, GoAlert non puo' consegnare a nessuno
+    let warning = if !sms_on && !email_on {
+        Some("Nessun trasporto attivo in GoAlert: gli alert NON raggiungono nessuno. Il superadmin deve configurare Twilio (SMS/voce) o SMTP (email) in Connettori -> Trasporto notifiche.".to_string())
+    } else if no_contact > 0 {
+        Some(format!("{no_contact} membro/i senza recapito utilizzabile (manca il telefono per SMS, o l'email con SMTP attivo): non verranno avvisati finche' non aggiungi il recapito in Utenti e sedi."))
+    } else { None };
+    audit(st, tid, "youworkforce", "goalert_sync", json!({"groups":n_groups,"users_created":n_users,"routes":n_routes,"skipped":skipped,"contact_methods":n_cm})).await;
     Ok(json!({"ok":true,"groups_synced":n_groups,"users_created":n_users,"routes":n_routes,"groups_skipped_no_members":skipped,
-        "repeat_seconds":repeat,"step_delay_minutes":delay_min,"ep_repeat":ep_repeat}))
+        "contact_methods_created":n_cm,"members_without_contact":no_contact,
+        "transport":{"sms":sms_on,"email":email_on},
+        "repeat_seconds":repeat,"step_delay_minutes":delay_min,"ep_repeat":ep_repeat,"warning":warning}))
 }
 pub async fn goalert_sync_handler(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
@@ -1165,10 +1214,11 @@ pub async fn list_sites(State(st): State<AppState>, h: HeaderMap) -> R {
 pub async fn list_users(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT id,email,role FROM app.users ORDER BY role,email").fetch_all(&mut *tx).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT id,email,role,phone FROM app.users ORDER BY role,email").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({
-        "id": r.get::<Uuid,_>("id"), "email": r.get::<String,_>("email"), "role": r.get::<String,_>("role") })).collect();
+        "id": r.get::<Uuid,_>("id"), "email": r.get::<String,_>("email"), "role": r.get::<String,_>("role"),
+        "phone": r.try_get::<String,_>("phone").ok() })).collect();
     Ok(Json(json!(out)))
 }
 
@@ -1571,7 +1621,7 @@ pub async fn create_user(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     Ok(Json(json!({"id":id})))
 }
 #[derive(Deserialize)]
-pub struct UpdateUser { pub role: Option<String>, pub password: Option<String> }
+pub struct UpdateUser { pub role: Option<String>, pub password: Option<String>, pub phone: Option<String> }
 pub async fn update_user(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<UpdateUser>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
@@ -1591,6 +1641,15 @@ pub async fn update_user(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     if let Some(p) = &b.password {
         if p.len() < 4 { let _=tx.rollback().await; return Err(err(StatusCode::BAD_REQUEST, "password troppo corta")); }
         sqlx::query("UPDATE app.users SET pass_hash=$2 WHERE id=$1").bind(id).bind(auth::hash_password(p)).execute(&mut *tx).await.map_err(ise)?;
+    }
+    if let Some(ph) = &b.phone {
+        let ph = ph.trim();
+        if ph.is_empty() {
+            sqlx::query("UPDATE app.users SET phone=NULL WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+        } else {
+            if !is_e164(ph) { let _=tx.rollback().await; return Err(err(StatusCode::BAD_REQUEST, "telefono: formato E.164 richiesto (es. +393331234567)")); }
+            sqlx::query("UPDATE app.users SET phone=$2 WHERE id=$1").bind(id).bind(ph).execute(&mut *tx).await.map_err(ise)?;
+        }
     }
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "update_user", json!({"id":id,"role":b.role})).await;

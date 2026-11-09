@@ -1442,7 +1442,9 @@ async function vGruppi(v){
 async function syncGoalert(btn){
   const out=$('#gaSyncOut'); if(btn){btn.disabled=true;btn.textContent='Sincronizzo…';}
   try{ const r=await api('/alarm/sync-goalert',{method:'POST'});
-    if(out) out.innerHTML=`<span style="color:var(--ok,green)">✓ Sincronizzato</span> · ${r.groups_synced} gruppi · ${r.users_created} utenti creati · ${r.routes} routing · repeat ${r.repeat_seconds}s (step ${r.step_delay_minutes}m ×${r.ep_repeat})${r.groups_skipped_no_members?` · ${r.groups_skipped_no_members} gruppi senza membri saltati`:''}`;
+    const tr=r.transport||{}; const trTxt=`trasporto: ${tr.sms?'SMS✓':'SMS✗'} ${tr.email?'email✓':'email✗'}`;
+    if(out) out.innerHTML=`<span style="color:var(--ok,green)">✓ Sincronizzato</span> · ${r.groups_synced} gruppi · ${r.users_created} utenti · ${r.contact_methods_created} recapiti · ${r.routes} routing · ${trTxt} · repeat ${r.repeat_seconds}s (step ${r.step_delay_minutes}m ×${r.ep_repeat})${r.groups_skipped_no_members?` · ${r.groups_skipped_no_members} gruppi senza membri`:''}`
+      +(r.warning?`<div style="color:var(--warn,#b45309);margin-top:4px">⚠ ${esc(r.warning)}</div>`:'');
     toast('GoAlert sincronizzato','ok');
   }catch(e){ if(out) out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; toast(e.message,'bad'); }
   finally{ if(btn){btn.disabled=false;btn.textContent='🔄 Sincronizza con GoAlert';} }
@@ -1519,12 +1521,13 @@ async function userEdit(u){
   drawer('Utente · '+esc(u.email),`<div class="col" style="gap:10px">
     <label class="small mut">Ruolo<select id="uRo2">${ROLES.map(r=>`<option ${r===u.role?'selected':''}>${r}</option>`).join('')}</select></label>
     <label class="small mut">Nuova password (opzionale)<input id="uPw2" placeholder="lascia vuoto per non cambiare"></label>
+    <label class="small mut">Telefono (E.164, per notifiche SMS/voce GoAlert)<input id="uPhone" placeholder="+393331234567" value="${esc(u.phone||'')}"></label>
     ${siteBox}
     <div class="row" style="gap:8px"><button class="btn grow" onclick="userSave('${u.id}',${scoped})">Salva</button>
       <button class="btn ghost" onclick="userDel('${u.id}')">Elimina</button></div><div class="cfg-msg small"></div></div>`);
 }
 async function userSave(id,scoped){
-  const b={role:$('#uRo2').value}; const p=$('#uPw2').value; if(p)b.password=p;
+  const b={role:$('#uRo2').value, phone:$('#uPhone').value.trim()}; const p=$('#uPw2').value; if(p)b.password=p;
   const m=$('.cfg-msg');
   try{await api('/users/'+id,{method:'POST',body:JSON.stringify(b)});
     if(scoped){ const ids=[...document.querySelectorAll('.uSite:checked')].map(c=>c.value);

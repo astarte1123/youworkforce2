@@ -69,6 +69,15 @@ if echo "$SY" | grep -q '"ok":true'; then
   [ "$(sql "SELECT integration_key FROM app.goalert_routing WHERE tenant_id=$TIDQ AND etype='sos'")" = "$(sql "SELECT goalert_key FROM app.alarm_groups WHERE id='$GID'")" ] \
     && ok "routing sos -> integration key del gruppo (destinatari reali)" || no "goalert_routing non collegato al gruppo" "-"
   [ -n "$(sql "SELECT goalert_ep_id FROM app.alarm_groups WHERE id='$GID'")" ] && ok "gruppo -> escalation policy GoAlert creata" || no "EP non creata" "-"
+  # recapiti: il risultato espone trasporto + conteggio; con trasporto spento avvisa onestamente
+  echo "$SY" | grep -q '"transport"' && ok "sync espone stato trasporto (sms/email)" || no "manca transport nel risultato" "-"
+  SMS_ON=$(echo "$SY" | jv 'str(d["transport"]["sms"]).lower()'); EMAIL_ON=$(echo "$SY" | jv 'str(d["transport"]["email"]).lower()')
+  if [ "$SMS_ON" = "false" ] && [ "$EMAIL_ON" = "false" ]; then
+    echo "$SY" | jv 'd.get("warning") or ""' | grep -qi "trasporto" && ok "trasporto spento -> avviso onesto (nessuna consegna)" || no "manca avviso trasporto spento" "-"
+    [ "$(echo "$SY" | jv 'd["contact_methods_created"]')" = "0" ] && ok "trasporto spento -> 0 recapiti creati (coerente)" || no "recapiti creati senza trasporto" "-"
+  else
+    ok "trasporto attivo ($SMS_ON/$EMAIL_ON): recapiti creati=$(echo "$SY" | jv 'd["contact_methods_created"]')"
+  fi
 else
   echo "SKIP  sync GoAlert non eseguibile (GoAlert non provisionato per acme): $(echo "$SY" | head -c 120)"
 fi
