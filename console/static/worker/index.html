@@ -37,7 +37,7 @@ function login(){
     <div class="row" style="gap:10px;justify-content:center;margin-bottom:18px"><div class="logo">${ICON.logomark}</div>
       <strong style="font-size:18px">App lavoratore</strong></div>
     <div class="card"><div class="card-b col">
-      <div class="field"><label>Tenant</label><input id="slug" value="${store.slug}"></div>
+      <div class="field"><label>Tenant${store.slugFromHost?' <span class="small mut">(dal dominio)</span>':''}</label><input id="slug" value="${store.slug}" ${store.slugFromHost?'readonly':''}></div>
       <div class="field"><label>Email</label><input id="email" value="mario@acme.loneworker.eu"></div>
       <div class="field"><label>Password</label><input id="pw" type="password" value="demo"></div>
       <button class="btn block lg" id="go">Accedi</button>
@@ -62,6 +62,8 @@ function app(){
 
     <div><h3 style="margin:4px 2px 10px">Turno</h3><div class="card"><div class="card-b" id="shiftBox"></div></div></div>
 
+    <div><h3 style="margin:4px 2px 10px">Turni pianificati</h3><div id="plansBox" class="col"></div></div>
+
     <div><h3 style="margin:4px 2px 10px">Oggi · ordini assegnati</h3><div id="orders" class="col"></div></div>
 
     <div><h3 style="margin:4px 2px 10px">Azioni</h3><div class="col" style="gap:10px">
@@ -73,8 +75,23 @@ function app(){
     <div class="small mut center" style="margin-top:8px">Input manuale sempre disponibile. La dettatura usa il riconoscimento vocale del browser; se assente o negato, scrivi a mano.</div>
     <div id="diaryList" class="col" style="gap:8px;margin-top:10px"></div></div>
   </div>`;
-  renderCheckin(); loadOrders(); renderShift(); loadDiary(); flushNotes();
+  renderCheckin(); loadOrders(); renderShift(); loadPlans(); loadDiary(); flushNotes();
 }
+async function loadPlans(){
+  const b=$('#plansBox'); if(!b)return;
+  const P=await api('/shift-plans').catch(()=>[]);
+  const fut=P.filter(p=>p.state!=='annullato').slice(0,6);
+  if(!fut.length){ b.innerHTML='<div class="card"><div class="card-b small mut">Nessun turno pianificato</div></div>'; return; }
+  const dt=iso=>new Date(iso).toLocaleString('it-IT',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+  b.innerHTML=fut.map(p=>`<div class="card"><div class="card-b">
+    <div class="spread"><b>${dt(p.starts_at)} → ${new Date(p.ends_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}</b>
+      <span class="chip ${p.state==='confermato'?'s-attivo':''}">${p.state}</span></div>
+    <div class="small mut" style="margin-top:4px">${esc(p.site||'—')}${p.note?' · '+esc(p.note):''}</div>
+    ${p.state==='pianificato'?`<button class="btn block" style="margin-top:10px" onclick="planConfirm('${p.id}')">Conferma turno</button>`:''}
+  </div></div>`).join('');
+}
+async function planConfirm(id){ try{ await api('/shift-plans/'+id,{method:'POST',body:JSON.stringify({action:'confirm'})}); toast('Turno confermato','ok'); loadPlans(); }catch(e){toast(e.message,'bad');} }
+
 async function out(){ try{ await api('/logout',{method:'POST'}); }catch(e){} location.reload(); }
 
 // ---- SOS ----
@@ -114,8 +131,10 @@ async function loadOrders(){
   const box=$('#orders'); const O=await api('/orders').catch(()=>[]); ORDERS=O;
   const mine=O.filter(o=>['assegnato','in_corso'].includes(o.state));
   if(!mine.length){ box.innerHTML='<div class="card pad mut center">Nessun ordine per oggi</div>'; return; }
+  const sched=o=>o.scheduled_start?new Date(o.scheduled_start).toLocaleString('it-IT',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):null;
   box.innerHTML=mine.map(o=>`<div class="card pad">
     <div class="spread"><b>${esc(o.title)}</b>${chip(o.state)}</div>
+    ${sched(o)?`<div class="small" style="margin-top:4px">🕑 ${sched(o)}${o.priority>=3?' · <b style="color:var(--bad,#c0392b)">priorità alta</b>':''}</div>`:''}
     <div class="small mut" style="margin:4px 0 10px">${esc(o.site||'—')} ${o.instructions?'· '+esc(o.instructions):''}</div>
     ${o.state==='assegnato'?`<button class="btn block" onclick="oAct('${o.id}','start',${o.version})">${ICON.play} Avvia intervento</button>`:''}
     ${o.state==='in_corso'?`<button class="btn ok block" onclick="oComplete('${o.id}',${o.version})">${ICON.check} Completa</button>`:''}
@@ -130,9 +149,11 @@ async function renderShift(){
   const b=$('#shiftBox'); if(!b)return; let s=null; try{ s=await api('/shifts/current'); }catch(e){}
   if(s&&s.active){
     const t=new Date(s.started_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
-    b.innerHTML=`<div class="spread"><b>Turno in corso</b><span class="chip s-attivo">confermato dal server</span></div>
-      <div class="small mut" style="margin:6px 0 12px">Iniziato alle ${t}</div>
-      <button class="btn block" onclick="shiftEnd()">${ICON.stop} Termina turno</button>`;
+    const el=s.elapsed_minutes||0, h=Math.floor(el/60), m=el%60;
+    const warn=s.over_max?`<div class="small" style="color:var(--bad,#c0392b);margin:6px 0 0">⚠ Oltre il massimo di ${s.max_hours}h — considera la chiusura</div>`:'';
+    b.innerHTML=`<div class="spread"><b>Turno in corso</b><span class="chip ${s.over_max?'':'s-attivo'}">${s.over_max?'oltre soglia':'confermato dal server'}</span></div>
+      <div class="small mut" style="margin:6px 0 2px">Iniziato alle ${t} · ${h}h ${m}m (max ${s.max_hours}h)</div>${warn}
+      <button class="btn block" style="margin-top:12px" onclick="shiftEnd()">${ICON.stop} Termina turno</button>`;
   } else {
     b.innerHTML=`<div class="spread"><b>Turno</b><span class="chip">non iniziato</span></div>
       <button class="btn block" style="margin-top:10px" onclick="shiftStart()">${ICON.play} Inizia turno</button>`;

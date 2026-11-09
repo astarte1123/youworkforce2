@@ -7,7 +7,6 @@
 | `traccar` | Traccar badge | connettore | **UPSTREAM REALE** (v6.17.0, event forwarding → `/api/ingress/traccar`; alarm sos→sos, fallDown→man_down) | ingest token |
 | `iot` | Dispositivi e IoT | prodotto | ingest HTTP + **ThingsBoard reale** | — (può lavorare senza loneworker) |
 | `thingsboard` | ThingsBoard industriale | connettore | **UPSTREAM REALE** (v3.8.1, Rule Engine → `/api/ingress/thingsboard`; soglia → `sensore_critico`); BUSL, istanza esterna | iot |
-| `blues` | Blues sperimentale | connettore | **off** (replay) | — |
 | `workforce` | Forza lavoro e turni | prodotto | parziale (assegnazione manuale) | — |
 | `interventi` | Interventi e cantieri | prodotto | **implementato** (ordini) | assegnazione manuale |
 | `consuntivi` | Ore, spese, consuntivi | prodotto | **implementato** (righe+spese+CSV) | fonte dati dichiarata; **no AI** |

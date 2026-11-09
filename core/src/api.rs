@@ -6,12 +6,55 @@ use std::convert::Infallible;
 use uuid::Uuid;
 use futures::stream::Stream;
 use crate::state::{AppState, Session, TenantEvent};
-use crate::{auth, db};
+use crate::{auth, db, goalert};
 
 type R = Result<Json<Value>, (StatusCode, String)>;
 fn err(c: StatusCode, m: &str) -> (StatusCode, String) { (c, m.to_string()) }
 
-const CRITICAL: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin", "sensore_critico"];
+const CRITICAL: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin", "sensore_critico",
+    "manomissione_badge", "perdita_alimentazione", "jamming", "perdita_contatto"];
+
+/// Traccar alarm -> normalized etype. Safety-first defaults for lone workers.
+/// `sos_as` lets a tenant route the SOS alarm to `sos` or `man_down`.
+/// Returns the normalized etype; whether it is critical is decided by CRITICAL.
+fn traccar_alarm_etype(alarm: &str, sos_as: &str) -> String {
+    match alarm {
+        "sos" => sos_as.to_string(),
+        "fallDown" | "accident" => "man_down".into(),
+        "removing" | "tampering" | "bonnet" => "manomissione_badge".into(), // badge rimosso/manomesso
+        "powerCut" | "powerOff" => "perdita_alimentazione".into(),
+        "jamming" | "gpsAntennaCut" => "jamming".into(),
+        "lowBattery" | "lowPower" => "batteria_bassa".into(),       // warning, non critico
+        "" => "device_alarm".into(),
+        _ => "device_alarm".into(),                                  // registrato, non critico
+    }
+}
+
+/// Mappa un evento Traccar (tipo + eventuale alarm + batteria) nell'etype
+/// normalizzato, applicando la config per-tenant `traccar/alarm_map`.
+/// Usata SIA dal webhook di forwarding SIA dal poller API, così push e pull
+/// producono esattamente lo stesso incidente (idempotente a valle).
+pub fn map_traccar_etype(amap: &Value, evt_type: &str, alarm: Option<&str>, battery: Option<f64>) -> String {
+    let sos_as = amap.get("sos_as").and_then(|v| v.as_str()).unwrap_or("sos");
+    let offline_critical = amap.get("offline_critical").and_then(|v| v.as_str()).map(|s| s=="si").unwrap_or(false);
+    let stopped_immobilita = amap.get("stopped_as_immobilita").and_then(|v| v.as_str()).map(|s| s=="si").unwrap_or(false);
+    let battery_min = amap.get("battery_min").and_then(|v| v.as_i64()).unwrap_or(15);
+    if let Some(a) = alarm {
+        traccar_alarm_etype(a, sos_as)
+    } else if evt_type == "deviceOffline" {
+        if offline_critical { "perdita_contatto".into() } else { "device_offline".into() }
+    } else if evt_type == "deviceStopped" && stopped_immobilita {
+        "immobilita".into()
+    } else if evt_type == "geofenceEnter" {
+        "ingresso_sito".into()
+    } else if evt_type == "geofenceExit" {
+        "uscita_sito".into()
+    } else if battery.map(|b| b > 0.0 && b < battery_min as f64).unwrap_or(false) {
+        "batteria_bassa".into()
+    } else {
+        "traccar_event".into()
+    }
+}
 
 // ----------------------------- helpers -----------------------------
 fn get_cookie(h: &HeaderMap, name: &str) -> Option<String> {
@@ -266,14 +309,337 @@ pub async fn set_module(State(st): State<AppState>, h: HeaderMap, Path(tid): Pat
 }
 
 #[derive(Deserialize)]
-pub struct SetGoalert { pub integration_key: String }
+pub struct SetTraccarConn { pub base_url: String, pub username: String, pub password: String }
+pub async fn super_set_traccar(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetTraccarConn>) -> R {
+    require_super(&st, &h).await?;
+    let base = b.base_url.trim_end_matches('/').to_string();
+    sqlx::query("INSERT INTO app.traccar_connections(tenant_id,base_url,username,password) VALUES($1,$2,$3,$4)
+        ON CONFLICT (tenant_id) DO UPDATE SET base_url=EXCLUDED.base_url,username=EXCLUDED.username,password=EXCLUDED.password,updated_at=now()")
+        .bind(tid).bind(&base).bind(&b.username).bind(&b.password).execute(&st.owner_pool).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,'superadmin','set_traccar_conn',$2)")
+        .bind(tid).bind(json!({"base_url":base})).execute(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+#[derive(Deserialize)]
+pub struct SetGoalert { pub integration_key: String, pub service_id: Option<String>,
+    pub gql_user: Option<String>, pub gql_pass: Option<String> }
 pub async fn super_set_goalert(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetGoalert>) -> R {
     require_super(&st, &h).await?;
-    sqlx::query("INSERT INTO app.goalert_services(tenant_id,integration_key) VALUES($1,$2)
-        ON CONFLICT (tenant_id) DO UPDATE SET integration_key=EXCLUDED.integration_key, updated_at=now()")
-        .bind(tid).bind(&b.integration_key).execute(&st.owner_pool).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.goalert_services(tenant_id,integration_key,service_id,gql_user,gql_pass) VALUES($1,$2,$3,$4,$5)
+        ON CONFLICT (tenant_id) DO UPDATE SET integration_key=EXCLUDED.integration_key,
+          service_id=COALESCE(EXCLUDED.service_id,goalert_services.service_id),
+          gql_user=COALESCE(EXCLUDED.gql_user,goalert_services.gql_user),
+          gql_pass=COALESCE(EXCLUDED.gql_pass,goalert_services.gql_pass), updated_at=now()")
+        .bind(tid).bind(&b.integration_key).bind(&b.service_id).bind(&b.gql_user).bind(&b.gql_pass)
+        .execute(&st.owner_pool).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,'superadmin','set_goalert_key',$2)")
-        .bind(tid).bind(json!({"len":b.integration_key.len()})).execute(&st.owner_pool).await.map_err(ise)?;
+        .bind(tid).bind(json!({"len":b.integration_key.len(),"service_id":b.service_id})).execute(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+// Helper: sessione GoAlert per il tenant (login via credenziali salvate).
+async fn goalert_session(st: &AppState, tid: Uuid) -> Option<(String, String, Option<String>)> {
+    let base = st.goalert_base.clone()?;
+    let row = sqlx::query("SELECT gql_user,gql_pass,service_id FROM app.goalert_services WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten()?;
+    let user: String = row.try_get("gql_user").ok()?; let pass: String = row.try_get("gql_pass").ok()?;
+    let sid: Option<String> = row.try_get("service_id").ok();
+    let cookie = goalert::login(&st.http, &base, &user, &pass).await?;
+    Some((base, cookie, sid))
+}
+
+// P2: stato reale dell'alert GoAlert di un incidente (ack/close/escalation).
+pub async fn goalert_status(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let tid = s.tenant_id.unwrap();
+    let aid: Option<i32> = sqlx::query_scalar("SELECT goalert_alert_id FROM app.incidents WHERE id=$1 AND tenant_id=$2")
+        .bind(iid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.flatten();
+    let Some(aid) = aid else { return Ok(Json(json!({"available":false,"reason":"nessun alert GoAlert collegato"}))); };
+    let Some((base, cookie, _)) = goalert_session(&st, tid).await else {
+        return Ok(Json(json!({"available":false,"reason":"credenziali GoAlert non configurate"}))); };
+    let q = format!("{{alert(id:{aid}){{id status summary}}}}");
+    match goalert::graphql(&st.http, &base, &cookie, &q).await {
+        Some(v) => { let a = v.pointer("/data/alert");
+            Ok(Json(json!({"available":true,"alert_id":aid,
+                "status": a.and_then(|x| x.get("status")).and_then(|x| x.as_str()),
+                "summary": a.and_then(|x| x.get("summary")).and_then(|x| x.as_str())}))) }
+        None => Ok(Json(json!({"available":false,"reason":"GoAlert non raggiungibile"}))),
+    }
+}
+
+// (c) ack / escalate dell'alert GoAlert dalla nostra console.
+async fn goalert_alert_action(st: &AppState, h: &HeaderMap, iid: Uuid, mutation: impl Fn(i64)->String) -> R {
+    let s = require_tenant(st, h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let tid = s.tenant_id.unwrap();
+    let aid: Option<i32> = sqlx::query_scalar("SELECT goalert_alert_id FROM app.incidents WHERE id=$1 AND tenant_id=$2")
+        .bind(iid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.flatten();
+    let aid = aid.ok_or_else(|| err(StatusCode::BAD_REQUEST, "nessun alert GoAlert collegato"))?;
+    let (base, cookie, _) = goalert_session(st, tid).await
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "credenziali GoAlert non configurate"))?;
+    let v = goalert::graphql(&st.http, &base, &cookie, &mutation(aid as i64)).await
+        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "GoAlert non raggiungibile"))?;
+    if v.get("errors").is_some() { return Err(err(StatusCode::BAD_GATEWAY, &format!("GoAlert: {}", v.get("errors").unwrap()))); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn goalert_ack(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>) -> R {
+    let r = goalert_alert_action(&st, &h, iid, |aid| format!("mutation{{updateAlerts(input:{{alertIDs:[{aid}],newStatus:StatusAcknowledged}}){{id}}}}")).await?;
+    if let Ok(s)=require_tenant(&st,&h).await { let tid=s.tenant_id.unwrap();
+        let _=sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'human_ack',$3)")
+            .bind(tid).bind(iid).bind(json!({"by":s.email,"via":"goalert"})).execute(&st.owner_pool).await; }
+    Ok(r)
+}
+pub async fn goalert_escalate(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>) -> R {
+    goalert_alert_action(&st, &h, iid, |aid| format!("mutation{{escalateAlerts(input:[{aid}]){{id}}}}")).await
+}
+
+// P2: chi è reperibile adesso sul servizio del tenant.
+pub async fn goalert_oncall(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor"|"responsabile") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let tid = s.tenant_id.unwrap();
+    let Some((base, cookie, sid)) = goalert_session(&st, tid).await else {
+        return Ok(Json(json!({"available":false,"reason":"GoAlert non configurato"}))); };
+    let Some(sid) = sid else { return Ok(Json(json!({"available":false,"reason":"service_id non impostato"}))); };
+    let q = format!("{{service(id:\"{sid}\"){{onCallUsers{{userName stepNumber}}}}}}");
+    match goalert::graphql(&st.http, &base, &cookie, &q).await {
+        Some(v) => { let arr = v.pointer("/data/service/onCallUsers").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+            let out: Vec<Value> = arr.iter().map(|u| json!({
+                "user": u.get("userName").and_then(|x| x.as_str()),
+                "step": u.get("stepNumber").and_then(|x| x.as_i64())})).collect();
+            Ok(Json(json!({"available":true,"oncall":out}))) }
+        None => Ok(Json(json!({"available":false,"reason":"GoAlert non raggiungibile"}))),
+    }
+}
+
+// P3: provisioning GoAlert per-tenant (crea escalation policy + servizio + generic key).
+#[derive(Deserialize)]
+pub struct GoalertProvision { pub user: String, pub pass: String, pub name: Option<String> }
+pub async fn goalert_provision(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<GoalertProvision>) -> R {
+    require_super(&st, &h).await?;
+    let base = st.goalert_base.clone().ok_or_else(|| err(StatusCode::BAD_REQUEST, "GOALERT_BASE non configurato"))?;
+    let cookie = goalert::login(&st.http, &base, &b.user, &b.pass).await
+        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "login GoAlert fallito"))?;
+    // suffisso unico: i nomi EP/service devono essere univoci su GoAlert (re-provision sicuro)
+    let suf = chrono::Utc::now().timestamp();
+    let name = format!("{} {}", b.name.clone().unwrap_or_else(|| format!("YW {}", &tid.to_string()[..8])), suf);
+    // EP (repeat 1, nessuno step: lo configura l'admin in GoAlert), servizio, generic key
+    let ep = goalert::graphql(&st.http,&base,&cookie,
+        &format!("mutation{{createEscalationPolicy(input:{{name:\"{name} EP\",repeat:1}}){{id}}}}")).await
+        .and_then(|v| v.pointer("/data/createEscalationPolicy/id").and_then(|x| x.as_str().map(String::from)))
+        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "createEscalationPolicy fallito"))?;
+    let sid = goalert::graphql(&st.http,&base,&cookie,
+        &format!("mutation{{createService(input:{{name:\"{name}\",escalationPolicyID:\"{ep}\"}}){{id}}}}")).await
+        .and_then(|v| v.pointer("/data/createService/id").and_then(|x| x.as_str().map(String::from)))
+        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "createService fallito"))?;
+    let key = goalert::graphql(&st.http,&base,&cookie,
+        &format!("mutation{{createIntegrationKey(input:{{serviceID:\"{sid}\",type:generic,name:\"core-outbox\"}}){{id}}}}")).await
+        .and_then(|v| v.pointer("/data/createIntegrationKey/id").and_then(|x| x.as_str().map(String::from)))
+        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "createIntegrationKey fallito"))?;
+    // heartbeat monitor (P3): avvisa se la nostra pipeline smette di pingare
+    let hb = goalert::graphql(&st.http,&base,&cookie,
+        &format!("mutation{{createHeartbeatMonitor(input:{{serviceID:\"{sid}\",name:\"yw-core\",timeoutMinutes:5}}){{href}}}}")).await
+        .and_then(|v| v.pointer("/data/createHeartbeatMonitor/href").and_then(|x| x.as_str().map(String::from)));
+    sqlx::query("INSERT INTO app.goalert_services(tenant_id,integration_key,service_id,gql_user,gql_pass,heartbeat_url) VALUES($1,$2,$3,$4,$5,$6)
+        ON CONFLICT (tenant_id) DO UPDATE SET integration_key=EXCLUDED.integration_key,service_id=EXCLUDED.service_id,
+          gql_user=EXCLUDED.gql_user,gql_pass=EXCLUDED.gql_pass,heartbeat_url=EXCLUDED.heartbeat_url,updated_at=now()")
+        .bind(tid).bind(&key).bind(&sid).bind(&b.user).bind(&b.pass).bind(&hb).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, "superadmin", "goalert_provision", json!({"service_id":sid})).await;
+    Ok(Json(json!({"ok":true,"escalation_policy":ep,"service_id":sid,"integration_key":key,"heartbeat_url":hb})))
+}
+
+// ====== Config server Traccar, gestita DA YouWorkforce (PUT /api/server) ======
+// Porte/forwarding = config d'avvio (nostra compose/env). I filtri posizione sono
+// già nel nostro strumento traccar/alarm_map. Qui le impostazioni runtime del server.
+const TR_CFG_BOOL: &[&str] = &["registration","readonly","deviceReadonly","limitCommands","disableReports","forceSettings"];
+const TR_CFG_STR:  &[&str] = &["mapUrl","overlayUrl","coordinateFormat","poiLayer","announcement"];
+const TR_CFG_NUM:  &[&str] = &["zoom","latitude","longitude"];
+pub async fn traccar_conn(st: &AppState, tid: Uuid) -> Option<(String,String,String)> {
+    let r = sqlx::query("SELECT base_url,username,password FROM app.traccar_connections WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten()?;
+    Some((r.get("base_url"), r.get("username"), r.get("password")))
+}
+pub async fn traccar_login(http: &reqwest::Client, base: &str, user: &str, pass: &str) -> Option<String> {
+    let resp = http.post(format!("{base}/api/session"))
+        .form(&[("email", user), ("password", pass)]).send().await.ok()?;
+    if !resp.status().is_success() { return None; }
+    let mut c = Vec::new();
+    for v in resp.headers().get_all(reqwest::header::SET_COOKIE).iter() {
+        if let Ok(s)=v.to_str() { if let Some(p)=s.split(';').next() { c.push(p.to_string()); } } }
+    if c.is_empty() { None } else { Some(c.join("; ")) }
+}
+pub async fn traccar_get_config(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
+    require_super(&st, &h).await?;
+    let (base,user,pass) = traccar_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata"))?;
+    let cookie = traccar_login(&st.http, &base, &user, &pass).await.ok_or_else(|| err(StatusCode::BAD_GATEWAY, "login Traccar fallito"))?;
+    let srv: Value = st.http.get(format!("{base}/api/server")).header("Cookie", &cookie).send().await
+        .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar irraggiungibile"))?.json().await
+        .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar json"))?;
+    let mut out = Vec::new();
+    for id in TR_CFG_BOOL { out.push(json!({"id":id,"type":"boolean","value":srv.get(id).and_then(|v|v.as_bool()).unwrap_or(false)})); }
+    for id in TR_CFG_STR  { out.push(json!({"id":id,"type":"string","value":srv.get(id).and_then(|v|v.as_str()).unwrap_or("")})); }
+    for id in TR_CFG_NUM  { out.push(json!({"id":id,"type":"number","value":srv.get(id).and_then(|v|v.as_f64()).unwrap_or(0.0)})); }
+    Ok(Json(json!(out)))
+}
+pub async fn traccar_set_config(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<GaCfgSet>) -> R {
+    require_super(&st, &h).await?;
+    let (base,user,pass) = traccar_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata"))?;
+    let cookie = traccar_login(&st.http, &base, &user, &pass).await.ok_or_else(|| err(StatusCode::BAD_GATEWAY, "login Traccar fallito"))?;
+    let mut srv: Value = st.http.get(format!("{base}/api/server")).header("Cookie", &cookie).send().await
+        .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar irraggiungibile"))?.json().await
+        .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar json"))?;
+    let o = srv.as_object_mut().ok_or_else(|| err(StatusCode::BAD_GATEWAY, "server model"))?;
+    for e in &b.entries {
+        if TR_CFG_BOOL.contains(&e.id.as_str()) { o.insert(e.id.clone(), json!(e.value=="true")); }
+        else if TR_CFG_STR.contains(&e.id.as_str()) { o.insert(e.id.clone(), json!(e.value)); }
+        else if TR_CFG_NUM.contains(&e.id.as_str()) { o.insert(e.id.clone(), json!(e.value.parse::<f64>().unwrap_or(0.0))); }
+    }
+    let put = st.http.put(format!("{base}/api/server")).header("Cookie", &cookie).json(&srv).send().await
+        .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar PUT fallito"))?;
+    if !put.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("Traccar PUT {}", put.status()))); }
+    audit(&st, tid, "superadmin", "traccar_set_config", json!({"n":b.entries.len()})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
+/// Stato salute della connessione/poller Traccar del tenant (card Connettori).
+/// Lo alimenta il worker::traccar_poll; qui lo leggiamo per operatore/admin/auditor.
+pub async fn traccar_status(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "traccar").await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor") {
+        return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato"));
+    }
+    let configured = traccar_conn(&st, tid).await.is_some();
+    let cfg: Option<(bool,i32,i32)> = sqlx::query_as("SELECT poll_enabled,poll_interval_s,silence_after_s FROM app.traccar_connections WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let (poll_enabled, poll_interval_s, silence_after_s) = cfg.unwrap_or((false,30,600));
+    let row = sqlx::query("SELECT last_event_id,last_poll_at,last_ok_at,reachable,last_error,device_count,online_count FROM app.traccar_poll_state WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let now = st.clock.now();
+    let (reachable, last_ok_at, last_poll_at, last_error, device_count, online_count, last_event_id) = match &row {
+        Some(r) => (
+            r.get::<bool,_>("reachable"),
+            r.try_get::<chrono::DateTime<chrono::Utc>,_>("last_ok_at").ok(),
+            r.try_get::<chrono::DateTime<chrono::Utc>,_>("last_poll_at").ok(),
+            r.try_get::<String,_>("last_error").ok(),
+            r.get::<i32,_>("device_count"),
+            r.get::<i32,_>("online_count"),
+            r.get::<i64,_>("last_event_id"),
+        ),
+        None => (false, None, None, None, 0, 0, 0),
+    };
+    let lag_seconds = last_ok_at.map(|t| (now - t).num_seconds());
+    Ok(Json(json!({
+        "configured": configured,
+        "poll_enabled": poll_enabled,
+        "poll_interval_s": poll_interval_s,
+        "silence_after_s": silence_after_s,
+        "reachable": reachable,
+        "last_ok_at": last_ok_at,
+        "last_poll_at": last_poll_at,
+        "lag_seconds": lag_seconds,
+        "last_error": last_error,
+        "device_count": device_count,
+        "online_count": online_count,
+        "last_event_id": last_event_id,
+    })))
+}
+
+// ====== Config trasporto notifiche GoAlert, gestita DA YouWorkforce ======
+// L'admin configura tutto dal nostro pannello; noi spingiamo la config a GoAlert via GraphQL.
+// NB: in GoAlert OSS la config è per-istanza (globale), non per-tenant.
+const GA_CFG_IDS: &[&str] = &[
+    "Twilio.Enable","Twilio.AccountSID","Twilio.AuthToken","Twilio.FromNumber","Twilio.MessagingServiceSID",
+    "SMTP.Enable","SMTP.From","SMTP.Address","SMTP.Username","SMTP.Password","SMTP.DisableTLS","SMTP.SkipVerify",
+    "Slack.Enable","Slack.ClientID","Slack.ClientSecret","Slack.AccessToken","Slack.SigningSecret",
+    "Mailgun.Enable","Mailgun.APIKey","Mailgun.EmailDomain",
+    "Webhook.Enable","Webhook.AllowedURLs","General.PublicURL",
+];
+const GA_CFG_SECRETS: &[&str] = &["Twilio.AuthToken","SMTP.Password","Slack.ClientSecret","Slack.SigningSecret","Slack.AccessToken","Mailgun.APIKey"];
+/// Validazione E.164: '+' seguito da 8-15 cifre, prima cifra 1-9.
+fn is_e164(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() < 9 || b.len() > 16 || b[0] != b'+' { return false; }
+    if !(b'1'..=b'9').contains(&b[1]) { return false; }
+    b[1..].iter().all(|c| c.is_ascii_digit())
+}
+
+pub async fn goalert_get_config(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
+    require_super(&st, &h).await?;
+    let Some((base, cookie, _)) = goalert_session(&st, tid).await else {
+        return Err(err(StatusCode::BAD_REQUEST, "credenziali GoAlert non configurate per il tenant (prima: Provisiona/Imposta)")); };
+    let v = goalert::graphql(&st.http, &base, &cookie, "{config(all:true){id type value}}").await
+        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "GoAlert non raggiungibile"))?;
+    let all = v.pointer("/data/config").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+    let out: Vec<Value> = all.iter().filter(|c| {
+        c.get("id").and_then(|i| i.as_str()).map(|i| GA_CFG_IDS.contains(&i)).unwrap_or(false)
+    }).map(|c| {
+        let id = c.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        let ty = c.get("type").and_then(|x| x.as_str()).unwrap_or("string");
+        let val = c.get("value").and_then(|x| x.as_str()).unwrap_or("");
+        let secret = GA_CFG_SECRETS.contains(&id);
+        json!({"id":id,"type":ty,"secret":secret,
+            "value": if secret { Value::Null } else { json!(val) },
+            "set": if secret { Some(!val.is_empty()) } else { None }})
+    }).collect();
+    Ok(Json(json!(out)))
+}
+
+#[derive(Deserialize)]
+pub struct GaCfgSet { pub entries: Vec<GaCfgEntry> }
+#[derive(Deserialize)]
+pub struct GaCfgEntry { pub id: String, pub value: String }
+pub async fn goalert_set_config(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<GaCfgSet>) -> R {
+    require_super(&st, &h).await?;
+    let Some((base, cookie, _)) = goalert_session(&st, tid).await else {
+        return Err(err(StatusCode::BAD_REQUEST, "credenziali GoAlert non configurate")); };
+    // whitelist + segreti vuoti = non sovrascrivere
+    let mut items = Vec::new();
+    for e in &b.entries {
+        if !GA_CFG_IDS.contains(&e.id.as_str()) { continue; }
+        if GA_CFG_SECRETS.contains(&e.id.as_str()) && e.value.is_empty() { continue; }
+        // validazione lato nostro (prima di inoltrare a GoAlert)
+        if e.id == "Twilio.FromNumber" && !e.value.is_empty() && !is_e164(&e.value) {
+            return Err(err(StatusCode::BAD_REQUEST, "Twilio.FromNumber: formato E.164 richiesto (es. +14155552671)"));
+        }
+        if e.id == "Twilio.MessagingServiceSID" && !e.value.is_empty()
+            && !(e.value.len()==34 && e.value.starts_with("MG")) {
+            return Err(err(StatusCode::BAD_REQUEST, "Twilio.MessagingServiceSID: formato 'MG' + 32 esadecimali"));
+        }
+        if e.id == "Twilio.AccountSID" && !e.value.is_empty()
+            && !(e.value.len()==34 && e.value.starts_with("AC")) {
+            return Err(err(StatusCode::BAD_REQUEST, "Twilio.AccountSID: formato 'AC' + 32 esadecimali"));
+        }
+        let v = e.value.replace('\\', "\\\\").replace('"', "\\\"");
+        items.push(format!("{{id:\"{}\",value:\"{}\"}}", e.id, v));
+    }
+    if items.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nessun campo valido")); }
+    let q = format!("mutation{{setConfig(input:[{}])}}", items.join(","));
+    let v = goalert::graphql(&st.http, &base, &cookie, &q).await
+        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "GoAlert non raggiungibile"))?;
+    if v.get("errors").is_some() {
+        return Err(err(StatusCode::BAD_GATEWAY, &format!("GoAlert: {}", v.get("errors").unwrap())));
+    }
+    audit(&st, tid, "superadmin", "goalert_set_config", json!({"n":items.len()})).await;
+    Ok(Json(json!({"ok":true,"updated":items.len()})))
+}
+
+// P3: routing per tipo evento -> key GoAlert specifica.
+#[derive(Deserialize)]
+pub struct GoalertRoute { pub etype: String, pub integration_key: Option<String> }
+pub async fn goalert_set_routing(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GoalertRoute>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    match &b.integration_key {
+        Some(k) if !k.is_empty() => { sqlx::query("INSERT INTO app.goalert_routing(tenant_id,etype,integration_key) VALUES($1,$2,$3)
+            ON CONFLICT (tenant_id,etype) DO UPDATE SET integration_key=EXCLUDED.integration_key")
+            .bind(tid).bind(&b.etype).bind(k).execute(&st.owner_pool).await.map_err(ise)?; }
+        _ => { sqlx::query("DELETE FROM app.goalert_routing WHERE tenant_id=$1 AND etype=$2")
+            .bind(tid).bind(&b.etype).execute(&st.owner_pool).await.map_err(ise)?; }
+    }
     Ok(Json(json!({"ok":true})))
 }
 
@@ -369,6 +735,754 @@ pub async fn list_users(State(st): State<AppState>, h: HeaderMap) -> R {
     let out: Vec<Value> = rows.iter().map(|r| json!({
         "id": r.get::<Uuid,_>("id"), "email": r.get::<String,_>("email"), "role": r.get::<String,_>("role") })).collect();
     Ok(Json(json!(out)))
+}
+
+// ============================ Gestione (Fase 1) ============================
+// Anagrafiche e operazioni che mancavano: dispositivi, sedi, utenti, gruppi di
+// allarme + routing, assegnazione/note incidenti, check-in in centrale.
+fn admin_only(s: &Session) -> Result<(), (StatusCode, String)> {
+    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "riservato all'admin del tenant")); }
+    Ok(())
+}
+const USER_ROLES: &[&str] = &["tenant_admin","operatore","pianificatore","responsabile","lavoratore","reperibile","auditor"];
+
+/// #8 ACL: sedi visibili all'utente. None = tutte (admin/auditor/pianificatore o
+/// operatore senza restrizioni); Some(set) = solo quelle sedi.
+async fn allowed_sites(st: &AppState, s: &Session) -> Option<std::collections::HashSet<Uuid>> {
+    if !matches!(s.role.as_str(), "operatore"|"lavoratore"|"reperibile") { return None; }
+    let rows = sqlx::query_scalar::<_, Uuid>("SELECT site_id FROM app.operator_sites WHERE user_id=$1")
+        .bind(s.user_id).fetch_all(&st.owner_pool).await.ok()?;
+    if rows.is_empty() { None } else { Some(rows.into_iter().collect()) }
+}
+fn site_allowed(set: &Option<std::collections::HashSet<Uuid>>, site_id: Option<Uuid>) -> bool {
+    match set { None => true, Some(s) => site_id.map(|x| s.contains(&x)).unwrap_or(false) }
+}
+
+#[derive(Deserialize)]
+pub struct UserSitesReq { pub site_ids: Vec<Uuid> }
+pub async fn get_user_sites(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let rows = sqlx::query_scalar::<_, Uuid>("SELECT site_id FROM app.operator_sites WHERE user_id=$1")
+        .bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"site_ids": rows})))
+}
+pub async fn set_user_sites(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<UserSitesReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.operator_sites WHERE user_id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    for sid in &b.site_ids {
+        sqlx::query("INSERT INTO app.operator_sites(tenant_id,user_id,site_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+            .bind(tid).bind(id).bind(sid).execute(&mut *tx).await.map_err(ise)?;
+    }
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "set_user_sites", json!({"user":id,"n":b.site_ids.len()})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---------------- Dispositivi ----------------
+pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), DEVICE_MODS).await?;
+    let acl = allowed_sites(&st, &s).await;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let rows = sqlx::query(
+        "SELECT d.id,d.external_id,d.source,d.label,d.enabled,d.config,d.site_id,d.assigned_user,
+                d.last_lat,d.last_lon,d.last_battery,d.last_pos_at,d.last_attributes,d.model_code,d.assigned_asset,
+                s.name AS site_name, u.email AS user_email, a.name AS asset_name,
+                m.manufacturer, m.model_name, m.category, m.capabilities,
+                pr.step AS prov_step,
+                (SELECT max(received_ts) FROM app.events e WHERE e.device_id=d.id) AS last_seen,
+                (SELECT e.etype FROM app.events e WHERE e.device_id=d.id ORDER BY e.received_ts DESC LIMIT 1) AS last_etype
+         FROM app.devices d LEFT JOIN app.sites s ON s.id=d.site_id LEFT JOIN app.users u ON u.id=d.assigned_user
+              LEFT JOIN app.assets a ON a.id=d.assigned_asset
+              LEFT JOIN app.device_models m ON m.model_code=d.model_code
+              LEFT JOIN app.device_provisioning pr ON pr.device_id=d.id
+         ORDER BY d.source,d.external_id").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter()
+        .filter(|r| site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok()))
+        .map(|r| json!({
+        "id": r.get::<Uuid,_>("id"), "external_id": r.get::<String,_>("external_id"), "source": r.get::<String,_>("source"),
+        "label": r.try_get::<String,_>("label").ok(), "enabled": r.get::<bool,_>("enabled"), "config": r.get::<Value,_>("config"),
+        "site_id": r.try_get::<Uuid,_>("site_id").ok(), "site_name": r.try_get::<String,_>("site_name").ok(),
+        "assigned_user": r.try_get::<Uuid,_>("assigned_user").ok(), "user_email": r.try_get::<String,_>("user_email").ok(),
+        "last_seen": r.try_get::<chrono::DateTime<chrono::Utc>,_>("last_seen").ok(),
+        "last_etype": r.try_get::<String,_>("last_etype").ok(),
+        "last_lat": r.try_get::<f64,_>("last_lat").ok(), "last_lon": r.try_get::<f64,_>("last_lon").ok(),
+        "last_battery": r.try_get::<f64,_>("last_battery").ok(),
+        "last_pos_at": r.try_get::<chrono::DateTime<chrono::Utc>,_>("last_pos_at").ok(),
+        "last_attributes": r.try_get::<Value,_>("last_attributes").ok(),
+        "model_code": r.try_get::<String,_>("model_code").ok(),
+        "manufacturer": r.try_get::<String,_>("manufacturer").ok(),
+        "model_name": r.try_get::<String,_>("model_name").ok(),
+        "category": r.try_get::<String,_>("category").ok(),
+        "capabilities": r.try_get::<Vec<String>,_>("capabilities").ok(),
+        "assigned_asset": r.try_get::<Uuid,_>("assigned_asset").ok(),
+        "asset_name": r.try_get::<String,_>("asset_name").ok(),
+        "prov_step": r.try_get::<String,_>("prov_step").ok() })).collect();
+    Ok(Json(json!(out)))
+}
+#[derive(Deserialize)]
+pub struct DeviceReq { pub external_id: String, pub source: String, pub label: Option<String>,
+    pub site_id: Option<Uuid>, pub assigned_user: Option<Uuid>, pub enabled: Option<bool>, pub config: Option<Value> }
+pub async fn create_device(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DeviceReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if b.external_id.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "external_id richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query(
+        "INSERT INTO app.devices(tenant_id,external_id,source,label,site_id,assigned_user,enabled,config)
+         VALUES($1,$2,$3,$4,$5,$6,COALESCE($7,true),COALESCE($8,'{}'::jsonb)) RETURNING id")
+        .bind(tid).bind(b.external_id.trim()).bind(&b.source).bind(&b.label).bind(b.site_id).bind(b.assigned_user)
+        .bind(b.enabled).bind(b.config.clone())
+        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "dispositivo gia' presente (source+external_id)"))?;
+    tx.commit().await.map_err(ise)?;
+    let id = row.ok_or_else(|| err(StatusCode::CONFLICT, "dispositivo gia' presente"))?.get::<Uuid,_>("id");
+    audit(&st, tid, &s.email, "create_device", json!({"external_id":b.external_id,"source":b.source})).await;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn update_device(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<DeviceReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query(
+        "UPDATE app.devices SET external_id=$2,source=$3,label=$4,site_id=$5,assigned_user=$6,
+            enabled=COALESCE($7,enabled),config=COALESCE($8,config),updated_at=now() WHERE id=$1")
+        .bind(id).bind(b.external_id.trim()).bind(&b.source).bind(&b.label).bind(b.site_id).bind(b.assigned_user)
+        .bind(b.enabled).bind(b.config.clone()).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "dispositivo inesistente")); }
+    audit(&st, tid, &s.email, "update_device", json!({"id":id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_device(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.devices WHERE id=$1").bind(id).execute(&mut *tx).await
+        .map_err(|_| err(StatusCode::CONFLICT, "dispositivo referenziato da eventi: disabilitalo invece di eliminarlo"))?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "dispositivo inesistente")); }
+    audit(&st, tid, &s.email, "delete_device", json!({"id":id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---------------- Ingest token (credenziali macchina dei connettori) ----------------
+// Il tenant deriva SEMPRE dal token di ingest; qui il tenant_admin li vede e li ruota.
+pub async fn list_ingest_tokens(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, CONNECTOR_MODS).await?;
+    let rows = sqlx::query("SELECT token,source,created_at FROM app.ingest_tokens WHERE tenant_id=$1 ORDER BY source,created_at")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "token": r.get::<String,_>("token"), "source": r.get::<String,_>("source"),
+        "created_at": r.get::<chrono::DateTime<chrono::Utc>,_>("created_at") })).collect();
+    Ok(Json(json!(out)))
+}
+#[derive(Deserialize)]
+pub struct TokenReq { pub source: String }
+pub async fn create_ingest_token(State(st): State<AppState>, h: HeaderMap, Json(b): Json<TokenReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    const SRC: &[&str] = &["traccar","thingsboard","iot"];
+    if !SRC.contains(&b.source.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "sorgente non valida")); }
+    let token = format!("{}-{}", b.source, &auth::new_token()[..24]);
+    sqlx::query("INSERT INTO app.ingest_tokens(token,tenant_id,source) VALUES($1,$2,$3)")
+        .bind(&token).bind(tid).bind(&b.source).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, &s.email, "create_ingest_token", json!({"source":b.source})).await;
+    Ok(Json(json!({"token":token})))
+}
+pub async fn delete_ingest_token(State(st): State<AppState>, h: HeaderMap, Path(tok): Path<String>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    // il filtro per tenant_id impedisce di toccare token di altri tenant
+    let n = sqlx::query("DELETE FROM app.ingest_tokens WHERE token=$1 AND tenant_id=$2")
+        .bind(&tok).bind(tid).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "token inesistente")); }
+    audit(&st, tid, &s.email, "delete_ingest_token", json!({})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---------------- Connettori (riepilogo) ----------------
+pub async fn list_connectors(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, CONNECTOR_MODS).await?;
+    let defs = [("traccar","Traccar (badge)",5055usize),("thingsboard","ThingsBoard (IoT)",0),("goalert","GoAlert (escalation)",0),("iot","IoT generico",0)];
+    let has_key: i64 = sqlx::query_scalar("SELECT count(*) FROM app.goalert_services WHERE tenant_id=$1")
+        .bind(tid).fetch_one(&st.owner_pool).await.map_err(ise)?;
+    let mut out = Vec::new();
+    for (code,name,_p) in defs {
+        let state: Option<String> = sqlx::query_scalar("SELECT state FROM app.tenant_modules WHERE tenant_id=$1 AND module_code=$2")
+            .bind(tid).bind(code).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+        let toks: i64 = sqlx::query_scalar("SELECT count(*) FROM app.ingest_tokens WHERE tenant_id=$1 AND source=$2")
+            .bind(tid).bind(code).fetch_one(&st.owner_pool).await.map_err(ise)?;
+        out.push(json!({"code":code,"name":name,"state":state.unwrap_or("non_abilitato".into()),
+            "tokens":toks,"has_key": if code=="goalert" { Some(has_key>0) } else { None::<bool> }}));
+    }
+    Ok(Json(json!(out)))
+}
+
+// ================= Fase A — Catalogo modelli dispositivo =================
+pub async fn list_catalog(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), DEVICE_MODS).await?;
+    let term = q.get("q").map(|s| format!("%{}%", s.to_lowercase()));
+    let manu = q.get("manufacturer").filter(|s| !s.is_empty()).cloned();
+    let cat = q.get("category").filter(|s| !s.is_empty()).cloned();
+    let rows = sqlx::query(
+        "SELECT model_code,manufacturer,model_name,protocol,default_port,category,capabilities,osmand,recommended,notes
+         FROM app.device_models
+         WHERE ($1::text IS NULL OR lower(manufacturer||' '||model_name) LIKE $1)
+           AND ($2::text IS NULL OR manufacturer=$2)
+           AND ($3::text IS NULL OR category=$3)
+         ORDER BY recommended DESC, manufacturer, model_name
+         LIMIT 300")
+        .bind(term).bind(manu).bind(cat).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "model_code":r.get::<String,_>("model_code"),"manufacturer":r.get::<String,_>("manufacturer"),
+        "model_name":r.get::<String,_>("model_name"),"protocol":r.get::<String,_>("protocol"),
+        "default_port":r.try_get::<i32,_>("default_port").ok(),"category":r.get::<String,_>("category"),
+        "capabilities":r.get::<Vec<String>,_>("capabilities"),"osmand":r.get::<bool,_>("osmand"),
+        "recommended":r.get::<bool,_>("recommended"),"notes":r.try_get::<String,_>("notes").ok() })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn catalog_facets(State(st): State<AppState>, h: HeaderMap) -> R {
+    let _ = require_tenant(&st, &h).await?;
+    let manu: Vec<String> = sqlx::query_scalar("SELECT DISTINCT manufacturer FROM app.device_models ORDER BY manufacturer")
+        .fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let cats: Vec<String> = sqlx::query_scalar("SELECT DISTINCT category FROM app.device_models ORDER BY category")
+        .fetch_all(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"manufacturers":manu,"categories":cats})))
+}
+
+// ================= Fase C — Asset =================
+pub async fn list_assets(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT a.id,a.name,a.kind,a.identifier,a.site_id,si.name AS site,a.note
+        FROM app.assets a LEFT JOIN app.sites si ON si.id=a.site_id ORDER BY a.name").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"kind":r.get::<String,_>("kind"),
+        "identifier":r.try_get::<String,_>("identifier").ok(),"site_id":r.try_get::<Uuid,_>("site_id").ok(),
+        "site":r.try_get::<String,_>("site").ok(),"note":r.try_get::<String,_>("note").ok() })).collect();
+    Ok(Json(json!(out)))
+}
+#[derive(Deserialize)]
+pub struct AssetReq { pub name: String, pub kind: Option<String>, pub identifier: Option<String>, pub site_id: Option<Uuid>, pub note: Option<String> }
+pub async fn create_asset(State(st): State<AppState>, h: HeaderMap, Json(b): Json<AssetReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let kind = b.kind.clone().unwrap_or("attrezzatura".into());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.assets(tenant_id,name,kind,identifier,site_id,note) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(&kind).bind(&b.identifier).bind(b.site_id).bind(&b.note)
+        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "nome gia' presente"))?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":row.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id")})))
+}
+pub async fn delete_asset(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.assets WHERE id=$1").bind(id).execute(&mut *tx).await
+        .map_err(|_| err(StatusCode::CONFLICT, "asset con dispositivi collegati"))?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "asset inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)]
+pub struct AssignReq2 { pub user_id: Option<Uuid>, pub asset_id: Option<Uuid> }
+pub async fn assign_device(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<AssignReq2>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    if b.user_id.is_some() && b.asset_id.is_some() { return Err(err(StatusCode::BAD_REQUEST, "assegna a utente OPPURE asset, non entrambi")); }
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.devices SET assigned_user=$2, assigned_asset=$3, updated_at=now() WHERE id=$1")
+        .bind(id).bind(b.user_id).bind(b.asset_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "device inesistente")); }
+    audit(&st, tid, &s.email, "assign_device", json!({"device":id,"user":b.user_id,"asset":b.asset_id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ================= Fase B — Provisioning guidato =================
+#[derive(Deserialize)]
+pub struct ProvisionReq {
+    pub model_code: String, pub external_id: String, pub label: Option<String>, pub site_id: Option<Uuid>,
+    pub user_id: Option<Uuid>, pub asset_id: Option<Uuid>, pub register_traccar: Option<bool> }
+pub async fn provision_device(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ProvisionReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, DEVICE_MODS).await?;
+    if b.external_id.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "IMEI/uniqueId richiesto")); }
+    if b.user_id.is_some() && b.asset_id.is_some() { return Err(err(StatusCode::BAD_REQUEST, "assegna a utente OPPURE asset")); }
+    // modello dal catalogo
+    let m = sqlx::query("SELECT protocol,default_port,capabilities,default_config,osmand FROM app.device_models WHERE model_code=$1")
+        .bind(&b.model_code).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "modello inesistente"))?;
+    let protocol: String = m.get("protocol");
+    let port: Option<i32> = m.try_get("default_port").ok();
+    let caps: Vec<String> = m.get("capabilities");
+    let def_cfg: Value = m.get("default_config");
+    // crea device (source 'traccar': tutti i protocolli arrivano via forwarding Traccar)
+    let dcfg = json!({"model_code": b.model_code, "capabilities": caps, "protocol": protocol});
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let drow = sqlx::query(
+        "INSERT INTO app.devices(tenant_id,external_id,source,label,site_id,assigned_user,assigned_asset,enabled,config,model_code)
+         VALUES($1,$2,'traccar',$3,$4,$5,$6,true,$7,$8) RETURNING id")
+        .bind(tid).bind(b.external_id.trim()).bind(&b.label).bind(b.site_id).bind(b.user_id).bind(b.asset_id)
+        .bind(&dcfg).bind(&b.model_code)
+        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "dispositivo gia' presente (uniqueId)"))?;
+    let dev_id = drow.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id");
+    tx.commit().await.map_err(ise)?;
+    // default alarm_map dal modello SOLO se il tenant non ha gia' una config propria
+    let has_cfg: Option<Uuid> = sqlx::query_scalar("SELECT tenant_id FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='traccar' AND tool_code='alarm_map'")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    if has_cfg.is_none() && def_cfg.is_object() && !def_cfg.as_object().unwrap().is_empty() {
+        let mut ttx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+        let _ = sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'traccar','alarm_map',$2,$3) ON CONFLICT DO NOTHING")
+            .bind(tid).bind(&def_cfg).bind(s.user_id).execute(&mut *ttx).await;
+        let _ = ttx.commit().await;
+    }
+    // registrazione su Traccar (opzionale, se connessione configurata)
+    let mut step = "in_attesa_primo_fix".to_string();
+    let mut tdid: Option<i64> = None; let mut last_err: Option<String> = None;
+    if b.register_traccar.unwrap_or(false) {
+        if let Some(conn) = sqlx::query("SELECT base_url,username,password FROM app.traccar_connections WHERE tenant_id=$1")
+            .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)? {
+            let base: String = conn.get("base_url"); let user: String = conn.get("username"); let pass: String = conn.get("password");
+            let name = b.label.clone().unwrap_or_else(|| b.external_id.clone());
+            match st.http.post(format!("{base}/api/devices")).basic_auth(&user, Some(&pass))
+                .json(&json!({"name":name,"uniqueId":b.external_id})).send().await {
+                Ok(r) if r.status().is_success() => {
+                    if let Ok(v) = r.json::<Value>().await { tdid = v.get("id").and_then(|x| x.as_i64()); }
+                    step = "traccar_registrato".into();
+                }
+                Ok(r) => last_err = Some(format!("Traccar {}", r.status())),
+                Err(e) => last_err = Some(format!("Traccar irraggiungibile: {e}")),
+            }
+        } else { last_err = Some("connessione Traccar non configurata".into()); }
+    }
+    sqlx::query("INSERT INTO app.device_provisioning(device_id,tenant_id,step,traccar_device_id,last_error) VALUES($1,$2,$3,$4,$5)
+        ON CONFLICT (device_id) DO UPDATE SET step=EXCLUDED.step,traccar_device_id=EXCLUDED.traccar_device_id,last_error=EXCLUDED.last_error,updated_at=now()")
+        .bind(dev_id).bind(tid).bind(&step).bind(tdid).bind(&last_err).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, &s.email, "provision_device", json!({"model":b.model_code,"external_id":b.external_id})).await;
+    Ok(Json(json!({"device_id":dev_id,"step":step,"traccar_device_id":tdid,"error":last_err,
+        "install":{"protocol":protocol,"port":port,"note":"Configura il device verso host:porta del server Traccar (o OsmAnd per smartphone)."}})))
+}
+
+// ---------------- Sedi ----------------
+#[derive(Deserialize)]
+pub struct SiteReq { pub name: String }
+pub async fn create_site(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SiteReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.sites(tenant_id,name) VALUES($1,$2) RETURNING id")
+        .bind(tid).bind(b.name.trim()).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "create_site", json!({"name":b.name})).await;
+    Ok(Json(json!({"id":row.get::<Uuid,_>("id")})))
+}
+pub async fn update_site(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<SiteReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.sites SET name=$2 WHERE id=$1").bind(id).bind(b.name.trim()).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "sede inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_site(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.sites WHERE id=$1").bind(id).execute(&mut *tx).await
+        .map_err(|_| err(StatusCode::CONFLICT, "sede referenziata: rimuovi prima i collegamenti"))?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "sede inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---------------- Utenti ----------------
+#[derive(Deserialize)]
+pub struct NewUser { pub email: String, pub role: String, pub password: String }
+pub async fn create_user(State(st): State<AppState>, h: HeaderMap, Json(b): Json<NewUser>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if !USER_ROLES.contains(&b.role.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "ruolo non valido")); }
+    if b.password.len() < 4 { return Err(err(StatusCode::BAD_REQUEST, "password troppo corta")); }
+    if b.email.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "email richiesta")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.users(tenant_id,email,pass_hash,role) VALUES($1,$2,$3,$4) RETURNING id")
+        .bind(tid).bind(b.email.trim()).bind(auth::hash_password(&b.password)).bind(&b.role)
+        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "email gia' presente"))?;
+    tx.commit().await.map_err(ise)?;
+    let id = row.ok_or_else(|| err(StatusCode::CONFLICT, "email gia' presente"))?.get::<Uuid,_>("id");
+    audit(&st, tid, &s.email, "create_user", json!({"email":b.email,"role":b.role})).await;
+    Ok(Json(json!({"id":id})))
+}
+#[derive(Deserialize)]
+pub struct UpdateUser { pub role: Option<String>, pub password: Option<String> }
+pub async fn update_user(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<UpdateUser>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if let Some(r) = &b.role {
+        if !USER_ROLES.contains(&r.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "ruolo non valido")); }
+        // non togliere l'ultimo admin
+        if id == s.user_id && r != "tenant_admin" {
+            let admins: i64 = sqlx::query_scalar("SELECT count(*) FROM app.users WHERE tenant_id=$1 AND role='tenant_admin'")
+                .bind(tid).fetch_one(&st.owner_pool).await.map_err(ise)?;
+            if admins <= 1 { return Err(err(StatusCode::CONFLICT, "non puoi rimuovere l'ultimo admin")); }
+        }
+    }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    if let Some(r) = &b.role {
+        sqlx::query("UPDATE app.users SET role=$2 WHERE id=$1").bind(id).bind(r).execute(&mut *tx).await.map_err(ise)?;
+    }
+    if let Some(p) = &b.password {
+        if p.len() < 4 { let _=tx.rollback().await; return Err(err(StatusCode::BAD_REQUEST, "password troppo corta")); }
+        sqlx::query("UPDATE app.users SET pass_hash=$2 WHERE id=$1").bind(id).bind(auth::hash_password(p)).execute(&mut *tx).await.map_err(ise)?;
+    }
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "update_user", json!({"id":id,"role":b.role})).await;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_user(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if id == s.user_id { return Err(err(StatusCode::CONFLICT, "non puoi eliminare te stesso")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.users WHERE id=$1").bind(id).execute(&mut *tx).await
+        .map_err(|_| err(StatusCode::CONFLICT, "utente referenziato (ordini/consuntivi): cambia ruolo invece di eliminarlo"))?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "utente inesistente")); }
+    audit(&st, tid, &s.email, "delete_user", json!({"id":id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---------------- Gruppi di allarme + routing ----------------
+pub async fn list_groups(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "loneworker").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let groups = sqlx::query("SELECT id,name FROM app.alarm_groups ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
+    let members = sqlx::query(
+        "SELECT m.group_id,m.user_id,m.position,u.email,u.role FROM app.alarm_group_members m
+         JOIN app.users u ON u.id=m.user_id ORDER BY m.position").fetch_all(&mut *tx).await.map_err(ise)?;
+    let routing = sqlx::query("SELECT etype,group_id FROM app.alarm_routing").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = groups.iter().map(|g| {
+        let gid: Uuid = g.get("id");
+        let mem: Vec<Value> = members.iter().filter(|m| m.get::<Uuid,_>("group_id")==gid).map(|m| json!({
+            "user_id":m.get::<Uuid,_>("user_id"),"email":m.get::<String,_>("email"),
+            "role":m.get::<String,_>("role"),"position":m.get::<i32,_>("position")})).collect();
+        json!({"id":gid,"name":g.get::<String,_>("name"),"members":mem})
+    }).collect();
+    let routes: Vec<Value> = routing.iter().map(|r| json!({"etype":r.get::<String,_>("etype"),"group_id":r.get::<Uuid,_>("group_id")})).collect();
+    Ok(Json(json!({"groups":out,"routing":routes})))
+}
+#[derive(Deserialize)]
+pub struct GroupReq { pub name: String }
+pub async fn create_group(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GroupReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.alarm_groups(tenant_id,name) VALUES($1,$2) RETURNING id")
+        .bind(tid).bind(b.name.trim()).fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "gruppo gia' presente"))?;
+    tx.commit().await.map_err(ise)?;
+    let id = row.ok_or_else(|| err(StatusCode::CONFLICT, "gruppo gia' presente"))?.get::<Uuid,_>("id");
+    Ok(Json(json!({"id":id})))
+}
+pub async fn delete_group(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.alarm_groups WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)]
+pub struct MemberReq { pub user_id: Uuid, pub position: Option<i32> }
+pub async fn add_group_member(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<MemberReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.alarm_group_members(tenant_id,group_id,user_id,position) VALUES($1,$2,$3,COALESCE($4,1))
+        ON CONFLICT (group_id,user_id) DO UPDATE SET position=EXCLUDED.position")
+        .bind(tid).bind(gid).bind(b.user_id).bind(b.position).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn remove_group_member(State(st): State<AppState>, h: HeaderMap, Path((gid,uid)): Path<(Uuid,Uuid)>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.alarm_group_members WHERE group_id=$1 AND user_id=$2").bind(gid).bind(uid).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)]
+pub struct RouteReq { pub etype: String, pub group_id: Option<Uuid> }
+pub async fn set_routing(State(st): State<AppState>, h: HeaderMap, Json(b): Json<RouteReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    match b.group_id {
+        Some(g) => { sqlx::query("INSERT INTO app.alarm_routing(tenant_id,etype,group_id) VALUES($1,$2,$3)
+            ON CONFLICT (tenant_id,etype) DO UPDATE SET group_id=EXCLUDED.group_id")
+            .bind(tid).bind(&b.etype).bind(g).execute(&mut *tx).await.map_err(ise)?; }
+        None => { sqlx::query("DELETE FROM app.alarm_routing WHERE tenant_id=$1 AND etype=$2").bind(tid).bind(&b.etype).execute(&mut *tx).await.map_err(ise)?; }
+    }
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---------------- Centrale: assegnazione + note ----------------
+#[derive(Deserialize)]
+pub struct AssignReq { pub user_id: Option<Uuid> }
+pub async fn assign_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>, Json(b): Json<AssignReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.incidents SET assigned_user=$2 WHERE id=$1").bind(iid).bind(b.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    if n>0 {
+        sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'assegnazione',$3)")
+            .bind(tid).bind(iid).bind(json!({"assigned_user":b.user_id,"by":s.email})).execute(&mut *tx).await.map_err(ise)?;
+    }
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "incidente inesistente")); }
+    publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"incident_assigned","incident_id":iid})}).await;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)]
+pub struct NoteReq { pub body: String }
+pub async fn add_incident_note(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>, Json(b): Json<NoteReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let tid = s.tenant_id.unwrap();
+    let body = b.body.trim();
+    if body.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nota vuota")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail)
+        SELECT $1,$2,'nota',$3 WHERE EXISTS(SELECT 1 FROM app.incidents WHERE id=$2)")
+        .bind(tid).bind(iid).bind(json!({"body":body,"by":s.email})).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "incidente inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---------------- Check-in in centrale ----------------
+pub async fn list_checkins(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    require_module(&st, s.tenant_id.unwrap(), "loneworker").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let rows = sqlx::query(
+        "SELECT c.id,c.due_at,c.state,u.email,s.name AS site FROM app.checkins c
+         JOIN app.users u ON u.id=c.user_id LEFT JOIN app.sites s ON s.id=c.site_id
+         WHERE c.state IN ('attivo','scaduto') ORDER BY c.due_at").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"due_at":r.get::<chrono::DateTime<chrono::Utc>,_>("due_at"),
+        "state":r.get::<String,_>("state"),"email":r.get::<String,_>("email"),"site":r.try_get::<String,_>("site").ok() })).collect();
+    Ok(Json(json!(out)))
+}
+
+async fn audit(st: &AppState, tid: Uuid, actor: &str, action: &str, detail: Value) {
+    let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,$2,$3,$4)")
+        .bind(tid).bind(actor).bind(action).bind(detail).execute(&st.owner_pool).await;
+}
+
+// ============================ Fase 2 — Forza lavoro + turni ============================
+fn parse_ts(s: &str) -> Result<chrono::DateTime<chrono::Utc>, (StatusCode, String)> {
+    chrono::DateTime::parse_from_rfc3339(s).map(|d| d.with_timezone(&chrono::Utc))
+        .map_err(|_| err(StatusCode::BAD_REQUEST, "data/ora non valida (usa ISO 8601)"))
+}
+async fn need_workforce(st: &AppState, tid: Uuid) -> Result<(), (StatusCode, String)> {
+    if !module_active(st, tid, "workforce").await { return Err(err(StatusCode::FORBIDDEN, "modulo workforce non abilitato")); }
+    Ok(())
+}
+
+// ---------------- Squadre ----------------
+pub async fn list_teams(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "workforce").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let teams = sqlx::query("SELECT id,name FROM app.teams ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
+    let mem = sqlx::query("SELECT m.team_id,m.user_id,u.email FROM app.team_members m JOIN app.users u ON u.id=m.user_id")
+        .fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = teams.iter().map(|t| {
+        let id: Uuid = t.get("id");
+        let ms: Vec<Value> = mem.iter().filter(|m| m.get::<Uuid,_>("team_id")==id)
+            .map(|m| json!({"user_id":m.get::<Uuid,_>("user_id"),"email":m.get::<String,_>("email")})).collect();
+        json!({"id":id,"name":t.get::<String,_>("name"),"members":ms})
+    }).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn create_team(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GroupReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.teams(tenant_id,name) VALUES($1,$2) RETURNING id")
+        .bind(tid).bind(b.name.trim()).fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "squadra gia' presente"))?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":row.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id")})))
+}
+pub async fn delete_team(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.teams WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "squadra inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn add_team_member(State(st): State<AppState>, h: HeaderMap, Path(tid_p): Path<Uuid>, Json(b): Json<MemberReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.team_members(tenant_id,team_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+        .bind(tid).bind(tid_p).bind(b.user_id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn remove_team_member(State(st): State<AppState>, h: HeaderMap, Path((team,uid)): Path<(Uuid,Uuid)>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.team_members WHERE team_id=$1 AND user_id=$2").bind(team).bind(uid).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---------------- Turni pianificati ----------------
+#[derive(Deserialize)]
+pub struct ShiftPlanReq { pub user_id: Uuid, pub site_id: Option<Uuid>, pub starts_at: String, pub ends_at: String, pub note: Option<String> }
+pub async fn create_shift_plan(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ShiftPlanReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    need_workforce(&st, tid).await?;
+    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let (a,z) = (parse_ts(&b.starts_at)?, parse_ts(&b.ends_at)?);
+    if z <= a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query(
+        "INSERT INTO app.shift_plans(tenant_id,user_id,site_id,starts_at,ends_at,note,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        .bind(tid).bind(b.user_id).bind(b.site_id).bind(a).bind(z).bind(&b.note).bind(s.user_id)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let iid: Uuid = row.get("id");
+    audit(&st, tid, &s.email, "create_shift_plan", json!({"user":b.user_id})).await;
+    publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"shift_planned","id":iid})}).await;
+    Ok(Json(json!({"id":iid})))
+}
+pub async fn list_shift_plans(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "workforce").await?;
+    let from = q.get("from").and_then(|x| parse_ts(x).ok());
+    let to = q.get("to").and_then(|x| parse_ts(x).ok());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // worker sees own; planner/admin/auditor see all
+    let own = matches!(s.role.as_str(), "lavoratore"|"reperibile");
+    let rows = sqlx::query(
+        "SELECT p.id,p.user_id,p.site_id,p.starts_at,p.ends_at,p.note,p.state,u.email,si.name AS site
+         FROM app.shift_plans p JOIN app.users u ON u.id=p.user_id LEFT JOIN app.sites si ON si.id=p.site_id
+         WHERE ($1=false OR p.user_id=$2)
+           AND ($3::timestamptz IS NULL OR p.ends_at>=$3)
+           AND ($4::timestamptz IS NULL OR p.starts_at<=$4)
+         ORDER BY p.starts_at")
+        .bind(own).bind(s.user_id).bind(from).bind(to).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"user_id":r.get::<Uuid,_>("user_id"),"email":r.get::<String,_>("email"),
+        "site_id":r.try_get::<Uuid,_>("site_id").ok(),"site":r.try_get::<String,_>("site").ok(),
+        "starts_at":r.get::<chrono::DateTime<chrono::Utc>,_>("starts_at"),
+        "ends_at":r.get::<chrono::DateTime<chrono::Utc>,_>("ends_at"),
+        "note":r.try_get::<String,_>("note").ok(),"state":r.get::<String,_>("state") })).collect();
+    Ok(Json(json!(out)))
+}
+#[derive(Deserialize)]
+pub struct ShiftPlanAction { pub action: String } // confirm|cancel
+pub async fn shift_plan_action(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<ShiftPlanAction>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = match b.action.as_str() {
+        // il lavoratore conferma il PROPRIO turno pianificato
+        "confirm" => sqlx::query("UPDATE app.shift_plans SET state='confermato' WHERE id=$1 AND user_id=$2 AND state='pianificato'")
+            .bind(id).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected(),
+        // pianificatore/admin annulla
+        "cancel" => { if !is_planner(&s.role) { let _=tx.rollback().await; return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+            sqlx::query("UPDATE app.shift_plans SET state='annullato' WHERE id=$1 AND state<>'annullato'")
+                .bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected() }
+        _ => { let _=tx.rollback().await; return Err(err(StatusCode::BAD_REQUEST, "azione non valida")); }
+    };
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::CONFLICT, "turno non aggiornabile (stato o proprieta')")); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_shift_plan(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.shift_plans WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "turno inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---------------- Reperibilita' (on-call) ----------------
+#[derive(Deserialize)]
+pub struct OncallReq { pub user_id: Uuid, pub starts_at: String, pub ends_at: String, pub note: Option<String> }
+pub async fn list_oncall(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    require_module(&st, s.tenant_id.unwrap(), "workforce").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let rows = sqlx::query(
+        "SELECT o.id,o.user_id,o.starts_at,o.ends_at,o.note,u.email FROM app.oncall o JOIN app.users u ON u.id=o.user_id ORDER BY o.starts_at")
+        .fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"user_id":r.get::<Uuid,_>("user_id"),"email":r.get::<String,_>("email"),
+        "starts_at":r.get::<chrono::DateTime<chrono::Utc>,_>("starts_at"),
+        "ends_at":r.get::<chrono::DateTime<chrono::Utc>,_>("ends_at"),"note":r.try_get::<String,_>("note").ok() })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn create_oncall(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OncallReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    need_workforce(&st, tid).await?;
+    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let (a,z) = (parse_ts(&b.starts_at)?, parse_ts(&b.ends_at)?);
+    if z <= a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.oncall(tenant_id,user_id,starts_at,ends_at,note) VALUES($1,$2,$3,$4,$5) RETURNING id")
+        .bind(tid).bind(b.user_id).bind(a).bind(z).bind(&b.note).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":row.get::<Uuid,_>("id")})))
+}
+pub async fn delete_oncall(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.oncall WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "reperibilita' inesistente")); }
+    Ok(Json(json!({"ok":true})))
 }
 
 // ----------------------------- ingress -----------------------------
@@ -471,21 +1585,25 @@ pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
 
     let mut incident_id: Option<Uuid> = None;
     if CRITICAL.contains(&n.etype.as_str()) {
+        // SOS priority/repeat follow the per-tenant escalation policy; other criticals = 2.
+        let (pri, repeat) = if n.etype=="sos" { sos_escalation(st, tid).await } else { (2, 0) };
         let irow = sqlx::query(
             "INSERT INTO app.incidents(tenant_id,event_id,site_id,etype,correlation,priority)
              VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
             .bind(tid).bind(eid).bind(site_id).bind(&n.etype).bind(&n.correlation)
-            .bind(if n.etype=="sos" {3} else {2})
+            .bind(pri)
             .fetch_one(&mut *tx).await.map_err(ise)?;
         let iid: Uuid = irow.get("id");
         incident_id = Some(iid);
         // timeline + outbox notify request in the SAME transaction (contract line 48)
         sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'notify_requested',$3)")
-            .bind(tid).bind(iid).bind(json!({"etype":n.etype,"source":n.source})).execute(&mut *tx).await.map_err(ise)?;
+            .bind(tid).bind(iid).bind(json!({"etype":n.etype,"source":n.source,"priority":pri,"repeat_seconds":repeat})).execute(&mut *tx).await.map_err(ise)?;
         sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_notify',$2)")
             .bind(tid).bind(json!({
                 "incident_id": iid, "summary": format!("{} [{}] @ {} (src:{})", n.etype, n.correlation, n.site_name.clone().unwrap_or("-".into()), n.source),
-                "dedup": n.correlation, "integration_key": ""}))
+                "dedup": n.correlation, "integration_key": "", "repeat_seconds": repeat, "etype": n.etype,
+                "details": format!("etype={}; sede={}; sorgente={}; lat={:?}; lon={:?}; correlazione={}",
+                    n.etype, n.site_name.clone().unwrap_or("-".into()), n.source, n.lat, n.lon, n.correlation)}))
             .execute(&mut *tx).await.map_err(ise)?;
     }
     tx.commit().await.map_err(ise)?;
@@ -540,14 +1658,12 @@ pub async fn ingest_traccar(
         .or_else(|| pos.and_then(|p| p.get("id")).map(|v| v.to_string()))
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    let etype = match (evt_type, alarm) {
-        (_, Some("sos")) => "sos",
-        (_, Some("fallDown")) => "man_down",
-        (_, Some(_)) => "device_alarm",
-        ("deviceOffline", _) => "device_offline",
-        (t, _) if !t.is_empty() => "traccar_event",
-        _ => "traccar_event",
-    }.to_string();
+    // Per-tenant mapping (traccar/alarm_map): sos routing, offline severity, soglia batteria.
+    let amap = tool_config(&st, tid, "traccar", "alarm_map").await;
+    // battery level dagli attributi (posizione o evento)
+    let battery = pos.and_then(|p| p.get("attributes")).and_then(|a| a.get("batteryLevel")).and_then(|v| v.as_f64())
+        .or_else(|| ev.and_then(|e| e.get("attributes")).and_then(|a| a.get("batteryLevel")).and_then(|v| v.as_f64()));
+    let etype = map_traccar_etype(&amap, evt_type, alarm, battery);
 
     let source_event = format!("traccar-evt-{}", evt_id);
     persist_ingest(&st, tid, Normalized {
@@ -561,6 +1677,413 @@ pub async fn ingest_traccar(
         correlation: source_event,
         payload: b.clone(),
     }).await
+}
+
+// ----------------------------- #2 Comandi al device (via API Traccar) -----------------------------
+#[derive(Deserialize)]
+pub struct DeviceCmd { #[serde(rename="type")] pub kind: String, pub data: Option<String> }
+/// Inoltra un comando al device tramite l'API Traccar del tenant (es. richiesta posizione).
+/// Risolve uniqueId -> id numerico Traccar, poi POST /api/commands/send. operatore/admin.
+pub async fn device_command(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<DeviceCmd>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let tid = s.tenant_id.unwrap();
+    // device (deve essere sorgente traccar)
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let ext: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND source='traccar'")
+        .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let ext = ext.ok_or_else(|| err(StatusCode::NOT_FOUND, "device traccar inesistente"))?;
+    // connessione Traccar per-tenant
+    let conn = sqlx::query("SELECT base_url,username,password FROM app.traccar_connections WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata (superadmin)"))?;
+    let base: String = conn.get("base_url"); let user: String = conn.get("username"); let pass: String = conn.get("password");
+    // risolvi uniqueId -> id numerico
+    let dl = st.http.get(format!("{base}/api/devices?uniqueId={ext}"))
+        .basic_auth(&user, Some(&pass)).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar non raggiungibile: {e}")))?;
+    if !dl.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, "Traccar: auth/lookup fallito")); }
+    let arr: Value = dl.json().await.map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar: json device non valido"))?;
+    let dev_id = arr.as_array().and_then(|a| a.first()).and_then(|d| d.get("id")).and_then(|v| v.as_i64())
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "device non trovato su Traccar"))?;
+    // invia comando
+    let mut payload = json!({"deviceId": dev_id, "type": b.kind});
+    if let Some(d) = &b.data { payload["attributes"] = json!({"data": d}); }
+    let cr = st.http.post(format!("{base}/api/commands/send"))
+        .basic_auth(&user, Some(&pass)).json(&payload).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar send: {e}")))?;
+    let status = cr.status().as_u16();
+    let body = cr.text().await.unwrap_or_default();
+    audit(&st, tid, &s.email, "device_command", json!({"device":id,"type":b.kind,"traccar_status":status})).await;
+    // relay esito Traccar (anche se il device non supporta il comando)
+    Ok(Json(json!({"resolved_device_id":dev_id,"traccar_status":status,"traccar_body":body})))
+}
+
+// ----------------------------- #3 Geofence + presenza -----------------------------
+fn haversine_m(a_lat: f64, a_lon: f64, b_lat: f64, b_lon: f64) -> f64 {
+    let r = 6_371_000.0_f64;
+    let (p1, p2) = (a_lat.to_radians(), b_lat.to_radians());
+    let dphi = (b_lat - a_lat).to_radians();
+    let dlmb = (b_lon - a_lon).to_radians();
+    let h = (dphi/2.0).sin().powi(2) + p1.cos()*p2.cos()*(dlmb/2.0).sin().powi(2);
+    2.0 * r * h.sqrt().asin()
+}
+fn point_in_polygon(lat: f64, lon: f64, pts: &[[f64;2]]) -> bool {
+    // ray casting; punti come [lat, lon]
+    let mut inside = false; let n = pts.len();
+    if n < 3 { return false; }
+    let mut j = n - 1;
+    for i in 0..n {
+        let (yi, xi) = (pts[i][0], pts[i][1]);
+        let (yj, xj) = (pts[j][0], pts[j][1]);
+        if ((yi > lat) != (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) { inside = !inside; }
+        j = i;
+    }
+    inside
+}
+fn geofence_contains(geom: &Value, lat: f64, lon: f64) -> bool {
+    if let Some(radius) = geom.get("radius").and_then(|v| v.as_f64()) {
+        let (clat, clon) = (geom.get("lat").and_then(|v| v.as_f64()), geom.get("lon").and_then(|v| v.as_f64()));
+        if let (Some(clat), Some(clon)) = (clat, clon) { return haversine_m(lat, lon, clat, clon) <= radius; }
+        false
+    } else if let Some(points) = geom.get("points").and_then(|v| v.as_array()) {
+        let pts: Vec<[f64;2]> = points.iter().filter_map(|p| {
+            let a = p.as_array()?; Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?])
+        }).collect();
+        point_in_polygon(lat, lon, &pts)
+    } else { false }
+}
+
+pub async fn list_geofences(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    require_module(&st, s.tenant_id.unwrap(), "traccar").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT g.id,g.name,g.kind,g.geom,g.site_id,si.name AS site
+        FROM app.geofences g LEFT JOIN app.sites si ON si.id=g.site_id ORDER BY g.name").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"kind":r.get::<String,_>("kind"),
+        "geom":r.get::<Value,_>("geom"),"site_id":r.try_get::<Uuid,_>("site_id").ok(),"site":r.try_get::<String,_>("site").ok() })).collect();
+    Ok(Json(json!(out)))
+}
+#[derive(Deserialize)]
+pub struct GeofenceReq { pub name: String, pub kind: String, pub geom: Value, pub site_id: Option<Uuid> }
+pub async fn create_geofence(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GeofenceReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    match b.kind.as_str() {
+        "circle" => { if b.geom.get("radius").and_then(|v|v.as_f64()).is_none() || b.geom.get("lat").is_none() { return Err(err(StatusCode::BAD_REQUEST, "cerchio: lat/lon/radius richiesti")); } }
+        "polygon" => { if b.geom.get("points").and_then(|v|v.as_array()).map(|a| a.len()<3).unwrap_or(true) { return Err(err(StatusCode::BAD_REQUEST, "poligono: almeno 3 punti")); } }
+        _ => return Err(err(StatusCode::BAD_REQUEST, "kind non valido (circle|polygon)")),
+    }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.geofences(tenant_id,name,kind,geom,site_id) VALUES($1,$2,$3,$4,$5) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(&b.kind).bind(&b.geom).bind(b.site_id)
+        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "nome gia' presente"))?;
+    tx.commit().await.map_err(ise)?;
+    let id = row.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id");
+    audit(&st, tid, &s.email, "create_geofence", json!({"name":b.name,"kind":b.kind})).await;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn delete_geofence(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.geofences WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "geofence inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+/// Presenza corrente: chi e' dentro quale geofence adesso.
+pub async fn list_presence(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    require_module(&st, s.tenant_id.unwrap(), "traccar").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let rows = sqlx::query(
+        "SELECT p.device_id,p.geofence_id,p.inside,p.changed_at,d.label,d.external_id,u.email,g.name AS geofence
+         FROM app.device_presence p JOIN app.devices d ON d.id=p.device_id JOIN app.geofences g ON g.id=p.geofence_id
+         LEFT JOIN app.users u ON u.id=d.assigned_user WHERE p.inside=true ORDER BY g.name,d.external_id")
+        .fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "device_id":r.get::<Uuid,_>("device_id"),"geofence_id":r.get::<Uuid,_>("geofence_id"),
+        "geofence":r.get::<String,_>("geofence"),"device":r.try_get::<String,_>("label").ok(),
+        "external_id":r.get::<String,_>("external_id"),"user":r.try_get::<String,_>("email").ok(),
+        "since":r.get::<chrono::DateTime<chrono::Utc>,_>("changed_at") })).collect();
+    Ok(Json(json!(out)))
+}
+
+// ----------------------------- #5 Report (percorso/soste/presenza) -----------------------------
+fn rep_dates(q: &std::collections::HashMap<String,String>) -> Result<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>), (StatusCode,String)> {
+    let to = q.get("to").and_then(|x| parse_ts(x).ok()).unwrap_or_else(chrono::Utc::now);
+    let from = q.get("from").and_then(|x| parse_ts(x).ok()).unwrap_or(to - chrono::Duration::days(7));
+    Ok((from, to))
+}
+fn report_role(s: &Session) -> Result<(), (StatusCode,String)> {
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor"|"responsabile") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    Ok(())
+}
+/// Report percorso: posizioni in intervallo -> distanza totale, durata, soste.
+pub async fn report_route(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?; report_role(&s)?;
+    require_any_module(&st, s.tenant_id.unwrap(), &["loneworker","traccar"]).await?;
+    let dev = q.get("device").and_then(|x| Uuid::parse_str(x).ok()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "device richiesto"))?;
+    let (from, to) = rep_dates(&q)?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT lat,lon,speed,battery,fixed_at FROM app.device_positions
+        WHERE device_id=$1 AND fixed_at BETWEEN $2 AND $3 ORDER BY fixed_at").bind(dev).bind(from).bind(to)
+        .fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let pts: Vec<(f64,f64,chrono::DateTime<chrono::Utc>)> = rows.iter().map(|r| (r.get("lat"),r.get("lon"),r.get("fixed_at"))).collect();
+    let mut total = 0.0;
+    for w in pts.windows(2) { total += haversine_m(w[0].0,w[0].1,w[1].0,w[1].1); }
+    // soste: cluster di punti entro 50 m per >= 5 min
+    let mut stops = Vec::new();
+    let mut i = 0;
+    while i < pts.len() {
+        let anchor = pts[i]; let mut j = i;
+        while j+1 < pts.len() && haversine_m(anchor.0,anchor.1,pts[j+1].0,pts[j+1].1) <= 50.0 { j += 1; }
+        let mins = (pts[j].2 - anchor.2).num_minutes();
+        if j > i && mins >= 5 {
+            stops.push(json!({"lat":anchor.0,"lon":anchor.1,"from":anchor.2,"to":pts[j].2,"minutes":mins}));
+            i = j + 1;
+        } else { i += 1; }
+    }
+    let dur = pts.first().map(|f| (pts.last().unwrap().2 - f.2).num_minutes()).unwrap_or(0);
+    Ok(Json(json!({"device":dev,"from":from,"to":to,"points":pts.len(),"total_m":total.round(),
+        "duration_min":dur,"stops":stops})))
+}
+pub async fn report_route_csv(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> Result<Response,(StatusCode,String)> {
+    let s = require_tenant(&st, &h).await?; report_role(&s)?;
+    let dev = q.get("device").and_then(|x| Uuid::parse_str(x).ok()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "device richiesto"))?;
+    let (from, to) = rep_dates(&q)?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(|_| ise_resp2())?;
+    let rows = sqlx::query("SELECT lat,lon,speed,battery,fixed_at FROM app.device_positions
+        WHERE device_id=$1 AND fixed_at BETWEEN $2 AND $3 ORDER BY fixed_at").bind(dev).bind(from).bind(to)
+        .fetch_all(&mut *tx).await.map_err(|_| ise_resp2())?;
+    let _ = tx.commit().await;
+    let mut csv = String::from("data_ora,lat,lon,velocita,batteria\n");
+    for r in &rows {
+        csv.push_str(&format!("{},{},{},{},{}\n",
+            r.get::<chrono::DateTime<chrono::Utc>,_>("fixed_at").to_rfc3339(),
+            r.get::<f64,_>("lat"), r.get::<f64,_>("lon"),
+            r.try_get::<f64,_>("speed").map(|x|x.to_string()).unwrap_or_default(),
+            r.try_get::<f64,_>("battery").map(|x|x.to_string()).unwrap_or_default()));
+    }
+    Ok(csv_response(csv, "percorso.csv"))
+}
+/// Report presenza: ingressi/uscite nelle geofence in intervallo.
+pub async fn report_presence(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?; report_role(&s)?;
+    require_any_module(&st, s.tenant_id.unwrap(), &["loneworker","traccar"]).await?;
+    let (from, to) = rep_dates(&q)?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let rows = sqlx::query(
+        "SELECT l.inside,l.at,d.external_id,d.label,g.name AS geofence,u.email
+         FROM app.presence_log l JOIN app.devices d ON d.id=l.device_id JOIN app.geofences g ON g.id=l.geofence_id
+         LEFT JOIN app.users u ON u.id=d.assigned_user
+         WHERE l.at BETWEEN $1 AND $2 ORDER BY l.at DESC").bind(from).bind(to).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "at":r.get::<chrono::DateTime<chrono::Utc>,_>("at"),"inside":r.get::<bool,_>("inside"),
+        "device":r.try_get::<String,_>("label").ok(),"external_id":r.get::<String,_>("external_id"),
+        "geofence":r.get::<String,_>("geofence"),"user":r.try_get::<String,_>("email").ok() })).collect();
+    Ok(Json(json!({"from":from,"to":to,"events":out})))
+}
+pub async fn report_presence_csv(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> Result<Response,(StatusCode,String)> {
+    let s = require_tenant(&st, &h).await?; report_role(&s)?;
+    let (from, to) = rep_dates(&q)?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(|_| ise_resp2())?;
+    let rows = sqlx::query(
+        "SELECT l.inside,l.at,d.external_id,g.name AS geofence,u.email
+         FROM app.presence_log l JOIN app.devices d ON d.id=l.device_id JOIN app.geofences g ON g.id=l.geofence_id
+         LEFT JOIN app.users u ON u.id=d.assigned_user
+         WHERE l.at BETWEEN $1 AND $2 ORDER BY l.at DESC").bind(from).bind(to).fetch_all(&mut *tx).await.map_err(|_| ise_resp2())?;
+    let _ = tx.commit().await;
+    let mut csv = String::from("data_ora,evento,dispositivo,geofence,assegnatario\n");
+    for r in &rows {
+        csv.push_str(&format!("{},{},{},{},{}\n",
+            r.get::<chrono::DateTime<chrono::Utc>,_>("at").to_rfc3339(),
+            if r.get::<bool,_>("inside") {"ingresso"} else {"uscita"},
+            csv_esc(r.get::<String,_>("external_id").as_str()),
+            csv_esc(r.get::<String,_>("geofence").as_str()),
+            csv_esc(r.try_get::<String,_>("email").unwrap_or_default().as_str())));
+    }
+    Ok(csv_response(csv, "presenza.csv"))
+}
+fn ise_resp2() -> (StatusCode,String) { (StatusCode::INTERNAL_SERVER_ERROR, "db".into()) }
+fn csv_response(csv: String, filename: &str) -> Response {
+    (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
+        (axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\""))], csv).into_response()
+}
+
+// ----------------------------- #4 Geocoding inverso (Nominatim/OSM) -----------------------------
+/// Indirizzo da coordinate. Cache globale (coordinate arrotondate) per rispettare
+/// la usage policy di Nominatim. Richiede sessione tenant.
+pub async fn reverse_geocode(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let _ = require_tenant(&st, &h).await?;
+    let lat: f64 = q.get("lat").and_then(|x| x.parse().ok()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "lat mancante"))?;
+    let lon: f64 = q.get("lon").and_then(|x| x.parse().ok()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "lon mancante"))?;
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) { return Err(err(StatusCode::BAD_REQUEST, "coordinate fuori range")); }
+    let (lk, ok) = (format!("{:.4}", lat), format!("{:.4}", lon));
+    if let Some(name) = sqlx::query_scalar::<_, String>("SELECT display_name FROM app.geocode_cache WHERE lat_key=$1::numeric AND lon_key=$2::numeric")
+        .bind(&lk).bind(&ok).fetch_optional(&st.owner_pool).await.map_err(ise)? {
+        return Ok(Json(json!({"address":name,"cached":true})));
+    }
+    let url = format!("https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lon}&zoom=18&addressdetails=0");
+    let resp = st.http.get(&url)
+        .header("User-Agent", "YouWorkforce/1.0 (lone-worker safety platform)")
+        .header("Accept-Language", "it")
+        .send().await.map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("geocoder non raggiungibile: {e}")))?;
+    if !resp.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, "geocoder: risposta non valida")); }
+    let body: Value = resp.json().await.map_err(|_| err(StatusCode::BAD_GATEWAY, "geocoder: json non valido"))?;
+    let name = body.get("display_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if name.is_empty() { return Ok(Json(json!({"address":null,"cached":false}))); }
+    let _ = sqlx::query("INSERT INTO app.geocode_cache(lat_key,lon_key,display_name) VALUES($1::numeric,$2::numeric,$3) ON CONFLICT DO NOTHING")
+        .bind(&lk).bind(&ok).bind(&name).execute(&st.owner_pool).await;
+    Ok(Json(json!({"address":name,"cached":false})))
+}
+
+// ----------------------------- Traccar position forwarding (P2) -----------------------------
+/// Riceve il *position forwarding* di Traccar ({position, device}) e aggiorna
+/// l'ultima posizione nota del device + lo storico. Tenant dal token di ingest.
+/// Alta frequenza: idempotente per id posizione, nessun incidente qui.
+pub async fn ingest_traccar_position(
+    State(st): State<AppState>,
+    h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>,
+    Json(b): Json<Value>,
+) -> R {
+    let token = h.get("x-ingest-token").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+        .or_else(|| q.get("token").cloned())
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing ingest token"))?;
+    let tid: Uuid = sqlx::query_scalar("SELECT tenant_id FROM app.ingest_tokens WHERE token=$1")
+        .bind(&token).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
+    if !module_active(&st, tid, "traccar").await {
+        return Err(err(StatusCode::FORBIDDEN, "modulo traccar non abilitato"));
+    }
+    let pos = b.get("position").or(Some(&b)).unwrap();
+    let dev = b.get("device");
+    let unique_id = dev.and_then(|d| d.get("uniqueId")).and_then(|v| v.as_str())
+        .or_else(|| q.get("id").map(|s| s.as_str()));
+    let lat = pos.get("latitude").and_then(|v| v.as_f64());
+    let lon = pos.get("longitude").and_then(|v| v.as_f64());
+    if lat.is_none() || lon.is_none() { return Err(err(StatusCode::BAD_REQUEST, "posizione senza coordinate")); }
+    let Some(ext) = unique_id else { return Err(err(StatusCode::BAD_REQUEST, "device uniqueId mancante")); };
+    let out = process_traccar_position(&st, tid, pos, ext).await.map_err(ise)?;
+    Ok(Json(out))
+}
+
+/// Pipeline posizione condivisa da webhook (push) e poller API (pull): filtri #7,
+/// storico, ultima posizione, presenza geofence #3, primo-fix->attivo. Idempotente
+/// per (tenant,device,source_id) cosi' push e pull convergono senza duplicare.
+pub async fn process_traccar_position(st: &AppState, tid: Uuid, pos: &Value, ext: &str) -> anyhow::Result<Value> {
+    let (Some(lat), Some(lon)) = (pos.get("latitude").and_then(|v| v.as_f64()), pos.get("longitude").and_then(|v| v.as_f64()))
+        else { return Ok(json!({"ignored":"no_coords"})); };
+    let speed = pos.get("speed").and_then(|v| v.as_f64());
+    let course = pos.get("course").and_then(|v| v.as_f64());
+    let battery = pos.get("attributes").and_then(|a| a.get("batteryLevel")).and_then(|v| v.as_f64());
+    let src_id = pos.get("id").map(|v| v.to_string());
+    let fixed_at = pos.get("fixTime").and_then(|v| v.as_str())
+        .or_else(|| pos.get("deviceTime").and_then(|v| v.as_str()))
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|d| d.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|| st.clock.now());
+    // #7 filtri posizione (config per-tenant)
+    let fcfg = tool_config(st, tid, "traccar", "alarm_map").await;
+    let max_jump = fcfg.get("max_jump_kmh").and_then(|v| v.as_f64()).unwrap_or(300.0);
+    let min_move = fcfg.get("min_move_m").and_then(|v| v.as_f64()).unwrap_or(5.0);
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await?;
+    let drow = sqlx::query("SELECT id,last_lat,last_lon,last_pos_at FROM app.devices WHERE source='traccar' AND external_id=$1")
+        .bind(ext).fetch_optional(&mut *tx).await?;
+    let Some(drow) = drow else {
+        tx.commit().await?;
+        return Ok(json!({"ignored":"device non registrato","external_id":ext}));
+    };
+    let dev_id: Uuid = drow.get("id");
+    // confronto con l'ultima posizione nota per scartare salti/duplicati
+    if let (Some(plat), Some(plon), Some(pat)) = (drow.try_get::<f64,_>("last_lat").ok(), drow.try_get::<f64,_>("last_lon").ok(), drow.try_get::<chrono::DateTime<chrono::Utc>,_>("last_pos_at").ok()) {
+        let dist = haversine_m(plat, plon, lat, lon);
+        let dt = (fixed_at - pat).num_seconds();
+        if max_jump > 0.0 && dt > 0 {
+            let kmh = dist / dt as f64 * 3.6;
+            if kmh > max_jump {
+                tx.commit().await?;
+                return Ok(json!({"filtered":"salto implausibile","speed_kmh":kmh.round()}));
+            }
+        }
+        if min_move > 0.0 && dist < min_move && dt >= 0 && dt < 300 {
+            tx.commit().await?;
+            return Ok(json!({"filtered":"spostamento sotto soglia","dist_m":dist.round()}));
+        }
+    }
+    let dedup = sqlx::query(
+        "INSERT INTO app.device_positions(tenant_id,device_id,source_id,lat,lon,speed,course,battery,attributes,fixed_at)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         ON CONFLICT (tenant_id,device_id,source_id) DO NOTHING RETURNING id")
+        .bind(tid).bind(dev_id).bind(&src_id).bind(lat).bind(lon).bind(speed).bind(course).bind(battery)
+        .bind(pos.get("attributes").cloned()).bind(fixed_at)
+        .fetch_optional(&mut *tx).await?;
+    // aggiorna l'ultima posizione solo se piu' recente
+    sqlx::query(
+        "UPDATE app.devices SET last_lat=$2,last_lon=$3,last_speed=$4,last_course=$5,last_battery=COALESCE($6,last_battery),
+            last_attributes=COALESCE($8,last_attributes),last_pos_at=$7,updated_at=now()
+         WHERE id=$1 AND (last_pos_at IS NULL OR last_pos_at <= $7)")
+        .bind(dev_id).bind(lat).bind(lon).bind(speed).bind(course).bind(battery).bind(fixed_at)
+        .bind(pos.get("attributes").cloned())
+        .execute(&mut *tx).await?;
+    // #3 presenza: valuta le geofence del tenant e registra i cambi dentro/fuori
+    let mut presence_changes: Vec<(Uuid, bool)> = Vec::new();
+    let gfs = sqlx::query("SELECT id,geom FROM app.geofences").fetch_all(&mut *tx).await?;
+    for g in gfs {
+        let gid: Uuid = g.get("id");
+        let inside = geofence_contains(&g.get::<Value,_>("geom"), lat, lon);
+        let prev: Option<bool> = sqlx::query_scalar("SELECT inside FROM app.device_presence WHERE device_id=$1 AND geofence_id=$2")
+            .bind(dev_id).bind(gid).fetch_optional(&mut *tx).await?;
+        if prev != Some(inside) {
+            sqlx::query("INSERT INTO app.device_presence(tenant_id,device_id,geofence_id,inside) VALUES($1,$2,$3,$4)
+                ON CONFLICT (device_id,geofence_id) DO UPDATE SET inside=EXCLUDED.inside, changed_at=now()")
+                .bind(tid).bind(dev_id).bind(gid).bind(inside).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO app.presence_log(tenant_id,device_id,geofence_id,inside,at) VALUES($1,$2,$3,$4,$5)")
+                .bind(tid).bind(dev_id).bind(gid).bind(inside).bind(fixed_at).execute(&mut *tx).await?;
+            presence_changes.push((gid, inside));
+        }
+    }
+    tx.commit().await?;
+    // Fase B: al primo fix il device diventa "attivo"
+    let _ = sqlx::query("UPDATE app.device_provisioning SET step='attivo',updated_at=now() WHERE device_id=$1 AND step<>'attivo'")
+        .bind(dev_id).execute(&st.owner_pool).await;
+    publish_event(st, TenantEvent{tenant_id:tid,payload:json!({"type":"device_position","device_id":dev_id,"lat":lat,"lon":lon})}).await;
+    for (gid, inside) in &presence_changes {
+        publish_event(st, TenantEvent{tenant_id:tid,payload:json!({"type":"presence","device_id":dev_id,"geofence_id":gid,"inside":inside})}).await;
+    }
+    Ok(json!({"ok":true,"device_id":dev_id,"deduplicated":dedup.is_none(),"presence_changes":presence_changes.len()}))
+}
+
+/// Storico posizioni di un device (trail/mappa). operatore/admin/auditor.
+pub async fn list_device_positions(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    require_module(&st, s.tenant_id.unwrap(), "traccar").await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let limit: i64 = q.get("limit").and_then(|x| x.parse().ok()).unwrap_or(50).clamp(1,500);
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT lat,lon,speed,course,battery,attributes,fixed_at FROM app.device_positions
+        WHERE device_id=$1 ORDER BY fixed_at DESC LIMIT $2").bind(id).bind(limit).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "lat":r.get::<f64,_>("lat"),"lon":r.get::<f64,_>("lon"),
+        "speed":r.try_get::<f64,_>("speed").ok(),"course":r.try_get::<f64,_>("course").ok(),
+        "battery":r.try_get::<f64,_>("battery").ok(),"attributes":r.try_get::<Value,_>("attributes").ok(),
+        "fixed_at":r.get::<chrono::DateTime<chrono::Utc>,_>("fixed_at") })).collect();
+    Ok(Json(json!(out)))
 }
 
 // ----------------------------- ThingsBoard adapter (UPSTREAM REALE) -----------------------------
@@ -591,7 +2114,10 @@ pub async fn ingest_thingsboard(
     let temp = b.get("temperature").and_then(|v| v.as_f64());
     let alarm_flag = b.get("alarm").and_then(|v| v.as_bool()).unwrap_or(false)
         || b.get("critical").and_then(|v| v.as_bool()).unwrap_or(false);
-    let critical = alarm_flag || temp.map(|t| t >= 90.0).unwrap_or(false);
+    // Per-tenant severity threshold (thingsboard/severity_gate).
+    let gate = tool_config(&st, tid, "thingsboard", "severity_gate").await;
+    let temp_max = gate.get("temperature_max").and_then(|v| v.as_f64()).unwrap_or(90.0);
+    let critical = alarm_flag || temp.map(|t| t >= temp_max).unwrap_or(false);
     let etype = if critical { "sensore_critico" } else { "telemetria" }.to_string();
 
     let corr = format!("tb-{}-{}", device.clone().unwrap_or_else(|| "dev".into()), Uuid::new_v4());
@@ -611,18 +2137,25 @@ pub async fn ingest_thingsboard(
 // ----------------------------- incidents -----------------------------
 pub async fn list_incidents(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
+    require_module(&st, s.tenant_id.unwrap(), "loneworker").await?;
+    let acl = allowed_sites(&st, &s).await;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = sqlx::query(
-        "SELECT i.id,i.etype,i.state,i.priority,i.correlation,i.opened_at,i.outcome,s.name AS site
-         FROM app.incidents i LEFT JOIN app.sites s ON s.id=i.site_id
+        "SELECT i.id,i.etype,i.state,i.priority,i.correlation,i.opened_at,i.outcome,i.assigned_user,i.site_id,
+                s.name AS site, u.email AS assignee
+         FROM app.incidents i LEFT JOIN app.sites s ON s.id=i.site_id LEFT JOIN app.users u ON u.id=i.assigned_user
          ORDER BY i.state<>'chiuso' DESC, i.priority DESC, i.opened_at DESC")
         .fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    let out: Vec<Value> = rows.iter().map(|r| json!({
+    let out: Vec<Value> = rows.iter()
+        .filter(|r| site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok()))
+        .map(|r| json!({
         "id": r.get::<Uuid,_>("id"), "etype": r.get::<String,_>("etype"),
         "state": r.get::<String,_>("state"), "priority": r.get::<i32,_>("priority"),
         "correlation": r.get::<String,_>("correlation"),
         "site": r.try_get::<String,_>("site").ok(),
+        "assigned_user": r.try_get::<Uuid,_>("assigned_user").ok(),
+        "assignee": r.try_get::<String,_>("assignee").ok(),
         "outcome": r.try_get::<String,_>("outcome").ok() })).collect();
     Ok(Json(json!(out)))
 }
@@ -665,11 +2198,16 @@ pub async fn close_incident(State(st): State<AppState>, h: HeaderMap, Path(iid):
     }
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$2,closed_at=now(),version=version+1 WHERE id=$1 AND state<>'chiuso'")
-        .bind(iid).bind(&b.outcome).execute(&mut *tx).await.map_err(ise)?.rows_affected();
-    if n==0 { let _=tx.rollback().await; return Err(err(StatusCode::CONFLICT,"already closed")); }
+    let row = sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$2,closed_at=now(),version=version+1 WHERE id=$1 AND state<>'chiuso' RETURNING correlation,etype")
+        .bind(iid).bind(&b.outcome).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let Some(row) = row else { let _=tx.rollback().await; return Err(err(StatusCode::CONFLICT,"already closed")); };
+    let correlation: String = row.get("correlation"); let etype: String = row.get("etype");
     sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'transition',$3)")
         .bind(tid).bind(iid).bind(json!({"to":"chiuso","outcome":b.outcome,"by":s.email})).execute(&mut *tx).await.map_err(ise)?;
+    // P1 close-loop: chiedi a GoAlert di chiudere l'alert con lo stesso dedup (=correlation)
+    sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_close',$2)")
+        .bind(tid).bind(json!({"incident_id":iid,"summary":format!("close {}",correlation),"dedup":correlation,"etype":etype}))
+        .execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"incident_closed","incident_id":iid})}).await;
     Ok(Json(json!({"ok":true})))
@@ -685,6 +2223,7 @@ pub async fn worker_sos(State(st): State<AppState>, h: HeaderMap, Json(b): Json<
     let lon = b.get("lon").and_then(|v| v.as_f64());
     let correlation = Uuid::new_v4().to_string();
     let now = st.clock.now();
+    let (pri, repeat) = sos_escalation(&st, tid).await;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let ev = sqlx::query(
         "INSERT INTO app.events(tenant_id,source,source_event,idem_key,etype,origin_ts,received_ts,lat,lon,correlation)
@@ -693,13 +2232,15 @@ pub async fn worker_sos(State(st): State<AppState>, h: HeaderMap, Json(b): Json<
         .bind(now).bind(lat).bind(lon).bind(&correlation).fetch_one(&mut *tx).await.map_err(ise)?;
     let eid: Uuid = ev.get("id");
     let irow = sqlx::query(
-        "INSERT INTO app.incidents(tenant_id,event_id,etype,correlation,priority) VALUES($1,$2,'sos',$3,3) RETURNING id")
-        .bind(tid).bind(eid).bind(&correlation).fetch_one(&mut *tx).await.map_err(ise)?;
+        "INSERT INTO app.incidents(tenant_id,event_id,etype,correlation,priority) VALUES($1,$2,'sos',$3,$4) RETURNING id")
+        .bind(tid).bind(eid).bind(&correlation).bind(pri).fetch_one(&mut *tx).await.map_err(ise)?;
     let iid: Uuid = irow.get("id");
     sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'notify_requested',$3)")
-        .bind(tid).bind(iid).bind(json!({"etype":"sos","by":s.email})).execute(&mut *tx).await.map_err(ise)?;
+        .bind(tid).bind(iid).bind(json!({"etype":"sos","by":s.email,"priority":pri,"repeat_seconds":repeat})).execute(&mut *tx).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_notify',$2)")
-        .bind(tid).bind(json!({"incident_id":iid,"summary":format!("SOS [{}] {}",correlation,s.email),"dedup":correlation,"integration_key":""}))
+        .bind(tid).bind(json!({"incident_id":iid,"summary":format!("SOS [{}] {}",correlation,s.email),"dedup":correlation,
+            "integration_key":"","repeat_seconds":repeat,"etype":"sos",
+            "details":format!("SOS lavoratore={}; lat={:?}; lon={:?}; correlazione={}",s.email,lat,lon,correlation)}))
         .execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"incident_opened","incident_id":iid,"etype":"sos","correlation":correlation})}).await;
@@ -712,7 +2253,12 @@ pub struct CheckinReq { pub minutes: i64 }
 pub async fn create_checkin(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CheckinReq>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
-    let due = st.clock.now() + chrono::Duration::minutes(b.minutes.max(1));
+    // Per-tenant check-in policy (loneworker/checkin_timer): default when unset, clamp to max.
+    let cfg = tool_config(&st, tid, "loneworker", "checkin_timer").await;
+    let def_min = cfg.get("default_minutes").and_then(|v| v.as_i64()).unwrap_or(30);
+    let max_min = cfg.get("max_minutes").and_then(|v| v.as_i64()).unwrap_or(120);
+    let mins = if b.minutes >= 1 { b.minutes } else { def_min }.min(max_min).max(1);
+    let due = st.clock.now() + chrono::Duration::minutes(mins);
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("INSERT INTO app.checkins(tenant_id,user_id,due_at) VALUES($1,$2,$3) RETURNING id")
         .bind(tid).bind(s.user_id).bind(due).fetch_one(&mut *tx).await.map_err(ise)?;
@@ -755,27 +2301,49 @@ pub async fn shift_start(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     Ok(Json(json!({"id":id,"state":"in_corso","started_at":started,"reused":reused})))
 }
 
+// Max shift length (workforce/shift): used to surface overtime. Non-blocking by design
+// (a worker is never locked out mid-shift); the UI warns and consuntivi can flag it.
+async fn shift_max_hours(st: &AppState, tid: Uuid) -> i64 {
+    tool_config(st, tid, "workforce", "shift").await
+        .get("max_hours").and_then(|v| v.as_i64()).unwrap_or(12).max(1)
+}
+
 pub async fn shift_end(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
-    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let tid = s.tenant_id.unwrap();
+    let max_h = shift_max_hours(&st, tid).await;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("UPDATE app.shifts SET state='terminato', ended_at=now() WHERE user_id=$1 AND state='in_corso' RETURNING id, started_at, ended_at")
         .bind(s.user_id).fetch_optional(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     match row {
-        Some(r) => Ok(Json(json!({"id":r.get::<Uuid,_>("id"),"state":"terminato","started_at":r.get::<Dt,_>("started_at"),"ended_at":r.get::<Dt,_>("ended_at")}))),
+        Some(r) => {
+            let started: Dt = r.get("started_at"); let ended: Dt = r.get("ended_at");
+            let worked = (ended - started).num_minutes().max(0);
+            let over = worked > max_h * 60;
+            Ok(Json(json!({"id":r.get::<Uuid,_>("id"),"state":"terminato","started_at":started,"ended_at":ended,
+                "worked_minutes":worked,"max_hours":max_h,"over_max":over})))
+        }
         None => Err(err(StatusCode::CONFLICT, "nessun turno aperto")),
     }
 }
 
 pub async fn shift_current(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
-    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let tid = s.tenant_id.unwrap();
+    let max_h = shift_max_hours(&st, tid).await;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("SELECT id, started_at FROM app.shifts WHERE user_id=$1 AND state='in_corso'")
         .bind(s.user_id).fetch_optional(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(match row {
-        Some(r) => json!({"active":true,"id":r.get::<Uuid,_>("id"),"started_at":r.get::<Dt,_>("started_at")}),
-        None => json!({"active":false}),
+        Some(r) => {
+            let started: Dt = r.get("started_at");
+            let elapsed = (chrono::Utc::now() - started).num_minutes().max(0);
+            json!({"active":true,"id":r.get::<Uuid,_>("id"),"started_at":started,
+                "elapsed_minutes":elapsed,"max_hours":max_h,"over_max":elapsed > max_h*60})
+        }
+        None => json!({"active":false,"max_hours":max_h}),
     }))
 }
 
@@ -864,48 +2432,282 @@ pub fn tenant_slug(st: &AppState, h: &HeaderMap) -> Option<String> {
 fn is_planner(role: &str) -> bool { matches!(role, "pianificatore"|"tenant_admin") }
 fn is_approver(role: &str) -> bool { matches!(role, "responsabile"|"tenant_admin") }
 
-async fn module_active(st: &AppState, tid: Uuid, code: &str) -> bool {
+pub async fn module_active(st: &AppState, tid: Uuid, code: &str) -> bool {
     sqlx::query_scalar::<_, String>("SELECT state FROM app.tenant_modules WHERE tenant_id=$1 AND module_code=$2")
         .bind(tid).bind(code).fetch_optional(&st.owner_pool).await.ok().flatten()
         .map(|s| s == "attivo").unwrap_or(false)
 }
+/// Modulo spento dal superadmin -> la gestione sparisce anche via API.
+async fn require_module(st: &AppState, tid: Uuid, code: &str) -> Result<(), (StatusCode, String)> {
+    if module_active(st, tid, code).await { Ok(()) }
+    else { Err(err(StatusCode::FORBIDDEN, &format!("modulo {code} non abilitato"))) }
+}
+async fn require_any_module(st: &AppState, tid: Uuid, codes: &[&str]) -> Result<(), (StatusCode, String)> {
+    for c in codes { if module_active(st, tid, c).await { return Ok(()); } }
+    Err(err(StatusCode::FORBIDDEN, "nessun modulo abilitato per questa funzione"))
+}
+const DEVICE_MODS: &[&str] = &["loneworker","traccar","iot","thingsboard"];
+const CONNECTOR_MODS: &[&str] = &["traccar","thingsboard","goalert","iot"];
+
+// ================== Per-module tool configuration (schema-driven) ==================
+// Effective config for a tool = catalog default_config overlaid with the tenant's
+// saved values. System-scope read (owner_pool), always filtered by tenant_id.
+// A tool is AVAILABLE unless superadmin set tenant_tool_enabled.enabled=false.
+pub async fn tool_config(st: &AppState, tid: Uuid, module: &str, tool: &str) -> Value {
+    let row = sqlx::query(
+        "SELECT mt.default_config, tc.config
+         FROM app.module_tools mt
+         LEFT JOIN app.tenant_module_config tc
+           ON tc.module_code=mt.module_code AND tc.tool_code=mt.tool_code AND tc.tenant_id=$1
+         WHERE mt.module_code=$2 AND mt.tool_code=$3")
+        .bind(tid).bind(module).bind(tool).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let mut out = serde_json::Map::new();
+    if let Some(r) = row {
+        if let Ok(Value::Object(d)) = r.try_get::<Value,_>("default_config") { out.extend(d); }
+        if let Ok(Value::Object(c)) = r.try_get::<Value,_>("config") { out.extend(c); }
+    }
+    Value::Object(out)
+}
+
+/// SOS escalation policy (loneworker/sos_escalation): incident priority + repeat cadence.
+/// priority "alta"->3, "media"->2. repeat_seconds carried to the GoAlert connector payload.
+async fn sos_escalation(st: &AppState, tid: Uuid) -> (i32, i64) {
+    let c = tool_config(st, tid, "loneworker", "sos_escalation").await;
+    let p = match c.get("priority").and_then(|v| v.as_str()) { Some("media") => 2, _ => 3 };
+    let r = c.get("repeat_seconds").and_then(|v| v.as_i64()).unwrap_or(0);
+    (p, r)
+}
+
+async fn tool_enabled(st: &AppState, tid: Uuid, module: &str, tool: &str) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT enabled FROM app.tenant_tool_enabled WHERE tenant_id=$1 AND module_code=$2 AND tool_code=$3")
+        .bind(tid).bind(module).bind(tool).fetch_optional(&st.owner_pool).await.ok().flatten()
+        .unwrap_or(true) // absent => available
+}
+
+/// Validate an incoming config object against a tool's JSON schema.
+/// Rejects unknown keys and out-of-range/enum-violating values. Returns a
+/// cleaned object containing only schema-declared keys.
+fn validate_config(schema: &Value, input: &Value) -> Result<Value, String> {
+    let fields = schema.get("fields").and_then(|f| f.as_array()).cloned().unwrap_or_default();
+    let inobj = input.as_object().ok_or_else(|| "config must be an object".to_string())?;
+    let known: std::collections::HashSet<String> = fields.iter()
+        .filter_map(|f| f.get("key").and_then(|k| k.as_str()).map(|s| s.to_string())).collect();
+    for k in inobj.keys() {
+        if !known.contains(k) { return Err(format!("unknown field: {k}")); }
+    }
+    let mut out = serde_json::Map::new();
+    for f in &fields {
+        let key = match f.get("key").and_then(|k| k.as_str()) { Some(k) => k, None => continue };
+        let v = match inobj.get(key) { Some(v) => v, None => continue };
+        let ty = f.get("type").and_then(|t| t.as_str()).unwrap_or("string");
+        match ty {
+            "int" => {
+                let n = v.as_i64().ok_or_else(|| format!("{key}: atteso intero"))?;
+                if let Some(min) = f.get("min").and_then(|x| x.as_i64()) { if n < min { return Err(format!("{key}: minimo {min}")); } }
+                if let Some(max) = f.get("max").and_then(|x| x.as_i64()) { if n > max { return Err(format!("{key}: massimo {max}")); } }
+                out.insert(key.into(), json!(n));
+            }
+            "enum" => {
+                let s = v.as_str().ok_or_else(|| format!("{key}: atteso testo"))?;
+                let opts: Vec<&str> = f.get("options").and_then(|o| o.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+                if !opts.contains(&s) { return Err(format!("{key}: valore non ammesso")); }
+                out.insert(key.into(), json!(s));
+            }
+            _ => { // string / fallback
+                let s = v.as_str().ok_or_else(|| format!("{key}: atteso testo"))?;
+                out.insert(key.into(), json!(s));
+            }
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+// ---- tenant_admin: read tools of a module (schema + effective config) ----
+pub async fn list_module_tools(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "tenant_admin"|"auditor") {
+        return Err(err(StatusCode::FORBIDDEN, "configurazione moduli riservata all'admin del tenant"));
+    }
+    let tid = s.tenant_id.unwrap();
+    let rows = sqlx::query(
+        "SELECT tool_code,name,description,config_schema,default_config,sort
+         FROM app.module_tools WHERE module_code=$1 ORDER BY sort,tool_code")
+        .bind(&code).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let mut out = Vec::new();
+    for r in rows {
+        let tool: String = r.get("tool_code");
+        if !tool_enabled(&st, tid, &code, &tool).await { continue; } // superadmin hid it
+        out.push(json!({
+            "tool_code": tool,
+            "name": r.get::<String,_>("name"),
+            "description": r.get::<String,_>("description"),
+            "schema": r.get::<Value,_>("config_schema"),
+            "config": tool_config(&st, tid, &code, &tool).await,
+            "editable": s.role == "tenant_admin",
+        }));
+    }
+    Ok(Json(json!(out)))
+}
 
 #[derive(Deserialize)]
-pub struct NewOrder { pub title: String, pub site_id: Option<Uuid>, pub instructions: Option<String>, pub assigned_user: Option<Uuid> }
+pub struct SetToolConfig { pub config: Value }
+
+// ---- tenant_admin: save config for one tool ----
+pub async fn set_module_tool(State(st): State<AppState>, h: HeaderMap, Path((code, tool)): Path<(String, String)>, Json(b): Json<SetToolConfig>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if s.role != "tenant_admin" {
+        return Err(err(StatusCode::FORBIDDEN, "solo l'admin del tenant puo configurare"));
+    }
+    let tid = s.tenant_id.unwrap();
+    let schema: Option<Value> = sqlx::query_scalar("SELECT config_schema FROM app.module_tools WHERE module_code=$1 AND tool_code=$2")
+        .bind(&code).bind(&tool).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let schema = schema.ok_or_else(|| err(StatusCode::NOT_FOUND, "strumento inesistente"))?;
+    if !tool_enabled(&st, tid, &code, &tool).await {
+        return Err(err(StatusCode::FORBIDDEN, "strumento non abilitato per questo tenant"));
+    }
+    let clean = validate_config(&schema, &b.config).map_err(|m| err(StatusCode::BAD_REQUEST, &m))?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query(
+        "INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by)
+         VALUES($1,$2,$3,$4,$5)
+         ON CONFLICT (tenant_id,module_code,tool_code)
+         DO UPDATE SET config=EXCLUDED.config, updated_by=EXCLUDED.updated_by, updated_at=now()")
+        .bind(tid).bind(&code).bind(&tool).bind(&clean).bind(s.user_id)
+        .execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,$2,'set_tool_config',$3)")
+        .bind(tid).bind(&s.email).bind(json!({"module":code,"tool":tool})).execute(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"ok":true,"config":clean})))
+}
+
+// ---- superadmin: list tool availability for a tenant ----
+pub async fn super_list_tools(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
+    require_super(&st, &h).await?;
+    let rows = sqlx::query(
+        "SELECT mt.module_code,mt.tool_code,mt.name,COALESCE(te.enabled,true) AS enabled
+         FROM app.module_tools mt
+         LEFT JOIN app.tenant_tool_enabled te
+           ON te.module_code=mt.module_code AND te.tool_code=mt.tool_code AND te.tenant_id=$1
+         ORDER BY mt.module_code,mt.sort,mt.tool_code")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "module_code": r.get::<String,_>("module_code"),
+        "tool_code": r.get::<String,_>("tool_code"),
+        "name": r.get::<String,_>("name"),
+        "enabled": r.get::<bool,_>("enabled"),
+    })).collect();
+    Ok(Json(json!(out)))
+}
+
+#[derive(Deserialize)]
+pub struct SetToolEnabled { pub module_code: String, pub tool_code: String, pub enabled: bool }
+
+// ---- superadmin: enable/disable a tool for a tenant ----
+pub async fn super_set_tool(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetToolEnabled>) -> R {
+    require_super(&st, &h).await?;
+    let exists: Option<String> = sqlx::query_scalar("SELECT tool_code FROM app.module_tools WHERE module_code=$1 AND tool_code=$2")
+        .bind(&b.module_code).bind(&b.tool_code).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    if exists.is_none() { return Err(err(StatusCode::NOT_FOUND, "strumento inesistente")); }
+    sqlx::query(
+        "INSERT INTO app.tenant_tool_enabled(tenant_id,module_code,tool_code,enabled)
+         VALUES($1,$2,$3,$4)
+         ON CONFLICT (tenant_id,module_code,tool_code)
+         DO UPDATE SET enabled=EXCLUDED.enabled, updated_at=now()")
+        .bind(tid).bind(&b.module_code).bind(&b.tool_code).bind(b.enabled)
+        .execute(&st.owner_pool).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,'superadmin','set_tool_enabled',$2)")
+        .bind(tid).bind(json!({"module":b.module_code,"tool":b.tool_code,"enabled":b.enabled})).execute(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+#[derive(Deserialize)]
+pub struct NewOrder { pub title: String, pub site_id: Option<Uuid>, pub instructions: Option<String>, pub assigned_user: Option<Uuid>,
+    pub scheduled_start: Option<String>, pub scheduled_end: Option<String>, pub priority: Option<i32> }
 pub async fn create_order(State(st): State<AppState>, h: HeaderMap, Json(b): Json<NewOrder>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
     if !module_active(&st, tid, "interventi").await { return Err(err(StatusCode::FORBIDDEN, "modulo interventi non abilitato")); }
+    let ss = b.scheduled_start.as_deref().map(parse_ts).transpose()?;
+    let se = b.scheduled_end.as_deref().map(parse_ts).transpose()?;
+    if let (Some(a),Some(z))=(ss,se) { if z<=a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); } }
+    let pri = b.priority.unwrap_or(2).clamp(1,3);
     let state = if b.assigned_user.is_some() { "assegnato" } else { "bozza" };
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query(
-        "INSERT INTO app.work_orders(tenant_id,site_id,title,instructions,assigned_user,state,created_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        "INSERT INTO app.work_orders(tenant_id,site_id,title,instructions,assigned_user,state,created_by,scheduled_start,scheduled_end,priority)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id")
         .bind(tid).bind(b.site_id).bind(&b.title).bind(&b.instructions).bind(b.assigned_user).bind(state).bind(s.user_id)
+        .bind(ss).bind(se).bind(pri)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":row.get::<Uuid,_>("id"),"state":state})))
 }
 
+#[derive(Deserialize)]
+pub struct EditOrder { pub version: i32, pub title: Option<String>, pub site_id: Option<Uuid>, pub instructions: Option<String>,
+    pub assigned_user: Option<Uuid>, pub scheduled_start: Option<String>, pub scheduled_end: Option<String>, pub priority: Option<i32>,
+    pub clear_schedule: Option<bool> }
+/// Modifica dell'ordine (pianificatore) con concorrenza ottimistica. Non cambia lo stato
+/// (eccetto bozza->assegnato se si assegna). Finestra, priorita', sede, istruzioni modificabili.
+pub async fn edit_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<EditOrder>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+    let ss = b.scheduled_start.as_deref().filter(|x| !x.is_empty()).map(parse_ts).transpose()?;
+    let se = b.scheduled_end.as_deref().filter(|x| !x.is_empty()).map(parse_ts).transpose()?;
+    if let (Some(a),Some(z))=(ss,se) { if z<=a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); } }
+    let clear = b.clear_schedule.unwrap_or(false);
+    let pri = b.priority.map(|p| p.clamp(1,3));
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // COALESCE mantiene i valori esistenti quando il campo non è passato; clear_schedule azzera la finestra.
+    let n = sqlx::query(
+        "UPDATE app.work_orders SET
+           title=COALESCE($3,title),
+           instructions=COALESCE($4,instructions),
+           site_id=COALESCE($5,site_id),
+           assigned_user=COALESCE($6,assigned_user),
+           scheduled_start=CASE WHEN $7 THEN NULL ELSE COALESCE($8,scheduled_start) END,
+           scheduled_end=CASE WHEN $7 THEN NULL ELSE COALESCE($9,scheduled_end) END,
+           priority=COALESCE($10,priority),
+           state=CASE WHEN state='bozza' AND $6 IS NOT NULL THEN 'assegnato' ELSE state END,
+           version=version+1, updated_at=now()
+         WHERE id=$1 AND version=$2")
+        .bind(id).bind(b.version).bind(&b.title).bind(&b.instructions).bind(b.site_id).bind(b.assigned_user)
+        .bind(clear).bind(ss).bind(se).bind(pri)
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::CONFLICT, "versione superata o ordine inesistente")); }
+    audit(&st, tid, &s.email, "edit_order", json!({"id":id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
 pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
+    require_module(&st, s.tenant_id.unwrap(), "interventi").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     // technician sees only own; planner/admin/auditor see all (RLS already scopes to tenant)
+    let cols="o.id,o.title,o.state,o.version,o.outcome,o.instructions,o.site_id,o.assigned_user,o.scheduled_start,o.scheduled_end,o.priority,s.name AS site,u.email AS assignee";
     let rows = if s.role == "lavoratore" {
-        sqlx::query("SELECT o.id,o.title,o.state,o.version,o.outcome,o.instructions,s.name AS site,u.email AS assignee
+        sqlx::query(&format!("SELECT {cols}
             FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user
-            WHERE o.assigned_user=$1 ORDER BY o.updated_at DESC").bind(s.user_id).fetch_all(&mut *tx).await
+            WHERE o.assigned_user=$1 ORDER BY o.scheduled_start NULLS LAST, o.updated_at DESC")).bind(s.user_id).fetch_all(&mut *tx).await
     } else {
-        sqlx::query("SELECT o.id,o.title,o.state,o.version,o.outcome,o.instructions,s.name AS site,u.email AS assignee
+        sqlx::query(&format!("SELECT {cols}
             FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user
-            ORDER BY o.updated_at DESC").fetch_all(&mut *tx).await
+            ORDER BY o.scheduled_start NULLS LAST, o.updated_at DESC")).fetch_all(&mut *tx).await
     }.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({
         "id": r.get::<Uuid,_>("id"), "title": r.get::<String,_>("title"), "state": r.get::<String,_>("state"),
         "version": r.get::<i32,_>("version"), "site": r.try_get::<String,_>("site").ok(),
+        "site_id": r.try_get::<Uuid,_>("site_id").ok(), "assigned_user": r.try_get::<Uuid,_>("assigned_user").ok(),
         "assignee": r.try_get::<String,_>("assignee").ok(), "outcome": r.try_get::<String,_>("outcome").ok(),
+        "scheduled_start": r.try_get::<chrono::DateTime<chrono::Utc>,_>("scheduled_start").ok(),
+        "scheduled_end": r.try_get::<chrono::DateTime<chrono::Utc>,_>("scheduled_end").ok(),
+        "priority": r.get::<i32,_>("priority"),
         "instructions": r.try_get::<String,_>("instructions").ok() })).collect();
     Ok(Json(json!(out)))
 }
@@ -974,6 +2776,7 @@ pub async fn create_timesheet(State(st): State<AppState>, h: HeaderMap, Json(b):
 
 pub async fn list_timesheets(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
+    require_module(&st, s.tenant_id.unwrap(), "consuntivi").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = if is_approver(&s.role) || s.role=="auditor" {
         sqlx::query("SELECT t.id,t.state,t.created_at,u.email AS owner,o.title AS order_title
@@ -1002,14 +2805,19 @@ async fn timesheet_detail(st: &AppState, tid: Uuid, id: Uuid) -> Result<Value, (
     let exps = sqlx::query("SELECT id,description,amount_cents,currency,has_receipt FROM app.expenses WHERE timesheet_id=$1")
         .bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    let mut minutes = 0i64; let mut labor = 0i64; let mut missing_rate = false;
+    // Per-tenant billing policy (consuntivi/rates): round billed minutes up, default currency.
+    let rates = tool_config(st, tid, "consuntivi", "rates").await;
+    let round = rates.get("round_minutes").and_then(|v| v.as_i64()).unwrap_or(15).max(1);
+    let currency = rates.get("currency").and_then(|v| v.as_str()).unwrap_or("EUR").to_string();
+    let mut minutes = 0i64; let mut billed = 0i64; let mut labor = 0i64; let mut missing_rate = false;
     let jl: Vec<Value> = lines.iter().map(|r| {
         let m = r.get::<i32,_>("minutes") as i64; minutes += m;
+        let bm = if m > 0 { ((m + round - 1) / round) * round } else { 0 }; billed += bm;
         let rate: Option<i64> = r.try_get("rate_cents").ok();
-        match rate { Some(rc) => labor += m * rc / 60, None => missing_rate = true }
+        match rate { Some(rc) => labor += bm * rc / 60, None => missing_rate = true }
         json!({"id":r.get::<Uuid,_>("id"),"activity":r.get::<String,_>("activity"),
             "work_date":r.get::<chrono::NaiveDate,_>("work_date").to_string(),
-            "minutes":m,"rate_cents":rate,"currency":r.get::<String,_>("currency")})
+            "minutes":m,"billed_minutes":bm,"rate_cents":rate,"currency":r.get::<String,_>("currency")})
     }).collect();
     let mut exp_total = 0i64;
     let je: Vec<Value> = exps.iter().map(|r| {
@@ -1021,8 +2829,8 @@ async fn timesheet_detail(st: &AppState, tid: Uuid, id: Uuid) -> Result<Value, (
         "id": head.get::<Uuid,_>("id"), "state": head.get::<String,_>("state"),
         "owner": head.get::<String,_>("owner"), "owner_id": head.get::<Uuid,_>("user_id"),
         "order_title": head.try_get::<String,_>("order_title").ok(), "note": head.try_get::<String,_>("note").ok(),
-        "lines": jl, "expenses": je,
-        "total": {"minutes":minutes,"labor_cents":labor,"expense_cents":exp_total,"total_cents":labor+exp_total,"missing_rate":missing_rate}
+        "lines": jl, "expenses": je, "currency": currency, "round_minutes": round,
+        "total": {"minutes":minutes,"billed_minutes":billed,"labor_cents":labor,"expense_cents":exp_total,"total_cents":labor+exp_total,"missing_rate":missing_rate}
     }))
 }
 
@@ -1044,10 +2852,12 @@ pub async fn add_line(State(st): State<AppState>, h: HeaderMap, Path(id): Path<U
     let tid = s.tenant_id.unwrap();
     guard_owner_editable(&st, tid, id, s.user_id).await?;
     let wd = chrono::NaiveDate::parse_from_str(&b.work_date, "%Y-%m-%d").map_err(|_| err(StatusCode::BAD_REQUEST, "data non valida"))?;
+    let def_cur = tool_config(&st, tid, "consuntivi", "rates").await
+        .get("currency").and_then(|v| v.as_str()).unwrap_or("EUR").to_string();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.timesheet_lines(tenant_id,timesheet_id,activity,work_date,minutes,rate_cents,currency) VALUES($1,$2,$3,$4,$5,$6,$7)")
         .bind(tid).bind(id).bind(&b.activity).bind(wd).bind(b.minutes).bind(b.rate_cents)
-        .bind(b.currency.clone().unwrap_or("EUR".into())).execute(&mut *tx).await.map_err(ise)?;
+        .bind(b.currency.clone().unwrap_or(def_cur)).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
@@ -1058,10 +2868,12 @@ pub async fn add_expense(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     guard_owner_editable(&st, tid, id, s.user_id).await?;
+    let def_cur = tool_config(&st, tid, "consuntivi", "rates").await
+        .get("currency").and_then(|v| v.as_str()).unwrap_or("EUR").to_string();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.expenses(tenant_id,timesheet_id,description,amount_cents,currency,has_receipt) VALUES($1,$2,$3,$4,$5,$6)")
         .bind(tid).bind(id).bind(&b.description).bind(b.amount_cents)
-        .bind(b.currency.clone().unwrap_or("EUR".into())).bind(b.has_receipt.unwrap_or(false)).execute(&mut *tx).await.map_err(ise)?;
+        .bind(b.currency.clone().unwrap_or(def_cur)).bind(b.has_receipt.unwrap_or(false)).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
@@ -1128,23 +2940,25 @@ pub async fn export_timesheet_csv(State(st): State<AppState>, h: HeaderMap, Path
     if owner_id != Some(s.user_id) && !is_approver(&s.role) && s.role != "auditor" {
         return Err(err(StatusCode::FORBIDDEN, "non autorizzato"));
     }
-    let mut csv = String::from("tipo,descrizione,data,minuti,tariffa_cent_ora,importo_cent,valuta,giustificativo\n");
+    let cur = d["currency"].as_str().unwrap_or("EUR").to_string();
+    let mut csv = String::from("tipo,descrizione,data,minuti,minuti_fatturati,tariffa_cent_ora,importo_cent,valuta,giustificativo\n");
     for l in d["lines"].as_array().unwrap_or(&vec![]) {
         let m = l["minutes"].as_i64().unwrap_or(0);
+        let bm = l["billed_minutes"].as_i64().unwrap_or(m);
         let rate = l["rate_cents"].as_i64();
-        let amt = rate.map(|r| m*r/60);
-        csv.push_str(&format!("riga,{},{},{},{},{},{},\n",
-            csv_esc(l["activity"].as_str().unwrap_or("")), l["work_date"].as_str().unwrap_or(""), m,
+        let amt = rate.map(|r| bm*r/60);
+        csv.push_str(&format!("riga,{},{},{},{},{},{},{},\n",
+            csv_esc(l["activity"].as_str().unwrap_or("")), l["work_date"].as_str().unwrap_or(""), m, bm,
             rate.map(|x|x.to_string()).unwrap_or_default(), amt.map(|x|x.to_string()).unwrap_or_default(),
-            l["currency"].as_str().unwrap_or("EUR")));
+            l["currency"].as_str().unwrap_or(&cur)));
     }
     for e in d["expenses"].as_array().unwrap_or(&vec![]) {
-        csv.push_str(&format!("spesa,{},,,,{},{},{}\n",
+        csv.push_str(&format!("spesa,{},,,,,{},{},{}\n",
             csv_esc(e["description"].as_str().unwrap_or("")), e["amount_cents"].as_i64().unwrap_or(0),
-            e["currency"].as_str().unwrap_or("EUR"), e["has_receipt"].as_bool().unwrap_or(false)));
+            e["currency"].as_str().unwrap_or(&cur), e["has_receipt"].as_bool().unwrap_or(false)));
     }
     let t = &d["total"];
-    csv.push_str(&format!("TOTALE,,,{},,{},EUR,\n", t["minutes"].as_i64().unwrap_or(0), t["total_cents"].as_i64().unwrap_or(0)));
+    csv.push_str(&format!("TOTALE,,,{},{},,{},{},\n", t["minutes"].as_i64().unwrap_or(0), t["billed_minutes"].as_i64().unwrap_or(0), t["total_cents"].as_i64().unwrap_or(0), cur));
     let mut resp = csv.into_response();
     resp.headers_mut().insert(header::CONTENT_TYPE, "text/csv; charset=utf-8".parse().unwrap());
     resp.headers_mut().insert(header::CONTENT_DISPOSITION, format!("attachment; filename=consuntivo-{}.csv", id).parse().unwrap());

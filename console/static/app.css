@@ -65,6 +65,9 @@ label{font-size:12.5px;font-weight:600;color:var(--mut)}
 .input,input,select,textarea{font:inherit;color:var(--fg);background:var(--surface);border:1px solid var(--line);
   border-radius:var(--r-sm);padding:10px 12px;width:100%;transition:border-color .15s,box-shadow .15s;outline:none}
 input:focus,select:focus,textarea:focus{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+/* checkbox/radio non devono ereditare width:100%/padding dagli input testuali */
+input[type=checkbox],input[type=radio]{width:auto;min-width:0;padding:0;margin:0;flex:0 0 auto;box-shadow:none;accent-color:var(--brand);vertical-align:middle}
+label.row,label.chk{align-items:center}
 textarea{resize:vertical;min-height:72px}
 select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--faint) 50%),linear-gradient(135deg,var(--faint) 50%,transparent 50%);
   background-position:calc(100% - 16px) 55%,calc(100% - 11px) 55%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:34px}

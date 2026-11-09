@@ -12,7 +12,7 @@ forza lavoro, IoT e consuntivi — un solo prodotto, attivabile per capacità e 
 
 ## Integrazioni sperimentali / da verificare sul sito
 GoAlert reale (2 livelli, canali), badge Traccar + firmware, ThingsBoard, YouWorker.ai (RAG/STT),
-OpenDuty, Blues. Nessuna è provata in questa build.
+OpenDuty. Nessuna è provata in questa build.
 
 ## Prerequisiti sito/hardware per avviare il pilota
 1. Istanza GoAlert autorizzata + recapiti di prova controllati (no numeri d'emergenza reali).

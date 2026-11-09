@@ -18,11 +18,16 @@ GoAlert come unico motore di escalation. LoneWorker è un modulo di prodotto.
 - **Consuntivi** (Prompt 9): bozza→in_revisione→da_correggere→approvato; righe ore + spese, calcolo deterministico in centesimi, doppia approvazione bloccata, **export CSV**.
 - **Assistente AI** (Prompt 7, sola lettura): widget NL nella console con strumenti tipizzati eseguiti da Rust (check-in scaduti, sensori offline, storia incidente, ordini, moduli degradati). Tenant/permessi dal contesto autenticato; azioni critiche rifiutate; provider intercambiabile (ora pianificatore locale **SIMULATO**). Si abilita per tenant dal superadmin.
 - **App lavoratore (Prompt 8)**: PWA con turni **confermati dal server** (inizio/fine idempotenti), **nota di lavoro dettata** (STT del browser via Web Speech, fallback manuale) con re-invio deduplicato e **coda offline** con indicatori distinti; SOS resta indipendente da voce/documenti. "Chiedi ai documenti" (RAG) = backlog dichiarato.
-- **UI**: design system completo (chiaro/scuro, responsive), console SPA (dashboard, centrale live, ordini, consuntivi, moduli) con drawer e toast; PWA lavoratore mobile-first.
+- **Configurazione strumenti per-modulo** (schema-driven, 2 livelli): ogni modulo espone *strumenti* configurabili con schema JSON (catalogo `module_tools`). **Superadmin** decide quali strumenti sono disponibili al tenant (`tenant_tool_enabled`); **tenant_admin** ne imposta i valori dalla console (`tenant_module_config`), validati lato server contro lo schema. Le configurazioni guidano il comportamento reale (es. loneworker/`checkin_timer` → default/clamp del check-in; thingsboard/`severity_gate` → soglia incidente). Isolamento RLS. Prova: `qa/module-config-e2e.sh` (10/10).
+- **Gestione del tenant (Fase 1 — Lone Worker + Dispositivi)**: anagrafica **dispositivi** (CRUD, assegnazione sede/lavoratore, abilita/disabilita, config), **gruppi di allarme** + membri + **routing** evento→gruppo, **utenti** (invito/ruolo/password/elimina con salvaguardia ultimo admin), **sedi** (CRUD), **centrale** con assegnazione operatore + note e pannello **check-in attivi**. Tutto RLS per tenant, RBAC tenant_admin, audit. Prova: `qa/mgmt-e2e.sh` (20/20).
+- **Connettori e IoT (Fase 4)**: gestione **credenziali di ingest** dal pannello (genera/copia/revoca token macchina — il tenant deriva sempre dal token), **riepilogo connettori** (Traccar/ThingsBoard/GoAlert/IoT: stato modulo, token, endpoint), **stato dispositivi** con ultimo contatto (telemetria/eventi). Prova: `qa/iot-mgmt-e2e.sh` (8/8).
+- **Interventi pianificati (Fase 3)**: ordini di lavoro con **finestra temporale** e **priorità**, vista **Agenda** (pianificati) + "da pianificare", **modifica/ripianifica** con concorrenza ottimistica (versione). Orario e priorità mostrati anche nella PWA. Prova: `qa/interventi-e2e.sh` (8/8).
+- **Forza lavoro e turni (Fase 2)**: **squadre** (team + membri), **turni pianificati** (pianificatore crea, lavoratore conferma, annullo/elimina) distinti dai turni reali timbrati, **reperibilità** (on-call) per utente. RLS per tenant, RBAC pianificatore/admin. Prova: `qa/workforce-e2e.sh` (14/14). Turni pianificati visibili e confermabili anche dalla PWA lavoratore.
+- **UI**: design system completo (chiaro/scuro, responsive), console SPA (dashboard, centrale live con assegna/note/check-in, ordini, consuntivi, **turni**, **dispositivi**, **gruppi allarme**, **utenti e sedi/squadre**, moduli con **config strumenti**) con drawer e toast; PWA lavoratore mobile-first con turni pianificati.
 
 ## Non implementato (backlog, dichiarato)
 Prompt 10 (parità/migrazione legacy). RAG "chiedi ai documenti" e STT lato server.
-Blues/OpenDuty reali. SMS/voce (Twilio) e firmware badge hardware: da cablare per sito.
+OpenDuty reale. SMS/voce (Twilio) e firmware badge hardware: da cablare per sito.
 
 ## Avvio — Docker Compose (profilo base)
 ```bash
@@ -70,6 +75,11 @@ bash qa/goalert-delivery.sh   # 10/10: contact-method webhook verificato + allar
 Catena: core SOS → GoAlert → escalation → contact-method **verificato** → il receiver esterno
 riceve la notifica con la correlazione del core. Trasporto **SMS/voce** (Twilio) = provider del cliente.
 
+**GoAlert P1+P2+P3** (`qa/goalert-p123-e2e.sh`, 8/8, GoAlert reale):
+- **P1 close-loop**: alla chiusura dell'incidente il core **chiude l'alert** GoAlert (`action=close`, stesso dedup); alert aperto con **details** (sede/lavoratore/lat-lon/correlazione) e **AlertID** salvato sull'incidente. Timeline `goalert_sent` (inviato) vs `goalert_closed`.
+- **P2 bidirezionale**: `GET /api/incidents/:id/goalert-status` legge lo **stato reale** via GraphQL (non preso in carico / ack / chiuso); `GET /api/oncall-now` mostra **chi è reperibile** ora (badge in centrale).
+- **P3 provisioning/robustezza**: `POST /api/superadmin/tenants/:id/goalert/provision` crea **escalation policy + servizio + integration key + heartbeat monitor** via GraphQL (bottone in superadmin); il worker fa **ping heartbeat** (GoAlert allerta se la pipeline muore); **routing per tipo evento** → key/service diversi (`/api/goalert/routing`). Credenziali GraphQL per-tenant (vault in produzione).
+
 ## Traccar REALE — sorgente badge (UPSTREAM REALE)
 Traccar v6.17.0 vero. Il device parla il protocollo OsmAnd; Traccar genera l'evento
 di allarme e lo inoltra (event forwarding) all'adapter del core, che lo mappa sulla
@@ -80,7 +90,17 @@ bash qa/traccar-e2e.sh        # 8/8: OsmAnd SOS -> incidente -> GoAlert (UPSTREA
 # invio manuale di un SOS da "device":
 curl "http://localhost:5055/?id=BADGE-001&lat=45.47&lon=9.19&timestamp=$(date +%s)&alarm=sos"
 ```
-Console Traccar: http://localhost:8083. Mapping allarmi: `sos→sos`, `fallDown→man_down`.
+Console Traccar: http://localhost:8083. **Mappa allarmi orientata al lavoratore isolato** (P1):
+`sos→sos` (configurabile man_down), `fallDown/accident→man_down`, `removing/tampering/bonnet→manomissione_badge`,
+`powerCut/powerOff→perdita_alimentazione`, `jamming/gpsAntennaCut→jamming` (tutti **critici**);
+`lowBattery/lowPower→batteria_bassa` (warning); `deviceOffline→perdita_contatto` se abilitato in `traccar/alarm_map`
+(`offline_critical`); `batteryLevel` sotto `battery_min` → `batteria_bassa`. Prova: `qa/traccar-p1-e2e.sh` (13/13).
+**P2 — posizioni & presenza**: ingest del *position forwarding* (`/api/ingress/traccar/position`, {position,device})
+→ ultima posizione nota su ogni device (lat/lon/batteria/ora) + storico (`/api/devices/:id/positions`),
+idempotente, no-regressione su fix più vecchi; pannello device con **Apri mappa** (OSM) e **Percorso recente**;
+`geofenceEnter/Exit` → presenza (`ingresso_sito`/`uscita_sito`). Il `run-traccar.sh` imposta sia event che position forwarding.
+Prova: `qa/traccar-p2-e2e.sh` (12/12).
+**P3 — mappa & immobilità**: vista **Mappa** (Leaflet + OpenStreetMap) con i device posizionati, popup (etichetta/batteria/ora/assegnatario), **percorso recente** (polyline) e **aggiornamento live** via SSE `device_position`; opzione `stopped_as_immobilita` (`deviceStopped`→`immobilita`, incidente). Prova: deviceStopped in `qa/traccar-p1-e2e.sh` (15/15).
 Il tenant deriva dal token di ingest (`?token=` o header `X-Ingest-Token`), **mai dal body**.
 
 ## ThingsBoard REALE — sorgente IoT (UPSTREAM REALE)

@@ -56,9 +56,9 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/events" -H 'x-i
 [ "$code" = "401" ] && ok || no "got $code"
 
 # ---- T03 worker -> GoAlert ack in timeline ----
-say "T03 wait worker -> goalert_ack (SIMULATO)"
-for i in 1 2 3 4 5; do sleep 2; TL=$(req GET "/api/incidents/$IID/timeline" "$J/op"); echo "$TL" | grep -q goalert_ack && break; done
-echo "$TL" | grep -q notify_requested && echo "$TL" | grep -q goalert_ack && ok || no "$TL"
+say "T03 wait worker -> goalert_sent (SIMULATO)"
+for i in 1 2 3 4 5; do sleep 2; TL=$(req GET "/api/incidents/$IID/timeline" "$J/op"); echo "$TL" | grep -q goalert_sent && break; done
+echo "$TL" | grep -q notify_requested && echo "$TL" | grep -q goalert_sent && ok || no "$TL"
 
 # ---- ack + close ----
 say "T03 operatore ack"

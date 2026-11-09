@@ -43,11 +43,11 @@ say "new REAL alert created in GoAlert (by correlation)"
 say "alert summary carries correlation"
 gql "{\"query\":\"{ alerts(input:{first:50,search:\\\"$CORR\\\"}){ nodes{ summary service{ name } } } }\"}" | grep -q "$CORR" && ok || no "no corr in GoAlert"
 
-# core incident timeline shows goalert_ack with UPSTREAM REALE
+# core incident timeline shows goalert_sent with UPSTREAM REALE
 curl -s -c "$J/op" -X POST "$BASE/api/login" -H 'content-type: application/json' -H 'x-tenant-slug: acme' -d '{"email":"operatore@acme.loneworker.eu","password":"demo"}' >/dev/null
 IID=$(curl -s -b "$J/op" "$BASE/api/incidents" | sed -n "s/.*{\"id\":\"\([^\"]*\)\"[^}]*\"correlation\":\"$CORR\".*/\1/p")
 [ -z "$IID" ] && IID=$(curl -s -b "$J/op" "$BASE/api/incidents" | grep -o '"id":"[^"]*"' | head -1 | sed 's/.*:"//;s/"//')
-say "core timeline: goalert_ack profile UPSTREAM REALE"
+say "core timeline: goalert_sent profile UPSTREAM REALE"
 curl -s -b "$J/op" "$BASE/api/incidents/$IID/timeline" | grep -q 'UPSTREAM REALE' && ok || no "$(curl -s -b "$J/op" "$BASE/api/incidents/$IID/timeline")"
 
 echo "== $PASS passed, $FAIL failed =="

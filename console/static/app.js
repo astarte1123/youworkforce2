@@ -1,7 +1,19 @@
 // Shared helpers for all YouWorkforce pages.
+// In produzione il tenant deriva dal SOTTODOMINIO (acme.dominio -> "acme"), come
+// farà il prodotto rilasciato. Su localhost nudo si ricade sul campo manuale /
+// localStorage (comodità dev). "tenants"/"www" = control plane, nessun tenant.
+function hostSlug(){
+  try{
+    const parts = location.hostname.split('.');
+    const first = (parts[0]||'').toLowerCase();
+    if(parts.length>=2 && first && !['tenants','www','localhost'].includes(first)) return first;
+  }catch(e){}
+  return null;
+}
 const store = {
-  get slug(){ try{return localStorage.getItem('yw_slug')||'acme'}catch(e){return 'acme'} },
+  get slug(){ const h=hostSlug(); if(h) return h; try{return localStorage.getItem('yw_slug')||'acme'}catch(e){return 'acme'} },
   set slug(v){ try{localStorage.setItem('yw_slug',v)}catch(e){} },
+  get slugFromHost(){ return hostSlug()!=null; },
 };
 // tenant slug header is needed only at /api/login; everything else uses the cookie.
 function csrfToken(){ const m=document.cookie.match(/(?:^|;\s*)yw_csrf=([^;]+)/); return m?decodeURIComponent(m[1]):''; }

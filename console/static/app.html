@@ -2,27 +2,43 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Console · YouWorkforce</title>
 <link rel="stylesheet" href="/app.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" referrerpolicy="no-referrer">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css" referrerpolicy="no-referrer">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.min.css" referrerpolicy="no-referrer">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js" referrerpolicy="no-referrer"></script>
 </head><body>
 <div id="root"></div>
 <div id="scrim" class="scrim"></div>
 <aside id="drawer" class="drawer"></aside>
 <script src="/app.js"></script>
 <script>
-let ME=null, SSE=null, CACHE={};
+let ME=null, SSE=null, CACHE={}, ACTIVE_MODS=new Set();
 const can = r => ME && r.includes(ME.role);
+// mod = modulo/i richiesti: la voce appare solo se ALMENO UNO è attivo sul tenant.
+const DEVICE_MODS=['loneworker','traccar','iot','thingsboard'];
 const NAV = [
   {k:'dashboard', t:'Dashboard', ico:'home', roles:null},
-  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor']},
-  {k:'ordini',    t:'Ordini di lavoro', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor']},
-  {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor']},
+  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker']},
+  {k:'mappa',     t:'Mappa', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS},
+  {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar']},
+  {k:'ordini',    t:'Ordini di lavoro', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi']},
+  {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], mod:['consuntivi']},
+  {k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], mod:['workforce']},
+  {k:'dispositivi',t:'Dispositivi', ico:'shield', roles:['tenant_admin'], mod:DEVICE_MODS},
+  {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','thingsboard','goalert','iot']},
+  {k:'gruppi',    t:'Gruppi allarme', ico:'users', roles:['tenant_admin'], mod:['loneworker']},
+  {k:'anagrafiche',t:'Utenti e sedi', ico:'receipt', roles:['tenant_admin']},
   {k:'moduli',    t:'Moduli', ico:'sliders', roles:['tenant_admin']},
 ];
-const visibleNav = ()=>NAV.filter(n=>!n.roles||n.roles.includes(ME.role));
+const modOk = n => !n.mod || n.mod.some(m=>ACTIVE_MODS.has(m));
+const visibleNav = ()=>NAV.filter(n=>(!n.roles||n.roles.includes(ME.role)) && modOk(n));
 
 // ---------------- boot ----------------
 (async function(){
   try{ ME = await api('/me'); if(ME.is_super||!ME.tenant_id){ME=null;} }catch(e){ ME=null; }
-  if(ME) renderShell(); else renderLogin();
+  if(ME){ try{ const M=await api('/modules'); ACTIVE_MODS=new Set((M||[]).filter(m=>m.state==='attivo').map(m=>m.code)); }catch(e){} renderShell(); }
+  else renderLogin();
 })();
 
 // ---------------- login ----------------
@@ -39,7 +55,7 @@ function renderLogin(){
           <span class="tag sim" style="margin-left:auto">DEMO</span></div>
         <div class="divider" style="margin:14px 0 16px"></div>
         <div class="col">
-          <div class="field"><label>Tenant</label><input id="slug" value="${store.slug}"></div>
+          <div class="field"><label>Tenant${store.slugFromHost?' <span class="small mut">(dal dominio)</span>':''}</label><input id="slug" value="${store.slug}" ${store.slugFromHost?'readonly':''}></div>
           <div class="field"><label>Email</label><input id="email" placeholder="operatore@acme.loneworker.eu"></div>
           <div class="field"><label>Password</label><input id="pw" type="password" value="demo"></div>
           <button class="btn block lg" id="go">Accedi</button>
@@ -61,7 +77,8 @@ function quick(u){ $('#email').value = u+'@acme.loneworker.eu'; $('#pw').value='
 async function doLogin(){
   store.slug=$('#slug').value.trim();
   try{ await api('/login',{method:'POST',body:JSON.stringify({email:$('#email').value.trim(),password:$('#pw').value})});
-    ME = await api('/me'); document.body.classList.remove('login-bg'); renderShell();
+    ME = await api('/me'); try{ const M=await api('/modules'); ACTIVE_MODS=new Set((M||[]).filter(m=>m.state==='attivo').map(m=>m.code)); }catch(e){}
+    document.body.classList.remove('login-bg'); renderShell();
   }catch(e){ $('#msg').textContent='Credenziali non valide'; }
 }
 async function logout(){ try{SSE&&SSE.close()}catch(e){} try{await api('/logout',{method:'POST'});}catch(e){} ME=null; location.hash=''; renderLogin(); }
@@ -116,7 +133,8 @@ function route(){
   let k=(location.hash.replace('#/','')||'dashboard');
   if(!visibleNav().some(n=>n.k===k)) k=visibleNav()[0].k;
   setActive(k); const v=$('#view'); v.innerHTML='<div class="col"><div class="skel" style="height:90px"></div><div class="skel" style="height:260px"></div></div>';
-  ({dashboard:vDashboard,centrale:vCentrale,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli}[k]||vDashboard)(v);
+  ({dashboard:vDashboard,centrale:vCentrale,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
+    dispositivi:vDispositivi,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,report:vReport}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -128,7 +146,9 @@ function connectSSE(){
   SSE.onerror=()=>{ if(w())w().innerHTML='<span class="live off">flusso interrotto</span>'; };
   SSE.onmessage=e=>{ let d={};try{d=JSON.parse(e.data)}catch(_){}
     if(d.type==='incident_opened') toast('Nuovo incidente: '+(d.etype||'')+' — '+(d.correlation||'').slice(0,8),'bad');
+    if(d.type==='device_position' && typeof mapLivePos==='function') mapLivePos(d.device_id,d.lat,d.lon);
     const k=location.hash.replace('#/','')||'dashboard';
+    if(d.type==='presence' && k==='mappa') route();
     if(k==='centrale'||k==='dashboard') route();
   };
 }
@@ -173,58 +193,246 @@ function bindRows(v){
 
 // ---------------- Centrale ----------------
 async function vCentrale(v){
-  const I=await api('/incidents').catch(()=>[]);
-  v.innerHTML=`<div class="page-h"><div><h1>Centrale allarmi</h1><div class="mut">${I.length} incidenti · aggiornamento live</div></div></div>
-  <div class="card"><table class="table"><thead><tr><th>Tipo</th><th>Sede</th><th>Stato</th><th>Priorità</th><th>Correlazione</th></tr></thead>
+  const [I,CK,OC]=await Promise.all([api('/incidents').catch(()=>[]), api('/checkins/list').catch(()=>[]), api('/oncall-now').catch(()=>({available:false}))]);
+  const scaduti=CK.filter(c=>c.state==='scaduto').length;
+  const onc = OC.available ? `<span class="chip s-attivo" title="reperibili GoAlert">📞 on-call: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
+  v.innerHTML=`<div class="page-h"><div><h1>Centrale allarmi</h1><div class="mut">${I.length} incidenti · ${CK.length} check-in (${scaduti} scaduti) · live</div></div><div>${onc}</div></div>
+  <div class="card"><table class="table"><thead><tr><th>Tipo</th><th>Sede</th><th>Assegnato</th><th>Stato</th><th>Priorità</th><th>Correlazione</th></tr></thead>
   <tbody>${I.map(i=>`<tr class="clk" data-inc="${i.id}">
-    <td><b>${esc(i.etype)}</b></td><td>${esc(i.site||'—')}</td><td>${chip(i.state)}</td>
+    <td><b>${esc(i.etype)}</b></td><td>${esc(i.site||'—')}</td><td class="small">${esc(i.assignee||'—')}</td><td>${chip(i.state)}</td>
     <td class="sev pri${i.priority}">${'●'.repeat(i.priority)}</td>
     <td class="mono small mut">${esc((i.correlation||'').slice(0,8))}</td></tr>`).join('')
-    ||`<tr><td colspan="5" class="empty">${ICON.check}<div>Nessun incidente aperto</div></td></tr>`}</tbody></table></div>`;
+    ||`<tr><td colspan="6" class="empty">${ICON.check}<div>Nessun incidente aperto</div></td></tr>`}</tbody></table></div>
+  <div class="card" style="margin-top:16px"><div class="card-h"><h2>Check-in attivi</h2></div>
+    <table class="table"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Scadenza</th><th>Stato</th></tr></thead>
+    <tbody>${CK.map(c=>`<tr><td>${esc(c.email)}</td><td>${esc(c.site||'—')}</td>
+      <td class="small mut">${new Date(c.due_at).toLocaleString('it-IT')}</td><td>${chip(c.state)}</td></tr>`).join('')
+      ||`<tr><td colspan="4" class="empty">nessun check-in attivo</td></tr>`}</tbody></table></div>`;
   bindRows(v);
 }
 async function openIncident(id){
-  const [list,tl]=await Promise.all([api('/incidents'),api('/incidents/'+id+'/timeline').catch(()=>[])]);
+  const [list,tl,users]=await Promise.all([api('/incidents'),api('/incidents/'+id+'/timeline').catch(()=>[]),
+    can(['operatore','tenant_admin'])?api('/users').catch(()=>[]):Promise.resolve([])]);
   const i=list.find(x=>x.id===id)||{};
-  const acts = (i.state==='aperto'&&can(['operatore','tenant_admin']))?`<button class="btn block" onclick="incAck('${id}')">Prendi in carico</button>`
-    :(i.state==='preso_in_carico'&&can(['operatore','tenant_admin']))?`<button class="btn ok block" onclick="incClose('${id}')">Chiudi con esito</button>`
+  const canOp=can(['operatore','tenant_admin']);
+  const acts = (i.state==='aperto'&&canOp)?`<button class="btn block" onclick="incAck('${id}')">Prendi in carico</button>`
+    :(i.state==='preso_in_carico'&&canOp)?`<button class="btn ok block" onclick="incClose('${id}')">Chiudi con esito</button>`
     :`<div class="chip">${esc(i.outcome||'nessuna azione disponibile')}</div>`;
+  const ops=users.filter(u=>['operatore','tenant_admin','reperibile'].includes(u.role));
+  const assignBox = canOp?`<div class="small mut" style="margin-top:14px">Assegna a operatore</div>
+    <div class="row" style="gap:6px;margin-top:4px"><select id="asgSel" class="grow">
+      <option value="">— nessuno —</option>
+      ${ops.map(u=>`<option value="${u.id}" ${u.id===i.assigned_user?'selected':''}>${esc(u.email)}</option>`).join('')}
+    </select><button class="btn ghost" onclick="incAssign('${id}')">Assegna</button></div>`:'';
+  const noteBox = canOp?`<div class="small mut" style="margin-top:14px">Aggiungi nota</div>
+    <div class="row" style="gap:6px;margin-top:4px"><input id="noteInp" class="grow" placeholder="es. chiamato, risponde">
+      <button class="btn ghost" onclick="incNote('${id}')">Salva</button></div>`:'';
   drawer(`Incidente · ${esc(i.etype)}`, `
-    <div class="row" style="margin-bottom:14px">${chip(i.state)}<span class="chip">prio ${i.priority}</span><span class="chip">${esc(i.site||'—')}</span></div>
+    <div class="row" style="margin-bottom:14px">${chip(i.state)}<span class="chip">prio ${i.priority}</span><span class="chip">${esc(i.site||'—')}</span>${i.assignee?`<span class="chip">${esc(i.assignee)}</span>`:''}</div>
     <div class="small mut">Correlazione</div><div class="mono" style="margin-bottom:16px">${esc(i.correlation)}</div>
-    <div style="margin-bottom:16px">${acts}</div>
-    <h3 style="margin-bottom:10px">Timeline</h3>
+    <div style="margin-bottom:6px">${acts}</div>${assignBox}${noteBox}
+    <div class="small mut" style="margin-top:14px">Stato GoAlert</div><div id="gaStatus" class="small">…</div>
+    ${canOp?`<div class="row" style="gap:6px;margin-top:6px"><button class="btn ghost small" onclick="gaAck('${id}')">Ack</button>
+      <button class="btn ghost small" onclick="gaEsc('${id}')">Escalate</button></div>`:''}
+    <h3 style="margin:18px 0 10px">Timeline</h3>
     <ul class="timeline">${tl.map(e=>`<li><div class="t">${esc(e.kind.replace(/_/g,' '))}</div>
-      <div class="small mut">${esc(JSON.stringify(e.detail||{}))}</div></li>`).join('')||'<li class="mut">—</li>'}</ul>`);
+      <div class="small mut">${esc(fmtDetail(e.detail))}</div></li>`).join('')||'<li class="mut">—</li>'}</ul>`);
+  loadGaStatus(id);
 }
+const GA_LAB={StatusUnacknowledged:'🔴 non preso in carico',StatusAcknowledged:'🟡 preso in carico (ack)',StatusClosed:'🟢 chiuso'};
+async function gaAck(id){ try{ await api('/incidents/'+id+'/goalert-ack',{method:'POST'}); toast('Ack inviato a GoAlert','ok'); loadGaStatus(id);}catch(e){toast(e.message,'bad');} }
+async function gaEsc(id){ try{ await api('/incidents/'+id+'/goalert-escalate',{method:'POST'}); toast('Escalation forzata','ok'); loadGaStatus(id);}catch(e){toast(e.message,'bad');} }
+async function loadGaStatus(id){ const el=$('#gaStatus'); if(!el)return;
+  try{ const r=await api('/incidents/'+id+'/goalert-status');
+    el.innerHTML = r.available ? (GA_LAB[r.status]||esc(r.status||'—')) : '<span class="mut">'+esc(r.reason||'n/d')+'</span>'; }
+  catch(e){ el.innerHTML='<span class="mut">n/d</span>'; } }
+function fmtDetail(d){ if(!d)return''; if(d.body)return d.body; if(d.outcome)return 'esito: '+d.outcome;
+  if(d.by)return Object.entries(d).map(([k,v])=>`${k}: ${v}`).join(', '); return JSON.stringify(d); }
+async function incAssign(id){ const u=$('#asgSel').value||null;
+  try{await api('/incidents/'+id+'/assign',{method:'POST',body:JSON.stringify({user_id:u})}); toast('Assegnazione aggiornata','ok'); openIncident(id); route();}catch(e){toast(e.message,'bad');} }
+async function incNote(id){ const b=$('#noteInp').value.trim(); if(!b)return;
+  try{await api('/incidents/'+id+'/note',{method:'POST',body:JSON.stringify({body:b})}); toast('Nota aggiunta','ok'); openIncident(id);}catch(e){toast(e.message,'bad');} }
 async function incAck(id){ try{await api('/incidents/'+id+'/ack',{method:'POST'}); toast('Preso in carico','ok'); closeDrawer(); route(); }catch(e){toast(e.message,'bad');} }
 async function incClose(id){ const o=prompt('Esito chiusura?','risolto sul posto'); if(o==null)return;
   try{await api('/incidents/'+id+'/close',{method:'POST',body:JSON.stringify({outcome:o})}); toast('Incidente chiuso','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 
+// ---------------- Report (#5) ----------------
+async function vReport(v){
+  const D=(await api('/devices').catch(()=>[])).filter(d=>d.source==='traccar');
+  const today=new Date().toISOString().slice(0,10);
+  const wago=new Date(Date.now()-7*864e5).toISOString().slice(0,10);
+  v.innerHTML=`<div class="page-h"><div><h1>Report</h1><div class="mut">percorsi, soste, presenza · export CSV</div></div></div>
+    <div class="card pad"><div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+      <div class="field"><label>Dispositivo</label><select id="rDev">${D.map(d=>`<option value="${d.id}">${esc(d.label||d.external_id)}</option>`).join('')||'<option value="">—</option>'}</select></div>
+      <div class="field"><label>Dal</label><input id="rFrom" type="date" value="${wago}"></div>
+      <div class="field"><label>Al</label><input id="rTo" type="date" value="${today}"></div>
+      <button class="btn" onclick="runReport()">Genera</button>
+    </div></div>
+    <div id="repOut" class="col" style="margin-top:16px"></div>`;
+}
+function repRange(){ const f=$('#rFrom').value+'T00:00:00Z', t=$('#rTo').value+'T23:59:59Z'; return 'from='+f+'&to='+t; }
+async function runReport(){
+  const dev=$('#rDev').value, rng=repRange(), out=$('#repOut');
+  if(!dev){ out.innerHTML='<div class="card pad mut">Nessun dispositivo Traccar.</div>'; return; }
+  out.innerHTML='<div class="card pad mut">Genero…</div>';
+  try{
+    const [route,pres]=await Promise.all([api('/reports/route?device='+dev+'&'+rng),api('/reports/presence?'+rng)]);
+    const km=(route.total_m/1000).toFixed(2);
+    const stops=(route.stops||[]).map(s=>`<tr><td class="small">${new Date(s.from).toLocaleString('it-IT')}</td><td class="small">${s.minutes} min</td><td class="small mono">${s.lat.toFixed(4)},${s.lon.toFixed(4)}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">nessuna sosta</td></tr>';
+    const ev=(pres.events||[]).filter(e=>true).map(e=>`<tr><td class="small">${new Date(e.at).toLocaleString('it-IT')}</td><td>${e.inside?'🟢 ingresso':'🔴 uscita'}</td><td class="small">${esc(e.external_id)}</td><td class="small">${esc(e.geofence)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessun evento di presenza</td></tr>';
+    out.innerHTML=`
+      <div class="card"><div class="card-h"><h2>Percorso</h2>
+        <a class="btn ghost small" href="/api/reports/route.csv?device=${dev}&${rng}">Esporta CSV</a></div>
+        <div class="pad"><div class="row" style="gap:20px;flex-wrap:wrap">
+          ${kpi('home','Distanza',km+' km')}${kpi('clipboard','Punti',route.points)}${kpi('receipt','Durata',route.duration_min+' min')}${kpi('alert','Soste',(route.stops||[]).length)}</div></div>
+        <table class="table"><thead><tr><th>Sosta dalle</th><th>Durata</th><th>Posizione</th></tr></thead><tbody>${stops}</tbody></table></div>
+      <div class="card" style="margin-top:16px"><div class="card-h"><h2>Presenza</h2>
+        <a class="btn ghost small" href="/api/reports/presence.csv?${rng}">Esporta CSV</a></div>
+        <table class="table"><thead><tr><th>Quando</th><th>Evento</th><th>Dispositivo</th><th>Geofence</th></tr></thead><tbody>${ev}</tbody></table></div>`;
+  }catch(e){ out.innerHTML='<div class="card pad" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
+}
+
+// ---------------- Mappa (Leaflet/OpenStreetMap) ----------------
+let MAP=null, MARK={}, MAPTRAIL=null, GFLAYER=null, ADDMODE=false, CLUSTER=null, REPLAY=null;
+async function vMappa(v){
+  const admin=can(['tenant_admin']);
+  const [D0,GF,PR]=await Promise.all([api('/devices').catch(()=>[]),api('/geofences').catch(()=>[]),api('/presence').catch(()=>[])]);
+  const D=D0.filter(d=>d.last_lat!=null&&d.last_lon!=null);
+  v.innerHTML=`<div class="page-h"><div><h1>Mappa</h1><div class="mut">${D.length} dispositivi · ${GF.length} geofence · ${PR.length} presenze · live</div></div>
+    ${admin?`<button class="btn ghost" id="addGf">+ Geofence (cerchio)</button>`:''}</div>
+    <div class="grid" style="grid-template-columns:1fr 280px;gap:16px">
+      <div class="card" style="padding:0;overflow:hidden">
+        <div id="replayBar" class="row hide" style="gap:8px;padding:8px 10px;border-bottom:1px solid var(--line);align-items:center"></div>
+        <div id="map" style="height:68vh;width:100%"></div></div>
+      <div class="card pad" style="height:72vh;overflow:auto"><h2 style="margin-bottom:8px">Presenza</h2>
+        ${PR.length?PR.map(p=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+          <b class="small">${esc(p.device||p.external_id)}</b><div class="small mut">${esc(p.geofence)} · da ${new Date(p.since).toLocaleTimeString('it-IT')}</div>
+          ${p.user?`<div class="small mut">👤 ${esc(p.user)}</div>`:''}</div>`).join(''):'<div class="small mut">Nessun dispositivo dentro una geofence.</div>'}
+      </div></div>`;
+  MARK={}; MAPTRAIL=null; GFLAYER=null; ADDMODE=false;
+  if(typeof L==='undefined'){ $('#map').innerHTML='<div class="pad mut">Libreria mappa non disponibile (serve connessione).</div>'; return; }
+  setTimeout(()=>{
+    MAP=L.map('map',{zoomControl:true}).setView([45.46,9.19],6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(MAP);
+    GFLAYER=L.layerGroup().addTo(MAP);
+    GF.forEach(g=>drawGeofence(g,admin));
+    CLUSTER = (typeof L.markerClusterGroup==='function') ? L.markerClusterGroup({maxClusterRadius:50}) : L.layerGroup();
+    const pts=[];
+    D.forEach(d=>{
+      const m=L.marker([d.last_lat,d.last_lon]);
+      m.bindPopup(popupHtml(d));
+      m.on('popupopen',()=>{ const b=document.getElementById('trailBtn_'+d.id); if(b)b.onclick=()=>drawTrail(d.id); });
+      MARK[d.id]=m; CLUSTER.addLayer(m); pts.push([d.last_lat,d.last_lon]);
+    });
+    MAP.addLayer(CLUSTER);
+    if(pts.length) MAP.fitBounds(pts,{padding:[40,40],maxZoom:15});
+    if(admin){ const btn=$('#addGf'); if(btn) btn.onclick=()=>{ ADDMODE=!ADDMODE; btn.classList.toggle('ok',ADDMODE);
+      toast(ADDMODE?'Clicca sulla mappa per il centro del cerchio':'Modifica geofence annullata','ok'); };
+      MAP.on('click',e=>{ if(!ADDMODE)return; ADDMODE=false; const b=$('#addGf'); if(b)b.classList.remove('ok'); addCircle(e.latlng.lat,e.latlng.lng); }); }
+  },60);
+}
+function drawGeofence(g,admin){
+  if(!GFLAYER)return; let layer=null;
+  if(g.kind==='circle'&&g.geom.radius){ layer=L.circle([g.geom.lat,g.geom.lon],{radius:g.geom.radius,color:'#16a34a',fillOpacity:0.08}); }
+  else if(g.kind==='polygon'&&g.geom.points){ layer=L.polygon(g.geom.points,{color:'#16a34a',fillOpacity:0.08}); }
+  if(!layer)return;
+  layer.bindPopup(`<b>${esc(g.name)}</b><br><span style="color:#666">${esc(g.kind)}</span>${admin?`<br><button id="gfDel_${g.id}">Elimina</button>`:''}`);
+  layer.on('popupopen',()=>{ const b=document.getElementById('gfDel_'+g.id); if(b)b.onclick=()=>gfDel(g.id); });
+  layer.addTo(GFLAYER);
+}
+async function addCircle(lat,lon){
+  const name=prompt('Nome geofence?'); if(!name)return;
+  const r=parseInt(prompt('Raggio in metri?','300')||'0',10); if(!r||r<10)return toast('raggio non valido','bad');
+  try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind:'circle',geom:{lat,lon,radius:r}})});
+    toast('Geofence creata','ok'); route(); }catch(e){ toast(e.message,'bad'); }
+}
+async function gfDel(id){ if(!confirm('Eliminare la geofence?'))return;
+  try{ await api('/geofences/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
+function popupHtml(d){
+  return `<b>${esc(d.label||d.external_id)}</b><br>
+    <span style="color:#666">${d.last_lat.toFixed(5)}, ${d.last_lon.toFixed(5)}</span><br>
+    ${d.last_battery!=null?'🔋 '+Math.round(d.last_battery)+'% · ':''}${d.last_pos_at?new Date(d.last_pos_at).toLocaleString('it-IT'):''}<br>
+    ${d.user_email?'👤 '+esc(d.user_email)+'<br>':''}
+    <button id="trailBtn_${d.id}" style="margin-top:6px">Percorso recente</button>`;
+}
+async function drawTrail(id){
+  try{ const P=await api('/devices/'+id+'/positions?limit=50');
+    const line=P.map(p=>[p.lat,p.lon]).reverse();
+    if(MAPTRAIL){ MAP.removeLayer(MAPTRAIL); MAPTRAIL=null; }
+    if(line.length>1){ MAPTRAIL=L.polyline(line,{color:'#2563eb',weight:3,opacity:0.8}).addTo(MAP); MAP.fitBounds(line,{padding:[40,40]}); setupReplay(line); }
+    else toast('Solo una posizione nota','warn');
+  }catch(e){ toast(e.message,'bad'); }
+}
+// live: SSE device_position muove/crea il marker
+function mapLivePos(id,lat,lon){
+  if(!MAP||typeof L==='undefined')return;
+  if(MARK[id]) MARK[id].setLatLng([lat,lon]);
+  else { const m=L.marker([lat,lon]); MARK[id]=m; (CLUSTER||MAP).addLayer(m); }
+}
+// Replay percorso: marker che scorre lungo la polyline con slider play/pausa.
+function setupReplay(line){
+  const bar=$('#replayBar'); if(!bar)return;
+  if(REPLAY){ clearInterval(REPLAY.timer); if(REPLAY.marker)MAP.removeLayer(REPLAY.marker); REPLAY=null; }
+  bar.classList.remove('hide');
+  bar.innerHTML=`<button class="btn ghost small" id="rpPlay">▶ Replay</button>
+    <input id="rpSlider" type="range" min="0" max="${line.length-1}" value="0" style="flex:1">
+    <span id="rpIdx" class="small mut">1/${line.length}</span>
+    <button class="btn-ico btn ghost" id="rpClose">${ICON.x}</button>`;
+  const marker=L.circleMarker(line[0],{radius:7,color:'#dc2626',fillColor:'#dc2626',fillOpacity:1}).addTo(MAP);
+  REPLAY={marker,timer:null,line};
+  const show=i=>{ marker.setLatLng(line[i]); $('#rpSlider').value=i; $('#rpIdx').textContent=(i+1)+'/'+line.length; };
+  $('#rpSlider').oninput=e=>show(+e.target.value);
+  $('#rpPlay').onclick=()=>{ if(REPLAY.timer){ clearInterval(REPLAY.timer); REPLAY.timer=null; $('#rpPlay').textContent='▶ Replay'; return; }
+    $('#rpPlay').textContent='⏸ Pausa';
+    REPLAY.timer=setInterval(()=>{ let i=(+$('#rpSlider').value)+1; if(i>=line.length){ clearInterval(REPLAY.timer); REPLAY.timer=null; $('#rpPlay').textContent='▶ Replay'; return; } show(i); MAP.panTo(line[i]); },500); };
+  $('#rpClose').onclick=()=>{ clearInterval(REPLAY.timer); MAP.removeLayer(marker); REPLAY=null; bar.classList.add('hide'); bar.innerHTML=''; };
+}
+
 // ---------------- Ordini ----------------
+const PRI_LAB={1:'bassa',2:'media',3:'alta'};
+function priBadge(p){ const c=p>=3?'var(--bad,#c0392b)':p===2?'var(--warn,#b8860b)':'var(--mut)'; return `<span class="tag" style="color:${c}">${PRI_LAB[p]||'media'}</span>`; }
+function schedLabel(o){ if(!o.scheduled_start)return'<span class="mut">—</span>';
+  const a=new Date(o.scheduled_start), z=o.scheduled_end?new Date(o.scheduled_end):null;
+  const d=a.toLocaleDateString('it-IT',{weekday:'short',day:'2-digit',month:'2-digit'});
+  const hh=a.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
+  return `${d} ${hh}${z?'–'+z.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}):''}`; }
 async function vOrdini(v){
   const O=await api('/orders').catch(()=>[]);
   const canCreate=can(['pianificatore','tenant_admin']);
-  v.innerHTML=`<div class="page-h"><div><h1>Ordini di lavoro</h1><div class="mut">${O.length} ordini</div></div>
+  // agenda: pianificati (con finestra) separati dai non pianificati
+  const sched=O.filter(o=>o.scheduled_start), unsched=O.filter(o=>!o.scheduled_start);
+  const row=o=>`<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b></td><td>${esc(o.site||'—')}</td>
+    <td>${esc(o.assignee||'—')}</td><td class="small">${schedLabel(o)}</td><td>${priBadge(o.priority)}</td><td>${chip(o.state)}</td></tr>`;
+  v.innerHTML=`<div class="page-h"><div><h1>Ordini di lavoro</h1><div class="mut">${O.length} ordini · ${sched.length} pianificati</div></div>
     ${canCreate?`<button class="btn" onclick="newOrder()">+ Nuovo ordine</button>`:''}</div>
-  <div class="card"><table class="table"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Stato</th></tr></thead>
-  <tbody>${O.map(o=>`<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b></td><td>${esc(o.site||'—')}</td>
-    <td>${esc(o.assignee||'—')}</td><td>${chip(o.state)}</td></tr>`).join('')
-    ||`<tr><td colspan="4" class="empty">${ICON.clipboard}<div>Nessun ordine</div></td></tr>`}</tbody></table></div>`;
+  <div class="card"><div class="card-h"><h2>Agenda (pianificati)</h2></div>
+    <table class="table"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Quando</th><th>Priorità</th><th>Stato</th></tr></thead>
+    <tbody>${sched.map(row).join('')||`<tr><td colspan="6" class="empty">Nessun ordine pianificato</td></tr>`}</tbody></table></div>
+  <div class="card" style="margin-top:16px"><div class="card-h"><h2>Da pianificare</h2></div>
+    <table class="table"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Quando</th><th>Priorità</th><th>Stato</th></tr></thead>
+    <tbody>${unsched.map(row).join('')||`<tr><td colspan="6" class="empty">${ICON.clipboard}<div>Nessun ordine</div></td></tr>`}</tbody></table></div>`;
   bindRows(v);
 }
+function orderFormFields(o,sites,workers){ o=o||{}; return `
+  <div class="field"><label>Titolo</label><input id="o_title" value="${esc(o.title||'')}" placeholder="Manutenzione quadro elettrico"></div>
+  <div class="field"><label>Sede</label><select id="o_site"><option value="">—</option>${sites.map(s=>`<option value="${s.id}" ${s.id===o.site_id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>
+  <div class="field"><label>Assegna a</label><select id="o_asg"><option value="">—</option>${workers.map(w=>`<option value="${w.id}" ${w.id===o.assigned_user?'selected':''}>${esc(w.email)}</option>`).join('')}</select></div>
+  <div class="row"><div class="field grow"><label>Inizio</label><input id="o_ss" type="datetime-local" value="${o.scheduled_start?new Date(o.scheduled_start).toISOString().slice(0,16):''}"></div>
+    <div class="field grow"><label>Fine</label><input id="o_se" type="datetime-local" value="${o.scheduled_end?new Date(o.scheduled_end).toISOString().slice(0,16):''}"></div></div>
+  <div class="field"><label>Priorità</label><select id="o_pri">${[1,2,3].map(p=>`<option value="${p}" ${p===(o.priority||2)?'selected':''}>${PRI_LAB[p]}</option>`).join('')}</select></div>
+  <div class="field"><label>Istruzioni</label><textarea id="o_instr">${esc(o.instructions||'')}</textarea></div>`; }
 async function newOrder(){
-  const sites=await api('/sites').catch(()=>[]);
-  drawer('Nuovo ordine', `
-    <div class="col">
-      <div class="field"><label>Titolo</label><input id="o_title" placeholder="Manutenzione quadro elettrico"></div>
-      <div class="field"><label>Sede</label><select id="o_site"><option value="">—</option>${sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
-      <div class="field"><label>Istruzioni</label><textarea id="o_instr"></textarea></div>
-      <button class="btn block" id="o_save">Crea ordine (bozza)</button>
-    </div>`);
-  $('#o_save').onclick=async()=>{ try{
-    await api('/orders',{method:'POST',body:JSON.stringify({title:$('#o_title').value,site_id:$('#o_site').value||null,instructions:$('#o_instr').value||null})});
-    toast('Ordine creato','ok'); closeDrawer(); route(); }catch(e){toast(e.message,'bad');} };
+  const [sites,users]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[])]);
+  const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
+  drawer('Nuovo ordine', `<div class="col">${orderFormFields(null,sites,workers)}
+      <button class="btn block" id="o_save">Crea ordine</button><div class="cfg-msg small"></div></div>`);
+  $('#o_save').onclick=async()=>{
+    const m=$('.cfg-msg');
+    const b={title:$('#o_title').value,site_id:$('#o_site').value||null,assigned_user:$('#o_asg').value||null,
+      instructions:$('#o_instr').value||null,scheduled_start:toISO($('#o_ss').value),scheduled_end:toISO($('#o_se').value),priority:+$('#o_pri').value};
+    if(!b.title){m.textContent='titolo richiesto';m.style.color='var(--bad)';return;}
+    try{ await api('/orders',{method:'POST',body:JSON.stringify(b)});
+      toast('Ordine creato','ok'); closeDrawer(); route(); }catch(e){m.textContent=e.message;m.style.color='var(--bad)';} };
 }
 async function openOrder(id){
   const planner=can(['pianificatore','tenant_admin']);
@@ -240,12 +448,29 @@ async function openOrder(id){
   if((mine||planner)&&o.state==='assegnato') acts+=`<button class="btn block" onclick="ordAct('${id}','start',${o.version})">${ICON.play} Avvia</button>`;
   if((mine||planner)&&o.state==='in_corso') acts+=`<button class="btn ok block" onclick="ordComplete('${id}',${o.version})">${ICON.check} Completa</button>`;
   if(planner&&['bozza','assegnato','in_corso'].includes(o.state)) acts+=`<button class="btn ghost block" onclick="ordCancel('${id}',${o.version})">Annulla</button>`;
+  const editBtn = (planner && o.state!=='completato' && o.state!=='annullato')
+    ? `<button class="btn ghost block" onclick='editOrder(${JSON.stringify(o).replace(/'/g,"&#39;")})'>✎ Modifica / ripianifica</button>` : '';
   drawer('Ordine · '+esc(o.title), `
-    <div class="row" style="margin-bottom:14px">${chip(o.state)}<span class="chip">${esc(o.site||'—')}</span><span class="chip">v${o.version}</span></div>
+    <div class="row" style="margin-bottom:14px">${chip(o.state)}<span class="chip">${esc(o.site||'—')}</span>${priBadge(o.priority)}<span class="chip">v${o.version}</span></div>
     <div class="small mut">Assegnatario</div><div style="margin-bottom:12px">${esc(o.assignee||'non assegnato')}</div>
+    <div class="small mut">Quando</div><div style="margin-bottom:12px">${schedLabel(o)}</div>
     <div class="small mut">Istruzioni</div><div style="margin-bottom:16px">${esc(o.instructions||'—')}</div>
     ${o.outcome?`<div class="small mut">Esito</div><div style="margin-bottom:16px">${esc(o.outcome)}</div>`:''}
-    <div class="col">${acts||'<div class="chip">nessuna azione disponibile</div>'}</div>`);
+    <div class="col">${acts||'<div class="chip">nessuna azione disponibile</div>'}${editBtn}</div>`);
+}
+async function editOrder(o){
+  const [sites,users]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[])]);
+  const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
+  drawer('Modifica ordine', `<div class="col">${orderFormFields(o,sites,workers)}
+    <label class="row small" style="gap:8px"><input type="checkbox" id="o_clear"> Rimuovi pianificazione</label>
+    <button class="btn block" id="o_edit">Salva modifiche</button><div class="cfg-msg small"></div></div>`);
+  $('#o_edit').onclick=async()=>{
+    const m=$('.cfg-msg');
+    const b={version:o.version,title:$('#o_title').value||null,site_id:$('#o_site').value||null,assigned_user:$('#o_asg').value||null,
+      instructions:$('#o_instr').value||null,scheduled_start:toISO($('#o_ss').value),scheduled_end:toISO($('#o_se').value),
+      priority:+$('#o_pri').value,clear_schedule:$('#o_clear').checked};
+    try{ await api('/orders/'+o.id+'/edit',{method:'POST',body:JSON.stringify(b)});
+      toast('Ordine aggiornato','ok'); closeDrawer(); route(); }catch(e){m.textContent=e.message;m.style.color='var(--bad)';} };
 }
 async function ordAssign(id,v){ const u=$('#asg').value.trim(); if(!u)return toast('inserisci user id','warn');
   try{await api('/orders/'+id+'/assign',{method:'POST',body:JSON.stringify({version:v,user_id:u})}); toast('Assegnato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
@@ -321,13 +546,468 @@ async function tsReqChanges(id){ const n=prompt('Cosa correggere?'); if(n==null)
 // ---------------- Moduli ----------------
 async function vModuli(v){
   const M=await api('/modules').catch(()=>[]);
-  v.innerHTML=`<div class="page-h"><div><h1>Moduli</h1><div class="mut">Abilitazione commerciale gestita dal superadmin. Qui vedi lo stato.</div></div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>Moduli</h1><div class="mut">Abilitazione commerciale dal superadmin. Qui vedi lo stato e <b>configuri gli strumenti</b> dei moduli attivi.</div></div></div>
   <div class="grid g3">${M.map(m=>`<div class="card pad">
     <div class="spread"><b>${esc(m.name)}</b>${chip(m.state)}</div>
     <div class="small mut" style="margin-top:6px">${esc(m.code)} · ${esc(m.kind)}</div>
     ${!m.available?'<div class="small" style="color:var(--warn);margin-top:6px">non disponibile in questa release</div>':''}
+    ${m.state==='attivo'?`<div style="margin-top:10px"><button class="btn ghost" onclick="openModuleConfig('${esc(m.code)}','${esc(m.name)}')">Configura strumenti</button></div>`:''}
   </div>`).join('')}</div>`;
 }
+
+// Schema-driven config: fetch the module's tools, render a form per field type.
+async function openModuleConfig(code,name){
+  let tools; try{ tools=await api('/modules/'+code+'/tools'); }
+  catch(e){ drawer(esc(name), `<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`); return; }
+  if(!tools.length){ drawer(esc(name), '<div class="small mut">Nessuno strumento configurabile disponibile per questo tenant.</div>'); return; }
+  const body = tools.map(t=>{
+    const fields=((t.schema&&t.schema.fields)||[]).map(f=>{
+      const val=(t.config&&t.config[f.key]!==undefined)?t.config[f.key]:'';
+      const id=`cf_${code}_${t.tool_code}_${f.key}`;
+      let input;
+      if(f.type==='enum'){ input=`<select id="${id}" ${t.editable?'':'disabled'}>${(f.options||[]).map(o=>`<option ${o==val?'selected':''}>${esc(o)}</option>`).join('')}</select>`; }
+      else if(f.type==='int'){ input=`<input id="${id}" type="number" value="${esc(String(val))}" ${f.min!=null?`min="${f.min}"`:''} ${f.max!=null?`max="${f.max}"`:''} ${t.editable?'':'disabled'}>`; }
+      else { input=`<input id="${id}" value="${esc(String(val))}" ${t.editable?'':'disabled'}>`; }
+      return `<label class="small mut" style="display:block;margin-top:8px">${esc(f.label||f.key)}${f.min!=null||f.max!=null?` <span class="tag">${f.min??''}–${f.max??''}</span>`:''}<div style="margin-top:3px">${input}</div></label>`;
+    }).join('');
+    const save=t.editable?`<button class="btn" style="margin-top:10px" onclick="saveToolConfig('${esc(code)}','${esc(t.tool_code)}',this)">Salva</button>`:'<div class="small mut" style="margin-top:8px">sola lettura</div>';
+    return `<div class="card pad" data-tool="${esc(t.tool_code)}" style="margin-bottom:12px"><b>${esc(t.name)}</b>
+      <div class="small mut">${esc(t.description||'')}</div>${fields}
+      <div class="cfg-msg small" style="margin-top:6px"></div>${save}</div>`;
+  }).join('');
+  drawer(esc(name)+' · strumenti', body);
+}
+async function saveToolConfig(code,tool,btn){
+  const card=btn.closest('[data-tool]'); const cfg={};
+  card.querySelectorAll('input,select').forEach(i=>{
+    const key=i.id.split('_').slice(3).join('_');
+    cfg[key]= i.type==='number' ? Number(i.value) : i.value;
+  });
+  const msg=card.querySelector('.cfg-msg'); msg.textContent='…'; msg.style.color='var(--mut)';
+  try{ await api('/modules/'+code+'/tools/'+tool,{method:'POST',body:JSON.stringify({config:cfg})});
+    msg.textContent='Salvato'; msg.style.color='var(--ok,green)'; }
+  catch(e){ msg.textContent=e.message; msg.style.color='var(--bad)'; }
+}
+
+// ---------------- Dispositivi ----------------
+async function vDispositivi(v){
+  const [D,sites,users]=await Promise.all([api('/devices').catch(()=>[]),api('/sites').catch(()=>[]),api('/users').catch(()=>[])]);
+  v._sites=sites; v._users=users;
+  const seen=d=>d.last_seen?`<span title="${esc(d.last_etype||'')}">${new Date(d.last_seen).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>`:'<span class="mut">mai</span>';
+  const prov=p=>{ if(!p)return''; const m={attivo:'s-attivo',in_attesa_primo_fix:'',traccar_registrato:'',configurato:''}; const lab={in_attesa_primo_fix:'attesa 1° fix',traccar_registrato:'registrato',configurato:'configurato',attivo:'attivo'}; return `<span class="chip ${m[p]||''}">${lab[p]||p}</span>`; };
+  const who=d=> d.asset_name?('🚚 '+esc(d.asset_name)) : d.user_email?('👤 '+esc(d.user_email)) : '—';
+  const model=d=> d.model_code?esc((d.manufacturer||'')+' '+(d.model_name||'')):'<span class="mut">generico</span>';
+  v.innerHTML=`<div class="page-h"><div><h1>Dispositivi</h1><div class="mut">${D.length} dispositivi · catalogo, flotta</div></div>
+    <div class="row" style="gap:8px"><button class="btn" onclick="wizardStart()">+ Aggiungi (guidato)</button>
+      <button class="btn ghost" onclick="devEdit(null)">manuale</button></div></div>
+  <div class="card"><table class="table"><thead><tr><th>ID esterno</th><th>Modello</th><th>Etichetta</th><th>Assegnato a</th><th>Capacità</th><th>Ultimo contatto</th><th>Onboarding</th></tr></thead>
+  <tbody>${D.map(d=>`<tr class="clk" data-dev='${encodeURIComponent(JSON.stringify(d))}'>
+    <td class="mono">${esc(d.external_id)}</td><td class="small">${model(d)}</td><td>${esc(d.label||'—')}</td>
+    <td class="small">${who(d)}</td><td class="small">${(d.capabilities||[]).slice(0,4).map(c=>`<span class="tag">${esc(c)}</span>`).join('')||'—'}</td>
+    <td class="small">${seen(d)}</td><td>${prov(d.prov_step)||(d.enabled?'<span class="chip s-attivo">attivo</span>':'<span class="chip">off</span>')}</td></tr>`).join('')
+    ||`<tr><td colspan="7" class="empty">${ICON.shield}<div>Nessun dispositivo. Usa "+ Aggiungi (guidato)".</div></td></tr>`}</tbody></table></div>`;
+  $$('[data-dev]',v).forEach(r=>r.onclick=()=>devEdit(JSON.parse(decodeURIComponent(r.dataset.dev))));
+}
+// ---- Wizard onboarding dispositivo (Fase A+B+C) ----
+let WZ={q:'',manufacturer:'',category:''};
+async function wizardStart(){
+  WZ={q:'',manufacturer:'',category:''};
+  let facets={manufacturers:[],categories:[]}; try{ facets=await api('/catalog/facets'); }catch(e){}
+  drawer('Aggiungi dispositivo · 1/2 catalogo', `
+    <div class="row" style="gap:6px;flex-wrap:wrap">
+      <input id="wzQ" class="grow" placeholder="Cerca modello / produttore…">
+      <select id="wzMan"><option value="">Tutti i produttori</option>${facets.manufacturers.map(m=>`<option>${esc(m)}</option>`).join('')}</select>
+      <select id="wzCat"><option value="">Tutti gli scopi</option>${facets.categories.map(c=>`<option>${esc(c)}</option>`).join('')}</select>
+    </div>
+    <div id="wzList" class="col" style="gap:8px;margin-top:12px"></div>`);
+  const run=async()=>{ const p=new URLSearchParams({q:$('#wzQ').value,manufacturer:$('#wzMan').value,category:$('#wzCat').value});
+    const L=await api('/catalog/devices?'+p).catch(()=>[]); const box=$('#wzList');
+    box.innerHTML=L.map(m=>`<div class="card pad clk" onclick='wizardStep2(${JSON.stringify(m).replace(/'/g,"&#39;")})'>
+      <div class="spread"><b>${esc(m.manufacturer)} ${esc(m.model_name)}</b>${m.recommended?'<span class="chip s-attivo">consigliato</span>':''}</div>
+      <div class="small mut" style="margin:3px 0">${esc(m.category)} · ${esc(m.protocol)}${m.default_port?':'+m.default_port:''}${m.osmand?' · OsmAnd':''}</div>
+      <div class="row" style="flex-wrap:wrap;gap:4px">${(m.capabilities||[]).map(c=>`<span class="tag">${esc(c)}</span>`).join('')}</div>
+      ${m.notes?`<div class="small mut" style="margin-top:4px">${esc(m.notes)}</div>`:''}</div>`).join('')||'<div class="small mut">Nessun modello. Prova "Generico (OsmAnd)".</div>';
+  };
+  $('#wzQ').oninput=run; $('#wzMan').onchange=run; $('#wzCat').onchange=run; run();
+}
+let WZOPTS={users:[],assets:[]};
+async function wizardStep2(m){
+  const [users,sites,assets]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),api('/assets').catch(()=>[])]);
+  const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
+  WZOPTS={users:workers,assets};
+  drawer('Aggiungi dispositivo · 2/2 '+esc(m.manufacturer+' '+m.model_name), `
+    <div class="card pad" style="margin-bottom:12px"><div class="small mut">${esc(m.category)} · ${esc(m.protocol)}${m.default_port?':'+m.default_port:''}</div>
+      <div class="row" style="flex-wrap:wrap;gap:4px;margin-top:4px">${(m.capabilities||[]).map(c=>`<span class="tag">${esc(c)}</span>`).join('')}</div></div>
+    <div class="col" style="gap:10px">
+      <label class="small mut">IMEI / uniqueId<input id="wzExt" placeholder="es. 862205051234567"></label>
+      <label class="small mut">Etichetta<input id="wzLab" placeholder="es. Badge Mario"></label>
+      <label class="small mut">Assegna a
+        <select id="wzKind"><option value="user">Lavoratore</option><option value="asset">Asset/mezzo</option><option value="">— nessuno —</option></select></label>
+      <label class="small mut" id="wzUserWrap">Cerca lavoratore (digita per filtrare)
+        <input id="wzUser" list="wzUserList" placeholder="email o nome…" autocomplete="off">
+        <datalist id="wzUserList">${workers.map(w=>`<option value="${esc(w.email)}">`).join('')}</datalist></label>
+      <label class="small mut hide" id="wzAssetWrap">Cerca asset (digita per filtrare)
+        <input id="wzAsset" list="wzAssetList" placeholder="nome o matricola…" autocomplete="off">
+        <datalist id="wzAssetList">${assets.map(a=>`<option value="${esc(a.name)}">`).join('')}</datalist></label>
+      <label class="row small" style="gap:8px"><input type="checkbox" id="wzTr"> Registra anche su Traccar (se configurato)</label>
+      <button class="btn" onclick='wizardSave("${esc(m.model_code)}")'>Attiva dispositivo</button>
+      <div class="cfg-msg small"></div></div>`);
+  const sync=()=>{ const k=$('#wzKind').value; $('#wzUserWrap').classList.toggle('hide',k!=='user'); $('#wzAssetWrap').classList.toggle('hide',k!=='asset'); };
+  $('#wzKind').onchange=sync; sync();
+}
+async function wizardSave(model_code){
+  const m=$('.cfg-msg'); const k=$('#wzKind').value;
+  // risolvi testo -> id (match esatto, poi parziale case-insensitive)
+  const resolve=(txt,list,key)=>{ if(!txt)return null; const t=txt.trim().toLowerCase();
+    let x=list.find(o=>String(o[key]).toLowerCase()===t) || list.find(o=>String(o[key]).toLowerCase().includes(t));
+    return x?x.id:null; };
+  let uid=null, aid=null, bad=null;
+  if(k==='user'){ const t=$('#wzUser').value; uid=resolve(t,WZOPTS.users,'email'); if(t&&!uid)bad='lavoratore non trovato: '+t; }
+  if(k==='asset'){ const t=$('#wzAsset').value; aid=resolve(t,WZOPTS.assets,'name'); if(t&&!aid)bad='asset non trovato: '+t; }
+  if(bad){ m.textContent=bad; m.style.color='var(--bad)'; return; }
+  const b={model_code,external_id:$('#wzExt').value.trim(),label:$('#wzLab').value.trim()||null,
+    user_id:uid, asset_id:aid, register_traccar:$('#wzTr').checked};
+  if(!b.external_id){m.textContent='IMEI/uniqueId richiesto';m.style.color='var(--bad)';return;}
+  try{ const r=await api('/devices/provision',{method:'POST',body:JSON.stringify(b)});
+    const ins=r.install||{}; const warn=r.error?`<div style="color:var(--warn)">Nota: ${esc(r.error)}</div>`:'';
+    drawer('Dispositivo attivato', `<div class="col" style="gap:8px">
+      <div class="chip s-attivo">${esc(r.step)}</div>
+      <div class="small mut">Istruzioni installazione</div>
+      <div class="card pad small">Protocollo <b>${esc(ins.protocol||'-')}</b>${ins.port?' · porta <b>'+ins.port+'</b>':''}<br>${esc(ins.note||'')}</div>
+      ${warn}
+      <button class="btn" onclick="closeDrawer();route()">Fatto</button></div>`);
+    toast('Dispositivo attivato','ok'); route();
+  }catch(e){ m.textContent=e.message; m.style.color='var(--bad)'; }
+}
+
+let DEV_OPTS={sites:[],users:[]};
+function devEdit(d){
+  const v=$('#view'); const sites=v._sites||[], users=v._users||[];
+  DEV_OPTS={sites,users};
+  const isNew=!d; d=d||{source:'manual',enabled:true};
+  const opt=(arr,sel,val,lab)=>`<option value="">—</option>`+arr.map(x=>`<option value="${x[val]}" ${x[val]===sel?'selected':''}>${esc(x[lab])}</option>`).join('');
+  const posBlock = (!isNew && d.last_lat!=null && d.last_lon!=null) ? `
+    <div class="card pad" style="margin-bottom:12px">
+      <div class="spread"><b>Ultima posizione</b>${d.last_battery!=null?`<span class="tag">🔋 ${Math.round(d.last_battery)}%</span>`:''}</div>
+      <div class="small mut" style="margin:4px 0">${d.last_lat.toFixed(5)}, ${d.last_lon.toFixed(5)}${d.last_pos_at?' · '+new Date(d.last_pos_at).toLocaleString('it-IT'):''}</div>
+      <div id="addr" class="small" style="margin:2px 0">📍 <span class="mut">indirizzo…</span></div>
+      ${attrChips(d.last_attributes)}
+      <div class="row" style="gap:8px;margin-top:6px">
+        <a class="btn ghost small" href="https://www.openstreetmap.org/?mlat=${d.last_lat}&mlon=${d.last_lon}#map=17/${d.last_lat}/${d.last_lon}" target="_blank" rel="noopener">Apri mappa</a>
+        <button class="btn ghost small" onclick="devTrail('${d.id}')">Percorso recente</button></div>
+      <div id="trail" class="small mut" style="margin-top:8px"></div>
+    </div>` : '';
+  drawer(isNew?'Nuovo dispositivo':'Modifica dispositivo', posBlock+`
+    <div class="col" style="gap:10px">
+    <label class="small mut">ID esterno (uniqueId badge / nome sensore)<input id="dEx" value="${esc(d.external_id||'')}"></label>
+    <label class="small mut">Sorgente<select id="dSrc">${['manual','traccar','thingsboard','iot'].map(x=>`<option ${x===d.source?'selected':''}>${x}</option>`).join('')}</select></label>
+    <label class="small mut">Etichetta<input id="dLab" value="${esc(d.label||'')}"></label>
+    <label class="small mut">Sede (digita per cercare)<input id="dSite" list="dSiteList" autocomplete="off" placeholder="cerca sede…" value="${esc((sites.find(x=>x.id===d.site_id)||{}).name||'')}">
+      <datalist id="dSiteList">${sites.map(x=>`<option value="${esc(x.name)}">`).join('')}</datalist></label>
+    <label class="small mut">Assegnato a (digita per cercare)<input id="dUsr" list="dUsrList" autocomplete="off" placeholder="cerca lavoratore…" value="${esc((users.find(x=>x.id===d.assigned_user)||{}).email||'')}">
+      <datalist id="dUsrList">${users.map(x=>`<option value="${esc(x.email)}">`).join('')}</datalist></label>
+    <label class="row" style="gap:8px"><input type="checkbox" id="dEn" ${d.enabled?'checked':''}> <span>Abilitato</span></label>
+    <div class="row" style="gap:8px;margin-top:8px"><button class="btn grow" onclick="devSave('${d.id||''}')">Salva</button>
+      ${d.id?`<button class="btn ghost" onclick="devDel('${d.id}')">Elimina</button>`:''}</div>
+    ${(!isNew && d.source==='traccar')?`<div class="row" style="gap:8px;margin-top:8px"><button class="btn ghost small grow" onclick="devCmd('${d.id}','positionSingle')">📡 Localizza (richiedi posizione)</button></div><div id="cmdMsg" class="small mut"></div>`:''}
+    <div class="cfg-msg small"></div></div>`);
+  if(!isNew && d.last_lat!=null && d.last_lon!=null) loadAddr(d.last_lat,d.last_lon);
+}
+async function devCmd(id,type){ const m=$('#cmdMsg'); if(m){m.textContent='invio…';m.style.color='var(--mut)';}
+  try{ const r=await api('/devices/'+id+'/command',{method:'POST',body:JSON.stringify({type})});
+    const okv = r.traccar_status>=200 && r.traccar_status<300;
+    if(m){ m.textContent = okv? 'Comando inviato a Traccar (device '+r.resolved_device_id+')' : 'Traccar '+r.traccar_status+': '+(r.traccar_body||'').slice(0,80); m.style.color = okv?'var(--ok,green)':'var(--bad)'; }
+    toast(okv?'Comando inviato':'Traccar: '+r.traccar_status, okv?'ok':'warn');
+  }catch(e){ if(m){m.textContent=e.message;m.style.color='var(--bad)';} toast(e.message,'bad'); } }
+async function loadAddr(lat,lon){ const el=$('#addr'); if(!el)return;
+  try{ const r=await api('/geocode/reverse?lat='+lat+'&lon='+lon);
+    el.innerHTML='📍 '+(r.address?esc(r.address):'<span class="mut">indirizzo non disponibile</span>'); }
+  catch(e){ el.innerHTML='📍 <span class="mut">geocoder non disponibile</span>'; } }
+async function devSave(id){
+  const m=$('.cfg-msg');
+  const pick=(txt,list,key)=>{ if(!txt||!txt.trim())return null; const t=txt.trim().toLowerCase();
+    const x=list.find(o=>String(o[key]).toLowerCase()===t)||list.find(o=>String(o[key]).toLowerCase().includes(t)); return x?x.id:'__NF__'; };
+  const sid=pick($('#dSite').value,DEV_OPTS.sites,'name'); const uid=pick($('#dUsr').value,DEV_OPTS.users,'email');
+  if(sid==='__NF__'){m.textContent='sede non trovata';m.style.color='var(--bad)';return;}
+  if(uid==='__NF__'){m.textContent='lavoratore non trovato';m.style.color='var(--bad)';return;}
+  const body={external_id:$('#dEx').value.trim(),source:$('#dSrc').value,label:$('#dLab').value.trim()||null,
+    site_id:sid,assigned_user:uid,enabled:$('#dEn').checked};
+  if(!body.external_id){m.textContent='ID esterno richiesto';m.style.color='var(--bad)';return;}
+  try{ await api(id?'/devices/'+id:'/devices',{method:'POST',body:JSON.stringify(body)}); toast('Dispositivo salvato','ok'); closeDrawer(); route(); }
+  catch(e){ m.textContent=e.message; m.style.color='var(--bad)'; }
+}
+async function devDel(id){ if(!confirm('Eliminare il dispositivo?'))return;
+  try{ await api('/devices/'+id,{method:'DELETE'}); toast('Eliminato','ok'); closeDrawer(); route(); }catch(e){toast(e.message,'bad');} }
+// Telemetria device: whitelist di attributi utili con etichette/icone.
+const ATTR_DEF=[
+  ['ignition','🔑','Quadro',v=>v?'acceso':'spento'],
+  ['motion','🏃','Movimento',v=>v?'sì':'no'],
+  ['heartRate','❤️','Freq. cardiaca',v=>Math.round(v)+' bpm'],
+  ['steps','👣','Passi',v=>Math.round(v)],
+  ['temperature','🌡️','Temperatura',v=>v+'°C'],
+  ['deviceTemp','🌡️','Temp. dispositivo',v=>v+'°C'],
+  ['humidity','💧','Umidità',v=>Math.round(v)+'%'],
+  ['odometer','🧭','Odometro',v=>Math.round(v/1000)+' km'],
+  ['rssi','📶','Segnale',v=>v],
+  ['sat','🛰️','Satelliti',v=>v],
+  ['charge','🔌','In carica',v=>v?'sì':'no'],
+];
+function attrChips(a){ if(!a||typeof a!=='object')return '';
+  const out=ATTR_DEF.filter(([k])=>a[k]!==undefined&&a[k]!==null).map(([k,ic,lab,fmt])=>
+    `<span class="tag" title="${lab}">${ic} ${esc(String(fmt(a[k])))}</span>`);
+  return out.length?`<div class="row" style="flex-wrap:wrap;gap:4px;margin-top:6px">${out.join('')}</div>`:'';
+}
+async function devTrail(id){ const el=$('#trail'); if(!el)return; el.textContent='…';
+  try{ const P=await api('/devices/'+id+'/positions?limit=10');
+    el.innerHTML = P.length? P.map(p=>`<div>${new Date(p.fixed_at).toLocaleString('it-IT')} · ${p.lat.toFixed(5)},${p.lon.toFixed(5)}${p.battery!=null?' · 🔋'+Math.round(p.battery)+'%':''}</div>`).join('')
+      : 'nessuna posizione'; }catch(e){ el.textContent=e.message; } }
+
+// ---------------- Connettori ----------------
+async function vConnettori(v){
+  const trOn=ACTIVE_MODS.includes('traccar');
+  const [C,T,TS]=await Promise.all([api('/connectors').catch(()=>[]),api('/ingest-tokens').catch(()=>[]),
+    trOn?api('/traccar/status').catch(()=>null):Promise.resolve(null)]);
+  const hint={traccar:'OsmAnd → '+location.origin.replace(/:\d+$/,':5055')+' · forwarding → /api/ingress/traccar?token=',
+    thingsboard:'Rule Engine REST → /api/ingress/thingsboard?token=',iot:'POST → /api/events (header X-Ingest-Token)',goalert:'chiave per-tenant gestita dal superadmin'};
+  v.innerHTML=`<div class="page-h"><div><h1>Connettori</h1><div class="mut">sorgenti esterne e credenziali macchina del tenant</div></div></div>
+  ${traccarHealthCard(TS)}
+  <div class="grid g2">${C.map(c=>`<div class="card pad">
+    <div class="spread"><b>${esc(c.name)}</b>${chip(c.state)}</div>
+    <div class="small mut" style="margin:6px 0">${esc(hint[c.code]||'')}</div>
+    ${c.code==='goalert'?`<div class="small">Chiave escalation: ${c.has_key?'<span class="chip s-attivo">configurata</span>':'<span class="chip">assente (superadmin)</span>'}</div>`
+      :`<div class="small">Token di ingest: <b>${c.tokens}</b> ${c.state!=='attivo'?'<span class="tag">modulo spento</span>':''}</div>`}
+  </div>`).join('')}</div>
+  <div class="card" style="margin-top:16px"><div class="card-h"><h2>Credenziali di ingest</h2>
+    <div class="row" style="gap:6px"><select id="tkSrc" class="small">${['traccar','thingsboard','iot'].map(x=>`<option>${x}</option>`).join('')}</select>
+      <button class="btn ghost small" onclick="tokNew()">+ genera token</button></div></div>
+    <table class="table"><thead><tr><th>Sorgente</th><th>Token</th><th>Creato</th><th></th></tr></thead>
+    <tbody>${T.map(t=>`<tr><td>${esc(t.source)}</td>
+      <td class="mono small"><span>${esc(t.token)}</span> <a onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(t.token)}')&&toast('Copiato','ok')">copia</a></td>
+      <td class="small mut">${new Date(t.created_at).toLocaleDateString('it-IT')}</td>
+      <td style="text-align:right"><button class="btn-ico btn ghost" onclick="tokDel('${esc(t.token)}')">${ICON.x}</button></td></tr>`).join('')
+      ||`<tr><td colspan="4" class="empty">nessun token</td></tr>`}</tbody></table>
+    <div class="small mut" style="margin-top:8px">Il tenant deriva sempre dal token di ingest: usalo nella configurazione del device/connettore. Revocarlo blocca subito quella sorgente.</div></div>`;
+}
+function traccarHealthCard(s){
+  if(!s) return '';
+  if(!s.configured) return `<div class="card pad" style="margin-bottom:14px"><div class="spread"><b>Traccar — salute connessione</b><span class="chip">non configurata</span></div>
+    <div class="small mut" style="margin-top:6px">Il superadmin deve impostare base URL e credenziali Traccar per abilitare il polling e il recupero eventi.</div></div>`;
+  const lag=s.lag_seconds;
+  const ok=s.reachable && lag!=null && lag<Math.max(60,(s.poll_interval_s||30)*3);
+  const dot=ok?'s-attivo':(s.reachable?'s-degradato':'s-critico');
+  const lagTxt=lag==null?'mai':(lag<120?lag+'s fa':Math.round(lag/60)+'m fa');
+  return `<div class="card pad" style="margin-bottom:14px">
+    <div class="spread"><b>Traccar — salute connessione</b>
+      <span class="chip ${dot}">${s.reachable?'raggiungibile':'irraggiungibile'}</span></div>
+    <div class="row" style="gap:18px;margin-top:10px;flex-wrap:wrap">
+      <div><div class="small mut">Ultimo poll ok</div><b>${lagTxt}</b></div>
+      <div><div class="small mut">Dispositivi online</div><b>${s.online_count}/${s.device_count}</b></div>
+      <div><div class="small mut">Cadenza poll</div><b>${s.poll_interval_s}s</b></div>
+      <div><div class="small mut">Watchdog silenzio</div><b>${s.silence_after_s>0?Math.round(s.silence_after_s/60)+'m':'off'}</b></div>
+      <div><div class="small mut">Cursore eventi</div><b>#${s.last_event_id||0}</b></div>
+    </div>
+    ${s.last_error?`<div class="small" style="color:var(--bad);margin-top:8px">⚠ ${esc(s.last_error)}</div>`:''}
+    <div class="small mut" style="margin-top:8px">Pull via API Traccar: recupera eventi persi (backfill da cursore) e rileva il silenzio dei badge anche se Traccar non invia <i>deviceOffline</i>. Il forwarding resta come percorso rapido.</div>
+  </div>`;
+}
+async function tokNew(){ const src=$('#tkSrc').value;
+  try{const r=await api('/ingest-tokens',{method:'POST',body:JSON.stringify({source:src})}); toast('Token creato','ok'); route();
+    setTimeout(()=>{navigator.clipboard&&navigator.clipboard.writeText(r.token);},100);}catch(e){toast(e.message,'bad');} }
+async function tokDel(t){ if(!confirm('Revocare il token? La sorgente collegata smette di funzionare.'))return;
+  try{await api('/ingest-tokens/'+encodeURIComponent(t),{method:'DELETE'}); toast('Revocato','ok'); route();}catch(e){toast(e.message,'bad');} }
+
+// ---------------- Gruppi allarme ----------------
+async function vGruppi(v){
+  const [G,users]=await Promise.all([api('/groups').catch(()=>({groups:[],routing:[]})),api('/users').catch(()=>[])]);
+  v._users=users; v._groups=G.groups;
+  const ETYPES=['sos','man_down','immobilita','mancato_checkin','sensore_critico'];
+  const routeOf=e=>(G.routing.find(r=>r.etype===e)||{}).group_id||'';
+  v.innerHTML=`<div class="page-h"><div><h1>Gruppi allarme</h1><div class="mut">destinatari ed escalation per tipo di evento</div></div>
+    <button class="btn" onclick="grpNew()">+ Nuovo gruppo</button></div>
+  <div class="grid g2">
+    <div class="card pad"><h2 style="margin-bottom:10px">Gruppi</h2>
+      ${G.groups.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px">
+        <div class="spread"><b>${esc(g.name)}</b><button class="btn-ico btn ghost" onclick="grpDel('${g.id}')">${ICON.x}</button></div>
+        <div class="small mut" style="margin:6px 0">${g.members.map(m=>`<span class="tag">${esc(m.email)} (${m.position})</span>`).join(' ')||'nessun membro'}</div>
+        <div class="row" style="gap:6px"><select id="mSel_${g.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
+          <button class="btn ghost small" onclick="grpAdd('${g.id}')">+ membro</button></div>
+        ${g.members.map(m=>`<div class="row small" style="justify-content:space-between;margin-top:4px"><span>${esc(m.email)}</span>
+          <button class="btn-ico btn ghost" onclick="grpRm('${g.id}','${m.user_id}')">${ICON.x}</button></div>`).join('')}
+      </div>`).join('')||'<div class="small mut">Nessun gruppo. Creane uno.</div>'}
+    </div>
+    <div class="card pad"><h2 style="margin-bottom:10px">Routing eventi → gruppo</h2>
+      ${ETYPES.map(e=>`<div class="row" style="justify-content:space-between;margin-top:8px">
+        <span class="small">${esc(e)}</span>
+        <select class="small" onchange="routeSet('${e}',this.value)">
+          <option value="">— nessuno —</option>
+          ${G.groups.map(g=>`<option value="${g.id}" ${g.id===routeOf(e)?'selected':''}>${esc(g.name)}</option>`).join('')}
+        </select></div>`).join('')}
+      <div class="small mut" style="margin-top:12px">Il routing indica quale gruppo è responsabile per tipo di allarme (base per l'escalation).</div>
+    </div>
+  </div>`;
+}
+async function grpNew(){ const n=prompt('Nome gruppo?'); if(!n)return;
+  try{await api('/groups',{method:'POST',body:JSON.stringify({name:n})}); toast('Gruppo creato','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function grpDel(id){ if(!confirm('Eliminare il gruppo?'))return;
+  try{await api('/groups/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function grpAdd(gid){ const uid=$('#mSel_'+gid).value; if(!uid)return;
+  try{await api('/groups/'+gid+'/members',{method:'POST',body:JSON.stringify({user_id:uid,position:1})}); toast('Membro aggiunto','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function grpRm(gid,uid){ try{await api('/groups/'+gid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function routeSet(etype,gid){ try{await api('/routing',{method:'POST',body:JSON.stringify({etype,group_id:gid||null})}); toast('Routing aggiornato','ok');}catch(e){toast(e.message,'bad');} }
+
+// ---------------- Anagrafiche: utenti e sedi ----------------
+async function vAnagrafiche(v){
+  const [users,sites,teams,assets]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),api('/teams').catch(()=>[]),api('/assets').catch(()=>[])]);
+  v._users=users;
+  v.innerHTML=`<div class="page-h"><div><h1>Utenti e sedi</h1><div class="mut">anagrafiche del tenant</div></div></div>
+  <div class="grid g2">
+    <div class="card"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
+      <table class="table"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
+      <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip">${esc(u.role)}</span></td>
+        <td style="text-align:right"><button class="btn ghost small" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'>gestisci</button></td></tr>`).join('')}</tbody></table></div>
+    <div class="card"><div class="card-h"><h2>Sedi (${sites.length})</h2><a onclick="siteNew()">+ aggiungi</a></div>
+      <table class="table"><thead><tr><th>Nome</th><th></th></tr></thead>
+      <tbody>${sites.map(s=>`<tr><td>${esc(s.name)}</td>
+        <td style="text-align:right"><button class="btn ghost small" onclick="siteRen('${s.id}','${esc(s.name)}')">rinomina</button>
+        <button class="btn-ico btn ghost" onclick="siteDel('${s.id}')">${ICON.x}</button></td></tr>`).join('')
+        ||'<tr><td colspan="2" class="empty">nessuna sede</td></tr>'}</tbody></table></div>
+  </div>
+  <div class="card pad" style="margin-top:16px"><div class="spread"><h2>Squadre (${teams.length})</h2><a onclick="teamNew()">+ nuova squadra</a></div>
+    <div class="grid g2" style="margin-top:10px">${teams.map(t=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px">
+      <div class="spread"><b>${esc(t.name)}</b><button class="btn-ico btn ghost" onclick="teamDel('${t.id}')">${ICON.x}</button></div>
+      <div class="small mut" style="margin:6px 0">${t.members.map(m=>`<span class="tag">${esc(m.email)} <a onclick="teamRm('${t.id}','${m.user_id}')">✕</a></span>`).join(' ')||'nessun membro'}</div>
+      <div class="row" style="gap:6px"><select id="tm_${t.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
+        <button class="btn ghost small" onclick="teamAdd('${t.id}')">+ membro</button></div></div>`).join('')
+      ||'<div class="small mut">Nessuna squadra.</div>'}</div></div>
+  <div class="card" style="margin-top:16px"><div class="card-h"><h2>Asset / mezzi (${assets.length})</h2><a onclick="assetNew()">+ nuovo asset</a></div>
+    <table class="table"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th></th></tr></thead>
+    <tbody>${assets.map(a=>`<tr><td>${esc(a.name)}</td><td><span class="chip">${esc(a.kind)}</span></td><td class="small mut">${esc(a.identifier||'—')}</td>
+      <td style="text-align:right"><button class="btn-ico btn ghost" onclick="assetDel('${a.id}')">${ICON.x}</button></td></tr>`).join('')
+      ||'<tr><td colspan="4" class="empty">nessun asset</td></tr>'}</tbody></table></div>`;
+}
+async function assetNew(){ const n=prompt('Nome asset/mezzo?'); if(!n)return;
+  const k=prompt('Tipo (veicolo/attrezzatura/varco/altro)?','veicolo')||'attrezzatura';
+  const id=prompt('Matricola/targa (opz.)?')||null;
+  try{await api('/assets',{method:'POST',body:JSON.stringify({name:n,kind:k,identifier:id})}); toast('Asset creato','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function assetDel(id){ if(!confirm('Eliminare asset?'))return; try{await api('/assets/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function teamNew(){ const n=prompt('Nome squadra?'); if(!n)return; try{await api('/teams',{method:'POST',body:JSON.stringify({name:n})}); toast('Squadra creata','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function teamDel(id){ if(!confirm('Eliminare squadra?'))return; try{await api('/teams/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function teamAdd(tid){ const uid=$('#tm_'+tid).value; if(!uid)return; try{await api('/teams/'+tid+'/members',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Aggiunto','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function teamRm(tid,uid){ try{await api('/teams/'+tid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
+const ROLES=['tenant_admin','operatore','pianificatore','responsabile','lavoratore','reperibile','auditor'];
+function userNew(){
+  drawer('Invita utente',`<div class="col" style="gap:10px">
+    <label class="small mut">Email<input id="uEm"></label>
+    <label class="small mut">Ruolo<select id="uRo">${ROLES.map(r=>`<option>${r}</option>`).join('')}</select></label>
+    <label class="small mut">Password iniziale<input id="uPw" value="cambiami1"></label>
+    <button class="btn" onclick="userCreate()">Crea</button><div class="cfg-msg small"></div></div>`);
+}
+async function userCreate(){
+  const b={email:$('#uEm').value.trim(),role:$('#uRo').value,password:$('#uPw').value};
+  const m=$('.cfg-msg');
+  try{await api('/users',{method:'POST',body:JSON.stringify(b)}); toast('Utente creato','ok'); closeDrawer(); route();}
+  catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
+}
+async function userEdit(u){
+  const scoped=['operatore','lavoratore','reperibile'].includes(u.role);
+  let sites=[], cur=[];
+  if(scoped){ try{ sites=await api('/sites'); cur=(await api('/users/'+u.id+'/sites')).site_ids||[]; }catch(e){} }
+  const siteBox = scoped ? `<div class="small mut" style="margin-top:6px">Sedi visibili (vuoto = tutte)</div>
+    <div style="max-height:160px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:4px">
+    ${sites.map(s=>`<label class="row small" style="gap:8px"><input type="checkbox" class="uSite" value="${s.id}" ${cur.includes(s.id)?'checked':''}> ${esc(s.name)}</label>`).join('')||'<span class="mut">nessuna sede</span>'}</div>` : '';
+  drawer('Utente · '+esc(u.email),`<div class="col" style="gap:10px">
+    <label class="small mut">Ruolo<select id="uRo2">${ROLES.map(r=>`<option ${r===u.role?'selected':''}>${r}</option>`).join('')}</select></label>
+    <label class="small mut">Nuova password (opzionale)<input id="uPw2" placeholder="lascia vuoto per non cambiare"></label>
+    ${siteBox}
+    <div class="row" style="gap:8px"><button class="btn grow" onclick="userSave('${u.id}',${scoped})">Salva</button>
+      <button class="btn ghost" onclick="userDel('${u.id}')">Elimina</button></div><div class="cfg-msg small"></div></div>`);
+}
+async function userSave(id,scoped){
+  const b={role:$('#uRo2').value}; const p=$('#uPw2').value; if(p)b.password=p;
+  const m=$('.cfg-msg');
+  try{await api('/users/'+id,{method:'POST',body:JSON.stringify(b)});
+    if(scoped){ const ids=[...document.querySelectorAll('.uSite:checked')].map(c=>c.value);
+      await api('/users/'+id+'/sites',{method:'POST',body:JSON.stringify({site_ids:ids})}); }
+    toast('Salvato','ok'); closeDrawer(); route();}
+  catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
+}
+async function userDel(id){ if(!confirm('Eliminare utente?'))return;
+  try{await api('/users/'+id,{method:'DELETE'}); toast('Eliminato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
+async function siteNew(){ const n=prompt('Nome sede?'); if(!n)return;
+  try{await api('/sites',{method:'POST',body:JSON.stringify({name:n})}); toast('Sede creata','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function siteRen(id,cur){ const n=prompt('Nuovo nome?',cur); if(!n||n===cur)return;
+  try{await api('/sites/'+id,{method:'POST',body:JSON.stringify({name:n})}); toast('Rinominata','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function siteDel(id){ if(!confirm('Eliminare sede?'))return;
+  try{await api('/sites/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
+
+// ---------------- Turni (pianificazione) ----------------
+function dtLocal(iso){ const d=new Date(iso); return d.toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }
+function toISO(localVal){ if(!localVal)return null; const d=new Date(localVal); return isNaN(d)?null:d.toISOString(); }
+async function vTurni(v){
+  const planner=can(['pianificatore','tenant_admin']);
+  const [P,OC,users,sites]=await Promise.all([
+    api('/shift-plans').catch(()=>[]), api('/oncall').catch(()=>[]),
+    planner?api('/users').catch(()=>[]):Promise.resolve([]), planner?api('/sites').catch(()=>[]):Promise.resolve([])]);
+  v._users=users; v._sites=sites;
+  const stChip=s=>`<span class="chip ${s==='confermato'?'s-attivo':''}">${s}</span>`;
+  const planRows=P.map(p=>{
+    const mine=p.user_id===ME.user_id||ME.email===p.email;
+    const acts=[];
+    if(p.state==='pianificato'&&mine) acts.push(`<button class="btn ghost small" onclick="spAct('${p.id}','confirm')">conferma</button>`);
+    if(planner&&p.state!=='annullato') acts.push(`<button class="btn ghost small" onclick="spAct('${p.id}','cancel')">annulla</button>`);
+    if(planner) acts.push(`<button class="btn-ico btn ghost" onclick="spDel('${p.id}')">${ICON.x}</button>`);
+    return `<tr><td>${esc(p.email)}</td><td>${esc(p.site||'—')}</td>
+      <td class="small">${dtLocal(p.starts_at)} → ${dtLocal(p.ends_at)}</td><td>${stChip(p.state)}</td>
+      <td style="text-align:right">${acts.join(' ')}</td></tr>`;}).join('')
+    ||`<tr><td colspan="5" class="empty">Nessun turno pianificato</td></tr>`;
+  const createBtn=planner?`<button class="btn" onclick="spNew()">+ Pianifica turno</button>`:'';
+  const oncallCard=`<div class="card" style="margin-top:16px"><div class="card-h"><h2>Reperibilità</h2>
+    ${planner?`<a onclick="ocNew()">+ aggiungi</a>`:''}</div>
+    <table class="table"><thead><tr><th>Utente</th><th>Dalle</th><th>Alle</th><th>Nota</th><th></th></tr></thead>
+    <tbody>${OC.map(o=>`<tr><td>${esc(o.email)}</td><td class="small">${dtLocal(o.starts_at)}</td><td class="small">${dtLocal(o.ends_at)}</td>
+      <td class="small mut">${esc(o.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="ocDel('${o.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
+      ||`<tr><td colspan="5" class="empty">Nessuna reperibilità</td></tr>`}</tbody></table></div>`;
+  v.innerHTML=`<div class="page-h"><div><h1>Turni</h1><div class="mut">${P.length} turni pianificati${planner?'':' (i tuoi)'}</div></div>${createBtn}</div>
+  <div class="card"><table class="table"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Quando</th><th>Stato</th><th></th></tr></thead>
+    <tbody>${planRows}</tbody></table></div>${oncallCard}`;
+}
+function spNew(){
+  const v=$('#view'); const users=v._users||[], sites=v._sites||[];
+  const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
+  drawer('Pianifica turno',`<div class="col" style="gap:10px">
+    <label class="small mut">Lavoratore<select id="spU">${workers.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select></label>
+    <label class="small mut">Sede<select id="spS"><option value="">—</option>${sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
+    <label class="small mut">Inizio<input id="spA" type="datetime-local"></label>
+    <label class="small mut">Fine<input id="spZ" type="datetime-local"></label>
+    <label class="small mut">Nota<input id="spN"></label>
+    <button class="btn" onclick="spSave()">Pianifica</button><div class="cfg-msg small"></div></div>`);
+}
+async function spSave(){
+  const m=$('.cfg-msg');
+  const b={user_id:$('#spU').value,site_id:$('#spS').value||null,starts_at:toISO($('#spA').value),ends_at:toISO($('#spZ').value),note:$('#spN').value||null};
+  if(!b.user_id||!b.starts_at||!b.ends_at){m.textContent='compila lavoratore, inizio e fine';m.style.color='var(--bad)';return;}
+  try{await api('/shift-plans',{method:'POST',body:JSON.stringify(b)}); toast('Turno pianificato','ok'); closeDrawer(); route();}
+  catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
+}
+async function spAct(id,action){ try{await api('/shift-plans/'+id,{method:'POST',body:JSON.stringify({action})}); toast(action==='confirm'?'Turno confermato':'Turno annullato','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function spDel(id){ if(!confirm('Eliminare il turno?'))return; try{await api('/shift-plans/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
+function ocNew(){
+  const v=$('#view'); const users=v._users||[];
+  drawer('Aggiungi reperibilità',`<div class="col" style="gap:10px">
+    <label class="small mut">Utente<select id="ocU">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select></label>
+    <label class="small mut">Dalle<input id="ocA" type="datetime-local"></label>
+    <label class="small mut">Alle<input id="ocZ" type="datetime-local"></label>
+    <label class="small mut">Nota<input id="ocN"></label>
+    <button class="btn" onclick="ocSave()">Salva</button><div class="cfg-msg small"></div></div>`);
+}
+async function ocSave(){
+  const m=$('.cfg-msg');
+  const b={user_id:$('#ocU').value,starts_at:toISO($('#ocA').value),ends_at:toISO($('#ocZ').value),note:$('#ocN').value||null};
+  if(!b.user_id||!b.starts_at||!b.ends_at){m.textContent='compila utente, dalle e alle';m.style.color='var(--bad)';return;}
+  try{await api('/oncall',{method:'POST',body:JSON.stringify(b)}); toast('Reperibilità salvata','ok'); closeDrawer(); route();}
+  catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
+}
+async function ocDel(id){ if(!confirm('Eliminare?'))return; try{await api('/oncall/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
 
 // ---------------- assistant ----------------
 function toggleAI(){ $('#ai').classList.toggle('hide'); if(!$('#ai').classList.contains('hide')) $('#aiQ').focus(); }

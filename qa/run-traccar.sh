@@ -11,6 +11,7 @@ TOKEN="${INGEST_TOKEN:-acme-ingest-token}"
 UI_PORT="${TRACCAR_UI_PORT:-8083}"
 OSMAND_PORT="${TRACCAR_OSMAND_PORT:-5055}"
 FWD="http://host.docker.internal:8080/api/ingress/traccar?token=${TOKEN}"
+POS_FWD="http://host.docker.internal:8080/api/ingress/traccar/position?token=${TOKEN}"
 
 docker network create ywnet >/dev/null 2>&1 || true
 docker rm -f traccar >/dev/null 2>&1 || true
@@ -20,6 +21,8 @@ docker run -d --name traccar --network ywnet \
   -p ${UI_PORT}:8082 -p ${OSMAND_PORT}:5055 -p ${OSMAND_PORT}:5055/udp \
   -e CONFIG_USE_ENVIRONMENT_VARIABLES=true \
   -e EVENT_FORWARD_URL="$FWD" \
+  -e FORWARD_TYPE=json \
+  -e FORWARD_URL="$POS_FWD" \
   --add-host host.docker.internal:host-gateway \
   "$IMAGE" >/dev/null
 

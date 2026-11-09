@@ -195,6 +195,8 @@ Ogni agente riporta: commit, file posseduti, comando di test, output e profilo d
 - [Traccar: inoltro eventi e posizioni](https://www.traccar.org/forward/)
 - [GoAlert: repository e documentazione](https://github.com/target/goalert)
 - [ThingsBoard: cambio di licenza](https://thingsboard.io/blog/one-thingsboard-source-available/) e [IoT Gateway](https://github.com/thingsboard/thingsboard-gateway)
+
+
 - [Blues: firmware e limiti del prototipo](https://dev.blues.io/example-apps/accelerators/lone-worker-panic-and-fall-detection-beacon/)
 - [OpenDuty: contratto da verificare](https://github.com/openduty/openduty)
 - [HSE: prove dei sistemi e delle procedure per lavoratori isolati](https://www.hse.gov.uk/lone-working/employer/training-supervision-monitoring.htm), come riferimento operativo, non come valutazione normativa italiana.

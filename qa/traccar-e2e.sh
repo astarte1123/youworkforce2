@@ -50,10 +50,10 @@ echo "== 3) timeline shows notify from source=traccar and GoAlert ack =="
 TL=""
 for i in $(seq 1 6); do
   TL=$(curl -s -b "$J" -H 'x-tenant-slug: acme' "$BASE/api/incidents/$IID/timeline")
-  echo "$TL" | grep -q goalert_ack && break; sleep 2
+  echo "$TL" | grep -q goalert_sent && break; sleep 2
 done
 echo "$TL" | grep -q '"source": *"traccar"' || echo "$TL" | grep -q '"source":"traccar"' && ok "notify_requested carries source=traccar" || no "no source=traccar in timeline"
-echo "$TL" | grep -q goalert_ack && ok "goalert_ack present" || no "no goalert_ack"
+echo "$TL" | grep -q goalert_sent && ok "goalert_sent present" || no "no goalert_sent"
 if echo "$TL" | grep -q 'UPSTREAM REALE'; then ok "GoAlert step profile: UPSTREAM REALE"; else
   echo "INFO  GoAlert step is SIMULATO (GOALERT_BASE not set) — set it for UPSTREAM REALE"; fi
 echo "$TL" | grep -q "\"dedup\": *\"$NEWCORR\"" || echo "$TL" | grep -q "\"dedup\":\"$NEWCORR\"" && ok "GoAlert dedup carries the Traccar correlation" || no "dedup missing correlation"

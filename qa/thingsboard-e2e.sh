@@ -48,10 +48,10 @@ echo "== 2) timeline: notify from source=thingsboard + GoAlert ack =="
 TL=""
 for i in $(seq 1 6); do
   TL=$(curl -s -b "$J" -H 'x-tenant-slug: acme' "$BASE/api/incidents/$IID/timeline")
-  echo "$TL" | grep -q goalert_ack && break; sleep 2
+  echo "$TL" | grep -q goalert_sent && break; sleep 2
 done
 echo "$TL" | grep -q '"thingsboard"' && ok "notify carries source=thingsboard" || no "no source=thingsboard"
-echo "$TL" | grep -q goalert_ack && ok "goalert_ack present" || no "no goalert_ack"
+echo "$TL" | grep -q goalert_sent && ok "goalert_sent present" || no "no goalert_sent"
 if echo "$TL" | grep -q 'UPSTREAM REALE'; then ok "GoAlert step profile: UPSTREAM REALE";
 else echo "INFO  GoAlert step is SIMULATO (set GOALERT_BASE for UPSTREAM REALE)"; fi
 
