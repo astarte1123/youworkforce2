@@ -61,6 +61,21 @@ FP_G=$(sql "SELECT floorplan_id FROM app.geofences WHERE id='$GID'")
 api "$BASE/api/geofences" | python -c "import sys,json;d=json.load(sys.stdin);print('ok' if any(g.get('floorplan_id')=='$FID' for g in d) else 'no')" | grep -q ok \
   && ok "lista geofence espone floorplan_id" || no "floorplan_id non esposto" "-"
 
+# rinomina piantina
+api -H 'content-type: application/json' -X POST "$BASE/api/floorplans/$FID" -d '{"name":"E2E Rinominata"}' >/dev/null
+[ "$(sql "SELECT name FROM app.floorplans WHERE id='$FID'")" = "E2E Rinominata" ] && ok "rinomina piantina" || no "rinomina fallita" "-"
+
+# posizionamento di un beacon GIA' registrato (register -> place), non invenzione
+api -H 'content-type: application/json' -X POST "$BASE/api/beacons" -d '{"beacon_uid":"e2e-reg-1","zone_name":"E2E Reg"}' >/dev/null
+RBID=$(sql "SELECT id FROM app.beacons WHERE tenant_id=$TIDQ AND beacon_uid='e2e-reg-1'")
+api -H 'content-type: application/json' -X POST "$BASE/api/beacons/$RBID/place" -d "{\"floorplan_id\":\"$FID\",\"x\":42,\"y\":24}" >/dev/null
+PB=$(sql "SELECT floorplan_id||'|'||x||'|'||y FROM app.beacons WHERE id='$RBID'")
+echo "$PB" | grep -qF "$FID|42|24" && ok "beacon registrato posizionato via /place" || no "place fallito" "$PB"
+# unplace
+api -H 'content-type: application/json' -X POST "$BASE/api/beacons/$RBID/place" -d '{"floorplan_id":null,"x":null,"y":null}' >/dev/null
+[ "$(sql "SELECT coalesce(floorplan_id::text,'NULL') FROM app.beacons WHERE id='$RBID'")" = "NULL" ] && ok "beacon rimosso dalla piantina (resta registrato)" || no "unplace fallito" "-"
+sql "DELETE FROM app.beacons WHERE id='$RBID'" >/dev/null
+
 # delete piantina -> beacon resta ma perde la posizione (ON DELETE SET NULL)
 api -H 'content-type: application/json' -X POST "$BASE/api/beacons" -d "{\"beacon_uid\":\"e2e-fp-1\",\"zone_name\":\"E2E Zona\",\"floorplan_id\":\"$FID\",\"x\":5,\"y\":5}" >/dev/null
 api -X DELETE "$BASE/api/floorplans/$FID" >/dev/null

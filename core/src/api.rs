@@ -2543,6 +2543,21 @@ pub async fn get_floorplan_image(State(st): State<AppState>, h: HeaderMap, Path(
     let img: Vec<u8> = row.get("image"); let ct: String = row.get("content_type");
     Ok(([(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, "private, max-age=3600".to_string())], img).into_response())
 }
+#[derive(Deserialize)]
+pub struct FloorplanPatch { pub name: Option<String>, pub site_id: Option<Uuid> }
+/// Rinomina / riassegna sede di una piantina (l'immagine resta). tenant_admin.
+pub async fn update_floorplan(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<FloorplanPatch>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
+    let tid = s.tenant_id.unwrap();
+    let name = b.name.map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.floorplans SET name=COALESCE($2,name), site_id=$3 WHERE id=$1")
+        .bind(id).bind(name).bind(b.site_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n == 0 { return Err(err(StatusCode::NOT_FOUND, "inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
 pub async fn delete_floorplan(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
     if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
@@ -2552,6 +2567,21 @@ pub async fn delete_floorplan(State(st): State<AppState>, h: HeaderMap, Path(id)
     tx.commit().await.map_err(ise)?;
     if n == 0 { return Err(err(StatusCode::NOT_FOUND, "inesistente")); }
     audit(&st, tid, &s.email, "floorplan_delete", json!({"id":id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)]
+pub struct BeaconPlace { pub floorplan_id: Option<Uuid>, pub x: Option<f64>, pub y: Option<f64> }
+/// Posiziona un beacon GIA' REGISTRATO su una piantina (o lo rimuove con floorplan_id null).
+/// Non crea beacon: aggiorna solo la posizione di uno esistente del tenant. tenant_admin.
+pub async fn place_beacon(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<BeaconPlace>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.beacons SET floorplan_id=$2, x=$3, y=$4 WHERE id=$1")
+        .bind(id).bind(b.floorplan_id).bind(b.x).bind(b.y).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n == 0 { return Err(err(StatusCode::NOT_FOUND, "beacon inesistente")); }
     Ok(Json(json!({"ok":true})))
 }
 
