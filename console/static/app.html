@@ -9,8 +9,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js" referrerpolicy="no-referrer"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" referrerpolicy="no-referrer"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js" referrerpolicy="no-referrer"></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet-geoman/2.14.2/leaflet-geoman.min.css" referrerpolicy="no-referrer">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet-geoman/2.14.2/leaflet-geoman.min.js" referrerpolicy="no-referrer"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@geoman-io/leaflet-geoman-free@2.14.2/dist/leaflet-geoman.css" referrerpolicy="no-referrer">
+<script src="https://cdn.jsdelivr.net/npm/@geoman-io/leaflet-geoman-free@2.14.2/dist/leaflet-geoman.min.js" referrerpolicy="no-referrer"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" referrerpolicy="no-referrer"></script>
 </head><body>
 <div id="root"></div>
@@ -444,12 +444,21 @@ function initMap(){
 function setMapMode(m){ MAPMODE=m; route(); }
 // ---- Modalità ALLARMI ----
 function alarmIcon(a){
-  const emo = a.etype==='sos'?'🆘':a.etype==='man_down'?'🧍':(a.indoor?'🏭':'⚠️');
-  const bg = (a.etype==='sos'||a.etype==='man_down')?'#dc2626':'#ea580c';
-  const ring = a.indoor?'#1e3a8a':'#111';
+  const sev=(a.etype==='sos'||a.etype==='man_down');
+  const emo = a.etype==='sos'?'🆘':a.etype==='man_down'?'🧍':'⚠️';
+  const bg = sev?'#dc2626':'#ea580c';
+  if(a.indoor){
+    // pin INDOOR: badge quadrato con bordo blu (chiaramente diverso dall'outdoor)
+    return L.divIcon({className:'', iconSize:[30,30], iconAnchor:[15,15],
+      html:`<div style="background:${bg};border:3px solid #1e3a8a;border-radius:6px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 1px 5px rgba(0,0,0,.45)"><span style="filter:grayscale(0)">🏭</span></div>`});
+  }
+  // pin OUTDOOR: cerchio bianco con l'emoji dell'allarme
   return L.divIcon({className:'', iconSize:[28,28], iconAnchor:[14,14],
-    html:`<div style="background:${bg};border:3px solid ${ring};border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 1px 5px rgba(0,0,0,.45)">${emo}</div>`});
+    html:`<div style="background:${bg};border:3px solid #fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 1px 5px rgba(0,0,0,.45)">${emo}</div>`});
 }
+const ALARM_LEGEND=`<div class="small mut" style="display:flex;gap:14px;align-items:center;margin:4px 0 8px">
+  <span style="display:inline-flex;align-items:center;gap:5px"><span style="width:16px;height:16px;background:#dc2626;border:2px solid #fff;border-radius:50%;display:inline-block"></span> outdoor (GPS)</span>
+  <span style="display:inline-flex;align-items:center;gap:5px"><span style="width:16px;height:16px;background:#dc2626;border:2px solid #1e3a8a;border-radius:4px;display:inline-block"></span> indoor (beacon/zona)</span></div>`;
 function alarmPopup(a){
   const where=a.indoor
     ? '🏭 <b>indoor</b> · '+esc(a.zone||'zona non mappata')+(a.beacon_uid?(' <span style="color:#888">['+esc(a.beacon_uid)+']</span>'):'')
@@ -488,7 +497,7 @@ async function loadAlarmsOnMap(){
       <div class="spread"><b class="small">${esc(a.label)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString('it-IT')}</span></div>
       <div class="small">${a.indoor?'🏭 indoor · '+esc(a.zone||'zona non mappata'):'📍 outdoor'} · ${a.state==='chiuso'?'🟢 chiuso':'🔴 aperto'}</div>
       <div class="small mut">${a.device?('📟 '+esc(a.device)):''}${a.person?(' · 👤 '+esc(a.person)):''}</div></div>`;
-    side.innerHTML=`<h2 style="margin-bottom:8px">Allarmi (${al.length})</h2>
+    side.innerHTML=`<h2 style="margin-bottom:4px">Allarmi (${al.length})</h2>${ALARM_LEGEND}
       ${noGeo.length?`<div class="small" style="color:var(--bad);margin:6px 0">⚠ ${noGeo.length} indoor senza posizione (beacon non mappato) — registra la zona in “⚙ Zone indoor”:</div>${noGeo.map(a=>`<div style="border:1px dashed var(--bad);border-radius:8px;padding:8px;margin-bottom:6px"><div class="spread"><b class="small">${esc(a.label)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString('it-IT')}</span></div><div class="small">beacon <span class="mono">${esc(a.beacon_uid||'—')}</span> · ${a.device?esc(a.device):''}</div></div>`).join('')}<hr style="border:none;border-top:1px solid var(--line);margin:8px 0">`:''}
       ${al.filter(a=>a.lat!=null).map(row).join('')||(noGeo.length?'':'<div class="small mut">Nessun allarme nel periodo.</div>')}`;
   }catch(err){ side.innerHTML='<div class="small" style="color:var(--bad)">'+esc(err.message)+'</div>'; }
@@ -510,7 +519,9 @@ async function renderDevices(admin){
     MARK[d.id]=m; CLUSTER.addLayer(m); pts.push([d.last_lat,d.last_lon]); });
   MAP.addLayer(CLUSTER);
   if(pts.length) MAP.fitBounds(pts,{padding:[40,40],maxZoom:15});
-  $('#mapSide').innerHTML=`<h2 style="margin-bottom:8px">Presenza</h2>${PR.length?PR.map(p=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+  $('#mapSide').innerHTML=`<h2 style="margin-bottom:4px">Presenza</h2>
+    <div class="small mut" style="margin-bottom:8px">Qui i dispositivi con posizione GPS (outdoor). Quelli al chiuso compaiono nella vista <b>🏭 Indoor</b> sulle piantine.</div>
+    ${PR.length?PR.map(p=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
     <b class="small">${esc(p.device||p.external_id)}</b><div class="small mut">${esc(p.geofence)} · da ${new Date(p.since).toLocaleTimeString('it-IT')}</div>
     ${p.user?`<div class="small mut">👤 ${esc(p.user)}</div>`:''}</div>`).join(''):'<div class="small mut">Nessun dispositivo dentro una geofence.</div>'}`;
   if(admin) setupGeofenceTools(MAP,{geo:true});
@@ -519,6 +530,7 @@ async function renderDevices(admin){
 // onSave opzionale: se assente, salva una geofence outdoor via /geofences.
 function setupGeofenceTools(map, opts){
   opts=opts||{};
+  if(!map.pm){ toast('Strumenti di disegno non caricati (serve connessione)','bad'); return; }
   if(map.pm){
     map.pm.addControls({position:'topleft', drawCircle:true, drawRectangle:true, drawPolygon:true,
       drawMarker:false, drawPolyline:false, drawCircleMarker:false, drawText:false,
@@ -569,6 +581,8 @@ function endFreehand(){ if(!FH||!MAP)return; MAP.off('mousedown',FH.onDown); MAP
 let FPMAP=null, FPSEL=null;
 function beaconIcon(){ return L.divIcon({className:'',iconSize:[22,22],iconAnchor:[11,11],
   html:`<div style="background:#2563eb;border:2px solid #fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.4)">📡</div>`}); }
+function deviceIndoorIcon(){ return L.divIcon({className:'',iconSize:[24,24],iconAnchor:[12,12],
+  html:`<div style="background:#0f766e;border:2px solid #fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 4px rgba(0,0,0,.4)">📟</div>`}); }
 async function fpImageUrl(id){ const r=await fetch('/api/floorplans/'+id+'/image',{headers:{'x-tenant-slug':store.slug},credentials:'include'}); if(!r.ok) throw new Error('immagine piantina non disponibile'); const b=await r.blob(); return URL.createObjectURL(b); }
 async function renderIndoor(admin){
   $('#mapSub').textContent='piantine indoor · beacon · geofence';
@@ -614,9 +628,30 @@ async function fpOpen(){
       if(!(B||[]).length) sel.innerHTML='<option value="">nessun beacon registrato</option>'; }
     const gfs=(GFs||[]).filter(g=>g.floorplan_id===id); const gl=L.layerGroup().addTo(FPMAP);
     gfs.forEach(g=>drawIndoorGeofence(g,gl));
+    // allarmi INDOOR avvenuti su questa piantina (match beacon posizionato), ultimi 7 giorni
+    const placedByUid={}; beacons.forEach(b=> placedByUid[b.beacon_uid]={x:b.x,y:b.y});
+    let alarmsHere=[];
+    try{
+      const from=new Date(Date.now()-7*864e5).toISOString(), to=new Date().toISOString();
+      const am=await api('/alarms/map?from='+from+'&to='+to);
+      alarmsHere=(am.alarms||[]).filter(a=>a.indoor && a.beacon_uid && placedByUid[a.beacon_uid]);
+      const al=L.layerGroup().addTo(FPMAP);
+      alarmsHere.forEach(a=>{ const p=placedByUid[a.beacon_uid];
+        L.marker([p.y,p.x],{icon:alarmIcon(a),zIndexOffset:1000}).bindPopup(alarmPopup(a)).addTo(al); });
+    }catch(e){}
+    // dispositivi la cui ultima posizione indoor (24h) e' su questa piantina
+    let devHere=[];
+    try{
+      devHere=await api('/floorplans/'+id+'/devices');
+      const dl=L.layerGroup().addTo(FPMAP);
+      (devHere||[]).forEach(d=>{ if(d.x==null)return;
+        L.marker([d.y+ (0), d.x],{icon:deviceIndoorIcon(),zIndexOffset:500})
+          .bindPopup(`<b>📟 ${esc(d.device||'dispositivo')}</b><br>${d.person?('👤 '+esc(d.person)+'<br>'):''}🏭 ${esc(d.zone)}<br><span style="color:#666">ultima posizione indoor: ${new Date(d.at).toLocaleString('it-IT')}</span>`).addTo(dl); });
+    }catch(e){}
     $('#mapSide').innerHTML=`<h2 style="margin-bottom:8px">${esc(f.name)}</h2>
-      <div class="small mut">${beacons.length} beacon · ${gfs.length} geofence · ${w}×${h}px</div>
-      ${window._fpAdmin?'<div class="small mut" style="margin-top:10px">• <b>📍 Posiziona beacon</b>: poi clicca sulla piantina.<br>• Disegna geofence con gli strumenti ⬡ in alto a sinistra (cerchio, rettangolo, poligono).</div>':''}`;
+      <div class="small mut">${beacons.length} beacon · ${gfs.length} geofence · ${(devHere||[]).length} dispositivi indoor · ${w}×${h}px</div>
+      ${alarmsHere.length?`<div class="small" style="color:var(--bad);margin-top:8px">🚨 ${alarmsHere.length} allarme/i su questa piantina (ultimi 7gg)</div>`:'<div class="small mut" style="margin-top:8px">Nessun allarme indoor su questa piantina negli ultimi 7gg.</div>'}
+      ${window._fpAdmin?'<div class="small mut" style="margin-top:10px">• <b>📍 Posiziona beacon</b>: scegli un beacon registrato, poi clicca sulla piantina.<br>• Disegna geofence con gli strumenti ⬡ in alto a sinistra (cerchio, rettangolo, poligono).</div>':''}`;
     if(window._fpAdmin){
       setupGeofenceTools(FPMAP,{xy:true, onSave:(name,kind,geom)=> saveIndoorGeofence(name,kind,geom,id)});
       FPMAP.on('click',e=>{ if(window._bkPlace) fpPlaceAt(e.latlng, id); });

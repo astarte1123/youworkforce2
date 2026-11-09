@@ -2569,6 +2569,36 @@ pub async fn delete_floorplan(State(st): State<AppState>, h: HeaderMap, Path(id)
     audit(&st, tid, &s.email, "floorplan_delete", json!({"id":id})).await;
     Ok(Json(json!({"ok":true})))
 }
+/// Dispositivi la cui ultima posizione INDOOR (24h) cade su un beacon di questa piantina.
+/// Serve a mostrare sulla mappa indoor i device che si trovano al chiuso (senza GPS).
+pub async fn floorplan_devices(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; report_role(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let acl = allowed_sites(&st, &s).await;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query(
+        "SELECT DISTINCT ON (e.device_id) e.device_id, e.etype, e.origin_ts, e.site_id,
+                b.x, b.y, b.zone_name, d.label AS device_label, d.external_id, u.email AS person
+         FROM app.events e
+         JOIN app.beacons b ON b.beacon_uid=e.beacon_uid AND b.floorplan_id=$1 AND b.x IS NOT NULL
+         JOIN app.devices d ON d.id=e.device_id
+         LEFT JOIN app.users u ON u.id=d.assigned_user
+         WHERE e.indoor=true AND e.device_id IS NOT NULL AND e.origin_ts > now() - interval '24 hours'
+         ORDER BY e.device_id, e.origin_ts DESC")
+        .bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter()
+        .filter(|r| site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok()))
+        .map(|r| json!({
+            "device": r.try_get::<String,_>("device_label").ok().or_else(|| r.try_get::<String,_>("external_id").ok()),
+            "person": r.try_get::<String,_>("person").ok(),
+            "zone": r.get::<String,_>("zone_name"),
+            "x": r.try_get::<f64,_>("x").ok(), "y": r.try_get::<f64,_>("y").ok(),
+            "at": r.get::<chrono::DateTime<chrono::Utc>,_>("origin_ts"),
+            "last_etype": r.get::<String,_>("etype"),
+        })).collect();
+    Ok(Json(json!(out)))
+}
 #[derive(Deserialize)]
 pub struct BeaconPlace { pub floorplan_id: Option<Uuid>, pub x: Option<f64>, pub y: Option<f64> }
 /// Posiziona un beacon GIA' REGISTRATO su una piantina (o lo rimuove con floorplan_id null).

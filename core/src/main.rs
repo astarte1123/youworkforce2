@@ -183,6 +183,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/floorplans", get(api::list_floorplans).post(api::create_floorplan))
         .route("/api/floorplans/:id", post(api::update_floorplan).delete(api::delete_floorplan))
         .route("/api/floorplans/:id/image", get(api::get_floorplan_image))
+        .route("/api/floorplans/:id/devices", get(api::floorplan_devices))
         .route("/api/beacons/:id/place", post(api::place_beacon))
         .route("/api/ingress/thingsboard", post(api::ingest_thingsboard))
         .route("/api/incidents", get(api::list_incidents))
