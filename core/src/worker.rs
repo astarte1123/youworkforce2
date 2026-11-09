@@ -348,13 +348,36 @@ async fn heartbeats(st: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+// Backoff e policy di ritentativo per l'outbox (#6). Gli invii di SICUREZZA (goalert_*)
+// non vengono MAI abbandonati: ritentano con backoff capato finche' non passano, cosi' un
+// outage di GoAlert non puo' far sparire un SOS. Solo gli invii non critici vanno in 'error'
+// dopo 6 tentativi. last_error rende visibile all'admin perche' sono bloccati.
+async fn requeue_outbox(st: &AppState, id: Uuid, tid: Uuid, kind: &str, attempts: i32, err: &str, incident_id: Option<Uuid>) -> anyhow::Result<()> {
+    let critical = kind == "goalert_notify" || kind == "goalert_close";
+    // backoff esponenziale: 5,10,20,40,80,160,300(cap) secondi
+    let shift = std::cmp::min((attempts.max(1) - 1) as u32, 6);
+    let backoff_s: i64 = std::cmp::min(300i64, 5i64 * (1i64 << shift));
+    if !critical && attempts >= 6 {
+        sqlx::query("UPDATE app.outbox SET state='error', last_error=$2 WHERE id=$1")
+            .bind(id).bind(err).execute(&st.owner_pool).await?;
+        return Ok(());
+    }
+    sqlx::query("UPDATE app.outbox SET state='pending', last_error=$2, next_attempt_at=now()+($3||' seconds')::interval WHERE id=$1")
+        .bind(id).bind(err).bind(backoff_s.to_string()).execute(&st.owner_pool).await?;
+    // allarme operativo UNA volta, al superamento della soglia, ma si continua a ritentare
+    if critical && attempts == 6 {
+        crate::api::publish_event(st, TenantEvent{tenant_id:tid, payload:json!({"type":"notify_failed","incident_id":incident_id,"reason":err})}).await;
+    }
+    Ok(())
+}
+
 async fn drain_outbox(st: &AppState) -> anyhow::Result<()> {
     // claim with a lease so a restart doesn't drop pending sends
     let rows = sqlx::query(
         "UPDATE app.outbox SET state='in_flight', attempts=attempts+1, claimed_until=now()+interval '30 seconds'
          WHERE id IN (
             SELECT id FROM app.outbox
-            WHERE state='pending' OR (state='in_flight' AND claimed_until < now())
+            WHERE (state='pending' AND next_attempt_at <= now()) OR (state='in_flight' AND claimed_until < now())
             ORDER BY created_at LIMIT 10 FOR UPDATE SKIP LOCKED)
          RETURNING id, tenant_id, kind, payload, attempts")
         .fetch_all(&st.owner_pool).await?;
@@ -380,17 +403,15 @@ async fn drain_outbox(st: &AppState) -> anyhow::Result<()> {
 
         // P1: chiusura alert (quando l'incidente è risolto da noi)
         if kind == "goalert_close" {
-            let (ok, _d) = goalert::close_notification(&st.http, &st.goalert_base, &key, summary, dedup).await;
+            let (ok, d) = goalert::close_notification(&st.http, &st.goalert_base, &key, summary, dedup).await;
             if ok {
                 sqlx::query("UPDATE app.outbox SET state='done' WHERE id=$1").bind(id).execute(&st.owner_pool).await?;
                 if let Some(iid) = incident_id {
                     sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'goalert_closed',$3)")
                         .bind(tid).bind(iid).bind(json!({"dedup":dedup})).execute(&st.owner_pool).await?;
                 }
-            } else if attempts >= 6 {
-                sqlx::query("UPDATE app.outbox SET state='error' WHERE id=$1").bind(id).execute(&st.owner_pool).await?;
             } else {
-                sqlx::query("UPDATE app.outbox SET state='pending' WHERE id=$1").bind(id).execute(&st.owner_pool).await?;
+                requeue_outbox(st, id, tid, &kind, attempts, &format!("goalert_close: {}", d), incident_id).await?;
             }
             continue;
         }
@@ -409,12 +430,8 @@ async fn drain_outbox(st: &AppState) -> anyhow::Result<()> {
                     .bind(tid).bind(iid).bind(detail).execute(&st.owner_pool).await?;
             }
             crate::api::publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"notify_sent","incident_id":incident_id})}).await;
-        } else if attempts >= 6 {
-            sqlx::query("UPDATE app.outbox SET state='error' WHERE id=$1").bind(id).execute(&st.owner_pool).await?;
-            // operational alarm for stuck events (contract line 48): surfaced as degraded on the bus
-            crate::api::publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"notify_failed","incident_id":incident_id})}).await;
         } else {
-            sqlx::query("UPDATE app.outbox SET state='pending' WHERE id=$1").bind(id).execute(&st.owner_pool).await?;
+            requeue_outbox(&st, id, tid, &kind, attempts, &format!("goalert_notify: {}", detail), incident_id).await?;
         }
     }
     Ok(())

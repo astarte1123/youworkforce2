@@ -825,6 +825,7 @@ function traccarHealthCard(s){
       <div><div class="small mut">Cursore eventi</div><b>#${s.last_event_id||0}</b></div>
     </div>
     ${s.last_error?`<div class="small" style="color:var(--bad);margin-top:8px">⚠ ${esc(s.last_error)}</div>`:''}
+    ${s.outbox_stuck>0?`<div class="small" style="color:var(--bad);margin-top:8px">⛔ ${s.outbox_stuck} notifica/e di sicurezza bloccata/e verso GoAlert — in ritentativo continuo${s.outbox_last_error?': '+esc(s.outbox_last_error):''}</div>`:''}
     <div class="small mut" style="margin-top:8px">Pull via API Traccar: recupera eventi persi (backfill da cursore) e rileva il silenzio dei badge anche se Traccar non invia <i>deviceOffline</i>. Il forwarding resta come percorso rapido.</div>
     ${can(['tenant_admin'])?`<div class="row" style="gap:8px;margin-top:10px"><button class="btn ghost small" onclick="trVerify(this)">Verifica collegamento</button>
       <button class="btn ghost small" onclick="trSettings(this)">⚙ Impostazioni sicurezza</button></div>
@@ -883,7 +884,8 @@ async function vGruppi(v){
   const [G,users]=await Promise.all([api('/groups').catch(()=>({groups:[],routing:[]})),api('/users').catch(()=>[])]);
   v._users=users; v._groups=G.groups;
   const ETYPES=['sos','man_down','immobilita','mancato_checkin','sensore_critico',
-    'perdita_contatto','manomissione_badge','perdita_alimentazione','jamming','traccar_conn_down'];
+    'perdita_contatto','manomissione_badge','perdita_alimentazione','jamming','traccar_conn_down',
+    'batteria_critica','batteria_bassa'];
   const routeOf=e=>(G.routing.find(r=>r.etype===e)||{}).group_id||'';
   v.innerHTML=`<div class="page-h"><div><h1>Gruppi allarme</h1><div class="mut">destinatari ed escalation per tipo di evento</div></div>
     <button class="btn" onclick="grpNew()">+ Nuovo gruppo</button></div>

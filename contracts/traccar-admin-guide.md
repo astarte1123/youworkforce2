@@ -10,7 +10,7 @@ instrada; **operatore/auditor/lavoratore** lo usano.
 |---|---|---|
 | **superadmin** | Piano di controllo → tenant | Abilita il modulo `traccar`; **Connessione Traccar** (base URL + utente + password); Strumenti disponibili; Config server Traccar (runtime `/api/server`) |
 | **tenant_admin** | Console → Connettori | **Verifica collegamento**; **Impostazioni sicurezza** (cadenza poll, soglia silenzio badge, soglia down connessione, poll on/off) |
-| **tenant_admin** | Console → Moduli → Traccar → Configura strumenti | Mappatura allarmi (`alarm_map`): SOS→sos/man_down, offline critico sì/no, fermo→immobilità, soglia batteria, filtri posizione (salto max, movimento minimo) |
+| **tenant_admin** | Console → Moduli → Traccar → Configura strumenti | Mappatura allarmi (`alarm_map`): SOS→sos/man_down, offline critico sì/no, fermo→immobilità, soglia batteria + **policy batteria** (off/warning/critico), filtri posizione (salto max, movimento minimo) |
 | **tenant_admin** | Console → Gruppi allarme | Routing **ogni tipo di allarme → squadra** (sos, man_down, immobilità, perdita_contatto, manomissione_badge, perdita_alimentazione, jamming, traccar_conn_down…) |
 | **tenant_admin** | Console → Dispositivi / Connettori | Device (CRUD, provisioning, catalogo); geofence; token di ingest |
 | **operatore** | Console → Centrale / Mappa | Ack/chiudi incidenti; mappa live; comandi al device (localizza, stop motore…) |
@@ -33,6 +33,10 @@ Configurabili dal tenant_admin in Connettori → Impostazioni sicurezza:
 | Soglia down connessione | 180 s | Traccar irraggiungibile oltre questo → incidente **traccar_conn_down** + escalation (30–3600 s) |
 | Poll attivo | sì | Spegne/accende il pull (lo storico resta) |
 
+Policy batteria (in Moduli → Traccar → `alarm_map`): **off** (ignora) · **warning** (evento
+`batteria_bassa`, default, non critico) · **critico** (`batteria_critica` → incidente +
+escalation). Soglia % impostabile con `battery_min`.
+
 ## Come funzionano gli allarmi (catena)
 - **Pull (spina dorsale):** interroghiamo Traccar via API con un cursore: recuperiamo gli eventi anche se il core era giù. Non serve alcuna config lato Traccar oltre alle credenziali.
 - **Push (fast-path opzionale):** il forwarding di Traccar verso di noi riduce la latenza; va impostato all'avvio del container. I due convergono senza duplicare.
@@ -42,8 +46,30 @@ Configurabili dal tenant_admin in Connettori → Impostazioni sicurezza:
 
 ## Allarmi Traccar mappati
 `sos`→sos/man_down · `fallDown/accident`→man_down · `removing/tampering`→manomissione_badge ·
-`powerCut`→perdita_alimentazione · `jamming/gpsAntennaCut`→jamming · `lowBattery`→batteria_bassa ·
+`powerCut`→perdita_alimentazione · `jamming/gpsAntennaCut`→jamming ·
+`lowBattery`/soglia %→**policy batteria** (off / batteria_bassa warning / batteria_critica allarme) ·
 `deviceOffline`→perdita_contatto (opt-in) · `deviceStopped`→immobilità (opt-in) · geofence→presenza.
+
+## Copertura Man Down / SOS (D.Lgs. 81/08, artt. 17/43/45)
+| Evento richiesto | Nel modulo Traccar | Chi lo gestisce |
+|---|---|---|
+| Caduta / posizione orizzontale prolungata | `fallDown`/`accident`→man_down (critico, escalation) | rilevato dal device, mappato+escalato da noi |
+| Immobilità (assenza movimento) | `deviceStopped`→immobilità (opt-in, critico) | device + nostra config |
+| Perdita segnale / badge silente | watchdog silenzio→perdita_contatto (critico) | **nostro**, indipendente da deviceOffline |
+| Traccar irraggiungibile (sistema cieco) | watchdog connessione→traccar_conn_down (critico) | **nostro** |
+| Batteria in esaurimento | policy batteria off/warning/critico | device + nostra config |
+| SOS / panic button | `sos`→sos/man_down (critico) | device/app, escalato da noi |
+| Check-in ignorato | mancato_checkin (critico) | modulo check-in PWA (non Traccar) |
+| Geolocalizzazione / beacon indoor | posizione sincronizzata, incidente con lat/lon | device che invia fix GPS/rete/beacon |
+| Smistamento (centrale, RSPP, preposti, colleghi) | Gruppi allarme: ogni etype → squadra GoAlert (SMS/voce/push, on-call) | tenant_admin configura |
+| Gestione falso allarme | ack operatore + chiusura con **esito** (registrato) | operatore |
+| Post-evento / audit / DVR | incident_timeline completo (notify_requested, goalert_sent, human_ack, transition+esito, goalert_closed) + comandi + posizione | tracciato automaticamente |
+
+**Finestra di annullamento (15–30 s) — dov'è:** il countdown "ti sei rialzato? annulla"
+è responsabilità del **device/app** (badge, smartwatch, PWA): il dispositivo suona, e invia
+SOS/fallDown a Traccar **solo se non annullato**. Quando l'allarme arriva a noi la finestra è
+già trascorsa, quindi NON aggiungiamo un ritardo server-side: introdurrebbe latenza su un SOS
+reale. La gestione del falso allarme lato backend avviene con ack + chiusura con esito.
 
 ## Note di sicurezza (comportamenti voluti e limiti noti)
 - **`perdita_contatto` non si auto-chiude**: un badge che torna online non significa
@@ -54,9 +80,12 @@ Configurabili dal tenant_admin in Connettori → Impostazioni sicurezza:
   **provisioning** (un device che non raggiunge "attivo al primo fix" è visibile lì).
 - **Degrado di Traccar** (autentica ma risponde 5xx sui dati): trattato come
   irraggiungibile → scatta `traccar_conn_down` (non resta mai cieco in silenzio).
-- **GoAlert irraggiungibile a lungo**: l'outbox ritenta con backoff; oltre i tentativi
-  massimi un invio critico va in stato `error` (segnalato sul bus). Il rinforzo di questo
-  percorso (retry infinito / canale di fallback) è trasversale a tutti i moduli, non solo Traccar.
+- **GoAlert irraggiungibile a lungo**: l'outbox ritenta con **backoff esponenziale**
+  (5s→300s). Gli invii di sicurezza (`goalert_notify`/`goalert_close`) **non vengono mai
+  abbandonati**: ritentano a oltranza finché non passano, così un outage di GoAlert non può
+  far sparire un SOS. Gli invii non critici capitolano in `error` dopo 6 tentativi. Le
+  notifiche bloccate sono visibili nella card salute (`outbox_stuck` + ultimo errore) e
+  segnalate sul bus. Un canale di trasporto alternativo a GoAlert resta un'estensione futura.
 
 ## Verifica (terminale)
 ```bash
@@ -64,4 +93,6 @@ bash qa/traccar-poll-e2e.sh       # pull, cursore, watchdog badge, verifica, sal
 bash qa/traccar-conndown-e2e.sh   # watchdog connessione: down -> allarme -> recovery
 bash qa/traccar-sync-e2e.sh       # sync device + comandi tracciati
 bash qa/crypto-e2e.sh             # credenziali cifrate a riposo
+bash qa/traccar-battery-policy-e2e.sh  # policy batteria off/warning/critico
+bash qa/outbox-resilience-e2e.sh  # #6: escalation critica mai abbandonata + backoff
 ```

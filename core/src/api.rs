@@ -12,7 +12,8 @@ type R = Result<Json<Value>, (StatusCode, String)>;
 fn err(c: StatusCode, m: &str) -> (StatusCode, String) { (c, m.to_string()) }
 
 const CRITICAL: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin", "sensore_critico",
-    "manomissione_badge", "perdita_alimentazione", "jamming", "perdita_contatto", "traccar_conn_down"];
+    "manomissione_badge", "perdita_alimentazione", "jamming", "perdita_contatto", "traccar_conn_down",
+    "batteria_critica"];
 
 /// Traccar alarm -> normalized etype. Safety-first defaults for lone workers.
 /// `sos_as` lets a tenant route the SOS alarm to `sos` or `man_down`.
@@ -39,7 +40,9 @@ pub fn map_traccar_etype(amap: &Value, evt_type: &str, alarm: Option<&str>, batt
     let offline_critical = amap.get("offline_critical").and_then(|v| v.as_str()).map(|s| s=="si").unwrap_or(false);
     let stopped_immobilita = amap.get("stopped_as_immobilita").and_then(|v| v.as_str()).map(|s| s=="si").unwrap_or(false);
     let battery_min = amap.get("battery_min").and_then(|v| v.as_i64()).unwrap_or(15);
-    if let Some(a) = alarm {
+    // policy batteria configurabile dall'admin: off (ignora) | warning (evento, default) | critico (allarme)
+    let battery_as = amap.get("battery_as").and_then(|v| v.as_str()).unwrap_or("warning");
+    let mut etype: String = if let Some(a) = alarm {
         traccar_alarm_etype(a, sos_as)
     } else if evt_type == "deviceOffline" {
         if offline_critical { "perdita_contatto".into() } else { "device_offline".into() }
@@ -53,7 +56,16 @@ pub fn map_traccar_etype(amap: &Value, evt_type: &str, alarm: Option<&str>, batt
         "batteria_bassa".into()
     } else {
         "traccar_event".into()
+    };
+    // Applica la policy batteria sia al percorso alarm=lowBattery sia alla soglia %.
+    if etype == "batteria_bassa" {
+        etype = match battery_as {
+            "off" => "traccar_event".into(),      // non segnalata
+            "critico" => "batteria_critica".into(), // allarme + escalation (in CRITICAL)
+            _ => "batteria_bassa".into(),          // warning registrato, non critico
+        };
     }
+    etype
 }
 
 // ----------------------------- helpers -----------------------------
@@ -545,8 +557,18 @@ pub async fn traccar_status(State(st): State<AppState>, h: HeaderMap) -> R {
         None => (false, None, None, None, 0, 0, 0),
     };
     let lag_seconds = last_ok_at.map(|t| (now - t).num_seconds());
+    // #6 — invii di sicurezza bloccati: notifiche/chiusure GoAlert che non passano
+    // (oltre soglia, ancora in coda a ritentare). Visibile all'admin come degrado.
+    let outbox_stuck: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM app.outbox WHERE tenant_id=$1 AND kind IN ('goalert_notify','goalert_close') AND state<>'done' AND attempts>=6")
+        .bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
+    let outbox_last_error: Option<String> = sqlx::query_scalar(
+        "SELECT last_error FROM app.outbox WHERE tenant_id=$1 AND kind IN ('goalert_notify','goalert_close') AND state<>'done' AND attempts>=6 ORDER BY attempts DESC LIMIT 1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
     Ok(Json(json!({
         "configured": configured,
+        "outbox_stuck": outbox_stuck,
+        "outbox_last_error": outbox_last_error,
         "poll_enabled": poll_enabled,
         "poll_interval_s": poll_interval_s,
         "silence_after_s": silence_after_s,
