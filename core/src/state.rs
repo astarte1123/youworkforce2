@@ -15,6 +15,7 @@ pub struct AppState {
     pub goalert_base: Option<String>,
     pub control_host: String,
     pub base_domain: String,
+    pub secrets: Arc<crate::crypto::Secrets>,
 }
 
 #[derive(Clone)]

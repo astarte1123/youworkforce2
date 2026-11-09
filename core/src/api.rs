@@ -313,9 +313,10 @@ pub struct SetTraccarConn { pub base_url: String, pub username: String, pub pass
 pub async fn super_set_traccar(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetTraccarConn>) -> R {
     require_super(&st, &h).await?;
     let base = b.base_url.trim_end_matches('/').to_string();
+    let enc_pass = st.secrets.encrypt(&b.password);   // P3: cifrato a riposo
     sqlx::query("INSERT INTO app.traccar_connections(tenant_id,base_url,username,password) VALUES($1,$2,$3,$4)
         ON CONFLICT (tenant_id) DO UPDATE SET base_url=EXCLUDED.base_url,username=EXCLUDED.username,password=EXCLUDED.password,updated_at=now()")
-        .bind(tid).bind(&base).bind(&b.username).bind(&b.password).execute(&st.owner_pool).await.map_err(ise)?;
+        .bind(tid).bind(&base).bind(&b.username).bind(&enc_pass).execute(&st.owner_pool).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,'superadmin','set_traccar_conn',$2)")
         .bind(tid).bind(json!({"base_url":base})).execute(&st.owner_pool).await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
@@ -326,12 +327,13 @@ pub struct SetGoalert { pub integration_key: String, pub service_id: Option<Stri
     pub gql_user: Option<String>, pub gql_pass: Option<String> }
 pub async fn super_set_goalert(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetGoalert>) -> R {
     require_super(&st, &h).await?;
+    let enc_pass = b.gql_pass.as_ref().map(|p| st.secrets.encrypt(p));   // P3: cifrato a riposo
     sqlx::query("INSERT INTO app.goalert_services(tenant_id,integration_key,service_id,gql_user,gql_pass) VALUES($1,$2,$3,$4,$5)
         ON CONFLICT (tenant_id) DO UPDATE SET integration_key=EXCLUDED.integration_key,
           service_id=COALESCE(EXCLUDED.service_id,goalert_services.service_id),
           gql_user=COALESCE(EXCLUDED.gql_user,goalert_services.gql_user),
           gql_pass=COALESCE(EXCLUDED.gql_pass,goalert_services.gql_pass), updated_at=now()")
-        .bind(tid).bind(&b.integration_key).bind(&b.service_id).bind(&b.gql_user).bind(&b.gql_pass)
+        .bind(tid).bind(&b.integration_key).bind(&b.service_id).bind(&b.gql_user).bind(&enc_pass)
         .execute(&st.owner_pool).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,'superadmin','set_goalert_key',$2)")
         .bind(tid).bind(json!({"len":b.integration_key.len(),"service_id":b.service_id})).execute(&st.owner_pool).await.map_err(ise)?;
@@ -344,6 +346,7 @@ async fn goalert_session(st: &AppState, tid: Uuid) -> Option<(String, String, Op
     let row = sqlx::query("SELECT gql_user,gql_pass,service_id FROM app.goalert_services WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten()?;
     let user: String = row.try_get("gql_user").ok()?; let pass: String = row.try_get("gql_pass").ok()?;
+    let pass = st.secrets.decrypt(&pass);   // P3: decifra a riposo
     let sid: Option<String> = row.try_get("service_id").ok();
     let cookie = goalert::login(&st.http, &base, &user, &pass).await?;
     Some((base, cookie, sid))
@@ -442,10 +445,11 @@ pub async fn goalert_provision(State(st): State<AppState>, h: HeaderMap, Path(ti
     let hb = goalert::graphql(&st.http,&base,&cookie,
         &format!("mutation{{createHeartbeatMonitor(input:{{serviceID:\"{sid}\",name:\"yw-core\",timeoutMinutes:5}}){{href}}}}")).await
         .and_then(|v| v.pointer("/data/createHeartbeatMonitor/href").and_then(|x| x.as_str().map(String::from)));
+    let enc_pass = st.secrets.encrypt(&b.pass);   // P3: cifrato a riposo
     sqlx::query("INSERT INTO app.goalert_services(tenant_id,integration_key,service_id,gql_user,gql_pass,heartbeat_url) VALUES($1,$2,$3,$4,$5,$6)
         ON CONFLICT (tenant_id) DO UPDATE SET integration_key=EXCLUDED.integration_key,service_id=EXCLUDED.service_id,
           gql_user=EXCLUDED.gql_user,gql_pass=EXCLUDED.gql_pass,heartbeat_url=EXCLUDED.heartbeat_url,updated_at=now()")
-        .bind(tid).bind(&key).bind(&sid).bind(&b.user).bind(&b.pass).bind(&hb).execute(&st.owner_pool).await.map_err(ise)?;
+        .bind(tid).bind(&key).bind(&sid).bind(&b.user).bind(&enc_pass).bind(&hb).execute(&st.owner_pool).await.map_err(ise)?;
     audit(&st, tid, "superadmin", "goalert_provision", json!({"service_id":sid})).await;
     Ok(Json(json!({"ok":true,"escalation_policy":ep,"service_id":sid,"integration_key":key,"heartbeat_url":hb})))
 }
@@ -459,7 +463,8 @@ const TR_CFG_NUM:  &[&str] = &["zoom","latitude","longitude"];
 pub async fn traccar_conn(st: &AppState, tid: Uuid) -> Option<(String,String,String)> {
     let r = sqlx::query("SELECT base_url,username,password FROM app.traccar_connections WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten()?;
-    Some((r.get("base_url"), r.get("username"), r.get("password")))
+    let pass: String = r.get("password");
+    Some((r.get("base_url"), r.get("username"), st.secrets.decrypt(&pass)))   // P3: decifra a riposo
 }
 pub async fn traccar_login(http: &reqwest::Client, base: &str, user: &str, pass: &str) -> Option<String> {
     let resp = http.post(format!("{base}/api/session"))
@@ -1124,7 +1129,8 @@ pub async fn provision_device(State(st): State<AppState>, h: HeaderMap, Json(b):
     if b.register_traccar.unwrap_or(false) {
         if let Some(conn) = sqlx::query("SELECT base_url,username,password FROM app.traccar_connections WHERE tenant_id=$1")
             .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)? {
-            let base: String = conn.get("base_url"); let user: String = conn.get("username"); let pass: String = conn.get("password");
+            let base: String = conn.get("base_url"); let user: String = conn.get("username");
+            let pass: String = st.secrets.decrypt(&conn.get::<String,_>("password"));   // P3
             let name = b.label.clone().unwrap_or_else(|| b.external_id.clone());
             match st.http.post(format!("{base}/api/devices")).basic_auth(&user, Some(&pass))
                 .json(&json!({"name":name,"uniqueId":b.external_id})).send().await {
@@ -1765,7 +1771,8 @@ pub async fn device_command(State(st): State<AppState>, h: HeaderMap, Path(id): 
     let conn = sqlx::query("SELECT base_url,username,password FROM app.traccar_connections WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata (superadmin)"))?;
-    let base: String = conn.get("base_url"); let user: String = conn.get("username"); let pass: String = conn.get("password");
+    let base: String = conn.get("base_url"); let user: String = conn.get("username");
+    let pass: String = st.secrets.decrypt(&conn.get::<String,_>("password"));   // P3
     // risolvi uniqueId -> id numerico
     let dl = st.http.get(format!("{base}/api/devices?uniqueId={ext}"))
         .basic_auth(&user, Some(&pass)).send().await

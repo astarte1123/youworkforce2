@@ -51,7 +51,7 @@ async fn traccar_poll(st: &AppState) -> anyhow::Result<()> {
         let last_event_id: i64 = state.as_ref().map(|s| s.get::<i64,_>("last_event_id")).unwrap_or(0);
         let base: String = c.get("base_url");
         let user: String = c.get("username");
-        let pass: String = c.get("password");
+        let pass: String = st.secrets.decrypt(&c.get::<String,_>("password"));   // P3
         let silence_after: i32 = c.get("silence_after_s");
         if let Err(e) = poll_tenant(st, tid, &base, &user, &pass, last_ok, last_event_id, silence_after, now).await {
             // marca non raggiungibile ma non interrompe gli altri tenant
@@ -75,7 +75,7 @@ pub async fn poll_now(st: &AppState, tid: Uuid) -> anyhow::Result<()> {
     let last_event_id: i64 = state.as_ref().map(|s| s.get::<i64,_>("last_event_id")).unwrap_or(0);
     let base: String = c.get("base_url");
     let user: String = c.get("username");
-    let pass: String = c.get("password");
+    let pass: String = st.secrets.decrypt(&c.get::<String,_>("password"));   // P3
     let silence_after: i32 = c.get("silence_after_s");
     poll_tenant(st, tid, &base, &user, &pass, last_ok, last_event_id, silence_after, now).await
 }

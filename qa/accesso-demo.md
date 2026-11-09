@@ -8,7 +8,9 @@ risolvono `*.localhost` → 127.0.0.1 da soli (RFC 6761): nessuna modifica al fi
 modificabile (comodità dev).
 
 > Il core va avviato con `YW_BASE_DOMAIN=localhost` e `YW_CONTROL_HOST=tenants.localhost`
-> (in produzione: il dominio reale e `tenants.<dominio>`).
+> (in produzione: il dominio reale e `tenants.<dominio>`). Imposta anche
+> `YW_SECRET_KEY=<passphrase>` per cifrare a riposo i segreti upstream (password
+> Traccar, gql_pass GoAlert); senza, restano in chiaro e il log avvisa.
 
 ## URL (prod-like, per-sottodominio)
 | Cosa | URL |

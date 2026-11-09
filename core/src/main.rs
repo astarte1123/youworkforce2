@@ -1,4 +1,4 @@
-mod state; mod clock; mod auth; mod db; mod goalert; mod worker; mod api;
+mod state; mod clock; mod auth; mod db; mod goalert; mod worker; mod api; mod crypto;
 
 use std::sync::Arc;
 use axum::{routing::{get, post}, Router, Json};
@@ -6,7 +6,30 @@ use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::broadcast;
 use uuid::Uuid;
+use sqlx::Row;
 use state::{AppState, TenantEvent};
+
+/// P3: cifra a riposo i segreti upstream ancora in chiaro (percorso di migrazione
+/// idempotente: salta cio' che e' gia' "enc:v1:"). Richiede YW_SECRET_KEY.
+async fn crypto_migrate(st: &AppState) -> anyhow::Result<()> {
+    let tr = sqlx::query("SELECT tenant_id,password FROM app.traccar_connections WHERE password NOT LIKE 'enc:v1:%'")
+        .fetch_all(&st.owner_pool).await?;
+    for r in tr {
+        let tid: Uuid = r.get("tenant_id");
+        let enc = st.secrets.encrypt(&r.get::<String,_>("password"));
+        sqlx::query("UPDATE app.traccar_connections SET password=$2 WHERE tenant_id=$1")
+            .bind(tid).bind(enc).execute(&st.owner_pool).await?;
+    }
+    let ga = sqlx::query("SELECT tenant_id,gql_pass FROM app.goalert_services WHERE gql_pass IS NOT NULL AND gql_pass NOT LIKE 'enc:v1:%'")
+        .fetch_all(&st.owner_pool).await?;
+    for r in ga {
+        let tid: Uuid = r.get("tenant_id");
+        let enc = st.secrets.encrypt(&r.get::<String,_>("gql_pass"));
+        sqlx::query("UPDATE app.goalert_services SET gql_pass=$2 WHERE tenant_id=$1")
+            .bind(tid).bind(enc).execute(&st.owner_pool).await?;
+    }
+    Ok(())
+}
 
 fn env(k: &str, d: &str) -> String { std::env::var(k).unwrap_or_else(|_| d.to_string()) }
 
@@ -42,7 +65,15 @@ async fn main() -> anyhow::Result<()> {
         goalert_base: std::env::var("GOALERT_BASE").ok().filter(|s| !s.is_empty()),
         control_host: env("YW_CONTROL_HOST", "tenants.loneworker.eu"),
         base_domain: env("YW_BASE_DOMAIN", "loneworker.eu"),
+        secrets: Arc::new(crypto::Secrets::from_env()),
     };
+    // P3: se la chiave e' presente, cifra a riposo i segreti ancora in chiaro.
+    if st.secrets.enabled() {
+        if let Err(e) = crypto_migrate(&st).await { tracing::warn!("crypto migrate: {e}"); }
+        tracing::info!("encryption-at-rest attiva (YW_SECRET_KEY)");
+    } else {
+        tracing::warn!("YW_SECRET_KEY non impostata: segreti upstream in chiaro nel DB");
+    }
 
     tokio::spawn(worker::run(st.clone()));
 
