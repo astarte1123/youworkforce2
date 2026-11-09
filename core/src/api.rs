@@ -3162,6 +3162,20 @@ pub async fn tool_config(st: &AppState, tid: Uuid, module: &str, tool: &str) -> 
     Value::Object(out)
 }
 
+/// UI nav feature flags for the current tenant (any authenticated role).
+/// Deriva dalle scelte dell'admin sul tool traccar/alarm_map: quali voci di
+/// menu mappa esporre. Default parametrici: Mappa on, Piantine off.
+pub async fn ui_features(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
+    let c = tool_config(&st, tid, "traccar", "alarm_map").await;
+    let on = |k: &str, d: bool| c.get(k).and_then(|v| v.as_str()).map(|v| v == "si").unwrap_or(d);
+    Ok(Json(json!({
+        "map_outdoor": on("view_mappa", true),
+        "map_indoor":  on("view_piantine", false),
+    })))
+}
+
 /// SOS escalation policy (loneworker/sos_escalation): incident priority + repeat cadence.
 /// priority "alta"->3, "media"->2. repeat_seconds carried to the GoAlert connector payload.
 async fn sos_escalation(st: &AppState, tid: Uuid) -> (i32, i64) {

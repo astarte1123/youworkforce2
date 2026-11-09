@@ -18,14 +18,15 @@
 <aside id="drawer" class="drawer"></aside>
 <script src="/app.js"></script>
 <script>
-let ME=null, SSE=null, CACHE={}, ACTIVE_MODS=new Set();
+let ME=null, SSE=null, CACHE={}, ACTIVE_MODS=new Set(), UI_FEAT={map_outdoor:true,map_indoor:false};
 const can = r => ME && r.includes(ME.role);
 // mod = modulo/i richiesti: la voce appare solo se ALMENO UNO è attivo sul tenant.
 const DEVICE_MODS=['loneworker','traccar','iot','thingsboard'];
 const NAV = [
   {k:'dashboard', t:'Dashboard', ico:'home', roles:null},
   {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker']},
-  {k:'mappa',     t:'Mappa/Piantine', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS},
+  {k:'mappa',     t:'Mappa', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor'},
+  {k:'piantine',  t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor'},
   {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar']},
   {k:'ordini',    t:'Ordini di lavoro', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi']},
   {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], mod:['consuntivi']},
@@ -37,12 +38,18 @@ const NAV = [
   {k:'moduli',    t:'Moduli', ico:'sliders', roles:['tenant_admin']},
 ];
 const modOk = n => !n.mod || n.mod.some(m=>ACTIVE_MODS.has(m));
-const visibleNav = ()=>NAV.filter(n=>(!n.roles||n.roles.includes(ME.role)) && modOk(n));
+const featOk = n => !n.feat || UI_FEAT[n.feat]!==false;
+const visibleNav = ()=>NAV.filter(n=>(!n.roles||n.roles.includes(ME.role)) && modOk(n) && featOk(n));
+// carica stato moduli + feature flag UI del tenant (voci menu Mappa/Piantine configurabili dall'admin)
+async function loadCtx(){
+  try{ const M=await api('/modules'); ACTIVE_MODS=new Set((M||[]).filter(m=>m.state==='attivo').map(m=>m.code)); }catch(e){}
+  try{ const F=await api('/ui/features'); if(F&&typeof F==='object') UI_FEAT=F; }catch(e){}
+}
 
 // ---------------- boot ----------------
 (async function(){
   try{ ME = await api('/me'); if(ME.is_super||!ME.tenant_id){ME=null;} }catch(e){ ME=null; }
-  if(ME){ try{ const M=await api('/modules'); ACTIVE_MODS=new Set((M||[]).filter(m=>m.state==='attivo').map(m=>m.code)); }catch(e){} renderShell(); }
+  if(ME){ await loadCtx(); renderShell(); }
   else renderLogin();
 })();
 
@@ -82,7 +89,7 @@ function quick(u){ $('#email').value = u+'@acme.loneworker.eu'; $('#pw').value='
 async function doLogin(){
   store.slug=$('#slug').value.trim();
   try{ await api('/login',{method:'POST',body:JSON.stringify({email:$('#email').value.trim(),password:$('#pw').value})});
-    ME = await api('/me'); try{ const M=await api('/modules'); ACTIVE_MODS=new Set((M||[]).filter(m=>m.state==='attivo').map(m=>m.code)); }catch(e){}
+    ME = await api('/me'); await loadCtx();
     document.body.classList.remove('login-bg'); renderShell();
   }catch(e){ $('#msg').textContent='Credenziali non valide'; }
 }
@@ -131,6 +138,7 @@ function renderShell(){
   if(can(['operatore','tenant_admin','auditor'])) connectSSE();
   route();
 }
+function rebuildNav(){ const n=$('#nav'); if(n) n.innerHTML=visibleNav().map(x=>`<a data-k="${x.k}"><span class="ico">${ICON[x.ico]}</span>${x.t}</a>`).join(''); }
 function setActive(k){ $$('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.k===k));
   const n=NAV.find(x=>x.k===k); if(n&&$('#pageTitle'))$('#pageTitle').textContent=n.t; }
 
@@ -139,7 +147,7 @@ function route(){
   if(!visibleNav().some(n=>n.k===k)) k=visibleNav()[0].k;
   setActive(k); const v=$('#view'); v.innerHTML='<div class="col"><div class="skel" style="height:90px"></div><div class="skel" style="height:260px"></div></div>';
   ({dashboard:vDashboard,centrale:vCentrale,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,report:vReport}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,piantine:vPiantine,report:vReport}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -416,24 +424,36 @@ async function runMoveReport(){
 // ---------------- Mappa (Leaflet/OpenStreetMap) ----------------
 // Due modalità: ALLARMI (dove si sono verificati, indoor/outdoor) e DISPOSITIVI (live+geofence).
 let MAP=null, MARK={}, MAPTRAIL=null, GFLAYER=null, ADDMODE=false, CLUSTER=null, REPLAY=null, ALARMLAYER=null, AMARK={}, MAPMODE='allarmi';
+// MAPPA (outdoor): ALLARMI (dove si sono verificati) e DISPOSITIVI (live+geofence).
+// L'indoor sta nella voce di menu separata "Piantine" (vPiantine).
 async function vMappa(v){
   const admin=can(['tenant_admin']);
-  const mods=await api('/modules').catch(()=>[]);
-  const alarmsOn=(mods||[]).some(m=>m.state==='attivo'&&['loneworker','traccar'].includes(m.code));
+  const alarmsOn=ACTIVE_MODS.has('loneworker')||ACTIVE_MODS.has('traccar');
+  if(MAPMODE!=='allarmi'&&MAPMODE!=='dispositivi') MAPMODE='allarmi';
   if(!alarmsOn) MAPMODE='dispositivi';
   v.innerHTML=`<div class="page-h"><div><h1>Mappa</h1><div class="mut" id="mapSub">—</div></div>
     <div class="row" style="gap:8px">
       ${alarmsOn?`<button class="btn ghost small ${MAPMODE==='allarmi'?'ok':''}" onclick="setMapMode('allarmi')">🚨 Allarmi</button>
-        <button class="btn ghost small ${MAPMODE==='dispositivi'?'ok':''}" onclick="setMapMode('dispositivi')">📟 Dispositivi</button>
-        <button class="btn ghost small ${MAPMODE==='indoor'?'ok':''}" onclick="setMapMode('indoor')">🏭 Indoor</button>`:''}
-      ${admin&&alarmsOn?`<button class="btn ghost small" onclick="configIndoor()">⚙ Configura indoor</button>`:''}
+        <button class="btn ghost small ${MAPMODE==='dispositivi'?'ok':''}" onclick="setMapMode('dispositivi')">📟 Dispositivi</button>`:''}
     </div></div>
     <div class="row" id="mapCtl" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px"></div>
     <div class="grid" style="grid-template-columns:1fr 300px;gap:16px">
       <div class="card" style="padding:0;overflow:hidden"><div id="map" style="height:68vh;width:100%"></div></div>
       <div class="card pad" style="height:72vh;overflow:auto" id="mapSide"></div></div>`;
   if(typeof L==='undefined'){ $('#map').innerHTML='<div class="pad mut">Libreria mappa non disponibile (serve connessione).</div>'; return; }
-  setTimeout(()=>{ if(MAPMODE==='indoor'){ renderIndoor(admin); } else { initMap(); (MAPMODE==='allarmi'?renderAlarms:renderDevices)(admin); } },60);
+  setTimeout(()=>{ initMap(); (MAPMODE==='allarmi'?renderAlarms:renderDevices)(admin); },60);
+}
+// PIANTINE (indoor): planimetrie con beacon posizionati, geofence indoor, allarmi/dispositivi indoor.
+async function vPiantine(v){
+  const admin=can(['tenant_admin']);
+  v.innerHTML=`<div class="page-h"><div><h1>Piantine</h1><div class="mut" id="mapSub">—</div></div>
+    <div class="row" style="gap:8px">${admin?`<button class="btn ghost small" onclick="configIndoor()">⚙ Configura indoor</button>`:''}</div></div>
+    <div class="row" id="mapCtl" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px"></div>
+    <div class="grid" style="grid-template-columns:1fr 300px;gap:16px">
+      <div class="card" style="padding:0;overflow:hidden"><div id="map" style="height:68vh;width:100%"></div></div>
+      <div class="card pad" style="height:72vh;overflow:auto" id="mapSide"></div></div>`;
+  if(typeof L==='undefined'){ $('#map').innerHTML='<div class="pad mut">Libreria mappa non disponibile (serve connessione).</div>'; return; }
+  setTimeout(()=>renderIndoor(admin),60);
 }
 function initMap(){
   if(MAP){ try{MAP.remove();}catch(e){} MAP=null; }
@@ -1026,7 +1046,8 @@ async function saveToolConfig(code,tool,btn){
   });
   const msg=card.querySelector('.cfg-msg'); msg.textContent='…'; msg.style.color='var(--mut)';
   try{ await api('/modules/'+code+'/tools/'+tool,{method:'POST',body:JSON.stringify({config:cfg})});
-    msg.textContent='Salvato'; msg.style.color='var(--ok,green)'; }
+    msg.textContent='Salvato'; msg.style.color='var(--ok,green)';
+    if(code==='traccar'&&tool==='alarm_map'){ await loadCtx(); rebuildNav(); } }
   catch(e){ msg.textContent=e.message; msg.style.color='var(--bad)'; }
 }
 
