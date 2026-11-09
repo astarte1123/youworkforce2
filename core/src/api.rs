@@ -1707,6 +1707,7 @@ pub async fn ingest_event(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
         lat: b.lat, lon: b.lon, accuracy_m: b.accuracy_m,
         correlation,
         payload: b.payload.clone().unwrap_or(json!({})),
+        indoor: false, beacon_uid: None, zone: None,
     }).await
 }
 
@@ -1722,6 +1723,40 @@ pub struct Normalized {
     pub lat: Option<f64>, pub lon: Option<f64>, pub accuracy_m: Option<f64>,
     pub correlation: String,
     pub payload: Value,
+    pub indoor: bool,
+    pub beacon_uid: Option<String>,
+    pub zone: Option<String>,
+}
+
+/// Estrae l'identificatore beacon dagli attributi di una posizione/evento Traccar.
+/// Supporta: beaconId (stringa), major+minor (iBeacon), beacon (stringa generica).
+pub fn extract_beacon_uid(attrs: &Value) -> Option<String> {
+    if let Some(b) = attrs.get("beaconId").and_then(|v| v.as_str()) { return Some(b.to_string()); }
+    let as_i = |v: &Value| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()));
+    let major = attrs.get("major").and_then(as_i);
+    let minor = attrs.get("minor").and_then(as_i);
+    if let (Some(ma), Some(mi)) = (major, minor) { return Some(format!("{}-{}", ma, mi)); }
+    if let Some(b) = attrs.get("beacon").and_then(|v| v.as_str()) { return Some(b.to_string()); }
+    None
+}
+/// Risolve se un allarme e' INDOOR dai suoi attributi: se contiene un beacon lo marca
+/// indoor e risolve la zona (e l'ancora sulla mappa) dalla tabella beacons del tenant.
+/// Un beacon visto ma non ancora mappato resta indoor con zona ignota (l'admin lo registra).
+pub async fn resolve_indoor(st: &AppState, tid: Uuid, attrs: Option<&Value>)
+    -> (bool, Option<String>, Option<String>, Option<(f64,f64)>) {
+    let Some(a) = attrs else { return (false, None, None, None); };
+    let Some(uid) = extract_beacon_uid(a) else { return (false, None, None, None); };
+    let row = sqlx::query("SELECT zone_name,lat,lon FROM app.beacons WHERE tenant_id=$1 AND beacon_uid=$2")
+        .bind(tid).bind(&uid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    match row {
+        Some(r) => {
+            let zone: String = r.get("zone_name");
+            let anchor = match (r.try_get::<f64,_>("lat").ok(), r.try_get::<f64,_>("lon").ok()) {
+                (Some(la), Some(lo)) => Some((la, lo)), _ => None };
+            (true, Some(uid), Some(zone), anchor)
+        }
+        None => (true, Some(uid), None, None),
+    }
 }
 
 /// Persist a normalized event idempotently; open an incident + outbox notify
@@ -1749,13 +1784,13 @@ pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
 
     // idempotent insert
     let ev = sqlx::query(
-        "INSERT INTO app.events(tenant_id,source,source_event,idem_key,site_id,device_id,etype,origin_ts,received_ts,lat,lon,accuracy_m,payload_ref,correlation)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        "INSERT INTO app.events(tenant_id,source,source_event,idem_key,site_id,device_id,etype,origin_ts,received_ts,lat,lon,accuracy_m,payload_ref,correlation,indoor,beacon_uid,zone)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
          ON CONFLICT (tenant_id,source,idem_key) DO NOTHING
          RETURNING id")
         .bind(tid).bind(&n.source).bind(&n.source_event).bind(&n.idem).bind(site_id).bind(device_id)
         .bind(&n.etype).bind(now).bind(now).bind(n.lat).bind(n.lon).bind(n.accuracy_m)
-        .bind(n.payload.clone()).bind(&n.correlation)
+        .bind(n.payload.clone()).bind(&n.correlation).bind(n.indoor).bind(&n.beacon_uid).bind(&n.zone)
         .fetch_optional(&mut *tx).await.map_err(ise)?;
 
     let Some(ev) = ev else {
@@ -1846,6 +1881,13 @@ pub async fn ingest_traccar(
         .or_else(|| ev.and_then(|e| e.get("attributes")).and_then(|a| a.get("batteryLevel")).and_then(|v| v.as_f64()));
     let etype = map_traccar_etype(&amap, evt_type, alarm, battery);
 
+    // Indoor/beacon: se la posizione (o l'evento) porta un beacon, l'allarme e' indoor
+    // e lo localizziamo per zona. L'ancora del beacon vince sul GPS (in fabbrica inaffidabile).
+    let attrs = pos.and_then(|p| p.get("attributes"))
+        .or_else(|| ev.and_then(|e| e.get("attributes")));
+    let (indoor, beacon_uid, zone, anchor) = resolve_indoor(&st, tid, attrs).await;
+    let (lat, lon) = if indoor { if let Some((a,o)) = anchor { (Some(a), Some(o)) } else { (lat, lon) } } else { (lat, lon) };
+
     let source_event = format!("traccar-evt-{}", evt_id);
     persist_ingest(&st, tid, Normalized {
         source,
@@ -1857,6 +1899,7 @@ pub async fn ingest_traccar(
         lat, lon, accuracy_m: None,
         correlation: source_event,
         payload: b.clone(),
+        indoor, beacon_uid, zone,
     }).await
 }
 
@@ -2155,6 +2198,281 @@ fn csv_response(csv: String, filename: &str) -> Response {
     (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
         (axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\""))], csv).into_response()
 }
+fn text_response(body: String, filename: &str) -> Response {
+    (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8".to_string()),
+        (axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\""))], body).into_response()
+}
+
+// ============ Report Allarmi (DVR) — guidato dal modulo allarmi ============
+// Quando il tenant ha un modulo che genera allarmi (loneworker/traccar), il report
+// principale e' quello degli ALLARMI/incidenti, non percorsi/soste/presenze.
+// Descrizioni leggibili per ogni tipo di allarme (DVR, operatori non tecnici).
+pub fn etype_label(e: &str) -> &'static str {
+    match e {
+        "sos" => "SOS / richiesta soccorso",
+        "man_down" => "Uomo a terra (man down)",
+        "immobilita" => "Immobilita' prolungata",
+        "mancato_checkin" => "Check-in mancato",
+        "sensore_critico" => "Sensore critico",
+        "manomissione_badge" => "Manomissione / rimozione badge",
+        "perdita_alimentazione" => "Perdita alimentazione",
+        "jamming" => "Jamming / disturbo del segnale",
+        "perdita_contatto" => "Perdita contatto (badge silente)",
+        "traccar_conn_down" => "Sistema di tracciamento irraggiungibile",
+        "batteria_critica" => "Batteria in esaurimento (critico)",
+        "batteria_bassa" => "Batteria bassa",
+        _ => "Altro evento",
+    }
+}
+struct AlarmRow {
+    etype: String, state: String, priority: i32,
+    opened_at: chrono::DateTime<chrono::Utc>,
+    closed_at: Option<chrono::DateTime<chrono::Utc>>,
+    ack_at: Option<chrono::DateTime<chrono::Utc>>,
+    site: Option<String>, assignee: Option<String>, outcome: Option<String>,
+}
+impl AlarmRow {
+    fn response_s(&self) -> Option<i64> { self.ack_at.map(|a| (a - self.opened_at).num_seconds().max(0)) }
+    fn is_critical(&self) -> bool { CRITICAL.contains(&self.etype.as_str()) }
+}
+async fn alarms_rows(st: &AppState, s: &Session, q: &std::collections::HashMap<String,String>)
+    -> Result<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>, Vec<AlarmRow>), (StatusCode,String)> {
+    let tid = s.tenant_id.unwrap();
+    let (from, to) = rep_dates(q)?;
+    let etype_f = q.get("etype").filter(|x| !x.is_empty()).cloned();
+    // stato: "chiuso" = chiusi, "aperto" = tutti i non-chiusi (include preso_in_carico)
+    let state_cond = match q.get("state").map(|x| x.as_str()) {
+        Some("chiuso") => " AND i.state='chiuso'",
+        Some("aperto") => " AND i.state<>'chiuso'",
+        _ => "",
+    };
+    let acl = allowed_sites(st, s).await;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(|_| ise_resp2())?;
+    let sql = format!(
+        "SELECT i.etype,i.state,i.priority,i.opened_at,i.closed_at,i.outcome,i.site_id,
+                s.name AS site, u.email AS assignee,
+                (SELECT min(t.at) FROM app.incident_timeline t WHERE t.incident_id=i.id AND t.kind='human_ack') AS ack_at
+         FROM app.incidents i
+         LEFT JOIN app.sites s ON s.id=i.site_id
+         LEFT JOIN app.users u ON u.id=i.assigned_user
+         WHERE i.opened_at BETWEEN $1 AND $2
+           AND ($3::text IS NULL OR i.etype=$3){}
+         ORDER BY i.opened_at DESC", state_cond);
+    let rows = sqlx::query(&sql)
+        .bind(from).bind(to).bind(&etype_f)
+        .fetch_all(&mut *tx).await.map_err(|_| ise_resp2())?;
+    let _ = tx.commit().await;
+    let out: Vec<AlarmRow> = rows.iter()
+        .filter(|r| site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok()))
+        .map(|r| AlarmRow{
+            etype: r.get("etype"), state: r.get("state"), priority: r.get("priority"),
+            opened_at: r.get("opened_at"), closed_at: r.try_get("closed_at").ok(),
+            ack_at: r.try_get("ack_at").ok(),
+            site: r.try_get::<String,_>("site").ok(),
+            assignee: r.try_get::<String,_>("assignee").ok(),
+            outcome: r.try_get::<String,_>("outcome").ok(),
+        }).collect();
+    Ok((from, to, out))
+}
+async fn tenant_name(st: &AppState, tid: Uuid) -> String {
+    sqlx::query_scalar::<_,String>("SELECT name FROM app.tenants WHERE id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().unwrap_or_else(|| "—".into())
+}
+fn fmt_local(t: &chrono::DateTime<chrono::Utc>) -> String { t.format("%d/%m/%Y %H:%M:%S").to_string() }
+fn fmt_resp(sec: Option<i64>) -> String {
+    match sec { Some(s) if s >= 60 => format!("{}m {}s", s/60, s%60), Some(s) => format!("{}s", s), None => "—".into() }
+}
+
+/// JSON: report allarmi + sintesi (per la UI e per il PDF lato client).
+pub async fn report_alarms(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?; report_role(&s)?;
+    require_any_module(&st, s.tenant_id.unwrap(), &["loneworker","traccar"]).await?;
+    let (from, to, rows) = alarms_rows(&st, &s, &q).await?;
+    let total = rows.len();
+    let aperti = rows.iter().filter(|r| r.state != "chiuso").count();
+    let critici = rows.iter().filter(|r| r.is_critical()).count();
+    let resp: Vec<i64> = rows.iter().filter_map(|r| r.response_s()).collect();
+    let ack_medio_s = if resp.is_empty() { None } else { Some(resp.iter().sum::<i64>() / resp.len() as i64) };
+    let presi = resp.len();
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "etype": r.etype, "label": etype_label(&r.etype), "state": r.state, "priority": r.priority,
+        "opened_at": r.opened_at, "closed_at": r.closed_at, "ack_at": r.ack_at,
+        "response_s": r.response_s(), "site": r.site, "assignee": r.assignee, "outcome": r.outcome,
+    })).collect();
+    Ok(Json(json!({
+        "tenant": tenant_name(&st, s.tenant_id.unwrap()).await,
+        "from": from, "to": to,
+        "summary": {"totale": total, "aperti": aperti, "critici": critici, "presi_in_carico": presi, "ack_medio_s": ack_medio_s},
+        "rows": out,
+    })))
+}
+/// CSV: dati grezzi macchina-leggibili (colonna tecnica + descrizione).
+pub async fn report_alarms_csv(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> Result<Response,(StatusCode,String)> {
+    let s = require_tenant(&st, &h).await?; report_role(&s)?;
+    let (_from, _to, rows) = alarms_rows(&st, &s, &q).await?;
+    let mut csv = String::from("aperto_il,tipo,descrizione,stato,priorita,preso_in_carico_il,tempo_risposta_s,chiuso_il,sede,assegnatario,esito\n");
+    for r in &rows {
+        csv.push_str(&format!("{},{},{},{},{},{},{},{},{},{},{}\n",
+            r.opened_at.to_rfc3339(),
+            csv_esc(&r.etype), csv_esc(etype_label(&r.etype)),
+            csv_esc(&r.state), r.priority,
+            r.ack_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
+            r.response_s().map(|x| x.to_string()).unwrap_or_default(),
+            r.closed_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
+            csv_esc(r.site.as_deref().unwrap_or("")),
+            csv_esc(r.assignee.as_deref().unwrap_or("")),
+            csv_esc(r.outcome.as_deref().unwrap_or(""))));
+    }
+    Ok(csv_response(csv, "allarmi.csv"))
+}
+/// TXT: report leggibile formattato (intestazione tenant + intervallo + sintesi).
+pub async fn report_alarms_txt(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> Result<Response,(StatusCode,String)> {
+    let s = require_tenant(&st, &h).await?; report_role(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let (from, to, rows) = alarms_rows(&st, &s, &q).await?;
+    let name = tenant_name(&st, tid).await;
+    let total = rows.len();
+    let aperti = rows.iter().filter(|r| r.state != "chiuso").count();
+    let critici = rows.iter().filter(|r| r.is_critical()).count();
+    let resp: Vec<i64> = rows.iter().filter_map(|r| r.response_s()).collect();
+    let ack_medio = if resp.is_empty() { "—".to_string() } else { fmt_resp(Some(resp.iter().sum::<i64>()/resp.len() as i64)) };
+    let mut t = String::new();
+    t.push_str("========================================================\n");
+    t.push_str("           REPORT ALLARMI — YouWorkforce\n");
+    t.push_str("========================================================\n");
+    t.push_str(&format!("Tenant       : {}\n", name));
+    t.push_str(&format!("Periodo      : {} — {}\n", fmt_local(&from), fmt_local(&to)));
+    t.push_str(&format!("Generato il  : {}\n", fmt_local(&st.clock.now())));
+    t.push_str("--------------------------------------------------------\n");
+    t.push_str(&format!("Totale allarmi: {}   Critici: {}   Aperti: {}\n", total, critici, aperti));
+    t.push_str(&format!("Presi in carico: {}/{}   Tempo medio risposta: {}\n", resp.len(), total, ack_medio));
+    t.push_str("========================================================\n\n");
+    if rows.is_empty() { t.push_str("Nessun allarme nel periodo selezionato.\n"); }
+    for (i, r) in rows.iter().enumerate() {
+        t.push_str(&format!("#{:<3} {}  [{}]\n", i+1, etype_label(&r.etype), if r.is_critical() {"CRITICO"} else {"evento"}));
+        t.push_str(&format!("     Aperto il   : {}\n", fmt_local(&r.opened_at)));
+        t.push_str(&format!("     Preso in car.: {}   (risposta: {})\n",
+            r.ack_at.map(|a| fmt_local(&a)).unwrap_or_else(|| "non preso in carico".into()), fmt_resp(r.response_s())));
+        t.push_str(&format!("     Chiuso il   : {}\n", r.closed_at.map(|c| fmt_local(&c)).unwrap_or_else(|| "aperto".into())));
+        t.push_str(&format!("     Stato       : {}   Sede: {}\n", r.state, r.site.as_deref().unwrap_or("—")));
+        t.push_str(&format!("     Assegnato a : {}\n", r.assignee.as_deref().unwrap_or("—")));
+        if let Some(o) = &r.outcome { if !o.is_empty() { t.push_str(&format!("     Esito       : {}\n", o)); } }
+        t.push('\n');
+    }
+    Ok(text_response(t, "allarmi.txt"))
+}
+
+// ============ Mappa Allarmi — dove si sono verificati (indoor/outdoor) ============
+/// Allarmi georeferenziati: per ognuno tipo, device, persona, e indoor(zona)/outdoor(GPS).
+pub async fn alarms_map(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?; report_role(&s)?;
+    require_any_module(&st, s.tenant_id.unwrap(), &["loneworker","traccar"]).await?;
+    let tid = s.tenant_id.unwrap();
+    let (from, to) = rep_dates(&q)?;
+    let etype_f = q.get("etype").filter(|x| !x.is_empty()).cloned();
+    let acl = allowed_sites(&st, &s).await;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query(
+        "SELECT i.id,i.etype,i.state,i.opened_at,i.site_id,
+                e.lat,e.lon,e.accuracy_m,e.indoor,e.zone,e.beacon_uid,
+                d.label AS device_label, d.external_id AS device_ext,
+                u.email AS person, s.name AS site
+         FROM app.incidents i
+         JOIN app.events e ON e.id=i.event_id
+         LEFT JOIN app.devices d ON d.id=e.device_id
+         LEFT JOIN app.users u ON u.id=d.assigned_user
+         LEFT JOIN app.sites s ON s.id=i.site_id
+         WHERE i.opened_at BETWEEN $1 AND $2
+           AND ($3::text IS NULL OR i.etype=$3)
+         ORDER BY i.opened_at DESC LIMIT 2000")
+        .bind(from).bind(to).bind(&etype_f)
+        .fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter()
+        .filter(|r| site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok()))
+        .map(|r| json!({
+            "id": r.get::<Uuid,_>("id"), "etype": r.get::<String,_>("etype"),
+            "label": etype_label(&r.get::<String,_>("etype")),
+            "state": r.get::<String,_>("state"),
+            "opened_at": r.get::<chrono::DateTime<chrono::Utc>,_>("opened_at"),
+            "lat": r.try_get::<f64,_>("lat").ok(), "lon": r.try_get::<f64,_>("lon").ok(),
+            "accuracy_m": r.try_get::<f64,_>("accuracy_m").ok(),
+            "indoor": r.try_get::<bool,_>("indoor").unwrap_or(false),
+            "zone": r.try_get::<String,_>("zone").ok(),
+            "beacon_uid": r.try_get::<String,_>("beacon_uid").ok(),
+            "device": r.try_get::<String,_>("device_label").ok()
+                .or_else(|| r.try_get::<String,_>("device_ext").ok()),
+            "person": r.try_get::<String,_>("person").ok(),
+            "site": r.try_get::<String,_>("site").ok(),
+        })).collect();
+    Ok(Json(json!({"from":from,"to":to,"alarms":out})))
+}
+
+// ============ Beacon indoor — CRUD (admin configura tutto) ============
+#[derive(Deserialize)]
+pub struct BeaconReq {
+    pub id: Option<Uuid>, pub beacon_uid: String, pub zone_name: String,
+    pub site_id: Option<Uuid>, pub lat: Option<f64>, pub lon: Option<f64>, pub floor: Option<String>,
+}
+pub async fn list_beacons(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor"|"responsabile") {
+        return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato"));
+    }
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query(
+        "SELECT b.id,b.beacon_uid,b.zone_name,b.site_id,b.lat,b.lon,b.floor,s.name AS site
+         FROM app.beacons b LEFT JOIN app.sites s ON s.id=b.site_id ORDER BY b.zone_name")
+        .fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id": r.get::<Uuid,_>("id"), "beacon_uid": r.get::<String,_>("beacon_uid"),
+        "zone_name": r.get::<String,_>("zone_name"),
+        "site_id": r.try_get::<Uuid,_>("site_id").ok(), "site": r.try_get::<String,_>("site").ok(),
+        "lat": r.try_get::<f64,_>("lat").ok(), "lon": r.try_get::<f64,_>("lon").ok(),
+        "floor": r.try_get::<String,_>("floor").ok(),
+    })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn save_beacon(State(st): State<AppState>, h: HeaderMap, Json(b): Json<BeaconReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
+    if b.beacon_uid.trim().is_empty() || b.zone_name.trim().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "beacon_uid e zona richiesti"));
+    }
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // upsert per (tenant, beacon_uid): un beacon = una zona
+    let row = sqlx::query(
+        "INSERT INTO app.beacons(tenant_id,beacon_uid,zone_name,site_id,lat,lon,floor)
+         VALUES($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (tenant_id,beacon_uid) DO UPDATE SET
+            zone_name=EXCLUDED.zone_name, site_id=EXCLUDED.site_id,
+            lat=EXCLUDED.lat, lon=EXCLUDED.lon, floor=EXCLUDED.floor
+         RETURNING id")
+        .bind(tid).bind(b.beacon_uid.trim()).bind(b.zone_name.trim())
+        .bind(b.site_id).bind(b.lat).bind(b.lon).bind(b.floor.as_deref())
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "beacon_save", json!({"beacon_uid":b.beacon_uid,"zone":b.zone_name})).await;
+    Ok(Json(json!({"id": row.get::<Uuid,_>("id")})))
+}
+pub async fn delete_beacon(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.beacons WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n == 0 { return Err(err(StatusCode::NOT_FOUND, "beacon inesistente")); }
+    audit(&st, tid, &s.email, "beacon_delete", json!({"id":id})).await;
+    Ok(Json(json!({"ok":true})))
+}
 
 // ----------------------------- #4 Geocoding inverso (Nominatim/OSM) -----------------------------
 /// Indirizzo da coordinate. Cache globale (coordinate arrotondate) per rispettare
@@ -2364,6 +2682,7 @@ pub async fn ingest_thingsboard(
         lat: None, lon: None, accuracy_m: None,
         correlation: corr,
         payload: b.clone(),
+        indoor: false, beacon_uid: None, zone: None,
     }).await
 }
 

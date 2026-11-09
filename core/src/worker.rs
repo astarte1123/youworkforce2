@@ -107,6 +107,7 @@ async fn conn_watchdog(st: &AppState, tid: Uuid, conn_down_after: i32, now: Date
                     lat: None, lon: None, accuracy_m: None,
                     correlation: correlation.clone(),
                     payload: json!({"watchdog":"connessione","down_since":ds,"conn_down_after_s":conn_down_after}),
+                    indoor: false, beacon_uid: None, zone: None,
                 }).await;
                 // segna aperto SOLO se l'incidente e' stato davvero creato (+ outbox).
                 let opened = matches!(&res, Ok(j) if j.0.get("incident_id").and_then(|v| v.as_str()).is_some());
@@ -281,6 +282,10 @@ async fn poll_tenant(st: &AppState, tid: Uuid, base: &str, user: &str, pass: &st
                     let etype = api::map_traccar_etype(&amap, etype_t, alarm, battery);
                     let lat = pos.and_then(|p| p.get("latitude")).and_then(|v| v.as_f64());
                     let lon = pos.and_then(|p| p.get("longitude")).and_then(|v| v.as_f64());
+                    // indoor/beacon come nel push path: il beacon della posizione localizza per zona
+                    let attrs = pos.and_then(|p| p.get("attributes")).or_else(|| e.get("attributes"));
+                    let (indoor, beacon_uid, zone, anchor) = api::resolve_indoor(st, tid, attrs).await;
+                    let (lat, lon) = if indoor { if let Some((a,o))=anchor {(Some(a),Some(o))} else {(lat,lon)} } else {(lat,lon)};
                     let srcev = format!("traccar-evt-{}", eid);
                     let _ = api::persist_ingest(st, tid, api::Normalized{
                         source: "traccar".into(),
@@ -292,6 +297,7 @@ async fn poll_tenant(st: &AppState, tid: Uuid, base: &str, user: &str, pass: &st
                         lat, lon, accuracy_m: None,
                         correlation: srcev,
                         payload: e.clone(),
+                        indoor, beacon_uid, zone,
                     }).await;
                     if eid > max_evt { max_evt = eid; }
                 }
@@ -329,6 +335,7 @@ async fn poll_tenant(st: &AppState, tid: Uuid, base: &str, user: &str, pass: &st
                         lat, lon, accuracy_m: None,
                         correlation: srcev,
                         payload: json!({"watchdog":"silenzio","last_update":lu,"silence_after_s":silence_after}),
+                        indoor: false, beacon_uid: None, zone: None,
                     }).await;
                 }
             }

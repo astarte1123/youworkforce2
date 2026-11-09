@@ -7,6 +7,8 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.min.css" referrerpolicy="no-referrer">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" referrerpolicy="no-referrer"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js" referrerpolicy="no-referrer"></script>
 </head><body>
 <div id="root"></div>
 <div id="scrim" class="scrim"></div>
@@ -235,8 +237,7 @@ async function openIncident(id){
     ${canOp?`<div class="row" style="gap:6px;margin-top:6px"><button class="btn ghost small" onclick="gaAck('${id}')">Ack</button>
       <button class="btn ghost small" onclick="gaEsc('${id}')">Escalate</button></div>`:''}
     <h3 style="margin:18px 0 10px">Timeline</h3>
-    <ul class="timeline">${tl.map(e=>`<li><div class="t">${esc(e.kind.replace(/_/g,' '))}</div>
-      <div class="small mut">${esc(fmtDetail(e.detail))}</div></li>`).join('')||'<li class="mut">—</li>'}</ul>`);
+    <ul class="timeline">${tl.map(e=>{const dt=fmtDetail(e.kind,e.detail);return `<li><div class="t">${tlTitle(e.kind)}${e.at?` <span class="small mut" style="font-weight:400">· ${new Date(e.at).toLocaleTimeString('it-IT')}</span>`:''}</div>${dt?`<div class="small mut">${dt}</div>`:''}</li>`;}).join('')||'<li class="mut">—</li>'}</ul>`);
   loadGaStatus(id);
 }
 const GA_LAB={StatusUnacknowledged:'🔴 non preso in carico',StatusAcknowledged:'🟡 preso in carico (ack)',StatusClosed:'🟢 chiuso'};
@@ -246,8 +247,39 @@ async function loadGaStatus(id){ const el=$('#gaStatus'); if(!el)return;
   try{ const r=await api('/incidents/'+id+'/goalert-status');
     el.innerHTML = r.available ? (GA_LAB[r.status]||esc(r.status||'—')) : '<span class="mut">'+esc(r.reason||'n/d')+'</span>'; }
   catch(e){ el.innerHTML='<span class="mut">n/d</span>'; } }
-function fmtDetail(d){ if(!d)return''; if(d.body)return d.body; if(d.outcome)return 'esito: '+d.outcome;
-  if(d.by)return Object.entries(d).map(([k,v])=>`${k}: ${v}`).join(', '); return JSON.stringify(d); }
+// Timeline leggibile per operatori non tecnici: etichette in italiano, niente JSON grezzo.
+const TL_LAB={
+  notify_requested:'📣 Allarme in uscita verso la reperibilità',
+  goalert_notify:'📣 Allarme in uscita verso la reperibilità',
+  goalert_sent:'✅ Consegnato al sistema di reperibilità',
+  goalert_closed:'🟢 Allarme rientrato (chiuso)',
+  human_ack:'🙋 Preso in carico',
+  transition:'🔁 Cambio stato',
+  assegnazione:'👤 Assegnazione',
+  note:'📝 Nota',
+  notify_failed:'⛔ Notifica non riuscita — ritentativo in corso',
+};
+function tlTitle(k){ return TL_LAB[k] || esc(String(k||'').replace(/_/g,' ')); }
+function fmtDetail(k,d){ if(!d) return '';
+  switch(k){
+    case 'notify_requested': case 'goalert_notify':
+      return d.by?('attivato da '+esc(d.by)):'';
+    case 'goalert_sent':
+      return (d.status>=200&&d.status<300)?'notifica ricevuta dal sistema di reperibilità'
+             :('invio non riuscito'+(d.status?(' (codice '+esc(String(d.status))+')'):''));
+    case 'goalert_closed': return 'allarme rientrato, reperibilità avvisata';
+    case 'human_ack': return d.by?('da '+esc(d.by)):'';
+    case 'transition':
+      return [d.to?('→ '+esc(d.to)):'', d.outcome?('esito: '+esc(d.outcome)):'', d.by?('da '+esc(d.by)):''].filter(Boolean).join(' · ');
+    case 'note': return d.body?esc(d.body):'';
+    case 'assegnazione': return (d.to||d.user||d.body)?esc(d.to||d.user||d.body):'';
+    case 'notify_failed': return d.reason?('motivo: '+esc(d.reason)):'';
+    default:
+      if(d.body) return esc(d.body);
+      if(d.outcome) return 'esito: '+esc(d.outcome);
+      return ''; // mai JSON grezzo in UI
+  }
+}
 async function incAssign(id){ const u=$('#asgSel').value||null;
   try{await api('/incidents/'+id+'/assign',{method:'POST',body:JSON.stringify({user_id:u})}); toast('Assegnazione aggiornata','ok'); openIncident(id); route();}catch(e){toast(e.message,'bad');} }
 async function incNote(id){ const b=$('#noteInp').value.trim(); if(!b)return;
@@ -256,81 +288,261 @@ async function incAck(id){ try{await api('/incidents/'+id+'/ack',{method:'POST'}
 async function incClose(id){ const o=prompt('Esito chiusura?','risolto sul posto'); if(o==null)return;
   try{await api('/incidents/'+id+'/close',{method:'POST',body:JSON.stringify({outcome:o})}); toast('Incidente chiuso','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 
-// ---------------- Report (#5) ----------------
+// ---------------- Report (module-aware) ----------------
+// Il tipo di report dipende dai moduli attivi: col modulo allarmi il report
+// principale e' quello degli ALLARMI (DVR), non percorsi/soste/presenza.
+// Registry estensibile: moduli futuri aggiungono qui le loro estrazioni.
+const REPORT_KINDS=[
+  {key:'allarmi',   label:'Allarmi (incidenti · DVR)',               need:['loneworker','traccar']},
+  {key:'movimenti', label:'Movimenti (percorsi, soste, presenza)',  need:['traccar']},
+];
+const ALARM_ETYPES=['sos','man_down','immobilita','mancato_checkin','sensore_critico','manomissione_badge',
+  'perdita_alimentazione','jamming','perdita_contatto','traccar_conn_down','batteria_critica','batteria_bassa'];
+const ETYPE_LAB={sos:'SOS / richiesta soccorso',man_down:'Uomo a terra (man down)',immobilita:'Immobilità prolungata',
+  mancato_checkin:'Check-in mancato',sensore_critico:'Sensore critico',manomissione_badge:'Manomissione / rimozione badge',
+  perdita_alimentazione:'Perdita alimentazione',jamming:'Jamming / disturbo segnale',perdita_contatto:'Perdita contatto (badge silente)',
+  traccar_conn_down:'Sistema di tracciamento irraggiungibile',batteria_critica:'Batteria in esaurimento (critico)',batteria_bassa:'Batteria bassa'};
+function etLab(e){ return ETYPE_LAB[e]||e; }
+function fmtD(s){ return s? new Date(s).toLocaleString('it-IT') : '—'; }
+function fmtResp(sec){ if(sec==null) return '—'; return sec>=60 ? Math.floor(sec/60)+'m '+(sec%60)+'s' : sec+'s'; }
 async function vReport(v){
-  const D=(await api('/devices').catch(()=>[])).filter(d=>d.source==='traccar');
+  const mods=await api('/modules').catch(()=>[]);
+  const active=new Set((mods||[]).filter(m=>m.state==='attivo').map(m=>m.code));
+  const KINDS=REPORT_KINDS.filter(k=>k.need.some(c=>active.has(c)));
   const today=new Date().toISOString().slice(0,10);
   const wago=new Date(Date.now()-7*864e5).toISOString().slice(0,10);
-  v.innerHTML=`<div class="page-h"><div><h1>Report</h1><div class="mut">percorsi, soste, presenza · export CSV</div></div></div>
+  if(!KINDS.length){ v.innerHTML=`<div class="page-h"><div><h1>Report</h1></div></div><div class="card pad mut">Nessun modulo che produce report è attivo.</div>`; return; }
+  v.innerHTML=`<div class="page-h"><div><h1>Report</h1><div class="mut">export CSV · TXT · PDF</div></div></div>
     <div class="card pad"><div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
-      <div class="field"><label>Dispositivo</label><select id="rDev">${D.map(d=>`<option value="${d.id}">${esc(d.label||d.external_id)}</option>`).join('')||'<option value="">—</option>'}</select></div>
+      <div class="field"><label>Tipo di report</label><select id="rKind" onchange="reportKindChange()">${KINDS.map(k=>`<option value="${k.key}">${esc(k.label)}</option>`).join('')}</select></div>
       <div class="field"><label>Dal</label><input id="rFrom" type="date" value="${wago}"></div>
       <div class="field"><label>Al</label><input id="rTo" type="date" value="${today}"></div>
+      <div id="rSub" class="row" style="gap:10px;align-items:flex-end"></div>
       <button class="btn" onclick="runReport()">Genera</button>
     </div></div>
     <div id="repOut" class="col" style="margin-top:16px"></div>`;
+  reportKindChange();
+}
+async function reportKindChange(){
+  const k=$('#rKind').value, sub=$('#rSub'); $('#repOut').innerHTML='';
+  if(k==='allarmi'){
+    sub.innerHTML=`<div class="field"><label>Tipo allarme</label><select id="aEtype"><option value="">Tutti</option>${ALARM_ETYPES.map(e=>`<option value="${e}">${esc(etLab(e))}</option>`).join('')}</select></div>
+      <div class="field"><label>Stato</label><select id="aState"><option value="">Tutti</option><option value="aperto">Aperti</option><option value="chiuso">Chiusi</option></select></div>`;
+  } else {
+    const D=(await api('/devices').catch(()=>[])).filter(d=>d.source==='traccar');
+    sub.innerHTML=`<div class="field"><label>Dispositivo</label><select id="rDev">${D.map(d=>`<option value="${d.id}">${esc(d.label||d.external_id)}</option>`).join('')||'<option value="">—</option>'}</select></div>`;
+  }
 }
 function repRange(){ const f=$('#rFrom').value+'T00:00:00Z', t=$('#rTo').value+'T23:59:59Z'; return 'from='+f+'&to='+t; }
-async function runReport(){
-  const dev=$('#rDev').value, rng=repRange(), out=$('#repOut');
+function alarmQuery(){ const ef=encodeURIComponent($('#aEtype')?.value||''), sf=encodeURIComponent($('#aState')?.value||''); return repRange()+'&etype='+ef+'&state='+sf; }
+function runReport(){ ($('#rKind').value==='allarmi'?runAlarmReport:runMoveReport)(); }
+// download robusto (manda x-tenant-slug anche senza sottodominio)
+async function downloadFile(path, filename){
+  try{ const r=await fetch('/api'+path,{headers:{'x-tenant-slug':store.slug},credentials:'same-origin'});
+    if(!r.ok){ toast('Export non riuscito ('+r.status+')','bad'); return; }
+    const b=await r.blob(), u=URL.createObjectURL(b), a=document.createElement('a');
+    a.href=u; a.download=filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u);
+  }catch(e){ toast(e.message,'bad'); }
+}
+async function runAlarmReport(){
+  const q=alarmQuery(), out=$('#repOut'); out.innerHTML='<div class="card pad mut">Genero…</div>';
+  try{
+    const d=await api('/reports/alarms?'+q); const sm=d.summary;
+    const rows=(d.rows||[]).map(r=>`<tr>
+      <td class="small">${fmtD(r.opened_at)}</td>
+      <td>${esc(r.label)}${ALARM_ETYPES.indexOf(r.etype)>=0&&r.priority>=3?' <span class="chip s-critico">critico</span>':''}</td>
+      <td class="small">${r.state==='chiuso'?'🟢 chiuso':'🔴 aperto'}</td>
+      <td class="small">${r.ack_at?fmtD(r.ack_at):'<span class="mut">non preso</span>'}</td>
+      <td class="small">${fmtResp(r.response_s)}</td>
+      <td class="small">${r.closed_at?fmtD(r.closed_at):'<span class="mut">aperto</span>'}</td>
+      <td class="small">${esc(r.site||'—')}</td>
+      <td class="small">${esc(r.assignee||'—')}</td>
+      <td class="small">${esc(r.outcome||'')}</td></tr>`).join('')||'<tr><td colspan="9" class="empty">Nessun allarme nel periodo.</td></tr>';
+    out.innerHTML=`
+      <div class="card"><div class="card-h"><h2>Allarmi — ${esc(d.tenant)}</h2>
+        <div class="row" style="gap:6px">
+          <button class="btn ghost small" onclick="downloadFile('/reports/alarms.csv?${q}','allarmi.csv')">CSV</button>
+          <button class="btn ghost small" onclick="downloadFile('/reports/alarms.txt?${q}','allarmi.txt')">TXT</button>
+          <button class="btn small" onclick="pdfAlarms()">PDF</button></div></div>
+        <div class="pad"><div class="row" style="gap:20px;flex-wrap:wrap">
+          ${kpi('alert','Totale',sm.totale)}${kpi('alert','Critici',sm.critici)}${kpi('clipboard','Aperti',sm.aperti)}${kpi('receipt','Presi in carico',sm.presi_in_carico+'/'+sm.totale)}${kpi('clock','Tempo medio risposta',fmtResp(sm.ack_medio_s))}</div>
+          <div class="small mut" style="margin-top:8px">Periodo ${fmtD(d.from)} — ${fmtD(d.to)}</div></div>
+        <table class="table"><thead><tr><th>Aperto il</th><th>Tipo</th><th>Stato</th><th>Preso in carico</th><th>Risposta</th><th>Chiuso il</th><th>Sede</th><th>Assegnato a</th><th>Esito</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }catch(e){ out.innerHTML='<div class="card pad" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
+}
+async function pdfAlarms(){
+  try{
+    const d=await api('/reports/alarms?'+alarmQuery());
+    if(!window.jspdf){ toast('Libreria PDF non caricata','bad'); return; }
+    const {jsPDF}=window.jspdf, doc=new jsPDF({orientation:'landscape'}); const sm=d.summary;
+    doc.setFontSize(16); doc.setTextColor(20); doc.text('Report Allarmi — YouWorkforce', 14, 16);
+    doc.setFontSize(10); doc.setTextColor(90);
+    doc.text('Tenant: '+d.tenant, 14, 24);
+    doc.text('Periodo: '+fmtD(d.from)+'  —  '+fmtD(d.to), 14, 29);
+    doc.text('Generato il: '+new Date().toLocaleString('it-IT'), 14, 34);
+    doc.setTextColor(20);
+    doc.text(`Totale: ${sm.totale}    Critici: ${sm.critici}    Aperti: ${sm.aperti}    Presi in carico: ${sm.presi_in_carico}/${sm.totale}    Tempo medio risposta: ${fmtResp(sm.ack_medio_s)}`, 14, 42);
+    const body=(d.rows||[]).map(r=>[fmtD(r.opened_at),r.label,r.state,r.ack_at?fmtD(r.ack_at):'non preso',fmtResp(r.response_s),r.closed_at?fmtD(r.closed_at):'aperto',r.site||'—',r.assignee||'—',r.outcome||'']);
+    doc.autoTable({startY:47, head:[['Aperto il','Tipo','Stato','Preso in carico','Risposta','Chiuso il','Sede','Assegnato a','Esito']], body,
+      styles:{fontSize:7,cellPadding:1.5}, headStyles:{fillColor:[30,41,59]}, alternateRowStyles:{fillColor:[245,247,250]},
+      didDrawPage:(data)=>{ doc.setFontSize(8); doc.setTextColor(150); doc.text('YouWorkforce · documento per DVR / primo soccorso', 14, doc.internal.pageSize.getHeight()-6); }});
+    doc.save('allarmi-'+(d.tenant||'tenant').toLowerCase().replace(/[^a-z0-9]+/g,'-')+'.pdf');
+  }catch(e){ toast(e.message,'bad'); }
+}
+async function runMoveReport(){
+  const dev=$('#rDev')?.value, rng=repRange(), out=$('#repOut');
   if(!dev){ out.innerHTML='<div class="card pad mut">Nessun dispositivo Traccar.</div>'; return; }
   out.innerHTML='<div class="card pad mut">Genero…</div>';
   try{
     const [route,pres]=await Promise.all([api('/reports/route?device='+dev+'&'+rng),api('/reports/presence?'+rng)]);
     const km=(route.total_m/1000).toFixed(2);
     const stops=(route.stops||[]).map(s=>`<tr><td class="small">${new Date(s.from).toLocaleString('it-IT')}</td><td class="small">${s.minutes} min</td><td class="small mono">${s.lat.toFixed(4)},${s.lon.toFixed(4)}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">nessuna sosta</td></tr>';
-    const ev=(pres.events||[]).filter(e=>true).map(e=>`<tr><td class="small">${new Date(e.at).toLocaleString('it-IT')}</td><td>${e.inside?'🟢 ingresso':'🔴 uscita'}</td><td class="small">${esc(e.external_id)}</td><td class="small">${esc(e.geofence)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessun evento di presenza</td></tr>';
+    const ev=(pres.events||[]).map(e=>`<tr><td class="small">${new Date(e.at).toLocaleString('it-IT')}</td><td>${e.inside?'🟢 ingresso':'🔴 uscita'}</td><td class="small">${esc(e.external_id)}</td><td class="small">${esc(e.geofence)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessun evento di presenza</td></tr>';
     out.innerHTML=`
       <div class="card"><div class="card-h"><h2>Percorso</h2>
-        <a class="btn ghost small" href="/api/reports/route.csv?device=${dev}&${rng}">Esporta CSV</a></div>
+        <button class="btn ghost small" onclick="downloadFile('/reports/route.csv?device=${dev}&${rng}','percorso.csv')">CSV</button></div>
         <div class="pad"><div class="row" style="gap:20px;flex-wrap:wrap">
           ${kpi('home','Distanza',km+' km')}${kpi('clipboard','Punti',route.points)}${kpi('receipt','Durata',route.duration_min+' min')}${kpi('alert','Soste',(route.stops||[]).length)}</div></div>
         <table class="table"><thead><tr><th>Sosta dalle</th><th>Durata</th><th>Posizione</th></tr></thead><tbody>${stops}</tbody></table></div>
       <div class="card" style="margin-top:16px"><div class="card-h"><h2>Presenza</h2>
-        <a class="btn ghost small" href="/api/reports/presence.csv?${rng}">Esporta CSV</a></div>
+        <button class="btn ghost small" onclick="downloadFile('/reports/presence.csv?${rng}','presenza.csv')">CSV</button></div>
         <table class="table"><thead><tr><th>Quando</th><th>Evento</th><th>Dispositivo</th><th>Geofence</th></tr></thead><tbody>${ev}</tbody></table></div>`;
   }catch(e){ out.innerHTML='<div class="card pad" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
 }
 
 // ---------------- Mappa (Leaflet/OpenStreetMap) ----------------
-let MAP=null, MARK={}, MAPTRAIL=null, GFLAYER=null, ADDMODE=false, CLUSTER=null, REPLAY=null;
+// Due modalità: ALLARMI (dove si sono verificati, indoor/outdoor) e DISPOSITIVI (live+geofence).
+let MAP=null, MARK={}, MAPTRAIL=null, GFLAYER=null, ADDMODE=false, CLUSTER=null, REPLAY=null, ALARMLAYER=null, AMARK={}, MAPMODE='allarmi';
 async function vMappa(v){
   const admin=can(['tenant_admin']);
+  const mods=await api('/modules').catch(()=>[]);
+  const alarmsOn=(mods||[]).some(m=>m.state==='attivo'&&['loneworker','traccar'].includes(m.code));
+  if(!alarmsOn) MAPMODE='dispositivi';
+  v.innerHTML=`<div class="page-h"><div><h1>Mappa</h1><div class="mut" id="mapSub">—</div></div>
+    <div class="row" style="gap:8px">
+      ${alarmsOn?`<button class="btn ghost small ${MAPMODE==='allarmi'?'ok':''}" onclick="setMapMode('allarmi')">🚨 Allarmi</button>
+        <button class="btn ghost small ${MAPMODE==='dispositivi'?'ok':''}" onclick="setMapMode('dispositivi')">📟 Dispositivi</button>`:''}
+      ${admin&&alarmsOn?`<button class="btn ghost small" onclick="beaconAdmin()">⚙ Zone indoor</button>`:''}
+    </div></div>
+    <div class="row" id="mapCtl" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px"></div>
+    <div class="grid" style="grid-template-columns:1fr 300px;gap:16px">
+      <div class="card" style="padding:0;overflow:hidden"><div id="map" style="height:68vh;width:100%"></div></div>
+      <div class="card pad" style="height:72vh;overflow:auto" id="mapSide"></div></div>`;
+  if(typeof L==='undefined'){ $('#map').innerHTML='<div class="pad mut">Libreria mappa non disponibile (serve connessione).</div>'; return; }
+  setTimeout(()=>{ initMap(); (MAPMODE==='allarmi'?renderAlarms:renderDevices)(admin); },60);
+}
+function initMap(){
+  if(MAP){ try{MAP.remove();}catch(e){} MAP=null; }
+  MARK={}; AMARK={}; ALARMLAYER=null; GFLAYER=null; CLUSTER=null; ADDMODE=false; MAPTRAIL=null;
+  MAP=L.map('map',{zoomControl:true}).setView([45.46,9.19],6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(MAP);
+}
+function setMapMode(m){ MAPMODE=m; route(); }
+// ---- Modalità ALLARMI ----
+function alarmIcon(a){
+  const emo = a.etype==='sos'?'🆘':a.etype==='man_down'?'🧍':(a.indoor?'🏭':'⚠️');
+  const bg = (a.etype==='sos'||a.etype==='man_down')?'#dc2626':'#ea580c';
+  const ring = a.indoor?'#1e3a8a':'#111';
+  return L.divIcon({className:'', iconSize:[28,28], iconAnchor:[14,14],
+    html:`<div style="background:${bg};border:3px solid ${ring};border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 1px 5px rgba(0,0,0,.45)">${emo}</div>`});
+}
+function alarmPopup(a){
+  const where=a.indoor
+    ? '🏭 <b>indoor</b> · '+esc(a.zone||'zona non mappata')+(a.beacon_uid?(' <span style="color:#888">['+esc(a.beacon_uid)+']</span>'):'')
+    : '📍 outdoor · '+(a.lat!=null?a.lat.toFixed(5)+', '+a.lon.toFixed(5):'posizione n/d');
+  return `<b>${esc(a.label)}</b><br>
+    <span style="color:#666">${new Date(a.opened_at).toLocaleString('it-IT')} · ${a.state==='chiuso'?'🟢 chiuso':'🔴 aperto'}</span><br>
+    ${where}<br>
+    ${a.device?('📟 '+esc(a.device)+'<br>'):''}
+    ${a.person?('👤 '+esc(a.person)+'<br>'):'<span style="color:#888">persona non associata al device</span><br>'}
+    <a href="#" onclick="openIncident('${a.id}');return false">Apri incidente</a>`;
+}
+async function renderAlarms(){
+  $('#mapSub').textContent='allarmi georeferenziati · indoor/outdoor';
+  const today=new Date().toISOString().slice(0,10), wago=new Date(Date.now()-7*864e5).toISOString().slice(0,10);
+  $('#mapCtl').innerHTML=`<div class="field"><label>Dal</label><input id="mFrom" type="date" value="${wago}"></div>
+    <div class="field"><label>Al</label><input id="mTo" type="date" value="${today}"></div>
+    <div class="field"><label>Tipo</label><select id="mEtype"><option value="">Tutti i critici</option><option value="sos">SOS</option><option value="man_down">Uomo a terra</option>${ALARM_ETYPES.filter(e=>e!=='sos'&&e!=='man_down').map(e=>`<option value="${e}">${esc(etLab(e))}</option>`).join('')}</select></div>
+    <button class="btn small" onclick="loadAlarmsOnMap()">Aggiorna</button>`;
+  loadAlarmsOnMap();
+}
+async function loadAlarmsOnMap(){
+  if(ALARMLAYER){ try{MAP.removeLayer(ALARMLAYER);}catch(e){} }
+  ALARMLAYER=L.layerGroup().addTo(MAP); AMARK={};
+  const f=$('#mFrom').value+'T00:00:00Z', t=$('#mTo').value+'T23:59:59Z', e=encodeURIComponent($('#mEtype')?.value||'');
+  const side=$('#mapSide'); side.innerHTML='<div class="small mut">Carico…</div>';
+  try{
+    const d=await api('/alarms/map?from='+f+'&to='+t+'&etype='+e);
+    const al=d.alarms||[]; const pts=[]; const noGeo=[];
+    al.forEach(a=>{
+      if(a.lat==null||a.lon==null){ noGeo.push(a); return; }
+      const m=L.marker([a.lat,a.lon],{icon:alarmIcon(a)}).bindPopup(alarmPopup(a));
+      AMARK[a.id]=m; m.addTo(ALARMLAYER); pts.push([a.lat,a.lon]);
+    });
+    if(pts.length) MAP.fitBounds(pts,{padding:[40,40],maxZoom:16});
+    const row=a=>`<div class="clk" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px" onclick="focusAlarm('${a.id}',${a.lat},${a.lon})">
+      <div class="spread"><b class="small">${esc(a.label)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString('it-IT')}</span></div>
+      <div class="small">${a.indoor?'🏭 indoor · '+esc(a.zone||'zona non mappata'):'📍 outdoor'} · ${a.state==='chiuso'?'🟢 chiuso':'🔴 aperto'}</div>
+      <div class="small mut">${a.device?('📟 '+esc(a.device)):''}${a.person?(' · 👤 '+esc(a.person)):''}</div></div>`;
+    side.innerHTML=`<h2 style="margin-bottom:8px">Allarmi (${al.length})</h2>
+      ${noGeo.length?`<div class="small" style="color:var(--bad);margin:6px 0">⚠ ${noGeo.length} indoor senza posizione (beacon non mappato) — registra la zona in “⚙ Zone indoor”:</div>${noGeo.map(a=>`<div style="border:1px dashed var(--bad);border-radius:8px;padding:8px;margin-bottom:6px"><div class="spread"><b class="small">${esc(a.label)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString('it-IT')}</span></div><div class="small">beacon <span class="mono">${esc(a.beacon_uid||'—')}</span> · ${a.device?esc(a.device):''}</div></div>`).join('')}<hr style="border:none;border-top:1px solid var(--line);margin:8px 0">`:''}
+      ${al.filter(a=>a.lat!=null).map(row).join('')||(noGeo.length?'':'<div class="small mut">Nessun allarme nel periodo.</div>')}`;
+  }catch(err){ side.innerHTML='<div class="small" style="color:var(--bad)">'+esc(err.message)+'</div>'; }
+}
+function focusAlarm(id,lat,lon){ if(lat==null||lat==='null')return; MAP.setView([lat,lon],18); const m=AMARK[id]; if(m)m.openPopup(); }
+// ---- Modalità DISPOSITIVI (live + geofence) ----
+async function renderDevices(admin){
+  $('#mapSub').textContent='dispositivi live · geofence · presenza';
   const [D0,GF,PR]=await Promise.all([api('/devices').catch(()=>[]),api('/geofences').catch(()=>[]),api('/presence').catch(()=>[])]);
   const D=D0.filter(d=>d.last_lat!=null&&d.last_lon!=null);
-  v.innerHTML=`<div class="page-h"><div><h1>Mappa</h1><div class="mut">${D.length} dispositivi · ${GF.length} geofence · ${PR.length} presenze · live</div></div>
-    ${admin?`<button class="btn ghost" id="addGf">+ Geofence (cerchio)</button>`:''}</div>
-    <div class="grid" style="grid-template-columns:1fr 280px;gap:16px">
-      <div class="card" style="padding:0;overflow:hidden">
-        <div id="replayBar" class="row hide" style="gap:8px;padding:8px 10px;border-bottom:1px solid var(--line);align-items:center"></div>
-        <div id="map" style="height:68vh;width:100%"></div></div>
-      <div class="card pad" style="height:72vh;overflow:auto"><h2 style="margin-bottom:8px">Presenza</h2>
-        ${PR.length?PR.map(p=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
-          <b class="small">${esc(p.device||p.external_id)}</b><div class="small mut">${esc(p.geofence)} · da ${new Date(p.since).toLocaleTimeString('it-IT')}</div>
-          ${p.user?`<div class="small mut">👤 ${esc(p.user)}</div>`:''}</div>`).join(''):'<div class="small mut">Nessun dispositivo dentro una geofence.</div>'}
-      </div></div>`;
-  MARK={}; MAPTRAIL=null; GFLAYER=null; ADDMODE=false;
-  if(typeof L==='undefined'){ $('#map').innerHTML='<div class="pad mut">Libreria mappa non disponibile (serve connessione).</div>'; return; }
-  setTimeout(()=>{
-    MAP=L.map('map',{zoomControl:true}).setView([45.46,9.19],6);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(MAP);
-    GFLAYER=L.layerGroup().addTo(MAP);
-    GF.forEach(g=>drawGeofence(g,admin));
-    CLUSTER = (typeof L.markerClusterGroup==='function') ? L.markerClusterGroup({maxClusterRadius:50}) : L.layerGroup();
-    const pts=[];
-    D.forEach(d=>{
-      const m=L.marker([d.last_lat,d.last_lon]);
-      m.bindPopup(popupHtml(d));
-      m.on('popupopen',()=>{ const b=document.getElementById('trailBtn_'+d.id); if(b)b.onclick=()=>drawTrail(d.id); });
-      MARK[d.id]=m; CLUSTER.addLayer(m); pts.push([d.last_lat,d.last_lon]);
-    });
-    MAP.addLayer(CLUSTER);
-    if(pts.length) MAP.fitBounds(pts,{padding:[40,40],maxZoom:15});
-    if(admin){ const btn=$('#addGf'); if(btn) btn.onclick=()=>{ ADDMODE=!ADDMODE; btn.classList.toggle('ok',ADDMODE);
+  $('#mapCtl').innerHTML=admin?`<button class="btn ghost small" id="addGf">+ Geofence (cerchio)</button>`:'';
+  GFLAYER=L.layerGroup().addTo(MAP); GF.forEach(g=>drawGeofence(g,admin));
+  CLUSTER=(typeof L.markerClusterGroup==='function')?L.markerClusterGroup({maxClusterRadius:50}):L.layerGroup();
+  const pts=[];
+  D.forEach(d=>{ const m=L.marker([d.last_lat,d.last_lon]); m.bindPopup(popupHtml(d));
+    m.on('popupopen',()=>{ const b=document.getElementById('trailBtn_'+d.id); if(b)b.onclick=()=>drawTrail(d.id); });
+    MARK[d.id]=m; CLUSTER.addLayer(m); pts.push([d.last_lat,d.last_lon]); });
+  MAP.addLayer(CLUSTER);
+  if(pts.length) MAP.fitBounds(pts,{padding:[40,40],maxZoom:15});
+  $('#mapSide').innerHTML=`<h2 style="margin-bottom:8px">Presenza</h2>${PR.length?PR.map(p=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+    <b class="small">${esc(p.device||p.external_id)}</b><div class="small mut">${esc(p.geofence)} · da ${new Date(p.since).toLocaleTimeString('it-IT')}</div>
+    ${p.user?`<div class="small mut">👤 ${esc(p.user)}</div>`:''}</div>`).join(''):'<div class="small mut">Nessun dispositivo dentro una geofence.</div>'}`;
+  if(admin){ const btn=$('#addGf'); if(btn) btn.onclick=()=>{ ADDMODE=!ADDMODE; btn.classList.toggle('ok',ADDMODE);
       toast(ADDMODE?'Clicca sulla mappa per il centro del cerchio':'Modifica geofence annullata','ok'); };
-      MAP.on('click',e=>{ if(!ADDMODE)return; ADDMODE=false; const b=$('#addGf'); if(b)b.classList.remove('ok'); addCircle(e.latlng.lat,e.latlng.lng); }); }
-  },60);
+    MAP.on('click',e=>{ if(!ADDMODE)return; ADDMODE=false; const b=$('#addGf'); if(b)b.classList.remove('ok'); addCircle(e.latlng.lat,e.latlng.lng); }); }
 }
+// ---- Admin: zone indoor (beacon) ----
+async function beaconAdmin(){
+  let B=[],S=[]; try{ [B,S]=await Promise.all([api('/beacons'),api('/sites').catch(()=>[])]); }catch(e){ toast(e.message,'bad'); return; }
+  const siteOpts=['<option value="">— nessuna sede —</option>'].concat(S.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`)).join('');
+  const rows=B.map(b=>`<tr><td class="small mono">${esc(b.beacon_uid)}</td><td class="small">${esc(b.zone_name)}</td>
+    <td class="small">${esc(b.site||'—')}${b.floor?(' · p.'+esc(b.floor)):''}</td>
+    <td class="small">${b.lat!=null?b.lat.toFixed(4)+','+b.lon.toFixed(4):'<span class="mut">no ancora</span>'}</td>
+    <td><button class="btn ghost small" onclick="beaconDel('${b.id}')">✕</button></td></tr>`).join('')||'<tr><td colspan="5" class="empty">Nessuna zona beacon registrata.</td></tr>';
+  drawer('Zone indoor (beacon)', `
+    <div class="small mut" style="margin-bottom:8px">Mappa ogni beacon (id o <span class="mono">major-minor</span>) a una zona interna. Gli allarmi che arrivano con quel beacon vengono localizzati qui, anche senza GPS. L'ancora (lat/lon) posiziona il pin sulla mappa.</div>
+    <table class="table"><thead><tr><th>Beacon</th><th>Zona</th><th>Sede/Piano</th><th>Ancora</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    <h3 style="margin:14px 0 8px">Aggiungi / aggiorna zona</h3>
+    <div class="col" style="gap:8px">
+      <label class="small mut">Beacon UID (es. 100-200)<input id="bkUid" placeholder="major-minor o UUID"></label>
+      <label class="small mut">Zona<input id="bkZone" placeholder="Reparto verniciatura - Piano 1"></label>
+      <label class="small mut">Sede<select id="bkSite">${siteOpts}</select></label>
+      <div class="row" style="gap:8px">
+        <label class="small mut grow">Piano<input id="bkFloor"></label>
+        <label class="small mut grow">Lat ancora<input id="bkLat" type="number" step="any"></label>
+        <label class="small mut grow">Lon ancora<input id="bkLon" type="number" step="any"></label></div>
+      <button class="btn" onclick="beaconSave()">Salva zona</button>
+    </div>`);
+}
+async function beaconSave(){
+  const body={beacon_uid:$('#bkUid').value.trim(), zone_name:$('#bkZone').value.trim(),
+    site_id:$('#bkSite').value||null, floor:$('#bkFloor').value.trim()||null,
+    lat:$('#bkLat').value?Number($('#bkLat').value):null, lon:$('#bkLon').value?Number($('#bkLon').value):null};
+  if(!body.beacon_uid||!body.zone_name){ toast('Beacon e zona richiesti','bad'); return; }
+  try{ await api('/beacons',{method:'POST',body:JSON.stringify(body)}); toast('Zona salvata','ok'); beaconAdmin(); }catch(e){ toast(e.message,'bad'); }
+}
+async function beaconDel(id){ if(!confirm('Eliminare questa zona beacon?'))return;
+  try{ await api('/beacons/'+id,{method:'DELETE'}); toast('Eliminata','ok'); beaconAdmin(); }catch(e){ toast(e.message,'bad'); } }
 function drawGeofence(g,admin){
   if(!GFLAYER)return; let layer=null;
   if(g.kind==='circle'&&g.geom.radius){ layer=L.circle([g.geom.lat,g.geom.lon],{radius:g.geom.radius,color:'#16a34a',fillOpacity:0.08}); }
