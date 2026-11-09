@@ -252,16 +252,18 @@ pub async fn superadmin_login(State(st): State<AppState>, h: HeaderMap, Json(b):
 }
 
 #[derive(Deserialize)]
-pub struct CreateTenant { pub slug: String, pub name: String, pub admin_email: String, pub admin_password: String }
+pub struct CreateTenant { pub slug: String, pub name: String, pub admin_email: String, pub admin_password: String,
+    pub brand_primary: Option<String>, pub brand_ink: Option<String>, pub brand_soft: Option<String>, pub brand_accent: Option<String> }
 
 pub async fn create_tenant(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CreateTenant>) -> R {
     require_super(&st, &h).await?;
     let slug = b.slug.to_lowercase();
     const RESERVED: &[&str] = &["tenants","www","admin","api","app"];
     if RESERVED.contains(&slug.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "reserved slug")); }
+    let (bp, bi, bs, ba) = (clean_color(&b.brand_primary)?, clean_color(&b.brand_ink)?, clean_color(&b.brand_soft)?, clean_color(&b.brand_accent)?);
     let mut tx = st.owner_pool.begin().await.map_err(ise)?;
-    let trow = sqlx::query("INSERT INTO app.tenants(slug,name) VALUES($1,$2) RETURNING id")
-        .bind(&slug).bind(&b.name).fetch_one(&mut *tx).await
+    let trow = sqlx::query("INSERT INTO app.tenants(slug,name,brand_primary,brand_ink,brand_soft,brand_accent) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
+        .bind(&slug).bind(&b.name).bind(bp).bind(bi).bind(bs).bind(ba).fetch_one(&mut *tx).await
         .map_err(|_| err(StatusCode::CONFLICT, "slug exists"))?;
     let tid: Uuid = trow.get("id");
     // first admin via single-use invite is the production path; demo seeds directly.

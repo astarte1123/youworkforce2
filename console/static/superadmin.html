@@ -38,18 +38,35 @@ async function shell(){
         <div class="field grow"><label>Nome</label><input id="c_name" placeholder="Acme 2 Srl"></div>
         <div class="field grow"><label>Admin email</label><input id="c_email" placeholder="admin@acme2.loneworker.eu"></div>
         <div class="field"><label>Password</label><input id="c_pw" value="demo"></div>
-        <div class="field" style="flex:0"><label>&nbsp;</label><button class="btn" id="c_go">Crea</button></div>
-      </div></div></div>
+      </div>
+      <div class="row" style="margin-top:10px;align-items:flex-end;flex-wrap:wrap;gap:16px">
+        <div class="field"><label>Logo <span class="small mut">(PNG/SVG trasparente, consigliato 256×256px, max ~1&nbsp;MB)</span></label>
+          <input id="c_logo" type="file" accept="image/png,image/svg+xml,image/jpeg,image/webp"></div>
+        ${cColor('c_cp','Primario')}${cColor('c_ca','Accento')}${cColor('c_ck','Hover')}${cColor('c_cs','Soft')}
+        <div class="field" style="flex:0"><button class="btn" id="c_go">Crea tenant</button></div>
+      </div>
+      <div class="small mut" style="margin-top:6px">Colori: lascia vuoto per usare il default YouCo (rosso/rosa). Potrai modificare logo e colori anche dopo, da ⚙ Amministrazione.</div>
+    </div></div>
     <h2 style="margin-bottom:12px">Tenant</h2>
     <div id="list" class="col"></div>
   </div>`;
-  $('#c_go').onclick=create; load();
+  $('#c_go').onclick=create; ['c_cp','c_ca','c_ck','c_cs'].forEach(syncPair); load();
 }
 async function out(){ location.reload(); }
-async function create(){ try{
-  await api('/superadmin/tenants',{method:'POST',body:JSON.stringify({slug:$('#c_slug').value,name:$('#c_name').value,
-    admin_email:$('#c_email').value,admin_password:$('#c_pw').value})});
-  toast('Tenant creato','ok'); load(); }catch(e){ toast(e.message,'bad'); } }
+async function create(){
+  const hx=id=>{ const v=document.getElementById(id+'t').value.trim(); return v||null; };
+  try{
+    const r=await api('/superadmin/tenants',{method:'POST',body:JSON.stringify({
+      slug:$('#c_slug').value,name:$('#c_name').value,admin_email:$('#c_email').value,admin_password:$('#c_pw').value,
+      brand_primary:hx('c_cp'),brand_accent:hx('c_ca'),brand_ink:hx('c_ck'),brand_soft:hx('c_cs')})});
+    const f=$('#c_logo').files&&$('#c_logo').files[0];
+    if(f){ const res=await fetch('/api/superadmin/tenants/'+r.id+'/logo',{method:'POST',credentials:'include',
+        headers:{'x-csrf-token':csrfToken(),'content-type':f.type||'image/png'}, body:f});
+      if(!res.ok) toast('Tenant creato, ma logo non caricato ('+res.status+')','bad'); }
+    toast('Tenant creato','ok');
+    ['c_slug','c_name','c_email'].forEach(id=>$('#'+id).value=''); if($('#c_logo'))$('#c_logo').value='';
+    load();
+  }catch(e){ toast(e.message,'bad'); } }
 
 async function load(){
   TENANTS=await api('/superadmin/tenants').catch(()=>[]);
@@ -82,6 +99,12 @@ function tenantCard(t,mods){
     <div id="cfg_${t.id}" style="margin-top:8px"></div>
     </div></div>`;
 }
+// campo colore compatto per il form Crea tenant (hex vuoto = default YouCo)
+function cColor(id,label){ return `<div class="field" style="flex:0"><label>${label}</label>
+  <div class="row" style="gap:4px"><input id="${id}" type="color" value="#e2001a" style="width:40px;height:34px;padding:2px">
+    <input id="${id}t" placeholder="default" style="width:92px" class="mono small"></div></div>`; }
+function syncPair(cid){ const p=document.getElementById(cid), x=document.getElementById(cid+'t');
+  if(p&&x){ p.oninput=()=>x.value=p.value; x.oninput=()=>{ if(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(x.value)) p.value=x.value; }; } }
 function licChip(label,used,limit){
   if(limit==null) return `<span class="chip" title="${label}: nessun limite">${label} ${used}/∞</span>`;
   const over=used>limit;
