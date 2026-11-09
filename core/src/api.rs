@@ -611,6 +611,126 @@ pub async fn goalert_provision(State(st): State<AppState>, h: HeaderMap, Path(ti
     Ok(Json(json!({"ok":true,"escalation_policy":ep,"service_id":sid,"integration_key":key,"heartbeat_url":hb})))
 }
 
+// ---- "YouWorkforce pilota GoAlert": sincronizza Gruppi/Routing/Escalation -> GoAlert ----
+// Escapa una stringa per inserirla in un literal GraphQL.
+fn esc_gql(s: &str) -> String { s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ") }
+// GoAlert consente nei nomi solo lettere/cifre/trattino/underscore/apostrofo/spazio.
+fn ga_name(s: &str) -> String {
+    let cleaned: String = s.chars().map(|c| if c.is_ascii_alphanumeric() || c=='-' || c=='_' || c=='\'' || c==' ' { c } else { ' ' }).collect();
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+async fn gql_id(st: &AppState, base: &str, cookie: &str, q: &str, ptr: &str) -> Option<String> {
+    goalert::graphql(&st.http, base, cookie, q).await
+        .and_then(|v| v.pointer(ptr).and_then(|x| x.as_str().map(String::from)))
+}
+/// Costruisce in GoAlert, in modo idempotente, la struttura che rispecchia la config
+/// del tenant: ogni Gruppo allarme -> escalation policy (step sui membri, repeat da
+/// sos_escalation) + servizio + integration key; ogni routing etype->gruppo popola
+/// app.goalert_routing con la key del gruppo (il drain instrada gia' per etype).
+pub async fn sync_goalert(st: &AppState, tid: Uuid) -> Result<Value, (StatusCode, String)> {
+    let base = st.goalert_base.clone().ok_or_else(|| err(StatusCode::BAD_REQUEST, "GOALERT_BASE non configurato"))?;
+    let svc = sqlx::query("SELECT gql_user,gql_pass FROM app.goalert_services WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "GoAlert non provisionato per questo tenant (chiedi al superadmin: Provisiona GoAlert)"))?;
+    let gu: String = svc.get("gql_user");
+    let gp_enc: String = svc.try_get("gql_pass").unwrap_or_default();
+    let gp = st.secrets.decrypt(&gp_enc);
+    let cookie = goalert::login(&st.http, &base, &gu, &gp).await
+        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "login GoAlert fallito (credenziali di provisioning)"))?;
+    // parametri escalation dal tool loneworker/sos_escalation
+    let (_pri, repeat) = sos_escalation(st, tid).await;
+    let delay_min = if repeat > 0 { ((repeat + 59) / 60).max(1) } else { 15 };
+    let ep_repeat = if repeat > 0 { 3 } else { 0 };
+
+    let groups = sqlx::query("SELECT id,name,goalert_ep_id,goalert_service_id,goalert_key FROM app.alarm_groups WHERE tenant_id=$1 ORDER BY name")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let (mut n_users, mut n_groups, mut skipped) = (0i64, 0i64, 0i64);
+    for g in &groups {
+        let gid: Uuid = g.get("id");
+        let gname: String = g.get("name");
+        let members = sqlx::query("SELECT u.id,u.email,u.goalert_user_id FROM app.alarm_group_members m JOIN app.users u ON u.id=m.user_id WHERE m.group_id=$1 ORDER BY m.position")
+            .bind(gid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+        if members.is_empty() { skipped += 1; continue; }
+        // assicura l'utente GoAlert per ogni membro
+        let mut uids: Vec<String> = Vec::new();
+        for m in &members {
+            let uid: Uuid = m.get("id");
+            let email: String = m.get("email");
+            let mut g_uid: Option<String> = m.try_get("goalert_user_id").ok().flatten();
+            if g_uid.is_none() {
+                let uname = format!("yw_{}_{}", &tid.to_string()[..8], &uid.to_string()[..8]);
+                let pw = auth::new_token();
+                let q = format!("mutation{{createUser(input:{{username:\"{uname}\",password:\"{pw}\",name:\"{}\",email:\"{}\"}}){{id}}}}", esc_gql(&email), esc_gql(&email));
+                g_uid = gql_id(st, &base, &cookie, &q, "/data/createUser/id").await;
+                if let Some(ref id) = g_uid {
+                    sqlx::query("UPDATE app.users SET goalert_user_id=$1 WHERE id=$2").bind(id).bind(uid).execute(&st.owner_pool).await.map_err(ise)?;
+                    n_users += 1;
+                }
+            }
+            if let Some(id) = g_uid { uids.push(id); }
+        }
+        if uids.is_empty() { skipped += 1; continue; }
+        // nuova escalation policy + step (idempotenza: si ricrea la EP, si ripunta il servizio, si elimina la vecchia)
+        let suf = chrono::Utc::now().timestamp_millis();
+        let epname = format!("YW {} {} {}", &tid.to_string()[..8], ga_name(&gname), suf);
+        let new_ep = gql_id(st, &base, &cookie,
+            &format!("mutation{{createEscalationPolicy(input:{{name:\"{}\",repeat:{ep_repeat}}}){{id}}}}", esc_gql(&epname)),
+            "/data/createEscalationPolicy/id").await
+            .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "createEscalationPolicy fallito"))?;
+        let targets = uids.iter().map(|id| format!("{{type:user,id:\"{id}\"}}")).collect::<Vec<_>>().join(",");
+        let _ = goalert::graphql(&st.http, &base, &cookie,
+            &format!("mutation{{createEscalationPolicyStep(input:{{escalationPolicyID:\"{new_ep}\",delayMinutes:{delay_min},targets:[{targets}]}}){{id}}}}")).await;
+        // servizio + integration key (la key resta stabile tra le sync)
+        let mut sid: Option<String> = g.try_get("goalert_service_id").ok().flatten();
+        let mut key: Option<String> = g.try_get("goalert_key").ok().flatten();
+        let old_ep: Option<String> = g.try_get("goalert_ep_id").ok().flatten();
+        if sid.is_none() {
+            let sname = format!("YW {} {} {}", &tid.to_string()[..8], ga_name(&gname), suf);
+            sid = gql_id(st, &base, &cookie,
+                &format!("mutation{{createService(input:{{name:\"{}\",escalationPolicyID:\"{new_ep}\"}}){{id}}}}", esc_gql(&sname)),
+                "/data/createService/id").await;
+            if let Some(ref s) = sid {
+                key = gql_id(st, &base, &cookie,
+                    &format!("mutation{{createIntegrationKey(input:{{serviceID:\"{s}\",type:generic,name:\"yw-group\"}}){{id}}}}"),
+                    "/data/createIntegrationKey/id").await;
+            }
+        } else if let Some(ref s) = sid {
+            let _ = goalert::graphql(&st.http, &base, &cookie,
+                &format!("mutation{{updateService(input:{{id:\"{s}\",escalationPolicyID:\"{new_ep}\"}})}}")).await;
+            if let Some(oep) = &old_ep {
+                let _ = goalert::graphql(&st.http, &base, &cookie,
+                    &format!("mutation{{deleteAll(input:[{{type:escalationPolicy,id:\"{oep}\"}}])}}")).await;
+            }
+        }
+        sqlx::query("UPDATE app.alarm_groups SET goalert_ep_id=$1, goalert_service_id=$2, goalert_key=COALESCE($3,goalert_key) WHERE id=$4")
+            .bind(&new_ep).bind(&sid).bind(&key).bind(gid).execute(&st.owner_pool).await.map_err(ise)?;
+        n_groups += 1;
+    }
+    // routing etype -> integration key del gruppo responsabile (il drain legge goalert_routing)
+    let routes = sqlx::query("SELECT r.etype,g.goalert_key,g.goalert_service_id FROM app.alarm_routing r JOIN app.alarm_groups g ON g.id=r.group_id WHERE r.tenant_id=$1 AND g.goalert_key IS NOT NULL")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let mut n_routes = 0i64;
+    for r in &routes {
+        let et: String = r.get("etype");
+        let k: String = r.get("goalert_key");
+        let s: Option<String> = r.try_get("goalert_service_id").ok().flatten();
+        sqlx::query("INSERT INTO app.goalert_routing(tenant_id,etype,integration_key,service_id) VALUES($1,$2,$3,$4)
+             ON CONFLICT (tenant_id,etype) DO UPDATE SET integration_key=EXCLUDED.integration_key, service_id=EXCLUDED.service_id")
+            .bind(tid).bind(&et).bind(&k).bind(&s).execute(&st.owner_pool).await.map_err(ise)?;
+        n_routes += 1;
+    }
+    audit(st, tid, "youworkforce", "goalert_sync", json!({"groups":n_groups,"users_created":n_users,"routes":n_routes,"skipped":skipped})).await;
+    Ok(json!({"ok":true,"groups_synced":n_groups,"users_created":n_users,"routes":n_routes,"groups_skipped_no_members":skipped,
+        "repeat_seconds":repeat,"step_delay_minutes":delay_min,"ep_repeat":ep_repeat}))
+}
+pub async fn goalert_sync_handler(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo l'admin del tenant")); }
+    require_module(&st, s.tenant_id.unwrap(), "loneworker").await?;
+    let out = sync_goalert(&st, s.tenant_id.unwrap()).await?;
+    Ok(Json(out))
+}
+
 // ====== Config server Traccar, gestita DA YouWorkforce (PUT /api/server) ======
 // Porte/forwarding = config d'avvio (nostra compose/env). I filtri posizione sono
 // già nel nostro strumento traccar/alarm_map. Qui le impostazioni runtime del server.
@@ -3114,8 +3234,10 @@ pub async fn create_checkin(State(st): State<AppState>, h: HeaderMap, Json(b): J
 pub async fn confirm_checkin(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.checkins SET state='confermato' WHERE id=$1 AND state='attivo'")
-        .bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    // SICUREZZA: solo il proprietario puo' confermare il proprio check-in. Altrimenti un
+    // altro utente potrebbe sopprimere l'allarme di mancato check-in di un collega isolato.
+    let n = sqlx::query("UPDATE app.checkins SET state='confermato' WHERE id=$1 AND user_id=$2 AND state='attivo'")
+        .bind(id).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":n>0})))
 }

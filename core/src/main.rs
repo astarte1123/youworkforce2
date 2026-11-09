@@ -151,6 +151,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/groups/:id/members", post(api::add_group_member))
         .route("/api/groups/:gid/members/:uid", axum::routing::delete(api::remove_group_member))
         .route("/api/routing", post(api::set_routing))
+        .route("/api/alarm/sync-goalert", post(api::goalert_sync_handler))
         .route("/api/checkins/list", get(api::list_checkins))
         .route("/api/teams", get(api::list_teams).post(api::create_team))
         .route("/api/teams/:id", axum::routing::delete(api::delete_team))
