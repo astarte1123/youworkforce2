@@ -94,7 +94,8 @@ function tenantCard(t,mods){
       <button class="btn ghost cfgbtn" onclick="gaConfig('${t.id}',this)">Trasporto notifiche</button>
       <button class="btn ghost cfgbtn" onclick="trConn('${t.id}',this)">Connessione Traccar</button>
       <button class="btn ghost cfgbtn" onclick="trConfig('${t.id}',this)">Config Traccar</button>
-      <button class="btn ghost cfgbtn" onclick="tbConn('${t.id}',this)">Connessione ThingsBoard</button></div>
+      <button class="btn ghost cfgbtn" onclick="tbConn('${t.id}',this)">Connessione ThingsBoard</button>
+      <button class="btn ghost cfgbtn" onclick="aiConn('${t.id}',this)">Connessione youworker.ai</button></div>
     <div id="admin_${t.id}" style="margin-top:8px"></div>
     <div id="tools_${t.id}" style="margin-top:8px"></div>
     <div id="cfg_${t.id}" style="margin-top:8px"></div>
@@ -258,6 +259,44 @@ async function tbVerify(tid){
   try{ const r=await api('/superadmin/tenants/'+tid+'/thingsboard/verify',{method:'POST'});
     if(msg) msg.innerHTML=r.reachable?`<span class="s-attivo">✓ ${esc(r.verdict)}</span> · device: <b>${r.device_count}</b>`:`<span style="color:var(--bad)">✗ ${esc(r.verdict)}</span>`;
     toast(r.reachable?'ThingsBoard collegato':'ThingsBoard irraggiungibile', r.reachable?'ok':'bad');
+  }catch(e){ if(msg)msg.textContent=e.message; toast(e.message,'bad'); }
+}
+async function aiConn(tid,btn){
+  const box=document.getElementById('cfg_'+tid);
+  if(box.dataset.open==='ai'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
+  box.dataset.open='ai'; cfgExclusive(btn); btnOn(btn,true); box.innerHTML='<div class="small mut">carico…</div>';
+  let c; try{ c=await api('/superadmin/tenants/'+tid+'/ai'); }catch(e){ c={configured:false}; }
+  box.innerHTML=`<div class="card" style="padding:12px">
+    <div class="small mut" style="margin-bottom:8px">Connessione alla piattaforma AI di YouCo (<b>youworker.ai</b>): base URL + API key (cifrata a riposo). Pilota tutti i processi AI della suite. Contratto OpenAI-compatibile, path/model configurabili. Se assente, i processi AI degradano al piano deterministico locale.</div>
+    <label class="small mut" style="display:block;margin:4px 0">Base URL<input id="ai_url_${tid}" placeholder="https://api.youworker.ai" value="${esc(c.base_url||'')}"></label>
+    <label class="small mut" style="display:block;margin:4px 0">API key${c.has_api_key?' <span class="small">(impostata — lascia vuoto per non cambiarla)</span>':''}<input id="ai_key_${tid}" type="password" placeholder="${c.has_api_key?'•••••• invariata':'sk-…'}"></label>
+    <label class="small mut" style="display:block;margin:4px 0">Modello<input id="ai_model_${tid}" placeholder="youworker-1" value="${esc(c.model||'youworker-1')}"></label>
+    <div class="row" style="gap:8px">
+      <label class="small mut" style="flex:1">Chat path<input id="ai_chat_${tid}" placeholder="/v1/chat/completions" value="${esc(c.chat_path||'/v1/chat/completions')}"></label>
+      <label class="small mut" style="flex:1">STT path<input id="ai_stt_${tid}" placeholder="/v1/audio/transcriptions" value="${esc(c.stt_path||'/v1/audio/transcriptions')}"></label></div>
+    <div class="row" style="gap:8px;margin-top:6px"><button class="btn" onclick="aiConnSave('${tid}')">Salva</button>
+      <button class="btn ghost" onclick="aiVerify('${tid}')">Verifica collegamento</button>
+      ${c.configured?'<span class="chip s-attivo">configurata</span>':'<span class="chip">assente</span>'}</div>
+    <div id="ai_msg_${tid}" class="small mut" style="margin-top:6px"></div></div>`;
+}
+async function aiConnSave(tid){
+  const url=document.getElementById('ai_url_'+tid).value.trim();
+  const key=document.getElementById('ai_key_'+tid).value;
+  const model=document.getElementById('ai_model_'+tid).value.trim();
+  const chat=document.getElementById('ai_chat_'+tid).value.trim();
+  const stt=document.getElementById('ai_stt_'+tid).value.trim();
+  const msg=document.getElementById('ai_msg_'+tid);
+  if(!url){ toast('Base URL obbligatorio','bad'); return; }
+  try{ const body={base_url:url,model:model,chat_path:chat,stt_path:stt}; if(key) body.api_key=key;
+    await api('/superadmin/tenants/'+tid+'/ai',{method:'POST',body:JSON.stringify(body)});
+    toast('Connessione youworker.ai salvata','ok'); if(msg)msg.innerHTML='<span class="s-attivo">salvata</span>';
+  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
+}
+async function aiVerify(tid){
+  const msg=document.getElementById('ai_msg_'+tid); if(msg)msg.textContent='Verifico…';
+  try{ const r=await api('/superadmin/tenants/'+tid+'/ai/verify',{method:'POST'});
+    if(msg) msg.innerHTML=r.reachable?`<span class="s-attivo">✓ ${esc(r.verdict)}</span>${r.sample?' · '+esc(r.sample):''}`:`<span style="color:var(--bad)">✗ ${esc(r.verdict)}</span>`;
+    toast(r.reachable?'youworker.ai collegato':'youworker.ai irraggiungibile', r.reachable?'ok':'bad');
   }catch(e){ if(msg)msg.textContent=e.message; toast(e.message,'bad'); }
 }
 async function trConfig(tid,btn){

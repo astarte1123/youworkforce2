@@ -18,7 +18,7 @@
 <aside id="drawer" class="drawer"></aside>
 <script src="/app.js"></script>
 <script>
-let ME=null, SSE=null, CACHE={}, ACTIVE_MODS=new Set(), UI_FEAT={map_outdoor:true,map_indoor:false};
+let ME=null, SSE=null, CACHE={}, ACTIVE_MODS=new Set(), UI_FEAT={map_outdoor:true,map_indoor:false}, AI_FEAT={};
 const can = r => ME && r.includes(ME.role);
 // mod = modulo/i richiesti: la voce appare solo se ALMENO UNO è attivo sul tenant.
 const DEVICE_MODS=['loneworker','traccar','iot','thingsboard'];
@@ -35,6 +35,7 @@ const NAV = [
   {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','thingsboard','goalert','iot']},
   {k:'gruppi',    t:'Gruppi allarme', ico:'users', roles:['tenant_admin'], mod:['loneworker']},
   {k:'anagrafiche',t:'Utenti e sedi', ico:'receipt', roles:['tenant_admin']},
+  {k:'ai',        t:'AI · youworker.ai', ico:'sliders', roles:['tenant_admin'], mod:['assistant']},
   {k:'moduli',    t:'Moduli', ico:'sliders', roles:['tenant_admin']},
 ];
 const modOk = n => !n.mod || n.mod.some(m=>ACTIVE_MODS.has(m));
@@ -46,6 +47,7 @@ async function loadCtx(){
   try{ const M=await api('/modules'); ACTIVE_MODS=new Set((M||[]).filter(m=>m.state==='attivo').map(m=>m.code)); }catch(e){}
   try{ const F=await api('/ui/features'); if(F&&typeof F==='object') UI_FEAT=F; }catch(e){}
   try{ const B=await api('/branding'); if(B&&typeof B==='object'){ BRANDING=B; applyBranding(B); } }catch(e){}
+  try{ if(ACTIVE_MODS.has('assistant')){ const A=await api('/ai/features'); AI_FEAT=(A&&A.features)||{}; } }catch(e){ AI_FEAT={}; }
 }
 // Branding per-tenant: sovrascrive i colori di base (default globale YouCo) via CSS vars su :root.
 function applyBranding(b){
@@ -147,7 +149,7 @@ function renderShell(){
     style="position:fixed;right:22px;bottom:22px;z-index:45;width:56px;height:56px;border-radius:50%;border:none;
     background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff;box-shadow:var(--sh-lg);cursor:pointer;font-size:22px">✦</button>
   <div id="ai" class="card hide" style="position:fixed;right:22px;bottom:90px;z-index:46;width:min(400px,92vw);max-height:70vh;display:flex;flex-direction:column">
-    <div class="card-h"><div class="row" style="gap:8px"><b>Assistente</b><span class="tag sim">SIMULATO · sola lettura</span></div>
+    <div class="card-h"><div class="row" style="gap:8px"><b>Assistente</b><span class="tag sim">${AI_FEAT.assistant?'youworker.ai · sola lettura':'deterministico · sola lettura'}</span></div>
       <button class="btn-ico btn ghost" onclick="toggleAI()">✕</button></div>
     <div id="aiLog" class="card-b" style="overflow:auto;flex:1;display:flex;flex-direction:column;gap:10px">
       <div class="small mut">Chiedi in linguaggio naturale. Es: «check-in scaduti al sito Milano», «ricostruisci l'ultimo allarme», «ordini attivi».</div></div>
@@ -170,7 +172,7 @@ function route(){
   if(!visibleNav().some(n=>n.k===k)) k=visibleNav()[0].k;
   setActive(k); const v=$('#view'); v.innerHTML='<div class="col"><div class="skel" style="height:90px"></div><div class="skel" style="height:260px"></div></div>';
   ({dashboard:vDashboard,centrale:vCentrale,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,piantine:vPiantine,report:vReport}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,piantine:vPiantine,report:vReport,ai:vAI}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -239,13 +241,18 @@ async function vCentrale(v){
     <td class="sev pri${i.priority}">${'●'.repeat(i.priority)}</td>
     <td class="mono small mut">${esc((i.correlation||'').slice(0,8))}</td></tr>`).join('')
     ||`<tr><td colspan="6" class="empty">${ICON.check}<div>Nessun incidente aperto</div></td></tr>`}</tbody></table></div>
-  <div class="card" style="margin-top:16px"><div class="card-h"><h2>Check-in attivi</h2></div>
+  <div class="card" style="margin-top:16px"><div class="card-h"><h2>Check-in attivi</h2>
+    ${AI_FEAT.checkin_anomaly?`<button class="btn ghost small" onclick="aiCheckinAnomaly(this)">✦ Anomalie check-in (AI)</button>`:''}</div>
+    <div id="aiCkOut"></div>
     <table class="table"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Scadenza</th><th>Stato</th></tr></thead>
     <tbody>${CK.map(c=>`<tr><td>${esc(c.email)}</td><td>${esc(c.site||'—')}</td>
       <td class="small mut">${new Date(c.due_at).toLocaleString('it-IT')}</td><td>${chip(c.state)}</td></tr>`).join('')
       ||`<tr><td colspan="4" class="empty">nessun check-in attivo</td></tr>`}</tbody></table></div>`;
   bindRows(v);
 }
+async function aiCheckinAnomaly(btn){ const box=$('#aiCkOut'); if(!box)return; btn.disabled=true; box.innerHTML='<div class="small mut" style="padding:0 16px 8px">youworker.ai analizza i check-in…</div>';
+  try{ const r=await api('/checkin/ai-anomaly'); box.innerHTML=`<div class="card pad" style="margin:0 16px 10px;background:var(--brand-soft)"><div class="small mut">✦ youworker.ai (${r.count} mancati check-in / 14gg)</div><div style="white-space:pre-wrap;margin-top:4px">${esc(r.analysis)}</div></div>`; }
+  catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad);padding:0 16px 8px">${esc(e.message)}</div>`; } finally{ btn.disabled=false; } }
 async function openIncident(id){
   const [list,tl,users]=await Promise.all([api('/incidents'),api('/incidents/'+id+'/timeline').catch(()=>[]),
     can(['operatore','tenant_admin'])?api('/users').catch(()=>[]):Promise.resolve([])]);
@@ -267,6 +274,7 @@ async function openIncident(id){
     <div class="row" style="margin-bottom:14px">${chip(i.state)}<span class="chip">prio ${i.priority}</span><span class="chip">${esc(i.site||'—')}</span>${i.assignee?`<span class="chip">${esc(i.assignee)}</span>`:''}</div>
     <div class="small mut">Correlazione</div><div class="mono" style="margin-bottom:16px">${esc(i.correlation)}</div>
     <div style="margin-bottom:6px">${acts}</div>${assignBox}${noteBox}
+    ${AI_FEAT.incident_summary?`<div class="row" style="gap:6px;margin-top:14px"><button class="btn ghost small" onclick="aiIncidentSummary('${id}',this)">✦ Sintesi AI</button></div><div id="aiIncOut"></div>`:''}
     <div class="small mut" style="margin-top:14px">Stato GoAlert</div><div id="gaStatus" class="small">…</div>
     ${canOp?`<div class="row" style="gap:6px;margin-top:6px"><button class="btn ghost small" onclick="gaAck('${id}')">Ack</button>
       <button class="btn ghost small" onclick="gaEsc('${id}')">Escalate</button></div>`:''}
@@ -274,6 +282,9 @@ async function openIncident(id){
     <ul class="timeline">${tl.map(e=>{const dt=fmtDetail(e.kind,e.detail);return `<li><div class="t">${tlTitle(e.kind)}${e.at?` <span class="small mut" style="font-weight:400">· ${new Date(e.at).toLocaleTimeString('it-IT')}</span>`:''}</div>${dt?`<div class="small mut">${dt}</div>`:''}</li>`;}).join('')||'<li class="mut">—</li>'}</ul>`);
   loadGaStatus(id);
 }
+async function aiIncidentSummary(id,btn){ const box=$('#aiIncOut'); if(!box)return; btn.disabled=true; box.innerHTML='<div class="small mut" style="margin-top:6px">youworker.ai…</div>';
+  try{ const r=await api('/incidents/'+id+'/ai-summary'); box.innerHTML=`<div class="card pad" style="margin-top:6px;background:var(--brand-soft)"><div class="small mut">✦ youworker.ai</div><div style="white-space:pre-wrap;margin-top:4px">${esc(r.summary)}</div></div>`; }
+  catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad);margin-top:6px">${esc(e.message)}</div>`; } finally{ btn.disabled=false; } }
 const GA_LAB={StatusUnacknowledged:'🔴 non preso in carico',StatusAcknowledged:'🟡 preso in carico (ack)',StatusClosed:'🟢 chiuso'};
 async function gaAck(id){ try{ await api('/incidents/'+id+'/goalert-ack',{method:'POST'}); toast('Ack inviato a GoAlert','ok'); loadGaStatus(id);}catch(e){toast(e.message,'bad');} }
 async function gaEsc(id){ try{ await api('/incidents/'+id+'/goalert-escalate',{method:'POST'}); toast('Escalation forzata','ok'); loadGaStatus(id);}catch(e){toast(e.message,'bad');} }
@@ -977,8 +988,12 @@ async function openOrder(id){
     <div class="small mut">Quando</div><div style="margin-bottom:12px">${schedLabel(o)}</div>
     <div class="small mut">Istruzioni</div><div style="margin-bottom:16px">${esc(o.instructions||'—')}</div>
     ${o.outcome?`<div class="small mut">Esito</div><div style="margin-bottom:16px">${esc(o.outcome)}</div>`:''}
-    <div class="col">${acts||'<div class="chip">nessuna azione disponibile</div>'}${editBtn}</div>`);
+    <div class="col">${acts||'<div class="chip">nessuna azione disponibile</div>'}${editBtn}</div>
+    ${AI_FEAT.interventi_assist?`<div class="row" style="gap:6px;margin-top:12px"><button class="btn ghost small" onclick="aiOrderBrief('${id}',this)">✦ Brief AI</button></div><div id="aiOrdOut"></div>`:''}`);
 }
+async function aiOrderBrief(id,btn){ const box=$('#aiOrdOut'); if(!box)return; btn.disabled=true; box.innerHTML='<div class="small mut" style="margin-top:6px">youworker.ai…</div>';
+  try{ const r=await api('/orders/'+id+'/ai-assist'); box.innerHTML=`<div class="card pad" style="margin-top:6px;background:var(--brand-soft)"><div class="small mut">✦ youworker.ai — proposta d'aiuto</div><div style="white-space:pre-wrap;margin-top:4px">${esc(r.brief)}</div></div>`; }
+  catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad);margin-top:6px">${esc(e.message)}</div>`; } finally{ btn.disabled=false; } }
 async function editOrder(o){
   const [sites,users]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[])]);
   const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
@@ -1050,8 +1065,12 @@ async function openTimesheet(id){
       <div class="divider"></div><div class="spread"><b>Totale</b><b style="font-size:18px">${fmtEUR(t.total_cents)}</b></div>
       ${t.missing_rate?`<div class="small" style="color:var(--warn);margin-top:6px">⚠ Alcune righe senza tariffa: nessun costo attribuito.</div>`:''}</div>
     ${lineForm}
-    <div class="col" style="margin-top:16px">${acts}</div>`);
+    <div class="col" style="margin-top:16px">${acts}</div>
+    ${AI_FEAT.consuntivi_summary?`<div class="row" style="gap:6px;margin-top:12px"><button class="btn ghost small" onclick="aiTsSummary('${id}',this)">✦ Sintesi AI</button></div><div id="aiTsOut"></div>`:''}`);
 }
+async function aiTsSummary(id,btn){ const box=$('#aiTsOut'); if(!box)return; btn.disabled=true; box.innerHTML='<div class="small mut" style="margin-top:6px">youworker.ai…</div>';
+  try{ const r=await api('/timesheets/'+id+'/ai-summary'); box.innerHTML=`<div class="card pad" style="margin-top:6px;background:var(--brand-soft)"><div class="small mut">✦ youworker.ai</div><div style="white-space:pre-wrap;margin-top:4px">${esc(r.summary)}</div></div>`; }
+  catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad);margin-top:6px">${esc(e.message)}</div>`; } finally{ btn.disabled=false; } }
 async function addLine(id){ const rate=$('#l_rate').value; try{
   await api('/timesheets/'+id+'/lines',{method:'POST',body:JSON.stringify({activity:$('#l_act').value,work_date:$('#l_date').value,
     minutes:Number($('#l_min').value),rate_cents:rate?Math.round(Number(rate)*100):null})});
@@ -1338,7 +1357,9 @@ async function renderSensorRules(){
   let R=[]; try{ R=await api('/sensor-rules'); }catch(e){}
   const opLab=o=>(RULE_OPS.find(x=>x[0]===o)||[o,o])[1];
   const numeric=o=>!['is_true','is_false'].includes(o);
-  box.innerHTML=`<div class="card pad"><div class="card-h" style="padding:0 0 10px"><h2>Regole sensori (IoT / ThingsBoard)</h2></div>
+  box.innerHTML=`<div class="card pad"><div class="card-h" style="padding:0 0 10px"><h2>Regole sensori (IoT / ThingsBoard)</h2>
+    <button class="btn ghost small" onclick="aiSuggestRules(this)">✦ Suggerisci regole (AI)</button></div>
+    <div id="srSuggest"></div>
     <div class="small mut" style="margin-bottom:8px">Trasformano la telemetria in allarmi, in modo parametrico: <b>metrica</b> (chiave nel payload) + <b>operatore</b> + <b>soglia</b> → <b>evento</b>. Gli eventi critici attivano la catena allarmi (incidente + GoAlert). Valgono sia per ThingsBoard sia per l'IoT generico.</div>
     <table class="table"><thead><tr><th>Metrica</th><th>Condizione</th><th>Evento</th><th>Etichetta</th><th></th></tr></thead>
     <tbody>${R.map(r=>`<tr><td class="mono small">${esc(r.metric)}</td>
@@ -1368,6 +1389,45 @@ async function ruleAdd(btn){
 }
 async function ruleDel(id){ if(!confirm('Eliminare la regola?'))return;
   try{ await api('/sensor-rules/'+id,{method:'DELETE'}); toast('Eliminata','ok'); renderSensorRules(); }catch(e){ toast(e.message,'bad'); } }
+// ---------------- AI · youworker.ai (impostazioni per-processo) ----------------
+const AI_FEAT_LAB={
+  assistant:['Assistente operativo','Risposte in linguaggio naturale su dati del tenant (fab ✦). Senza AI resta il piano deterministico.'],
+  incident_summary:['Sintesi incidenti','Riassunto e prossime verifiche su un incidente (in Centrale allarmi).'],
+  sensor_suggest:['Suggerimento regole sensori','Proposte di regole dai dati telemetrici (in Connettori).'],
+  checkin_anomaly:['Anomalie check-in','Pattern e anomalie sui mancati check-in (in Centrale).'],
+  interventi_assist:['Assistenza interventi','Brief operativo su un ordine di lavoro.'],
+  consuntivi_summary:['Sintesi consuntivi','Riepilogo leggibile di ore/spese per l\\'approvatore.'],
+  voice_diary:['Diario vocale (STT)','Trascrizione server-side dell\\'audio del diario via youworker.ai.'],
+};
+const AI_FEAT_ORDER=['assistant','incident_summary','sensor_suggest','checkin_anomaly','interventi_assist','consuntivi_summary','voice_diary'];
+async function vAI(v){
+  let d; try{ d=await api('/ai/features'); }catch(e){ v.innerHTML='<div class="card pad" style="color:var(--bad)">'+esc(e.message)+'</div>'; return; }
+  const conf=d.connection_configured, F=d.features||{};
+  v.innerHTML=`<div class="page-h"><div><h1>AI · youworker.ai</h1><div class="mut">la piattaforma AI di YouCo, integrata nei processi della suite</div></div></div>
+  <div class="card pad" style="margin-bottom:14px"><div class="spread"><b>Connessione youworker.ai</b>
+    ${conf?'<span class="chip s-attivo">configurata</span>':'<span class="chip">assente</span>'}</div>
+    <div class="small mut" style="margin-top:6px">${conf?'La connessione è impostata dal superadmin. Abilita qui i singoli processi AI.'
+      :'Non configurata: il superadmin deve impostare base URL + API key di youworker.ai. Finché è assente, i processi AI restano spenti e la suite usa il piano deterministico locale (manuale/check-in/SOS sempre attivi).'}</div></div>
+  <div class="card pad"><div class="card-h" style="padding:0 0 10px"><h2>Processi AI</h2></div>
+    <div class="col" style="gap:10px">${AI_FEAT_ORDER.map(k=>{const L=AI_FEAT_LAB[k]||[k,''];const on=!!F[k];return `
+      <div class="spread" style="align-items:flex-start;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)">
+        <div><b>${esc(L[0])}</b><div class="small mut">${esc(L[1])}</div></div>
+        <label class="switch"><input type="checkbox" ${on?'checked':''} ${conf?'':'disabled'} onchange="aiFeatSet('${k}',this)"><span class="sl"></span></label>
+      </div>`;}).join('')}</div>
+    <div class="small mut" style="margin-top:10px">Ogni processo è indipendente. Spegnere l'AI non rimuove mai l'inserimento manuale, il check-in o l'SOS. Le azioni sulla catena di sicurezza restano sempre manuali.</div></div>`;
+}
+async function aiFeatSet(feature,el){
+  try{ await api('/ai/features',{method:'POST',body:JSON.stringify({feature,enabled:el.checked})}); toast('Impostazione salvata','ok'); }
+  catch(e){ el.checked=!el.checked; toast(e.message,'bad'); }
+}
+async function aiSuggestRules(btn){
+  const box=$('#srSuggest'); if(!box)return; btn.disabled=true; box.innerHTML='<div class="small mut">youworker.ai analizza la telemetria recente…</div>';
+  try{ const r=await api('/sensor-rules/suggest',{method:'POST'});
+    box.innerHTML=`<div class="card pad" style="margin-bottom:10px;background:var(--brand-soft)"><div class="small mut">✦ Proposte da <b>youworker.ai</b> (su ${r.observed} campioni) — da valutare e creare manualmente:</div>
+      <div style="white-space:pre-wrap;margin-top:6px">${esc(r.suggestion)}</div></div>`;
+  }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; }
+  finally{ btn.disabled=false; }
+}
 function traccarHealthCard(s){
   if(!s) return '';
   if(!s.configured) return `<div class="card pad" style="margin-bottom:14px"><div class="spread"><b>Traccar — salute connessione</b><span class="chip">non configurata</span></div>

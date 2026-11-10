@@ -29,8 +29,10 @@
 <div id="root"></div>
 <script src="/app.js"></script>
 <script>
-let ME=null, CI=null, CITimer=null, ORDERS=[];
-(async function(){ try{ME=await api('/me'); if(ME.is_super||!ME.tenant_id)ME=null;}catch(e){ME=null;} ME?app():login(); })();
+let ME=null, CI=null, CITimer=null, ORDERS=[], AIVOICE=false;
+(async function(){ try{ME=await api('/me'); if(ME.is_super||!ME.tenant_id)ME=null;}catch(e){ME=null;}
+  if(ME){ try{ const A=await api('/ai/features'); AIVOICE=!!(A&&A.features&&A.features.voice_diary); }catch(e){ AIVOICE=false; } }
+  ME?app():login(); })();
 
 function login(){
   $('#root').innerHTML=`<div class="wrap" style="min-height:100vh;display:flex;flex-direction:column;justify-content:center">
@@ -176,6 +178,7 @@ function openNote(){
       <textarea id="noteBody" rows="4" placeholder="Scrivi o usa il microfono…"></textarea></div>
     <div class="row" style="gap:8px;align-items:center;margin-bottom:6px">
       <button class="btn ghost" id="micBtn" onclick="toggleDictation()">${ICON.mic} Detta</button>
+      ${AIVOICE?`<button class="btn ghost" id="srvBtn" onclick="toggleServerRec()">${ICON.mic} Detta (AI)</button>`:''}
       <span class="small mut grow" id="micState"></span></div>
     ${(ORDERS||[]).length?`<div class="field"><label>Collega a ordine (opzionale)</label><select id="noteOrder"><option value="">—</option>${opts}</select></div>`:''}
     <button class="btn block lg" style="margin-top:10px" onclick="saveNote()">Salva nota</button>
@@ -197,6 +200,26 @@ function toggleDictation(){
   catch(e){ st.textContent='Microfono non avviabile'; REC=null; }
 }
 function stopDictation(){ if(REC){ try{REC.stop();}catch(e){} REC=null; } const b=$('#micBtn'); if(b)b.classList.remove('on'); const s=$('#micState'); if(s&&s.textContent==='In ascolto…')s.textContent=''; }
+// Dettatura server-side: registra audio e trascrive via youworker.ai (STT). Fallback = scrivere a mano.
+let MR=null, CHUNKS=[], MRStream=null;
+async function toggleServerRec(){
+  const st=$('#micState'), b=$('#srvBtn');
+  if(MR){ try{MR.stop();}catch(e){} return; }
+  if(!navigator.mediaDevices||!window.MediaRecorder){ st.textContent='Registrazione non disponibile — scrivi a mano'; return; }
+  try{ MRStream=await navigator.mediaDevices.getUserMedia({audio:true}); }
+  catch(e){ st.textContent='Microfono negato — scrivi a mano'; return; }
+  CHUNKS=[]; MR=new MediaRecorder(MRStream);
+  MR.ondataavailable=e=>{ if(e.data&&e.data.size)CHUNKS.push(e.data); };
+  MR.onstop=async()=>{ if(b)b.classList.remove('on'); if(MRStream){MRStream.getTracks().forEach(t=>t.stop());MRStream=null;}
+    const blob=new Blob(CHUNKS,{type:(MR&&MR.mimeType)||'audio/webm'}); MR=null;
+    if(!blob.size){ st.textContent=''; return; }
+    st.textContent='Trascrivo (youworker.ai)…';
+    try{ const r=await fetch('/api/diary/transcribe',{method:'POST',headers:{'content-type':blob.type,'x-tenant-slug':store.slug||'','x-csrf-token':csrfToken()},body:blob});
+      if(!r.ok){ throw new Error((await r.json().catch(()=>({}))).error||('HTTP '+r.status)); }
+      const j=await r.json(); const ta=$('#noteBody'); ta.value=(ta.value?ta.value+' ':'')+(j.text||''); dictationUsed=true; st.textContent='Trascritta — rivedi e salva'; }
+    catch(e){ st.textContent='Trascrizione non riuscita: '+e.message+' — scrivi a mano'; } };
+  MR.start(); if(b)b.classList.add('on'); st.textContent='Registrazione… premi di nuovo per fermare';
+}
 async function saveNote(){
   const ta=$('#noteBody'); const body=(ta.value||'').trim(); if(!body){ toast('Nota vuota','warn'); return; }
   const sel=$('#noteOrder'); const wo=sel&&sel.value?sel.value:null;

@@ -892,6 +892,151 @@ pub async fn thingsboard_verify(State(st): State<AppState>, h: HeaderMap, Path(t
     }
 }
 
+// ======================= youworker.ai — piattaforma AI di YouCo =======================
+// Integrazione AI DI TUTTA la suite, configurata DA YouWorkforce (mai da sistemi a monte).
+// - Connessione per-tenant (base URL + API key cifrata enc:v1) impostata dal superadmin.
+// - Abilitazione per-processo pilotata dall'admin del tenant (app.ai_features).
+// - Provider intercambiabile: contratto OpenAI-compatibile parametrico (path/model).
+// Invarianti di sicurezza: tenant/identita' SEMPRE dal contesto autenticato (mai dal
+// modello); l'API key non e' mai esposta ne' inviata come dato tenant; i processi AI sono
+// in SOLA LETTURA / proposta (nessuna azione critica eseguita dal modello); se la
+// connessione manca o fallisce, si degrada al piano deterministico locale senza mai
+// togliere l'inserimento manuale, il check-in o l'SOS.
+
+pub const AI_FEATURES: &[&str] = &["assistant","incident_summary","sensor_suggest","checkin_anomaly","interventi_assist","consuntivi_summary","voice_diary"];
+
+#[derive(Clone)]
+pub struct AiConn { pub base_url: String, pub api_key: String, pub model: String, pub chat_path: String, pub stt_path: String }
+
+/// Connessione youworker.ai del tenant (API key decifrata a riposo). None se non configurata.
+pub async fn ai_conn(st: &AppState, tid: Uuid) -> Option<AiConn> {
+    let r = sqlx::query("SELECT base_url,api_key,model,chat_path,stt_path FROM app.ai_connections WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten()?;
+    let key: String = r.get("api_key");
+    Some(AiConn{ base_url: r.get("base_url"), api_key: st.secrets.decrypt(&key),
+        model: r.get("model"), chat_path: r.get("chat_path"), stt_path: r.get("stt_path") })
+}
+
+/// Un processo AI e' attivo per il tenant SOLO se: modulo assistant attivo + connessione
+/// configurata + feature abilitata dall'admin. Qualsiasi mancanza => degrada (false).
+pub async fn ai_feature_on(st: &AppState, tid: Uuid, feature: &str) -> bool {
+    if !module_active(st, tid, "assistant").await { return false; }
+    if ai_conn(st, tid).await.is_none() { return false; }
+    sqlx::query_scalar::<_, bool>("SELECT enabled FROM app.ai_features WHERE tenant_id=$1 AND feature=$2")
+        .bind(tid).bind(feature).fetch_optional(&st.owner_pool).await.ok().flatten().unwrap_or(false)
+}
+
+/// Chiamata chat a youworker.ai (OpenAI-compatibile). system = istruzioni/guardrail,
+/// user = richiesta+contesto (gia' ristretto al tenant). Ritorna il testo o Err diagnostico.
+pub async fn ai_chat(st: &AppState, c: &AiConn, system: &str, user: &str) -> Result<String, String> {
+    let url = format!("{}{}", c.base_url, c.chat_path);
+    let body = json!({
+        "model": c.model,
+        "temperature": 0.1,
+        "max_tokens": 700,
+        "messages": [ {"role":"system","content":system}, {"role":"user","content":user} ]
+    });
+    let resp = st.http.post(&url).bearer_auth(&c.api_key).json(&body).send().await
+        .map_err(|e| format!("youworker.ai irraggiungibile: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("youworker.ai HTTP {}", resp.status()));
+    }
+    let v: Value = resp.json().await.map_err(|e| format!("risposta non valida: {e}"))?;
+    v.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content")).and_then(|t| t.as_str()).map(|s| s.trim().to_string())
+        .ok_or_else(|| "youworker.ai: nessun contenuto nella risposta".to_string())
+}
+
+/// Speech-to-text youworker.ai (diario vocale lato server). Audio multipart -> testo.
+pub async fn ai_stt(st: &AppState, c: &AiConn, audio: Vec<u8>, filename: &str, mime: &str) -> Result<String, String> {
+    let url = format!("{}{}", c.base_url, c.stt_path);
+    let part = reqwest::multipart::Part::bytes(audio).file_name(filename.to_string())
+        .mime_str(mime).map_err(|e| format!("audio non valido: {e}"))?;
+    let form = reqwest::multipart::Form::new().text("model", c.model.clone()).part("file", part);
+    let resp = st.http.post(&url).bearer_auth(&c.api_key).multipart(form).send().await
+        .map_err(|e| format!("youworker.ai irraggiungibile: {e}"))?;
+    if !resp.status().is_success() { return Err(format!("youworker.ai STT HTTP {}", resp.status())); }
+    let v: Value = resp.json().await.map_err(|e| format!("risposta non valida: {e}"))?;
+    v.get("text").and_then(|t| t.as_str()).map(|s| s.trim().to_string())
+        .ok_or_else(|| "youworker.ai STT: nessun testo".to_string())
+}
+
+// ---- Connessione youworker.ai: set/get mascherato/verifica (superadmin) ----
+#[derive(Deserialize)]
+pub struct SetAiConn { pub base_url: String, pub api_key: Option<String>, pub model: Option<String>,
+    pub chat_path: Option<String>, pub stt_path: Option<String> }
+
+pub async fn super_set_ai(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetAiConn>) -> R {
+    require_super(&st, &h).await?;
+    let base = b.base_url.trim_end_matches('/').to_string();
+    let model = b.model.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "youworker-1".into());
+    let chat = b.chat_path.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "/v1/chat/completions".into());
+    let stt = b.stt_path.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "/v1/audio/transcriptions".into());
+    let key = b.api_key.unwrap_or_default();
+    if key.is_empty() {
+        let n = sqlx::query("UPDATE app.ai_connections SET base_url=$2,model=$3,chat_path=$4,stt_path=$5,updated_at=now() WHERE tenant_id=$1")
+            .bind(tid).bind(&base).bind(&model).bind(&chat).bind(&stt).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+        if n == 0 { return Err(err(StatusCode::BAD_REQUEST, "API key richiesta per la prima configurazione")); }
+    } else {
+        let enc = st.secrets.encrypt(&key);
+        sqlx::query("INSERT INTO app.ai_connections(tenant_id,base_url,api_key,model,chat_path,stt_path) VALUES($1,$2,$3,$4,$5,$6)
+            ON CONFLICT (tenant_id) DO UPDATE SET base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,model=EXCLUDED.model,chat_path=EXCLUDED.chat_path,stt_path=EXCLUDED.stt_path,updated_at=now()")
+            .bind(tid).bind(&base).bind(&enc).bind(&model).bind(&chat).bind(&stt).execute(&st.owner_pool).await.map_err(ise)?;
+    }
+    audit(&st, tid, "superadmin", "set_ai_conn", json!({"base_url":base,"model":model})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
+pub async fn super_get_ai(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
+    require_super(&st, &h).await?;
+    let r = sqlx::query("SELECT base_url,api_key,model,chat_path,stt_path FROM app.ai_connections WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    match r {
+        Some(r) => Ok(Json(json!({"configured":true,"base_url":r.get::<String,_>("base_url"),
+            "model":r.get::<String,_>("model"),"chat_path":r.get::<String,_>("chat_path"),
+            "stt_path":r.get::<String,_>("stt_path"),"has_api_key":!r.get::<String,_>("api_key").is_empty()}))),
+        None => Ok(Json(json!({"configured":false,"model":"youworker-1","chat_path":"/v1/chat/completions","stt_path":"/v1/audio/transcriptions"}))),
+    }
+}
+
+/// Verifica collegamento youworker.ai: ping chat minimale, reachable-aware.
+pub async fn ai_verify(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
+    require_super(&st, &h).await?;
+    let c = ai_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione youworker.ai non configurata"))?;
+    match ai_chat(&st, &c, "Rispondi con una sola parola: ok.", "ping").await {
+        Ok(ans) => { audit(&st, tid, "superadmin", "ai_verify", json!({"model":c.model})).await;
+            Ok(Json(json!({"reachable":true,"verdict":"collegato","sample":ans.chars().take(40).collect::<String>()}))) }
+        Err(e) => Ok(Json(json!({"reachable":false,"verdict":e}))),
+    }
+}
+
+// ---- Feature AI per-processo, pilotate dall'admin del tenant ----
+pub async fn ai_features_get(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let configured = ai_conn(&st, tid).await.is_some();
+    let rows = sqlx::query("SELECT feature,enabled FROM app.ai_features WHERE tenant_id=$1")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let mut map = serde_json::Map::new();
+    for f in AI_FEATURES { map.insert((*f).to_string(), json!(false)); }
+    for r in rows { map.insert(r.get::<String,_>("feature"), json!(r.get::<bool,_>("enabled"))); }
+    Ok(Json(json!({"connection_configured":configured,"features":map})))
+}
+
+#[derive(Deserialize)]
+pub struct SetAiFeature { pub feature: String, pub enabled: bool }
+pub async fn ai_features_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SetAiFeature>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo l'admin del tenant")); }
+    let tid = s.tenant_id.unwrap();
+    if !AI_FEATURES.contains(&b.feature.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "feature AI sconosciuta")); }
+    sqlx::query("INSERT INTO app.ai_features(tenant_id,feature,enabled) VALUES($1,$2,$3)
+        ON CONFLICT (tenant_id,feature) DO UPDATE SET enabled=EXCLUDED.enabled,updated_at=now()")
+        .bind(tid).bind(&b.feature).bind(b.enabled).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, &s.email, "set_ai_feature", json!({"feature":b.feature,"enabled":b.enabled})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
 pub async fn traccar_get_config(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
     require_super(&st, &h).await?;
     let (base,user,pass) = traccar_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata"))?;
@@ -4223,7 +4368,7 @@ pub async fn assistant_query(State(st): State<AppState>, h: HeaderMap, Json(b): 
     let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,$2,'assistant_query',$3)")
         .bind(tid).bind(&s.email).bind(json!({"len":b.q.len()})).execute(&st.owner_pool).await;
 
-    // --- critical-intent guardrail: never act, point to manual procedure ---
+    // --- critical-intent guardrail: never act, point to manual procedure (anche con AI on) ---
     let critical = ["chiudi","annulla","silenzia","spegni","disattiva","ferma","tacita"];
     let on_safety = ["sos","allarme","allarmi","protezione","escalation","reperib","emergenz","incident"];
     if critical.iter().any(|w| q.contains(w)) && on_safety.iter().any(|w| q.contains(w)) {
@@ -4233,12 +4378,40 @@ pub async fn assistant_query(State(st): State<AppState>, h: HeaderMap, Json(b): 
             "sources":[],"period":null })));
     }
 
+    // Grounding deterministico tenant-scoped: fatti e fonti reali dal DB (mai dal modello).
+    let mut plan = assistant_plan(&st, &s, &q).await?;
+
+    // Se youworker.ai e' attivo per questo tenant, riformula in linguaggio naturale usando
+    // ESCLUSIVAMENTE i fatti del grounding. Se la chiamata fallisce -> resta il deterministico.
+    if ai_feature_on(&st, tid, "assistant").await {
+        if let Some(c) = ai_conn(&st, tid).await {
+            let sys = "Sei l'assistente operativo di YouWorkforce, piattaforma di sicurezza lavoratori. \
+                Rispondi in italiano, breve e preciso. Usa SOLO i fatti forniti nel contesto: non inventare \
+                numeri, eventi, nomi o siti. Se il contesto dice zero eventi, dillo chiaramente. Non proporre \
+                ne' eseguire azioni sulla catena di sicurezza (SOS/allarmi/escalation): quelle restano manuali.";
+            let ctx = format!("Domanda operatore: {}\n\nFatti verificati (grounding): {}",
+                b.q, serde_json::to_string(&plan).unwrap_or_default());
+            if let Ok(ans) = ai_chat(&st, &c, sys, &ctx).await {
+                if let Value::Object(ref mut m) = plan {
+                    m.insert("answer".into(), json!(ans));
+                    m.insert("provider".into(), json!("youworker.ai"));
+                }
+            }
+        }
+    }
+    Ok(Json(plan))
+}
+
+/// Pianificatore deterministico: instrada l'intento e restituisce fatti+fonti dal DB del
+/// tenant (RLS). Nessun accesso del modello a SQL/credenziali; tenant dal contesto.
+async fn assistant_plan(st: &AppState, s: &Session, q: &str) -> Result<Value, (StatusCode,String)> {
+    let tid = s.tenant_id.unwrap();
     let has = |ws: &[&str]| ws.iter().any(|w| q.contains(w));
     let now = st.clock.now();
 
     // --- intent routing (local deterministic planner) ---
     if has(&["check-in","check in","checkin","scadut","mancato"]) {
-        let site = match_site(&st, tid, &q).await?;
+        let site = match_site(st, tid, q).await?;
         let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
         let rows = sqlx::query(
             "SELECT i.id,i.correlation,i.opened_at,s.name AS site FROM app.incidents i
@@ -4251,7 +4424,7 @@ pub async fn assistant_query(State(st): State<AppState>, h: HeaderMap, Json(b): 
         let ans = if rows.is_empty() {
             format!("Nessun check-in scaduto aperto{}. (zero eventi, non dati mancanti)", site.1.map(|n| format!(" al sito {n}")).unwrap_or_default())
         } else { format!("{} check-in scaduti aperti{}.", rows.len(), site.1.map(|n| format!(" al sito {n}")).unwrap_or_default()) };
-        return Ok(Json(json!({"provider":"SIMULATO","intent":"checkins_scaduti","answer":ans,"sources":srcs,"period":"incidenti aperti"})));
+        return Ok(json!({"provider":"SIMULATO","intent":"checkins_scaduti","answer":ans,"sources":srcs,"period":"incidenti aperti"}));
     }
 
     if has(&["sensor","offline","non comunica","comunica"]) {
@@ -4268,7 +4441,7 @@ pub async fn assistant_query(State(st): State<AppState>, h: HeaderMap, Json(b): 
             "device":r.try_get::<String,_>("external_id").ok()})).collect();
         let ans = if rows.is_empty() { format!("Nessun sensore offline nell'ultima ora. (zero eventi)") }
                   else { format!("{} sensori senza comunicazione nell'ultima ora.", rows.len()) };
-        return Ok(Json(json!({"provider":"SIMULATO","intent":"sensori_offline","answer":ans,"sources":srcs,"period":format!("ultime {hours}h")})));
+        return Ok(json!({"provider":"SIMULATO","intent":"sensori_offline","answer":ans,"sources":srcs,"period":format!("ultime {hours}h")}));
     }
 
     if has(&["sequenza","storia","cronologia","ultimo esito","allarme","incidente","ricostruisci"]) {
@@ -4286,7 +4459,7 @@ pub async fn assistant_query(State(st): State<AppState>, h: HeaderMap, Json(b): 
              vec![json!({"type":"incident","id":iid,"correlation":i.get::<String,_>("correlation")})])
         } else { ("Nessun incidente registrato.".into(), vec![]) };
         tx.commit().await.map_err(ise)?;
-        return Ok(Json(json!({"provider":"SIMULATO","intent":"incidente_storia","answer":ans,"sources":srcs,"period":"ultimo incidente"})));
+        return Ok(json!({"provider":"SIMULATO","intent":"incidente_storia","answer":ans,"sources":srcs,"period":"ultimo incidente"}));
     }
 
     if has(&["modul","degrad"]) {
@@ -4299,25 +4472,25 @@ pub async fn assistant_query(State(st): State<AppState>, h: HeaderMap, Json(b): 
         tx.commit().await.map_err(ise)?;
         let srcs: Vec<Value> = rows.iter().map(|r| json!({"type":"module","code":r.get::<String,_>("module_code"),"state":r.get::<String,_>("state")})).collect();
         let ans = if rows.is_empty() { "Nessun modulo degradato.".to_string() } else { format!("{} moduli in stato degradato/in disattivazione.", rows.len()) };
-        return Ok(Json(json!({"provider":"SIMULATO","intent":"moduli_degradati","answer":ans,"sources":srcs,"period":"stato attuale"})));
+        return Ok(json!({"provider":"SIMULATO","intent":"moduli_degradati","answer":ans,"sources":srcs,"period":"stato attuale"}));
     }
 
     if has(&["ordin","intervent","lavoro assegnat"]) {
-        if !module_active(&st, tid, "interventi").await {
-            return Ok(Json(json!({"provider":"SIMULATO","intent":"ordini_aperti","answer":"Modulo interventi non abilitato: dato non disponibile.","sources":[],"period":null})));
+        if !module_active(st, tid, "interventi").await {
+            return Ok(json!({"provider":"SIMULATO","intent":"ordini_aperti","answer":"Modulo interventi non abilitato: dato non disponibile.","sources":[],"period":null}));
         }
         let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
         let rows = sqlx::query("SELECT id,title,state FROM app.work_orders WHERE state IN ('assegnato','in_corso') ORDER BY updated_at DESC").fetch_all(&mut *tx).await.map_err(ise)?;
         tx.commit().await.map_err(ise)?;
         let srcs: Vec<Value> = rows.iter().map(|r| json!({"type":"order","id":r.get::<Uuid,_>("id"),"title":r.get::<String,_>("title"),"state":r.get::<String,_>("state")})).collect();
         let ans = if rows.is_empty() { "Nessun ordine attivo.".into() } else { format!("{} ordini attivi.", rows.len()) };
-        return Ok(Json(json!({"provider":"SIMULATO","intent":"ordini_aperti","answer":ans,"sources":srcs,"period":"attivi"})));
+        return Ok(json!({"provider":"SIMULATO","intent":"ordini_aperti","answer":ans,"sources":srcs,"period":"attivi"}));
     }
 
     // no confident intent -> ask for clarification (never guess an operation)
-    Ok(Json(json!({"provider":"SIMULATO","intent":"clarify",
+    Ok(json!({"provider":"SIMULATO","intent":"clarify",
         "answer":"Non ho abbastanza elementi. Prova: «check-in scaduti al sito Milano», «sensori che non comunicano», «ricostruisci l'ultimo allarme», «ordini attivi», «moduli degradati».",
-        "sources":[],"period":null})))
+        "sources":[],"period":null}))
 }
 
 /// Resolve an optional site mentioned in the query to a tenant site id (within scope).
@@ -4330,6 +4503,177 @@ async fn match_site(st: &AppState, tid: Uuid, q: &str) -> Result<(Option<Uuid>, 
         if q.contains(&name.to_lowercase()) { return Ok((Some(r.get::<Uuid,_>("id")), Some(name))); }
     }
     Ok((None, None))
+}
+
+// ============ Processi AI (youworker.ai) agganciati ai moduli ============
+// Ogni endpoint: 1) verifica la feature (modulo assistant + connessione + toggle admin),
+// 2) raccoglie fatti REALI dal tenant (RLS), 3) chiede al modello di SINTETIZZARE/PROPORRE
+// usando solo quei fatti. Mai azioni sulla catena di sicurezza; proposte, non esecuzioni.
+
+/// Cancello comune: feature attiva => connessione; altrimenti errore parlante.
+async fn ai_gate(st: &AppState, tid: Uuid, feature: &str) -> Result<AiConn, (StatusCode,String)> {
+    if !ai_feature_on(st, tid, feature).await {
+        return Err(err(StatusCode::FORBIDDEN, "funzione AI non attiva: richiede youworker.ai configurato (superadmin) e la feature abilitata dall'admin del tenant"));
+    }
+    ai_conn(st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione youworker.ai non configurata"))
+}
+const AI_SAFE: &str = "Non proporre ne' eseguire azioni sulla catena di sicurezza (SOS, allarmi, escalation, reperibilita'): restano manuali in centrale. Usa solo i fatti forniti, non inventare.";
+
+/// Sintesi operativa di un incidente (sola lettura): sequenza + esito + prossime verifiche.
+pub async fn incident_ai_summary(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let c = ai_gate(&st, tid, "incident_summary").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let head = sqlx::query("SELECT i.etype,i.state,i.correlation,i.outcome,i.opened_at,i.priority,s.name AS site
+        FROM app.incidents i LEFT JOIN app.sites s ON s.id=i.site_id WHERE i.id=$1")
+        .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "incidente non trovato"))?;
+    let tl = sqlx::query("SELECT kind,detail,at FROM app.incident_timeline WHERE incident_id=$1 ORDER BY at")
+        .bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let timeline: Vec<Value> = tl.iter().map(|r| json!({"kind":r.get::<String,_>("kind"),
+        "detail":r.try_get::<Value,_>("detail").ok(),"at":r.get::<Dt,_>("at").to_rfc3339()})).collect();
+    let facts = json!({"etype":head.get::<String,_>("etype"),"stato":head.get::<String,_>("state"),
+        "priorita":head.get::<i32,_>("priority"),"sito":head.try_get::<String,_>("site").ok(),
+        "esito":head.try_get::<String,_>("outcome").ok(),
+        "aperto_il":head.get::<Dt,_>("opened_at").to_rfc3339(),"sequenza":timeline});
+    let sys = format!("Sei l'analista operativo di YouWorkforce. Produci una sintesi chiara e breve (max 6 righe) \
+        dell'incidente: cosa e' successo, sequenza, stato/esito, e le prossime verifiche suggerite per la centrale. {AI_SAFE}");
+    let out = match ai_chat(&st, &c, &sys, &serde_json::to_string(&facts).unwrap_or_default()).await {
+        Ok(a) => a, Err(e) => return Err(err(StatusCode::BAD_GATEWAY, &e)),
+    };
+    audit(&st, tid, &s.email, "ai_incident_summary", json!({"id":id})).await;
+    Ok(Json(json!({"provider":"youworker.ai","summary":out,"facts":facts})))
+}
+
+/// Proposta di regole sensori dai dati telemetrici recenti (NON applicata: l'admin la valuta).
+pub async fn sensor_rules_suggest(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo l'admin del tenant")); }
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, &["iot","thingsboard"]).await?;
+    let c = ai_gate(&st, tid, "sensor_suggest").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let evs = sqlx::query("SELECT etype,payload_ref,origin_ts FROM app.events
+        WHERE payload_ref IS NOT NULL ORDER BY origin_ts DESC LIMIT 40")
+        .fetch_all(&mut *tx).await.map_err(ise)?;
+    let rules = sqlx::query("SELECT metric,op,threshold,etype,enabled FROM app.sensor_rules ORDER BY sort")
+        .fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let samples: Vec<Value> = evs.iter().map(|r| json!({"etype":r.get::<String,_>("etype"),
+        "payload":r.try_get::<Value,_>("payload_ref").ok(),"ts":r.get::<Dt,_>("origin_ts").to_rfc3339()})).collect();
+    let existing: Vec<Value> = rules.iter().map(|r| json!({"metric":r.get::<String,_>("metric"),
+        "op":r.get::<String,_>("op"),"threshold":r.try_get::<f64,_>("threshold").ok(),
+        "etype":r.get::<String,_>("etype"),"enabled":r.get::<bool,_>("enabled")})).collect();
+    let facts = json!({"etype_ammessi":RULE_ETYPES,"operatori_ammessi":RULE_OPS,
+        "regole_esistenti":existing,"telemetria_recente":samples});
+    let sys = format!("Sei un ingegnere della sicurezza IoT di YouWorkforce. Dai dati telemetrici recenti e dalle \
+        regole esistenti, proponi 1-5 regole sensori utili (metrica, operatore, soglia -> etype) usando SOLO \
+        gli operatori e gli etype ammessi. Spiega in una riga il perche' di ciascuna. Non duplicare regole gia' \
+        presenti. Chiarisci che sono PROPOSTE da validare e creare manualmente dall'admin. {AI_SAFE}");
+    let out = match ai_chat(&st, &c, &sys, &serde_json::to_string(&facts).unwrap_or_default()).await {
+        Ok(a) => a, Err(e) => return Err(err(StatusCode::BAD_GATEWAY, &e)),
+    };
+    audit(&st, tid, &s.email, "ai_sensor_suggest", json!({"samples":samples.len()})).await;
+    Ok(Json(json!({"provider":"youworker.ai","suggestion":out,"observed":samples.len(),"existing_rules":existing.len()})))
+}
+
+/// Lettura anomalie check-in (sola lettura): pattern di mancati check-in recenti.
+pub async fn checkin_ai_anomaly(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "loneworker").await?;
+    let c = ai_gate(&st, tid, "checkin_anomaly").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT i.state,i.outcome,i.opened_at,s.name AS site FROM app.incidents i
+        LEFT JOIN app.sites s ON s.id=i.site_id
+        WHERE i.etype='mancato_checkin' AND i.opened_at > now()-interval '14 days'
+        ORDER BY i.opened_at DESC LIMIT 60").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let events: Vec<Value> = rows.iter().map(|r| json!({"stato":r.get::<String,_>("state"),
+        "esito":r.try_get::<String,_>("outcome").ok(),"sito":r.try_get::<String,_>("site").ok(),
+        "quando":r.get::<Dt,_>("opened_at").to_rfc3339()})).collect();
+    let facts = json!({"finestra":"ultimi 14 giorni","mancati_checkin":events});
+    let sys = format!("Sei l'analista di sicurezza di YouWorkforce. Dai mancati check-in recenti, evidenzia pattern \
+        o anomalie (siti/orari ricorrenti, concentrazioni) e suggerisci verifiche. Se zero eventi, dillo. {AI_SAFE}");
+    let out = match ai_chat(&st, &c, &sys, &serde_json::to_string(&facts).unwrap_or_default()).await {
+        Ok(a) => a, Err(e) => return Err(err(StatusCode::BAD_GATEWAY, &e)),
+    };
+    audit(&st, tid, &s.email, "ai_checkin_anomaly", json!({"count":events.len()})).await;
+    Ok(Json(json!({"provider":"youworker.ai","analysis":out,"count":events.len()})))
+}
+
+/// Brief operativo per un ordine di intervento (proposta, non esecuzione).
+pub async fn work_order_ai_assist(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?;
+    let c = ai_gate(&st, tid, "interventi_assist").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let head = sqlx::query("SELECT o.title,o.state,o.instructions,o.priority,o.assigned_user,s.name AS site,u.email AS assignee
+        FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user WHERE o.id=$1")
+        .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "ordine non trovato"))?;
+    // il lavoratore puo' chiedere assistenza solo sui propri ordini
+    let assignee_id: Option<Uuid> = head.try_get("assigned_user").ok().flatten();
+    if s.role == "lavoratore" && assignee_id != Some(s.user_id) {
+        return Err(err(StatusCode::FORBIDDEN, "non assegnato a questo ordine"));
+    }
+    let diary = sqlx::query("SELECT body,created_at FROM app.diary_entries WHERE work_order_id=$1 ORDER BY created_at DESC LIMIT 20")
+        .bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let notes: Vec<Value> = diary.iter().map(|r| json!({"nota":r.get::<String,_>("body"),
+        "quando":r.get::<Dt,_>("created_at").to_rfc3339()})).collect();
+    let facts = json!({"titolo":head.get::<String,_>("title"),"stato":head.get::<String,_>("state"),
+        "priorita":head.get::<i32,_>("priority"),"sito":head.try_get::<String,_>("site").ok(),
+        "istruzioni":head.try_get::<String,_>("instructions").ok(),"diario":notes});
+    let sys = format!("Sei un caposquadra di YouWorkforce. Dall'ordine e dalle note di diario, scrivi un brief \
+        operativo breve: obiettivo, passi suggeriti, punti di attenzione sicurezza. E' una PROPOSTA d'aiuto, \
+        non sostituisce le istruzioni ufficiali ne' esegue azioni. {AI_SAFE}");
+    let out = match ai_chat(&st, &c, &sys, &serde_json::to_string(&facts).unwrap_or_default()).await {
+        Ok(a) => a, Err(e) => return Err(err(StatusCode::BAD_GATEWAY, &e)),
+    };
+    audit(&st, tid, &s.email, "ai_work_order_assist", json!({"id":id})).await;
+    Ok(Json(json!({"provider":"youworker.ai","brief":out})))
+}
+
+/// Sintesi leggibile di un consuntivo (ore/spese/fatturazione).
+pub async fn consuntivo_ai_summary(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let c = ai_gate(&st, tid, "consuntivi_summary").await?;
+    let d = timesheet_detail(&st, tid, id).await?;
+    let owner_id = d["owner_id"].as_str().and_then(|x| Uuid::parse_str(x).ok());
+    if owner_id != Some(s.user_id) && !is_approver(&s.role) && s.role != "auditor" {
+        return Err(err(StatusCode::FORBIDDEN, "non autorizzato"));
+    }
+    let sys = format!("Sei un amministrativo di YouWorkforce. Riassumi il consuntivo in modo chiaro per un \
+        approvatore: totale ore, spese, importo, eventuali tariffe mancanti o anomalie. {AI_SAFE}");
+    let out = match ai_chat(&st, &c, &sys, &serde_json::to_string(&d).unwrap_or_default()).await {
+        Ok(a) => a, Err(e) => return Err(err(StatusCode::BAD_GATEWAY, &e)),
+    };
+    audit(&st, tid, &s.email, "ai_consuntivo_summary", json!({"id":id})).await;
+    Ok(Json(json!({"provider":"youworker.ai","summary":out})))
+}
+
+/// Diario vocale: trascrizione STT server-side via youworker.ai. NON crea la voce di diario
+/// automaticamente: restituisce il testo che il lavoratore rivede e invia con /api/diary.
+pub async fn diary_transcribe(State(st): State<AppState>, h: HeaderMap, body: axum::body::Bytes) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let c = ai_gate(&st, tid, "voice_diary").await?;
+    if body.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "audio mancante")); }
+    if body.len() > 20*1024*1024 { return Err(err(StatusCode::PAYLOAD_TOO_LARGE, "audio troppo grande (max 20MB)")); }
+    let mime = h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("audio/webm").to_string();
+    let fname = if mime.contains("mp3")||mime.contains("mpeg") { "audio.mp3" }
+        else if mime.contains("wav") { "audio.wav" } else if mime.contains("m4a")||mime.contains("mp4") { "audio.m4a" }
+        else if mime.contains("ogg") { "audio.ogg" } else { "audio.webm" };
+    let text = match ai_stt(&st, &c, body.to_vec(), fname, &mime).await {
+        Ok(t) => t, Err(e) => return Err(err(StatusCode::BAD_GATEWAY, &e)),
+    };
+    audit(&st, tid, &s.email, "ai_diary_transcribe", json!({"bytes":body.len()})).await;
+    Ok(Json(json!({"provider":"youworker.ai","text":text})))
 }
 
 // SSE stream helper module
