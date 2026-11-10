@@ -526,13 +526,21 @@ function alarmPopup(a){
     ${a.person?('👤 '+esc(a.person)+'<br>'):'<span style="color:#888">persona non associata al device</span><br>'}
     <a href="#" onclick="openIncident('${a.id}');return false">Apri incidente</a>`;
 }
-async function renderAlarms(){
-  $('#mapSub').textContent='allarmi georeferenziati · indoor/outdoor';
+async function renderAlarms(admin){
+  admin = admin!==undefined?admin:can(['tenant_admin']); window._mapAdmin=admin;
+  $('#mapSub').textContent='allarmi georeferenziati · indoor/outdoor · aree';
   const today=new Date().toISOString().slice(0,10), wago=new Date(Date.now()-7*864e5).toISOString().slice(0,10);
   $('#mapCtl').innerHTML=`<div class="field"><label>Dal</label><input id="mFrom" type="date" value="${wago}"></div>
     <div class="field"><label>Al</label><input id="mTo" type="date" value="${today}"></div>
     <div class="field"><label>Tipo</label><select id="mEtype"><option value="">Tutti i critici</option><option value="sos">SOS</option><option value="man_down">Uomo a terra</option>${ALARM_ETYPES.filter(e=>e!=='sos'&&e!=='man_down').map(e=>`<option value="${e}">${esc(etLab(e))}</option>`).join('')}</select></div>
-    <button class="btn small" onclick="loadAlarmsOnMap()">Aggiorna</button>`;
+    <button class="btn small" onclick="loadAlarmsOnMap()">Aggiorna</button>
+    ${admin?`<label class="small mut" style="display:inline-flex;align-items:center;gap:4px">Colore area <input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" style="width:34px;height:26px;padding:1px"></label>`:''}`;
+  // aree geofence disegnate e gestibili anche in modalità allarmi (stesso prodotto)
+  let GF=[]; try{ GF=(await api('/geofences')).filter(g=>!g.floorplan_id); }catch(e){}
+  if(GFLAYER){ try{MAP.removeLayer(GFLAYER);}catch(e){} }
+  GFLAYER=L.layerGroup().addTo(MAP); GF_LAYERS={}; window._GF_CACHE=GF; window._ALARM_GF=GF;
+  GF.forEach(g=>drawGeofence(g,admin));
+  if(admin) setupGeofenceTools(MAP,{geo:true});
   loadAlarmsOnMap();
 }
 async function loadAlarmsOnMap(){
@@ -555,7 +563,8 @@ async function loadAlarmsOnMap(){
       <div class="small mut">${a.device?('📟 '+esc(a.device)):''}${a.person?(' · 👤 '+esc(a.person)):''}</div></div>`;
     side.innerHTML=`<h2 style="margin-bottom:4px">Allarmi (${al.length})</h2>${ALARM_LEGEND}
       ${noGeo.length?`<div class="small" style="color:var(--bad);margin:6px 0">⚠ ${noGeo.length} indoor senza posizione (beacon non mappato) — registra la zona in “⚙ Zone indoor”:</div>${noGeo.map(a=>`<div style="border:1px dashed var(--bad);border-radius:8px;padding:8px;margin-bottom:6px"><div class="spread"><b class="small">${esc(a.label)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString('it-IT')}</span></div><div class="small">beacon <span class="mono">${esc(a.beacon_uid||'—')}</span> · ${a.device?esc(a.device):''}</div></div>`).join('')}<hr style="border:none;border-top:1px solid var(--line);margin:8px 0">`:''}
-      ${al.filter(a=>a.lat!=null).map(row).join('')||(noGeo.length?'':'<div class="small mut">Nessun allarme nel periodo.</div>')}`;
+      ${al.filter(a=>a.lat!=null).map(row).join('')||(noGeo.length?'':'<div class="small mut">Nessun allarme nel periodo.</div>')}
+      ${geofencePanel(window._ALARM_GF||[], window._mapAdmin)}`;
   }catch(err){ side.innerHTML='<div class="small" style="color:var(--bad)">'+esc(err.message)+'</div>'; }
 }
 function focusAlarm(id,lat,lon){ if(lat==null||lat==='null')return; MAP.setView([lat,lon],18); const m=AMARK[id]; if(m)m.openPopup(); }
@@ -568,7 +577,8 @@ async function renderDevices(admin){
     <button class="btn ghost small" id="fhBtn" onclick="toggleFreehand(this)">✎ Mano libera</button>
     <label class="small mut" style="display:inline-flex;align-items:center;gap:4px">Colore <input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" style="width:34px;height:26px;padding:1px"></label>
     <span class="small mut">(o usa gli strumenti ⬡ in alto a sinistra)</span>`:'';
-  GFLAYER=L.layerGroup().addTo(MAP); GF_LAYERS={}; window._GF_CACHE=GF; GF.forEach(g=>drawGeofence(g,admin));
+  const GFo=GF.filter(g=>!g.floorplan_id);
+  GFLAYER=L.layerGroup().addTo(MAP); GF_LAYERS={}; window._GF_CACHE=GFo; GF.forEach(g=>{ if(!g.floorplan_id) drawGeofence(g,admin); });
   CLUSTER=(typeof L.markerClusterGroup==='function')?L.markerClusterGroup({maxClusterRadius:50}):L.layerGroup();
   const pts=[];
   D.forEach(d=>{ const m=L.marker([d.last_lat,d.last_lon]); m.bindPopup(popupHtml(d));
@@ -576,25 +586,12 @@ async function renderDevices(admin){
     MARK[d.id]=m; CLUSTER.addLayer(m); pts.push([d.last_lat,d.last_lon]); });
   MAP.addLayer(CLUSTER);
   if(pts.length) MAP.fitBounds(pts,{padding:[40,40],maxZoom:15});
-  const gfManage=admin?`<h2 style="margin:14px 0 4px">Aree (geofence)</h2>
-    <div class="small mut" style="margin-bottom:8px">Rinomina, modifica la forma, associa dispositivi/eventi o elimina. Disegna nuove aree con gli strumenti ⬡ sulla mappa.</div>
-    ${GF.length?GF.map(g=>`<div id="gfrow_${g.id}" style="border:1px solid var(--line);border-radius:10px;padding:8px;margin-bottom:6px">
-      <div class="spread"><b class="small">${esc(g.name)}</b><span class="chip">${esc(g.kind)}</span></div>
-      <div class="small mut" style="margin:4px 0">${(g.device_ids||[]).length} device · ${(g.etypes||[]).length} eventi associati</div>
-      <div class="row" style="gap:6px;flex-wrap:wrap">
-        <button class="btn ghost small" data-edit onclick="gfEditShape('${g.id}')">✥ Modifica forma</button>
-        <button class="btn small" data-save style="display:none" onclick="gfSaveShape('${g.id}')">💾 Salva</button>
-        <button class="btn ghost small" data-cancel style="display:none" onclick="gfCancelShape('${g.id}')">Annulla</button>
-        <button class="btn ghost small" onclick="gfRename('${g.id}','${esc((g.name||'').replace(/'/g,'&#39;'))}')">✎ Rinomina</button>
-        <input type="color" value="${g.color||'#16a34a'}" onchange="gfColor('${g.id}',this.value,false)" title="Colore area" style="width:30px;height:26px;padding:1px;border:1px solid var(--line);border-radius:6px;cursor:pointer">
-        <button class="btn ghost small" onclick="gfAssoc('${g.id}','${esc((g.name||'').replace(/'/g,'&#39;'))}')">🔗 Associa</button>
-        <button class="btn ghost small" onclick="gfDel('${g.id}')">🗑 Elimina</button></div></div>`).join(''):'<div class="small mut">Nessuna area. Disegnane una con gli strumenti ⬡.</div>'}`:'';
   $('#mapSide').innerHTML=`<h2 style="margin-bottom:4px">Presenza</h2>
     <div class="small mut" style="margin-bottom:8px">Qui i dispositivi con posizione GPS (outdoor). Quelli al chiuso compaiono nella vista <b>🏭 Indoor</b> sulle piantine.</div>
     ${PR.length?PR.map(p=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
     <b class="small">${esc(p.device||p.external_id)}</b><div class="small mut">${esc(p.geofence)} · da ${new Date(p.since).toLocaleTimeString('it-IT')}</div>
     ${p.user?`<div class="small mut">👤 ${esc(p.user)}</div>`:''}</div>`).join(''):'<div class="small mut">Nessun dispositivo dentro una geofence.</div>'}
-    ${gfManage}`;
+    ${geofencePanel(GFo,admin)}`;
   if(admin) setupGeofenceTools(MAP,{geo:true});
 }
 // Strumenti di disegno geofence (Geoman) — riusabili su mappa outdoor (geo) e indoor (xy).
@@ -718,7 +715,7 @@ async function fpOpen(){
     }).join('');
       if(!(DV||[]).length) dsel.innerHTML='<option value="">nessun dispositivo registrato</option>'; }
     const gfs=(GFs||[]).filter(g=>g.floorplan_id===id); const gl=L.layerGroup().addTo(FPMAP);
-    gfs.forEach(g=>drawIndoorGeofence(g,gl));
+    GF_LAYERS={}; window._GF_CACHE=gfs; gfs.forEach(g=>drawIndoorGeofence(g,gl));
     // allarmi INDOOR avvenuti su questa piantina (match beacon posizionato), ultimi 7 giorni
     const placedByUid={}; beacons.forEach(b=> placedByUid[b.beacon_uid]={x:b.x,y:b.y});
     let alarmsHere=[];
@@ -742,7 +739,8 @@ async function fpOpen(){
     $('#mapSide').innerHTML=`<h2 style="margin-bottom:8px">${esc(f.name)}</h2>
       <div class="small mut">${beacons.length} beacon · ${placedDevs.length} dispositivi fissi · ${gfs.length} geofence · ${(devHere||[]).length} indoor (live) · ${w}×${h}px</div>
       ${alarmsHere.length?`<div class="small" style="color:var(--bad);margin-top:8px">🚨 ${alarmsHere.length} allarme/i su questa piantina (ultimi 7gg)</div>`:'<div class="small mut" style="margin-top:8px">Nessun allarme indoor su questa piantina negli ultimi 7gg.</div>'}
-      ${window._fpAdmin?'<div class="small mut" style="margin-top:10px">• <b>📍 Posiziona beacon / dispositivo</b>: scegli un\'entità registrata, poi clicca sulla piantina.<br>• Disegna geofence con gli strumenti ⬡ in alto a sinistra (cerchio, rettangolo, poligono).</div>':''}`;
+      ${window._fpAdmin?'<div class="small mut" style="margin-top:10px">• <b>📍 Posiziona beacon / dispositivo</b>: scegli un\'entità registrata, poi clicca sulla piantina.<br>• Disegna geofence con gli strumenti ⬡ in alto a sinistra (cerchio, rettangolo, poligono).</div>':''}
+      ${geofencePanel(gfs, window._fpAdmin)}`;
     if(window._fpAdmin){
       setupGeofenceTools(FPMAP,{xy:true, onSave:(name,kind,geom)=> saveIndoorGeofence(name,kind,geom,id)});
       FPMAP.on('click',e=>{ if(window._bkPlace) fpPlaceAt(e.latlng, id); });
@@ -755,11 +753,8 @@ function drawIndoorGeofence(g,lg){
   if(g.kind==='circle'&&g.geom.radius){ layer=L.circle([g.geom.cy,g.geom.cx],{radius:g.geom.radius,color:col,fillColor:col,fillOpacity:0.14}); }
   else if(g.kind==='polygon'&&g.geom.points){ layer=L.polygon(g.geom.points.map(p=>[p[1],p[0]]),{color:col,fillColor:col,fillOpacity:0.14}); }
   if(!layer)return;
-  const acts=window._fpAdmin?`<br><div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-    <label style="display:inline-flex;align-items:center;gap:3px">🎨<input type="color" value="${g.color||'#16a34a'}" onchange="gfColor('${g.id}',this.value,true)" style="width:28px;height:24px;padding:1px"></label>
-    <a href="#" onclick="gfRename('${g.id}');return false">✎ Rinomina</a>
-    <a href="#" style="color:var(--bad)" onclick="gfDel('${g.id}');return false">🗑 Elimina</a></div>`:'';
-  layer.bindPopup(`<b>${esc(g.name)}</b>${acts}`);
+  layer._gf=g; GF_LAYERS[g.id]=layer;
+  layer.bindPopup(`<b>${esc(g.name)}</b>${gfPopupActions(g,window._fpAdmin)}`);
   layer.addTo(lg);
 }
 async function saveIndoorGeofence(name,kind,geom,fid){
@@ -894,12 +889,7 @@ function drawGeofence(g,admin){
   else if(g.kind==='polygon'&&g.geom.points){ layer=L.polygon(g.geom.points,{color:col,fillColor:col,fillOpacity:0.12}); }
   if(!layer)return;
   layer._gf=g; GF_LAYERS[g.id]=layer;
-  const acts=admin?`<br><div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-    <label style="display:inline-flex;align-items:center;gap:3px">🎨<input type="color" value="${g.color||'#16a34a'}" onchange="gfColor('${g.id}',this.value,false)" style="width:28px;height:24px;padding:1px"></label>
-    <a href="#" onclick="gfRename('${g.id}');return false">✎ Rinomina</a>
-    <a href="#" onclick="gfAssoc('${g.id}');return false">🔗 Associa</a>
-    <a href="#" style="color:var(--bad)" onclick="gfDel('${g.id}');return false">🗑 Elimina</a></div>`:'';
-  layer.bindPopup(`<b>${esc(g.name)}</b><br><span style="color:#666">${esc(g.kind)}</span>${acts}`);
+  layer.bindPopup(`<b>${esc(g.name)}</b><br><span style="color:#666">${esc(g.kind)}</span>${gfPopupActions(g,admin)}`);
   layer.addTo(GFLAYER);
 }
 // Geometria corrente dal layer Leaflet (dopo edit Geoman). Outdoor: lat/lon; indoor: cx/cy o points xy.
@@ -907,20 +897,54 @@ function geomFromEditLayer(layer, indoor){
   if(layer.getRadius){ const ll=layer.getLatLng(); return indoor?{cx:ll.lng,cy:ll.lat,radius:Math.round(layer.getRadius())}:{lat:ll.lat,lon:ll.lng,radius:Math.round(layer.getRadius())}; }
   const ll=layer.getLatLngs()[0]||[]; return indoor?{points:ll.map(p=>[p.lng,p.lat])}:{points:ll.map(p=>[p.lat,p.lng])};
 }
-async function gfRename(id,cur){ if(cur==null){ const g=(window._GF_CACHE||[]).find(x=>x.id===id); cur=g?g.name:''; }
-  const name=await askPrompt('Nuovo nome della geofence:',cur); if(name==null)return; if(!name.trim())return toast('Nome vuoto','warn');
-  try{ await api('/geofences/'+id,{method:'PUT',body:JSON.stringify({name:name.trim()})}); toast('Rinominata','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
-function gfEditShape(id){ const layer=GF_LAYERS[id]; if(!layer||!layer.pm){ toast('Editor non disponibile','bad'); return; }
-  layer.pm.enable({draggable:true}); window._gfEditing=id;
-  const row=document.getElementById('gfrow_'+id); if(row){ row.querySelector('[data-edit]').style.display='none'; row.querySelector('[data-save]').style.display='inline-block'; row.querySelector('[data-cancel]').style.display='inline-block'; }
-  toast('Trascina per spostare/ridimensionare, poi “Salva forma”','ok');
+// ====== Geofence: azioni uniformi (mappa allarmi+dispositivi e piantine) ======
+function gfFromCache(id){ return (window._GF_CACHE||[]).find(x=>x.id===id)||null; }
+function gfIsIndoor(id){ const g=gfFromCache(id); return !!(g && g.floorplan_id); }
+function gfRefresh(id){ if(gfIsIndoor(id)){ if(typeof fpOpen==='function') fpOpen(); else route(); } else route(); }
+// Blocco azioni (identico su mappa e piantine), come link per il popup Leaflet.
+function gfPopupActions(g,admin){ if(!admin)return'';
+  return `<br><div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <label style="display:inline-flex;align-items:center;gap:3px">🎨<input type="color" value="${g.color||'#16a34a'}" onchange="gfColor('${g.id}',this.value)" style="width:26px;height:22px;padding:1px"></label>
+    <a href="#" onclick="gfRename('${g.id}');return false">✎ Rinomina</a>
+    <a href="#" onclick="gfEditShape('${g.id}');return false">✥ Modifica forma</a>
+    <a href="#" onclick="gfAssoc('${g.id}');return false">🔗 Associa</a>
+    <a href="#" style="color:var(--bad)" onclick="gfDel('${g.id}');return false">🗑 Elimina</a></div>`;
 }
-async function gfSaveShape(id){ const layer=GF_LAYERS[id]; if(!layer)return; const geom=geomFromEditLayer(layer,false);
-  try{ await api('/geofences/'+id,{method:'PUT',body:JSON.stringify({geom})}); try{layer.pm.disable();}catch(e){} window._gfEditing=null; toast('Forma salvata','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
-function gfCancelShape(id){ const layer=GF_LAYERS[id]; if(layer){ try{layer.pm.disable();}catch(e){} } window._gfEditing=null; route(); }
+// Pannello di gestione aree (identico per i due modi mappa e per le piantine).
+function geofencePanel(GF,admin){ if(!admin)return'';
+  return `<h2 style="margin:14px 0 4px">Aree (geofence)</h2>
+    <div class="small mut" style="margin-bottom:8px">Rinomina, colore, modifica forma, associa dispositivi/eventi o elimina. Disegna nuove aree con gli strumenti ⬡.</div>
+    ${GF.length?GF.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:8px;margin-bottom:6px">
+      <div class="spread"><b class="small">${esc(g.name)}</b><span class="chip" style="background:${g.color||'#16a34a'};color:#fff;border:none">${esc(g.kind)}</span></div>
+      <div class="small mut" style="margin:4px 0">${(g.device_ids||[]).length} device · ${(g.etypes||[]).length} eventi</div>
+      <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+        <button class="btn ghost small" onclick="gfEditShape('${g.id}')">✥ Forma</button>
+        <button class="btn ghost small" onclick="gfRename('${g.id}')">✎ Rinomina</button>
+        <input type="color" value="${g.color||'#16a34a'}" onchange="gfColor('${g.id}',this.value)" title="Colore area" style="width:30px;height:26px;padding:1px;border:1px solid var(--line);border-radius:6px;cursor:pointer">
+        <button class="btn ghost small" onclick="gfAssoc('${g.id}')">🔗 Associa</button>
+        <button class="btn ghost small" onclick="gfDel('${g.id}')">🗑 Elimina</button></div></div>`).join(''):'<div class="small mut">Nessuna area. Disegnane una con gli strumenti ⬡.</div>'}`;
+}
+async function gfRename(id,cur){ if(cur==null){ const g=gfFromCache(id); cur=g?g.name:''; }
+  const name=await askPrompt('Nuovo nome della geofence:',cur); if(name==null)return; if(!name.trim())return toast('Nome vuoto','warn');
+  try{ await api('/geofences/'+id,{method:'PUT',body:JSON.stringify({name:name.trim()})}); toast('Rinominata','ok'); gfRefresh(id); }catch(e){ toast(e.message,'bad'); } }
+// Barra fluttuante per l'edit forma: funziona da popup e da pannello, mappa o piantina.
+function gfEditShape(id){ const layer=GF_LAYERS[id]; if(!layer||!layer.pm){ toast('Editor non disponibile','bad'); return; }
+  try{ layer.closePopup&&layer.closePopup(); }catch(e){}
+  layer.pm.enable({draggable:true}); window._gfEditing=id;
+  let bar=document.getElementById('gfEditBar'); if(!bar){ bar=document.createElement('div'); bar.id='gfEditBar';
+    bar.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:2000;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px 12px;box-shadow:var(--sh-lg);display:flex;gap:8px;align-items:center';
+    document.body.appendChild(bar); }
+  bar.innerHTML=`<span class="small">Trascina per spostare/ridimensionare l'area</span>
+    <button class="btn small" onclick="gfSaveShape('${id}')">💾 Salva forma</button>
+    <button class="btn ghost small" onclick="gfCancelShape('${id}')">Annulla</button>`;
+}
+function gfCloseEditBar(){ const b=document.getElementById('gfEditBar'); if(b)b.remove(); }
+async function gfSaveShape(id){ const layer=GF_LAYERS[id]; if(!layer)return; const geom=geomFromEditLayer(layer,gfIsIndoor(id));
+  try{ await api('/geofences/'+id,{method:'PUT',body:JSON.stringify({geom})}); try{layer.pm.disable();}catch(e){} window._gfEditing=null; gfCloseEditBar(); toast('Forma salvata','ok'); gfRefresh(id); }catch(e){ toast(e.message,'bad'); } }
+function gfCancelShape(id){ const layer=GF_LAYERS[id]; if(layer){ try{layer.pm.disable();}catch(e){} } window._gfEditing=null; gfCloseEditBar(); gfRefresh(id); }
 const GF_ETYPES=[['sos','SOS'],['man_down','Uomo a terra'],['immobilita','Immobilità'],['mancato_checkin','Mancato check-in'],['sensore_critico','Sensore critico'],['batteria_critica','Batteria critica'],['batteria_bassa','Batteria bassa'],['perdita_alimentazione','Perdita alimentazione'],['device_offline','Device offline'],['manomissione_badge','Manomissione badge'],['jamming','Jamming'],['presenza_ingresso','Ingresso area'],['presenza_uscita','Uscita area'],['telemetria','Telemetria']];
 async function gfAssoc(id,name){
-  const g=(window._GF_CACHE||[]).find(x=>x.id===id)||{device_ids:[],etypes:[]};
+  const g=gfFromCache(id)||{device_ids:[],etypes:[]};
   if(name==null) name=g.name||'area';
   const D=await api('/devices').catch(()=>[]);
   const selD=new Set(g.device_ids||[]), selE=new Set(g.etypes||[]);
@@ -937,11 +961,11 @@ async function gfSaveAssoc(id){
   const evs=[...document.querySelectorAll('.gfe:checked')].map(x=>x.value);
   try{ await api('/geofences/'+id+'/devices',{method:'PUT',body:JSON.stringify({device_ids:devs})});
     await api('/geofences/'+id+'/events',{method:'PUT',body:JSON.stringify({etypes:evs})});
-    toast('Associazioni salvate ('+devs.length+' device, '+evs.length+' eventi)','ok'); closeDrawer(); route();
+    toast('Associazioni salvate ('+devs.length+' device, '+evs.length+' eventi)','ok'); closeDrawer(); gfRefresh(id);
   }catch(e){ toast(e.message,'bad'); } }
-async function gfColor(id,color,indoor){ try{ await api('/geofences/'+id,{method:'PUT',body:JSON.stringify({color})}); toast('Colore aggiornato','ok'); indoor?fpOpen():route(); }catch(e){ toast(e.message,'bad'); } }
+async function gfColor(id,color){ try{ await api('/geofences/'+id,{method:'PUT',body:JSON.stringify({color})}); toast('Colore aggiornato','ok'); gfRefresh(id); }catch(e){ toast(e.message,'bad'); } }
 async function gfDel(id){ if(!await askConfirm('Eliminare la geofence? (rimuove area e associazioni)'))return;
-  try{ await api('/geofences/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
+  try{ await api('/geofences/'+id,{method:'DELETE'}); toast('Eliminata','ok'); gfRefresh(id); }catch(e){ toast(e.message,'bad'); } }
 async function addCircle(lat,lon){
   const name=prompt('Nome geofence?'); if(!name)return;
   const r=parseInt(prompt('Raggio in metri?','300')||'0',10); if(!r||r<10)return toast('raggio non valido','bad');

@@ -449,12 +449,11 @@ async function gaConfigSave(tid){
   }catch(e){ toast(e.message,'bad'); }
 }
 async function gaProvision(tid,btn){
-  const u=prompt('Utente GoAlert (admin)?','admin'); if(!u)return;
-  const p=prompt('Password GoAlert?'); if(!p)return;
   btnOn(btn,true);
-  try{ const r=await api('/superadmin/tenants/'+tid+'/goalert/provision',{method:'POST',body:JSON.stringify({user:u,pass:p})});
+  // Auto: il motore GoAlert è integrato nel prodotto -> usa le credenziali di default (nessun prompt)
+  try{ const r=await api('/superadmin/tenants/'+tid+'/goalert/provision',{method:'POST',body:JSON.stringify({})});
     toast('GoAlert provisionato: service '+(r.service_id||'').slice(0,8),'ok');
-  }catch(e){ toast(e.message,'bad'); } finally{ btnOn(btn,false); } }
+  }catch(e){ toast('GoAlert: '+e.message,'bad'); } finally{ btnOn(btn,false); } }
 async function toggleTool(tid,mc,tc,cb){
   try{ await api('/superadmin/tenants/'+tid+'/tools',{method:'POST',body:JSON.stringify({module_code:mc,tool_code:tc,enabled:cb.checked})});
     toast(tc+' → '+(cb.checked?'disponibile':'nascosto'),'ok');

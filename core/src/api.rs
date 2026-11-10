@@ -574,41 +574,65 @@ pub async fn goalert_oncall(State(st): State<AppState>, h: HeaderMap) -> R {
     }
 }
 
+/// Credenziali admin GoAlert di default (il motore è integrato nel prodotto): da env
+/// GOALERT_ADMIN_USER / GOALERT_ADMIN_PASS, altrimenti i default noti. Così il provisioning
+/// avviene automaticamente, senza chiedere nulla all'amministratore.
+pub fn goalert_admin_creds() -> (String, String) {
+    (std::env::var("GOALERT_ADMIN_USER").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "admin".into()),
+     std::env::var("GOALERT_ADMIN_PASS").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "goalertadmin1".into()))
+}
+/// Provisiona GoAlert per un tenant (EP + servizio + generic key + heartbeat). Riusabile da
+/// handler, creazione tenant e worker. Ritorna i riferimenti creati o un errore parlante.
+pub async fn do_goalert_provision(st: &AppState, tid: Uuid, user: &str, pass: &str, name: Option<&str>) -> Result<Value, (StatusCode,String)> {
+    let base = st.goalert_base.clone().ok_or_else(|| err(StatusCode::BAD_REQUEST, "GOALERT_BASE non configurato (motore escalation non raggiungibile)"))?;
+    let cookie = goalert::login(&st.http, &base, user, pass).await
+        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "login GoAlert fallito (credenziali/connessione)"))?;
+    let b = GoalertProvision{ user: Some(user.to_string()), pass: Some(pass.to_string()), name: name.map(String::from) };
+    goalert_provision_inner(st, tid, &base, &cookie, &b).await
+}
+
 // P3: provisioning GoAlert per-tenant (crea escalation policy + servizio + generic key).
 #[derive(Deserialize)]
-pub struct GoalertProvision { pub user: String, pub pass: String, pub name: Option<String> }
+pub struct GoalertProvision { pub user: Option<String>, pub pass: Option<String>, pub name: Option<String> }
 pub async fn goalert_provision(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<GoalertProvision>) -> R {
     require_super(&st, &h).await?;
-    let base = st.goalert_base.clone().ok_or_else(|| err(StatusCode::BAD_REQUEST, "GOALERT_BASE non configurato"))?;
-    let cookie = goalert::login(&st.http, &base, &b.user, &b.pass).await
-        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "login GoAlert fallito"))?;
+    // credenziali: quelle passate oppure i default del prodotto (nessun prompt)
+    let (du, dp) = goalert_admin_creds();
+    let user = b.user.clone().filter(|s| !s.is_empty()).unwrap_or(du);
+    let pass = b.pass.clone().filter(|s| !s.is_empty()).unwrap_or(dp);
+    let out = do_goalert_provision(&st, tid, &user, &pass, b.name.as_deref()).await?;
+    Ok(Json(out))
+}
+async fn goalert_provision_inner(st: &AppState, tid: Uuid, base: &str, cookie: &str, b: &GoalertProvision) -> Result<Value,(StatusCode,String)> {
+    let user = b.user.clone().unwrap_or_default();
+    let pass = b.pass.clone().unwrap_or_default();
     // suffisso unico: i nomi EP/service devono essere univoci su GoAlert (re-provision sicuro)
     let suf = chrono::Utc::now().timestamp();
     let name = format!("{} {}", b.name.clone().unwrap_or_else(|| format!("YW {}", &tid.to_string()[..8])), suf);
     // EP (repeat 1, nessuno step: lo configura l'admin in GoAlert), servizio, generic key
-    let ep = goalert::graphql(&st.http,&base,&cookie,
+    let ep = goalert::graphql(&st.http,base,cookie,
         &format!("mutation{{createEscalationPolicy(input:{{name:\"{name} EP\",repeat:1}}){{id}}}}")).await
         .and_then(|v| v.pointer("/data/createEscalationPolicy/id").and_then(|x| x.as_str().map(String::from)))
         .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "createEscalationPolicy fallito"))?;
-    let sid = goalert::graphql(&st.http,&base,&cookie,
+    let sid = goalert::graphql(&st.http,base,cookie,
         &format!("mutation{{createService(input:{{name:\"{name}\",escalationPolicyID:\"{ep}\"}}){{id}}}}")).await
         .and_then(|v| v.pointer("/data/createService/id").and_then(|x| x.as_str().map(String::from)))
         .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "createService fallito"))?;
-    let key = goalert::graphql(&st.http,&base,&cookie,
+    let key = goalert::graphql(&st.http,base,cookie,
         &format!("mutation{{createIntegrationKey(input:{{serviceID:\"{sid}\",type:generic,name:\"core-outbox\"}}){{id}}}}")).await
         .and_then(|v| v.pointer("/data/createIntegrationKey/id").and_then(|x| x.as_str().map(String::from)))
         .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "createIntegrationKey fallito"))?;
     // heartbeat monitor (P3): avvisa se la nostra pipeline smette di pingare
-    let hb = goalert::graphql(&st.http,&base,&cookie,
+    let hb = goalert::graphql(&st.http,base,cookie,
         &format!("mutation{{createHeartbeatMonitor(input:{{serviceID:\"{sid}\",name:\"yw-core\",timeoutMinutes:5}}){{href}}}}")).await
         .and_then(|v| v.pointer("/data/createHeartbeatMonitor/href").and_then(|x| x.as_str().map(String::from)));
-    let enc_pass = st.secrets.encrypt(&b.pass);   // P3: cifrato a riposo
+    let enc_pass = st.secrets.encrypt(&pass);   // P3: cifrato a riposo
     sqlx::query("INSERT INTO app.goalert_services(tenant_id,integration_key,service_id,gql_user,gql_pass,heartbeat_url) VALUES($1,$2,$3,$4,$5,$6)
         ON CONFLICT (tenant_id) DO UPDATE SET integration_key=EXCLUDED.integration_key,service_id=EXCLUDED.service_id,
           gql_user=EXCLUDED.gql_user,gql_pass=EXCLUDED.gql_pass,heartbeat_url=EXCLUDED.heartbeat_url,updated_at=now()")
-        .bind(tid).bind(&key).bind(&sid).bind(&b.user).bind(&enc_pass).bind(&hb).execute(&st.owner_pool).await.map_err(ise)?;
+        .bind(tid).bind(&key).bind(&sid).bind(&user).bind(&enc_pass).bind(&hb).execute(&st.owner_pool).await.map_err(ise)?;
     audit(&st, tid, "superadmin", "goalert_provision", json!({"service_id":sid})).await;
-    Ok(Json(json!({"ok":true,"escalation_policy":ep,"service_id":sid,"integration_key":key,"heartbeat_url":hb})))
+    Ok(json!({"ok":true,"escalation_policy":ep,"service_id":sid,"integration_key":key,"heartbeat_url":hb}))
 }
 
 // ---- "YouWorkforce pilota GoAlert": sincronizza Gruppi/Routing/Escalation -> GoAlert ----
