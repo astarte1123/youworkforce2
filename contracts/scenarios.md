@@ -80,6 +80,17 @@ YouCo e i **dati reali** del tenant.
 - UI: voce menu **Cruscotti IoT** (operatore/admin/auditor, moduli iot/thingsboard), tab per
   scenario, gauge/sparkline SVG inline.
 
+Tipi di widget: **gauge** (numerico), **status** (booleano), **KPI aggregati** (device, metriche,
+allarmi ora, incidenti aperti, eventi 24h), **mappa device** (Leaflet, coord demo generate
+all'attivazione), **multi-metrica** (sparkline sovrapposte normalizzate).
+
+### Preset AI per-scenario
+Ogni scenario ha un angolo d'analisi (`scenario_ai_focus`). `POST /api/scenarios/:code/ai-analysis`
+`{save?}` fa grounding sui dati reali del cruscotto (widget+KPI+incidenti) e chiede al provider
+AI un'analisi specifica dello scenario (stato/anomalie/azioni), opz. salvata come report AI
+(`kind=<code>`). UI: pulsante **✦ Analisi AI** nel cruscotto. Richiede provider AI configurato
+(superadmin) + modulo assistant.
+
 ## Estensione
 Aggiungere uno scenario = una voce in `scenario_catalog()` (nessuna migrazione): regole, moduli,
 device demo e widget si derivano da lì. Estensione residua: preset AI per-scenario (report/analisi tipici).

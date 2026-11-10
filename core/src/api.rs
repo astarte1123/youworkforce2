@@ -1183,12 +1183,15 @@ pub async fn super_apply_scenario(State(st): State<AppState>, h: HeaderMap, Path
             None => sqlx::query_scalar("INSERT INTO app.sites(tenant_id,name) VALUES($1,$2) RETURNING id")
                 .bind(tid).bind(&site_name).fetch_one(&st.owner_pool).await.map_err(ise)?,
         };
-        for dev in &scn.devices {
+        // coordinate demo sparse attorno a una base (Milano) per popolare la mappa del cruscotto
+        for (i, dev) in scn.devices.iter().enumerate() {
             let ext = format!("scn-{}-{}", scn.code, dev.suffix);
-            let n = sqlx::query("INSERT INTO app.devices(tenant_id,external_id,source,label,site_id,enabled,config,updated_at)
-                VALUES($1,$2,'scenario',$3,$4,true,$5,now())
+            let lat = 45.464 + ((i as f64)*0.9 + (scn.code.len() as f64)*0.13).sin() * 0.03;
+            let lon = 9.190 + ((i as f64)*1.3 + (scn.code.len() as f64)*0.21).cos() * 0.03;
+            let n = sqlx::query("INSERT INTO app.devices(tenant_id,external_id,source,label,site_id,enabled,config,last_lat,last_lon,updated_at)
+                VALUES($1,$2,'scenario',$3,$4,true,$5,$6,$7,now())
                 ON CONFLICT (tenant_id,source,external_id) DO NOTHING")
-                .bind(tid).bind(&ext).bind(dev.label).bind(site_id).bind(json!({"scenario":scn.code}))
+                .bind(tid).bind(&ext).bind(dev.label).bind(site_id).bind(json!({"scenario":scn.code})).bind(lat).bind(lon)
                 .execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
             devices_added += n as i64;
         }
@@ -1340,54 +1343,123 @@ pub async fn tenant_scenarios_list(State(st): State<AppState>, h: HeaderMap) -> 
     Ok(Json(json!(out)))
 }
 
-/// Dati del cruscotto di uno scenario: widget + ultimo valore/serie + incidenti recenti.
-pub async fn scenario_dashboard(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>) -> R {
-    let s = require_tenant(&st, &h).await?;
-    let tid = s.tenant_id.unwrap();
-    let cat = scenario_catalog();
+/// Angolo di analisi AI specifico per scenario (preset).
+fn scenario_ai_focus(code: &str) -> &'static str {
+    match code {
+        "smart_energy" => "Valuta picchi di consumo, sovratensioni e opportunità di risparmio energetico.",
+        "environment_monitoring" => "Valuta comfort e salubrità ambientale (temperatura/umidità/CO₂) e soglie superate.",
+        "smart_office" => "Valuta clima ufficio, qualità dell'aria e sicurezza (fumo), con azioni per il facility.",
+        "water_metering" => "Evidenzia perdite, frodi e consumi anomali; stima l'impatto e le verifiche prioritarie.",
+        "smart_retail" => "Valuta il rischio catena del freddo: escursioni di temperatura e integrità del prodotto.",
+        "smart_farming" => "Valuta stress colturale (umidità suolo, gelo) e interventi agronomici consigliati.",
+        "site_fleet_tracking" => "Valuta carburante, surriscaldamento motori e rischi operativi dei mezzi in cantiere.",
+        "smart_metering" => "Evidenzia perdite/frodi e pattern di consumo anomali sui contatori.",
+        "health_care" => "Valuta rischio clinico dei pazienti (battito, cadute) e priorità di allerta, SENZA sostituire il personale sanitario.",
+        "air_quality" => "Valuta la qualità dell'aria (PM2.5/CO₂) rispetto alle soglie di salute e le azioni di mitigazione.",
+        "smart_irrigation" => "Valuta fabbisogno idrico e stato impianto; suggerisci la programmazione irrigua.",
+        "waste_management" => "Valuta i cassonetti prossimi alla saturazione e ottimizza i giri di raccolta.",
+        "tank_level" => "Valuta rischi di esaurimento e troppopieno dei serbatoi e i rifornimenti prioritari.",
+        "scada_pool" => "Valuta la qualità dell'acqua (pH/cloro) e la conformità dei parametri della piscina.",
+        "scada_oil_gas" => "Valuta i rischi di sicurezza della perforazione (pressione/gas/vibrazioni) con priorità operative.",
+        "scada_energy" => "Valuta picchi di domanda, fattore di potenza e costi; suggerisci ottimizzazioni.",
+        _ => "Valuta anomalie, priorità di intervento e azioni consigliate.",
+    }
+}
+
+/// Guardia: scenario esistente e attivo per il tenant. Ritorna il riferimento allo scenario.
+async fn scenario_applied<'a>(st: &AppState, tid: Uuid, code: &str, cat: &'a [Scenario]) -> Result<&'a Scenario, (StatusCode,String)> {
     let scn = cat.iter().find(|x| x.code==code).ok_or_else(|| err(StatusCode::NOT_FOUND, "scenario sconosciuto"))?;
-    let applied: bool = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM app.tenant_scenarios WHERE tenant_id=$1 AND scenario_code=$2")
-        .bind(tid).bind(&code).fetch_one(&st.owner_pool).await.map_err(ise)? > 0;
-    if !applied { return Err(err(StatusCode::FORBIDDEN, "scenario non attivo per questo tenant")); }
+    let applied: i64 = sqlx::query_scalar("SELECT count(*) FROM app.tenant_scenarios WHERE tenant_id=$1 AND scenario_code=$2")
+        .bind(tid).bind(code).fetch_one(&st.owner_pool).await.map_err(ise)?;
+    if applied == 0 { return Err(err(StatusCode::FORBIDDEN, "scenario non attivo per questo tenant")); }
+    Ok(scn)
+}
+
+/// Dati completi del cruscotto: widget (valore/serie), KPI aggregati, device (coord mappa),
+/// multi-metrica, incidenti recenti. Riusato dal cruscotto e dall'analisi AI.
+async fn scenario_dash_json(st: &AppState, tid: Uuid, scn: &Scenario) -> Result<Value, (StatusCode,String)> {
     let widgets = scenario_widgets(scn);
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let devs = sqlx::query("SELECT id,external_id,label FROM app.devices WHERE source='scenario' AND external_id LIKE $1 ORDER BY external_id")
-        .bind(format!("scn-{}-%", code)).fetch_all(&mut *tx).await.map_err(ise)?;
+    let devs = sqlx::query("SELECT id,external_id,label,last_lat,last_lon FROM app.devices WHERE source='scenario' AND external_id LIKE $1 ORDER BY external_id")
+        .bind(format!("scn-{}-%", scn.code)).fetch_all(&mut *tx).await.map_err(ise)?;
     let ids: Vec<Uuid> = devs.iter().map(|r| r.get::<Uuid,_>("id")).collect();
-    // eventi recenti (cronologia telemetria) per i device dello scenario
     let evs = if ids.is_empty() { Vec::new() } else {
         sqlx::query("SELECT payload_ref,origin_ts FROM app.events WHERE device_id = ANY($1) AND payload_ref IS NOT NULL ORDER BY origin_ts DESC LIMIT 200")
-            .bind(&ids).fetch_all(&mut *tx).await.map_err(ise)?
-    };
-    // incidenti recenti sui device dello scenario
+            .bind(&ids).fetch_all(&mut *tx).await.map_err(ise)? };
     let incs = if ids.is_empty() { Vec::new() } else {
         sqlx::query("SELECT i.etype,i.state,i.opened_at FROM app.incidents i JOIN app.events e ON e.id=i.event_id
-            WHERE e.device_id = ANY($1) ORDER BY i.opened_at DESC LIMIT 10")
-            .bind(&ids).fetch_all(&mut *tx).await.map_err(ise)?
-    };
+            WHERE e.device_id = ANY($1) ORDER BY i.opened_at DESC LIMIT 10").bind(&ids).fetch_all(&mut *tx).await.map_err(ise)? };
+    let open_inc: i64 = if ids.is_empty() { 0 } else {
+        sqlx::query_scalar("SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id
+            WHERE e.device_id = ANY($1) AND i.state<>'chiuso'").bind(&ids).fetch_one(&mut *tx).await.map_err(ise)? };
+    let ev24: i64 = if ids.is_empty() { 0 } else {
+        sqlx::query_scalar("SELECT count(*) FROM app.events WHERE device_id = ANY($1) AND origin_ts > now()-interval '24 hours'")
+            .bind(&ids).fetch_one(&mut *tx).await.map_err(ise)? };
     tx.commit().await.ok();
-    // ultimo valore + serie per ogni widget (eventi sono DESC: il primo e' il piu' recente)
     let payloads: Vec<(Value, Dt)> = evs.iter().map(|r| (r.try_get::<Value,_>("payload_ref").unwrap_or(json!({})), r.get::<Dt,_>("origin_ts"))).collect();
+    let mut alarms_now = 0i64;
     let widgets_out: Vec<Value> = widgets.into_iter().map(|mut w| {
         let metric = w["metric"].as_str().unwrap_or("").to_string();
-        let mut value: Option<Value> = None;
-        let mut series: Vec<Value> = Vec::new();
-        for (p, ts) in &payloads {
-            if let Some(v) = p.get(&metric) {
-                if value.is_none() { value = Some(v.clone()); }
-                series.push(json!({"t": ts.to_rfc3339(), "v": v}));
-            }
-        }
-        series.reverse(); // cronologico crescente
+        let op = w["op"].as_str().unwrap_or("").to_string();
+        let thr = w["threshold"].as_f64();
+        let (mut value, mut series): (Option<Value>, Vec<Value>) = (None, Vec::new());
+        for (p, ts) in &payloads { if let Some(v) = p.get(&metric) {
+            if value.is_none() { value = Some(v.clone()); }
+            series.push(json!({"t": ts.to_rfc3339(), "v": v})); } }
+        series.reverse();
         if series.len() > 30 { series = series.split_off(series.len()-30); }
+        // stato d'allarme corrente (per KPI)
+        if let (Some(v), Some(t)) = (value.as_ref().and_then(|x| x.as_f64()), thr) {
+            let trip = match op.as_str() { ">="=>v>=t, ">"=>v>t, "<="=>v<=t, "<"=>v<t, _=>false };
+            if trip { alarms_now += 1; }
+        }
         if let Value::Object(ref mut m) = w { m.insert("value".into(), value.unwrap_or(Value::Null)); m.insert("series".into(), json!(series)); }
         w
     }).collect();
     let incidents: Vec<Value> = incs.iter().map(|r| json!({"etype":r.get::<String,_>("etype"),
         "state":r.get::<String,_>("state"),"at":r.get::<Dt,_>("opened_at").to_rfc3339()})).collect();
-    Ok(Json(json!({
-        "code":scn.code, "name":scn.name, "sector":scn.sector,
-        "device_count": devs.len(), "widgets": widgets_out, "incidents": incidents })))
+    let devices: Vec<Value> = devs.iter().map(|r| json!({"external_id":r.get::<String,_>("external_id"),
+        "label":r.try_get::<String,_>("label").ok(),"lat":r.try_get::<f64,_>("last_lat").ok(),"lon":r.try_get::<f64,_>("last_lon").ok()})).collect();
+    Ok(json!({
+        "code":scn.code, "name":scn.name, "sector":scn.sector, "ai_focus":scenario_ai_focus(scn.code),
+        "device_count": devs.len(), "widgets": widgets_out, "incidents": incidents, "devices": devices,
+        "kpis": {"device_count":devs.len(),"open_incidents":open_inc,"events_24h":ev24,"metrics_tracked":widgets_out.len(),"alarms_now":alarms_now}
+    }))
+}
+
+/// Dati del cruscotto di uno scenario (tenant, scenario attivo).
+pub async fn scenario_dashboard(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let cat = scenario_catalog();
+    let scn = scenario_applied(&st, tid, &code, &cat).await?;
+    Ok(Json(scenario_dash_json(&st, tid, scn).await?))
+}
+
+#[derive(Deserialize)]
+pub struct ScnAnalysisReq { pub save: Option<bool> }
+/// Analisi AI dello scenario: grounding sui dati reali del cruscotto + preset specifico.
+pub async fn scenario_ai_analysis(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>, Json(b): Json<ScnAnalysisReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let cat = scenario_catalog();
+    let scn = scenario_applied(&st, tid, &code, &cat).await?;
+    if !module_active(&st, tid, "assistant").await { return Err(err(StatusCode::FORBIDDEN, "modulo assistant non abilitato")); }
+    let c = ai_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "provider AI non configurato (superadmin)"))?;
+    let facts = scenario_dash_json(&st, tid, scn).await?;
+    let sys = format!("Sei un analista IoT di YouWorkforce per lo scenario «{}» (settore {}). {} \
+        Usa SOLO i fatti forniti (widget con valori/serie, KPI, incidenti). Non inventare numeri. \
+        Rispondi in italiano, breve e strutturato (stato, anomalie, azioni consigliate). Non agire \
+        sulla catena di sicurezza: resta manuale.", scn.name, scn.sector, scenario_ai_focus(scn.code));
+    let user = format!("Dati cruscotto: {}", serde_json::to_string(&facts).unwrap_or_default());
+    let analysis = ai_chat(&st, &c, &sys, &user).await.map_err(|e| err(StatusCode::BAD_GATEWAY, &e))?;
+    let mut report_id: Option<Uuid> = None;
+    if b.save.unwrap_or(false) {
+        let title = format!("Analisi {} — {}", scn.name, st.clock.now().format("%Y-%m-%d %H:%M"));
+        report_id = Some(ai_report_save(&st, &s, scn.code, &title, &analysis, json!({"scenario":scn.code})).await?);
+    }
+    audit(&st, tid, &s.email, "scenario_ai_analysis", json!({"code":scn.code,"saved":report_id.is_some()})).await;
+    Ok(Json(json!({"provider":c.provider,"analysis":analysis,"ai_focus":scenario_ai_focus(scn.code),"report_id":report_id})))
 }
 
 // ======================= youworker.ai — piattaforma AI di YouCo =======================

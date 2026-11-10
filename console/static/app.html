@@ -1542,14 +1542,54 @@ function dashWidget(w){
     ${spark(w.series)}
     <span class="chip ${tripped?'s-critico':'s-attivo'}" style="margin-top:6px">${num==null?'nessun dato':(tripped?'allarme':'ok')}</span></div>`;
 }
+let DASHMAP=null;
+function dashKpis(k){ if(!k)return'';
+  const tile=(lab,val,bad)=>`<div class="card pad" style="text-align:center"><div style="font-size:26px;font-weight:800;color:${bad?'var(--bad)':'var(--brand)'}">${val}</div><div class="small mut">${lab}</div></div>`;
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px;margin-bottom:14px">
+    ${tile('Device',k.device_count)}${tile('Metriche',k.metrics_tracked)}${tile('Allarmi ora',k.alarms_now,k.alarms_now>0)}${tile('Incidenti aperti',k.open_incidents,k.open_incidents>0)}${tile('Eventi 24h',k.events_24h)}</div>`;
+}
+function dashMulti(widgets){
+  const num=(widgets||[]).filter(w=>w.kind==='gauge'&&(w.series||[]).length>1);
+  if(num.length<2)return'';
+  const cols=['#e2001a','#ff6fa3','#2f7bd6','#19a974','#f39c12','#8e44ad'];
+  const W=600,H=120; let paths=''; let leg='';
+  num.forEach((w,idx)=>{ const vs=w.series.map(p=>typeof p.v==='number'?p.v:parseFloat(p.v)).filter(x=>!isNaN(x)); if(vs.length<2)return;
+    const mn=Math.min(...vs),mx=Math.max(...vs),rg=(mx-mn)||1;
+    const pts=vs.map((y,i)=>`${((i/(vs.length-1))*W).toFixed(1)},${(H-((y-mn)/rg)*H).toFixed(1)}`).join(' ');
+    const c=cols[idx%cols.length]; paths+=`<polyline points="${pts}" fill="none" stroke="${c}" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
+    leg+=`<span class="small" style="margin-right:12px"><span style="display:inline-block;width:10px;height:10px;background:${c};border-radius:2px;margin-right:4px"></span>${esc(w.label)}</span>`;
+  });
+  return `<div class="card pad" style="margin-top:14px"><div class="card-h" style="padding:0 0 8px"><h2>Andamento multi-metrica</h2></div>
+    <div>${leg}</div><svg viewBox="0 0 ${W} ${H}" width="100%" height="140" preserveAspectRatio="none" style="margin-top:6px">${paths}</svg>
+    <div class="small mut">Serie normalizzate (ogni metrica sul proprio minimo/massimo).</div></div>`;
+}
 async function renderScenarioDash(code){
   const box=$('#dashBox'); box.innerHTML='<div class="skel" style="height:200px"></div>';
+  if(DASHMAP){ try{DASHMAP.remove();}catch(e){} DASHMAP=null; }
   let d; try{ d=await api('/scenarios/'+code+'/dashboard'); }catch(e){ box.innerHTML=`<div class="card pad" style="color:var(--bad)">${esc(e.message)}</div>`; return; }
   const cards=(d.widgets||[]).map(dashWidget).join('')||'<div class="small mut">Nessun widget.</div>';
+  const geo=(d.devices||[]).filter(x=>x.lat!=null&&x.lon!=null);
+  const mapCard=geo.length?`<div class="card" style="padding:0;overflow:hidden;margin-top:14px"><div class="card-h"><h2 style="margin:0">Mappa device</h2></div><div id="dashMap" style="height:300px"></div></div>`:'';
   const inc=(d.incidents||[]).length?`<div class="card pad" style="margin-top:14px"><div class="card-h" style="padding:0 0 8px"><h2>Allarmi recenti</h2></div>
     <table class="table"><tbody>${d.incidents.map(i=>`<tr><td><b>${esc(i.etype)}</b></td><td>${chip(i.state)}</td><td class="small mut">${new Date(i.at).toLocaleString('it-IT')}</td></tr>`).join('')}</tbody></table></div>`:'';
-  box.innerHTML=`<div class="small mut" style="margin-bottom:10px">${esc(d.sector)} · ${d.device_count} device demo${d.device_count?'':' (attiva la demo dal superadmin per vedere i dati)'}</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px">${cards}</div>${inc}`;
+  box.innerHTML=`<div class="spread" style="margin-bottom:10px"><div class="small mut">${esc(d.sector)} · ${d.device_count} device demo${d.device_count?'':' (attiva la demo dal superadmin)'}</div>
+      <button class="btn ghost small" onclick="scnAiAnalysis('${code}',this)">✦ Analisi AI</button></div>
+    <div id="scnAiOut"></div>
+    ${dashKpis(d.kpis)}
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px">${cards}</div>
+    ${dashMulti(d.widgets)}${mapCard}${inc}`;
+  if(geo.length && typeof L!=='undefined'){ setTimeout(()=>{ try{
+    DASHMAP=L.map('dashMap',{zoomControl:true}).setView([geo[0].lat,geo[0].lon],12);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(DASHMAP);
+    geo.forEach(x=>L.marker([x.lat,x.lon]).addTo(DASHMAP).bindPopup(esc(x.label||x.external_id)));
+  }catch(e){} },80); }
+}
+async function scnAiAnalysis(code,btn){
+  const out=$('#scnAiOut'); if(!out)return; btn.disabled=true; out.innerHTML='<div class="small mut" style="margin-bottom:10px">Analisi AI in corso…</div>';
+  try{ const r=await api('/scenarios/'+code+'/ai-analysis',{method:'POST',body:JSON.stringify({save:true})});
+    out.innerHTML=`<div class="card pad" style="background:var(--brand-soft);margin-bottom:12px"><div class="small mut">✦ ${esc(r.provider)} · ${esc(r.ai_focus||'')} ${r.report_id?'· salvato come report':''}</div><div style="white-space:pre-wrap;margin-top:4px">${esc(r.analysis)}</div></div>`;
+  }catch(e){ out.innerHTML=`<div class="small" style="color:var(--bad);margin-bottom:10px">${esc(e.message)}</div>`; }
+  finally{ btn.disabled=false; }
 }
 async function aiSuggestRules(btn){
   const box=$('#srSuggest'); if(!box)return; btn.disabled=true; box.innerHTML='<div class="small mut">youworker.ai analizza la telemetria recente…</div>';

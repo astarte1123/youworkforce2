@@ -254,6 +254,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/thingsboard/status", get(api::thingsboard_status))
         .route("/api/scenarios", get(api::tenant_scenarios_list))
         .route("/api/scenarios/:code/dashboard", get(api::scenario_dashboard))
+        .route("/api/scenarios/:code/ai-analysis", post(api::scenario_ai_analysis))
         .route("/api/checkin/ai-anomaly", get(api::checkin_ai_anomaly))
         .route("/api/orders/:id/ai-assist", get(api::work_order_ai_assist))
         .route("/api/timesheets/:id/ai-summary", get(api::consuntivo_ai_summary))
