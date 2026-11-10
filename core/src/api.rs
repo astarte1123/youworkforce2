@@ -675,9 +675,9 @@ pub async fn sync_goalert(st: &AppState, tid: Uuid) -> Result<Value, (StatusCode
     let sms_on = cfg_on("Twilio.Enable");
     let email_on = cfg_on("SMTP.Enable");
 
-    let groups = sqlx::query("SELECT id,name,goalert_ep_id,goalert_service_id,goalert_key FROM app.alarm_groups WHERE tenant_id=$1 ORDER BY name")
+    let groups = sqlx::query("SELECT id,name,goalert_ep_id,goalert_service_id,goalert_key,oncall_mode,oncall_type,oncall_shift,oncall_tz,goalert_rotation_id FROM app.alarm_groups WHERE tenant_id=$1 ORDER BY name")
         .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-    let (mut n_users, mut n_groups, mut skipped, mut n_cm, mut no_contact) = (0i64, 0i64, 0i64, 0i64, 0i64);
+    let (mut n_users, mut n_groups, mut skipped, mut n_cm, mut no_contact, mut n_rot) = (0i64, 0i64, 0i64, 0i64, 0i64, 0i64);
     for g in &groups {
         let gid: Uuid = g.get("id");
         let gname: String = g.get("name");
@@ -718,7 +718,34 @@ pub async fn sync_goalert(st: &AppState, tid: Uuid) -> Result<Value, (StatusCode
             &format!("mutation{{createEscalationPolicy(input:{{name:\"{}\",repeat:{ep_repeat}}}){{id}}}}", esc_gql(&epname)),
             "/data/createEscalationPolicy/id").await
             .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "createEscalationPolicy fallito"))?;
-        let targets = uids.iter().map(|id| format!("{{type:user,id:\"{id}\"}}")).collect::<Vec<_>>().join(",");
+        // target dello step: TUTTI i membri (mode 'tutti') oppure il reperibile di TURNO (rotation)
+        let mode: String = g.get("oncall_mode");
+        let targets = if mode == "turni" {
+            let oc_type: String = g.get("oncall_type");
+            let oc_shift: i32 = g.get("oncall_shift");
+            let oc_tz: String = g.get("oncall_tz");
+            let mut rot_id: Option<String> = g.try_get("goalert_rotation_id").ok().flatten();
+            let rname = format!("YW {} {} turni {}", &tid.to_string()[..8], ga_name(&gname), suf);
+            if rot_id.is_none() {
+                rot_id = gql_id(st, &base, &cookie,
+                    &format!("mutation{{createRotation(input:{{name:\"{}\",type:{oc_type},start:\"2024-01-01T00:00:00Z\",shiftLength:{oc_shift},timeZone:\"{}\"}}){{id}}}}", esc_gql(&rname), esc_gql(&oc_tz)),
+                    "/data/createRotation/id").await;
+            }
+            if let Some(ref rid) = rot_id {
+                // aggiorna membri + parametri della rotation
+                let uidlist = uids.iter().map(|u| format!("\"{u}\"")).collect::<Vec<_>>().join(",");
+                let _ = goalert::graphql(&st.http, &base, &cookie,
+                    &format!("mutation{{updateRotation(input:{{id:\"{rid}\",type:{oc_type},shiftLength:{oc_shift},timeZone:\"{}\",userIDs:[{uidlist}]}})}}", esc_gql(&oc_tz))).await;
+                sqlx::query("UPDATE app.alarm_groups SET goalert_rotation_id=$1 WHERE id=$2").bind(rid).bind(gid).execute(&st.owner_pool).await.map_err(ise)?;
+                n_rot += 1;
+                format!("{{type:rotation,id:\"{rid}\"}}")
+            } else {
+                // fallback: se la rotation non si crea, notifica tutti
+                uids.iter().map(|id| format!("{{type:user,id:\"{id}\"}}")).collect::<Vec<_>>().join(",")
+            }
+        } else {
+            uids.iter().map(|id| format!("{{type:user,id:\"{id}\"}}")).collect::<Vec<_>>().join(",")
+        };
         let _ = goalert::graphql(&st.http, &base, &cookie,
             &format!("mutation{{createEscalationPolicyStep(input:{{escalationPolicyID:\"{new_ep}\",delayMinutes:{delay_min},targets:[{targets}]}}){{id}}}}")).await;
         // servizio + integration key (la key resta stabile tra le sync)
@@ -768,7 +795,7 @@ pub async fn sync_goalert(st: &AppState, tid: Uuid) -> Result<Value, (StatusCode
     } else { None };
     audit(st, tid, "youworkforce", "goalert_sync", json!({"groups":n_groups,"users_created":n_users,"routes":n_routes,"skipped":skipped,"contact_methods":n_cm})).await;
     Ok(json!({"ok":true,"groups_synced":n_groups,"users_created":n_users,"routes":n_routes,"groups_skipped_no_members":skipped,
-        "contact_methods_created":n_cm,"members_without_contact":no_contact,
+        "contact_methods_created":n_cm,"members_without_contact":no_contact,"rotations":n_rot,
         "transport":{"sms":sms_on,"email":email_on},
         "repeat_seconds":repeat,"step_delay_minutes":delay_min,"ep_repeat":ep_repeat,"warning":warning}))
 }
@@ -1674,7 +1701,7 @@ pub async fn list_groups(State(st): State<AppState>, h: HeaderMap) -> R {
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "loneworker").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let groups = sqlx::query("SELECT id,name FROM app.alarm_groups ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
+    let groups = sqlx::query("SELECT id,name,oncall_mode,oncall_type,oncall_shift,oncall_tz FROM app.alarm_groups ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
     let members = sqlx::query(
         "SELECT m.group_id,m.user_id,m.position,u.email,u.role FROM app.alarm_group_members m
          JOIN app.users u ON u.id=m.user_id ORDER BY m.position").fetch_all(&mut *tx).await.map_err(ise)?;
@@ -1685,7 +1712,9 @@ pub async fn list_groups(State(st): State<AppState>, h: HeaderMap) -> R {
         let mem: Vec<Value> = members.iter().filter(|m| m.get::<Uuid,_>("group_id")==gid).map(|m| json!({
             "user_id":m.get::<Uuid,_>("user_id"),"email":m.get::<String,_>("email"),
             "role":m.get::<String,_>("role"),"position":m.get::<i32,_>("position")})).collect();
-        json!({"id":gid,"name":g.get::<String,_>("name"),"members":mem})
+        json!({"id":gid,"name":g.get::<String,_>("name"),"members":mem,
+            "oncall_mode":g.get::<String,_>("oncall_mode"),"oncall_type":g.get::<String,_>("oncall_type"),
+            "oncall_shift":g.get::<i32,_>("oncall_shift"),"oncall_tz":g.get::<String,_>("oncall_tz")})
     }).collect();
     let routes: Vec<Value> = routing.iter().map(|r| json!({"etype":r.get::<String,_>("etype"),"group_id":r.get::<Uuid,_>("group_id")})).collect();
     Ok(Json(json!({"groups":out,"routing":routes})))
@@ -1702,6 +1731,24 @@ pub async fn create_group(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     tx.commit().await.map_err(ise)?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT, "gruppo gia' presente"))?.get::<Uuid,_>("id");
     Ok(Json(json!({"id":id})))
+}
+#[derive(Deserialize)]
+pub struct GroupOncallReq { pub mode: String, pub oncall_type: Option<String>, pub shift: Option<i32>, pub tz: Option<String> }
+// Turni di reperibilita' del gruppo (effetto alla prossima Sincronizza con GoAlert).
+pub async fn set_group_oncall(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GroupOncallReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if !matches!(b.mode.as_str(), "tutti"|"turni") { return Err(err(StatusCode::BAD_REQUEST, "mode: 'tutti' o 'turni'")); }
+    let ty = b.oncall_type.as_deref().unwrap_or("weekly");
+    if !matches!(ty, "hourly"|"daily"|"weekly"|"monthly") { return Err(err(StatusCode::BAD_REQUEST, "tipo turno non valido")); }
+    let shift = b.shift.unwrap_or(1).clamp(1, 999);
+    let tz = b.tz.as_deref().unwrap_or("Europe/Rome");
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.alarm_groups SET oncall_mode=$2,oncall_type=$3,oncall_shift=$4,oncall_tz=$5 WHERE id=$1")
+        .bind(id).bind(&b.mode).bind(ty).bind(shift).bind(tz).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
+    Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_group(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;

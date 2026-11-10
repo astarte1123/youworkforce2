@@ -1426,6 +1426,20 @@ async function vGruppi(v){
           <button class="btn ghost small" onclick="grpAdd('${g.id}')">+ membro</button></div>
         ${g.members.map(m=>`<div class="row small" style="justify-content:space-between;margin-top:4px"><span>${esc(m.email)}</span>
           <button class="btn-ico btn ghost" onclick="grpRm('${g.id}','${m.user_id}')">${ICON.x}</button></div>`).join('')}
+        <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
+          <div class="row small" style="gap:6px;align-items:center;flex-wrap:wrap">
+            <span class="mut">Reperibilità:</span>
+            <select id="ocMode_${g.id}" class="small" onchange="grpOncallToggle('${g.id}')">
+              <option value="tutti" ${g.oncall_mode!=='turni'?'selected':''}>Tutti insieme</option>
+              <option value="turni" ${g.oncall_mode==='turni'?'selected':''}>A turni (rotazione)</option></select>
+            <span id="ocParams_${g.id}" style="display:${g.oncall_mode==='turni'?'inline-flex':'none'};gap:6px;align-items:center">
+              <select id="ocType_${g.id}" class="small">${['hourly','daily','weekly','monthly'].map(t=>`<option value="${t}" ${g.oncall_type===t?'selected':''}>${({hourly:'orario',daily:'giorn.',weekly:'settim.',monthly:'mensile'})[t]}</option>`).join('')}</select>
+              <input id="ocShift_${g.id}" type="number" min="1" max="999" value="${g.oncall_shift||1}" style="width:56px" title="lunghezza turno">
+            </span>
+            <button class="btn ghost small" onclick="grpOncallSave('${g.id}')">Salva turni</button>
+          </div>
+          <div class="small faint" style="margin-top:3px">${g.oncall_mode==='turni'?'Il reperibile di turno viene avvisato per primo (rotazione in GoAlert).':'Tutti i membri vengono avvisati insieme.'} Applica con <b>Sincronizza con GoAlert</b>.</div>
+        </div>
       </div>`).join('')||'<div class="small mut">Nessun gruppo. Creane uno.</div>'}
     </div>
     <div class="card pad"><h2 style="margin-bottom:10px">Routing eventi → gruppo</h2>
@@ -1443,11 +1457,17 @@ async function syncGoalert(btn){
   const out=$('#gaSyncOut'); if(btn){btn.disabled=true;btn.textContent='Sincronizzo…';}
   try{ const r=await api('/alarm/sync-goalert',{method:'POST'});
     const tr=r.transport||{}; const trTxt=`trasporto: ${tr.sms?'SMS✓':'SMS✗'} ${tr.email?'email✓':'email✗'}`;
-    if(out) out.innerHTML=`<span style="color:var(--ok,green)">✓ Sincronizzato</span> · ${r.groups_synced} gruppi · ${r.users_created} utenti · ${r.contact_methods_created} recapiti · ${r.routes} routing · ${trTxt} · repeat ${r.repeat_seconds}s (step ${r.step_delay_minutes}m ×${r.ep_repeat})${r.groups_skipped_no_members?` · ${r.groups_skipped_no_members} gruppi senza membri`:''}`
+    if(out) out.innerHTML=`<span style="color:var(--ok,green)">✓ Sincronizzato</span> · ${r.groups_synced} gruppi · ${r.rotations||0} turni · ${r.users_created} utenti · ${r.contact_methods_created} recapiti · ${r.routes} routing · ${trTxt} · repeat ${r.repeat_seconds}s (step ${r.step_delay_minutes}m ×${r.ep_repeat})${r.groups_skipped_no_members?` · ${r.groups_skipped_no_members} gruppi senza membri`:''}`
       +(r.warning?`<div style="color:var(--warn,#b45309);margin-top:4px">⚠ ${esc(r.warning)}</div>`:'');
     toast('GoAlert sincronizzato','ok');
   }catch(e){ if(out) out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; toast(e.message,'bad'); }
   finally{ if(btn){btn.disabled=false;btn.textContent='🔄 Sincronizza con GoAlert';} }
+}
+function grpOncallToggle(gid){ const m=$('#ocMode_'+gid).value; const p=$('#ocParams_'+gid); if(p) p.style.display=m==='turni'?'inline-flex':'none'; }
+async function grpOncallSave(gid){
+  const body={mode:$('#ocMode_'+gid).value, oncall_type:$('#ocType_'+gid)?.value||'weekly', shift:+($('#ocShift_'+gid)?.value||1)};
+  try{ await api('/groups/'+gid+'/oncall',{method:'POST',body:JSON.stringify(body)}); toast('Turni salvati — premi Sincronizza con GoAlert','ok'); }
+  catch(e){ toast(e.message,'bad'); }
 }
 async function grpNew(){ const n=prompt('Nome gruppo?'); if(!n)return;
   try{await api('/groups',{method:'POST',body:JSON.stringify({name:n})}); toast('Gruppo creato','ok'); route();}catch(e){toast(e.message,'bad');} }

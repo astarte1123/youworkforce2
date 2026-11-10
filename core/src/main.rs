@@ -149,6 +149,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/groups", get(api::list_groups).post(api::create_group))
         .route("/api/groups/:id", axum::routing::delete(api::delete_group))
         .route("/api/groups/:id/members", post(api::add_group_member))
+        .route("/api/groups/:id/oncall", post(api::set_group_oncall))
         .route("/api/groups/:gid/members/:uid", axum::routing::delete(api::remove_group_member))
         .route("/api/routing", post(api::set_routing))
         .route("/api/alarm/sync-goalert", post(api::goalert_sync_handler))

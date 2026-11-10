@@ -78,6 +78,16 @@ if echo "$SY" | grep -q '"ok":true'; then
   else
     ok "trasporto attivo ($SMS_ON/$EMAIL_ON): recapiti creati=$(echo "$SY" | jv 'd["contact_methods_created"]')"
   fi
+  # turni di reperibilita': mode 'turni' -> rotation GoAlert + step che la punta
+  aapi -H 'content-type: application/json' -X POST "$BASE/api/groups/$GID/oncall" -d '{"mode":"turni","oncall_type":"weekly","shift":1}' >/dev/null
+  [ "$(aapi "$BASE/api/groups" | python -c "import sys,json;print([g['oncall_mode'] for g in json.load(sys.stdin)['groups'] if g['id']=='$GID'][0])")" = "turni" ] \
+    && ok "gruppo impostato a turni (reperibilità)" || no "oncall_mode non salvato" "-"
+  SY2=$(aapi -H 'content-type: application/json' -X POST "$BASE/api/alarm/sync-goalert")
+  [ "$(echo "$SY2" | jv 'd["rotations"]')" -ge 1 ] && ok "sync turni -> rotation GoAlert creata" || no "rotation non creata" "$SY2"
+  [ -n "$(sql "SELECT goalert_rotation_id FROM app.alarm_groups WHERE id='$GID'")" ] && ok "rotation id memorizzato sul gruppo" || no "rotation id assente" "-"
+  ROT1=$(sql "SELECT goalert_rotation_id FROM app.alarm_groups WHERE id='$GID'")
+  aapi -H 'content-type: application/json' -X POST "$BASE/api/alarm/sync-goalert" >/dev/null
+  [ "$ROT1" = "$(sql "SELECT goalert_rotation_id FROM app.alarm_groups WHERE id='$GID'")" ] && ok "re-sync turni idempotente (rotation invariata)" || no "rotation ricreata" "-"
 else
   echo "SKIP  sync GoAlert non eseguibile (GoAlert non provisionato per acme): $(echo "$SY" | head -c 120)"
 fi
