@@ -1721,8 +1721,10 @@ pub async fn ai_conn(st: &AppState, tid: Uuid) -> Option<AiConn> {
 pub async fn ai_feature_on(st: &AppState, tid: Uuid, feature: &str) -> bool {
     if !module_active(st, tid, "assistant").await { return false; }
     if ai_conn(st, tid).await.is_none() { return false; }
+    // Auto: con un provider AI configurato le funzioni sono ATTIVE di default; l'admin può
+    // comunque disattivarne esplicitamente qualcuna (riga con enabled=false).
     sqlx::query_scalar::<_, bool>("SELECT enabled FROM app.ai_features WHERE tenant_id=$1 AND feature=$2")
-        .bind(tid).bind(feature).fetch_optional(&st.owner_pool).await.ok().flatten().unwrap_or(false)
+        .bind(tid).bind(feature).fetch_optional(&st.owner_pool).await.ok().flatten().unwrap_or(true)
 }
 
 /// Compone base_url + path per l'endpoint AI, tollerando il caso comune in cui l'utente
@@ -1852,8 +1854,9 @@ pub async fn ai_features_get(State(st): State<AppState>, h: HeaderMap) -> R {
     let configured = ai_conn(&st, tid).await.is_some();
     let rows = sqlx::query("SELECT feature,enabled FROM app.ai_features WHERE tenant_id=$1")
         .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    // default: ON quando il provider è configurato (altrimenti OFF); l'override esplicito vince.
     let mut map = serde_json::Map::new();
-    for f in AI_FEATURES { map.insert((*f).to_string(), json!(false)); }
+    for f in AI_FEATURES { map.insert((*f).to_string(), json!(configured)); }
     for r in rows { map.insert(r.get::<String,_>("feature"), json!(r.get::<bool,_>("enabled"))); }
     Ok(Json(json!({"connection_configured":configured,"features":map})))
 }
