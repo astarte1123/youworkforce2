@@ -20,6 +20,32 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     sweep_checkins(st).await?;
     heartbeats(st).await?;
     traccar_poll(st).await?;
+    thingsboard_poll(st).await?;
+    Ok(())
+}
+
+// ThingsBoard PULL in background: per ogni tenant con connessione + modulo attivo + poll
+// abilitato, alla cadenza configurata fa login JWT, specchia i device e pulla la telemetria
+// applicando il motore regole (incidenti). Converge col push via Rule Engine.
+async fn thingsboard_poll(st: &AppState) -> anyhow::Result<()> {
+    let now = st.clock.now();
+    let conns = sqlx::query(
+        "SELECT c.tenant_id, c.poll_interval_s
+         FROM app.thingsboard_connections c
+         JOIN app.tenant_modules m ON m.tenant_id=c.tenant_id AND m.module_code='thingsboard' AND m.state='attivo'
+         WHERE c.poll_enabled=true")
+        .fetch_all(&st.owner_pool).await?;
+    for c in conns {
+        let tid: Uuid = c.get("tenant_id");
+        let interval: i32 = c.get("poll_interval_s");
+        let last = sqlx::query("SELECT last_poll_at FROM app.thingsboard_poll_state WHERE tenant_id=$1")
+            .bind(tid).fetch_optional(&st.owner_pool).await?;
+        if let Some(lp) = last.as_ref().and_then(|s| s.try_get::<DateTime<Utc>,_>("last_poll_at").ok()) {
+            if (now - lp).num_seconds() < interval as i64 { continue; }
+        }
+        // tb_poll_now aggiorna gia' lo stato salute (reachable-aware); un tenant giu' non blocca gli altri.
+        let _ = api::tb_poll_now(st, tid).await;
+    }
     Ok(())
 }
 

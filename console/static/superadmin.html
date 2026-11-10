@@ -241,7 +241,21 @@ async function tbConn(tid,btn){
     <div class="row" style="gap:8px;margin-top:6px"><button class="btn" onclick="tbConnSave('${tid}')">Salva</button>
       <button class="btn ghost" onclick="tbVerify('${tid}')">Verifica collegamento</button>
       ${c.configured?'<span class="chip s-attivo">configurata</span>':'<span class="chip">assente</span>'}</div>
+    <div class="divider" style="margin:10px 0"></div>
+    <div class="small mut" style="margin-bottom:6px">Pull (specchio device + telemetria → regole): oltre al push Rule Engine, YouWorkforce pulla i device e l'ultima telemetria alla cadenza impostata.</div>
+    <div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap">
+      <label class="small mut"><input type="checkbox" id="tb_poll_${tid}" ${c.poll_enabled?'checked':''}> Poll automatico</label>
+      <label class="small mut">Cadenza (s)<input id="tb_int_${tid}" type="number" min="15" max="3600" value="${c.poll_interval_s||60}" style="width:90px"></label>
+      <button class="btn ghost" onclick="tbSync('${tid}')">⟳ Sincronizza ora</button></div>
     <div id="tb_msg_${tid}" class="small mut" style="margin-top:6px"></div></div>`;
+}
+async function tbSync(tid){
+  const msg=document.getElementById('tb_msg_'+tid); if(msg)msg.textContent='Sincronizzo…';
+  const body={poll_enabled:document.getElementById('tb_poll_'+tid).checked, poll_interval_s:+document.getElementById('tb_int_'+tid).value};
+  try{ const r=await api('/superadmin/tenants/'+tid+'/thingsboard/sync',{method:'POST',body:JSON.stringify(body)});
+    if(msg) msg.innerHTML=r.reachable?`<span class="s-attivo">✓ ${r.device_count} device · ${r.alarm_count} allarmi</span>`:`<span style="color:var(--bad)">✗ ${esc(r.verdict||'irraggiungibile')}</span>`;
+    toast(r.reachable?'ThingsBoard sincronizzato':'ThingsBoard irraggiungibile', r.reachable?'ok':'bad');
+  }catch(e){ if(msg)msg.textContent=e.message; toast(e.message,'bad'); }
 }
 async function tbConnSave(tid){
   const url=document.getElementById('tb_url_'+tid).value.trim();

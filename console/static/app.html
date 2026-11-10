@@ -1348,8 +1348,25 @@ async function vConnettori(v){
       <td style="text-align:right"><button class="btn-ico btn ghost" onclick="tokDel('${esc(t.token)}')">${ICON.x}</button></td></tr>`).join('')
       ||`<tr><td colspan="4" class="empty">nessun token</td></tr>`}</tbody></table>
     <div class="small mut" style="margin-top:8px">Il tenant deriva sempre dal token di ingest: usalo nella configurazione del device/connettore. Revocarlo blocca subito quella sorgente.</div></div>
+  <div id="tbHealthCard" style="margin-top:16px"></div>
   <div id="sensorRulesCard" style="margin-top:16px"></div>`;
+  if(ACTIVE_MODS.has('thingsboard')) renderTbHealth();
   if(ACTIVE_MODS.has('iot')||ACTIVE_MODS.has('thingsboard')) renderSensorRules();
+}
+async function renderTbHealth(){
+  const box=$('#tbHealthCard'); if(!box)return;
+  let s; try{ s=await api('/thingsboard/status'); }catch(e){ return; }
+  if(!s.configured){ box.innerHTML=`<div class="card pad"><div class="spread"><b>ThingsBoard — pull</b><span class="chip">non configurata</span></div>
+    <div class="small mut" style="margin-top:6px">Il superadmin imposta la connessione ThingsBoard per abilitare lo specchio device e il pull telemetria.</div></div>`; return; }
+  const reach = s.reachable===true?'<span class="chip s-attivo">raggiungibile</span>':(s.reachable===false?'<span class="chip s-critico">irraggiungibile</span>':'<span class="chip">mai sincronizzato</span>');
+  box.innerHTML=`<div class="card pad"><div class="spread"><b>ThingsBoard — pull (specchio + telemetria)</b>${reach}</div>
+    <div class="row small mut" style="gap:14px;margin-top:8px;flex-wrap:wrap">
+      <span>Poll: <b>${s.poll_enabled?'attivo':'manuale'}</b>${s.poll_enabled?` (${s.poll_interval_s}s)`:''}</span>
+      <span>Device: <b>${s.device_count??'—'}</b></span>
+      <span>Incidenti ultimo pull: <b>${s.alarm_count??'—'}</b></span>
+      <span>Ultimo OK: <b>${s.last_ok_at?new Date(s.last_ok_at).toLocaleString('it-IT'):'—'}</b></span></div>
+    ${s.last_error?`<div class="small" style="color:var(--bad);margin-top:6px">⚠ ${esc(s.last_error)}</div>`:''}
+    <div class="small mut" style="margin-top:6px">Pull e push convergono sullo stesso motore regole sensori e sulla stessa catena incidenti. Config e sincronizzazione dal pannello superadmin.</div></div>`;
 }
 const RULE_OPS=[['>=','≥'],['<=','≤'],['>','>'],['<','<'],['==','='],['is_true','è vero'],['is_false','è falso']];
 const RULE_ETYPES=['sensore_critico','batteria_critica','man_down','perdita_alimentazione','telemetria'];

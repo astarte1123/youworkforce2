@@ -863,11 +863,12 @@ pub async fn super_set_thingsboard(State(st): State<AppState>, h: HeaderMap, Pat
 }
 pub async fn super_get_thingsboard(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
     require_super(&st, &h).await?;
-    let r = sqlx::query("SELECT base_url,username,password FROM app.thingsboard_connections WHERE tenant_id=$1")
+    let r = sqlx::query("SELECT base_url,username,password,poll_enabled,poll_interval_s FROM app.thingsboard_connections WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
     match r {
         Some(r) => Ok(Json(json!({"configured":true,"base_url":r.get::<String,_>("base_url"),
-            "username":r.get::<String,_>("username"),"has_password":!r.get::<String,_>("password").is_empty()}))),
+            "username":r.get::<String,_>("username"),"has_password":!r.get::<String,_>("password").is_empty(),
+            "poll_enabled":r.get::<bool,_>("poll_enabled"),"poll_interval_s":r.get::<i32,_>("poll_interval_s")}))),
         None => Ok(Json(json!({"configured":false}))),
     }
 }
@@ -890,6 +891,158 @@ pub async fn thingsboard_verify(State(st): State<AppState>, h: HeaderMap, Path(t
         Ok(r) => Ok(Json(json!({"reachable":false,"verdict":format!("ThingsBoard HTTP {}", r.status())}))),
         Err(e) => Ok(Json(json!({"reachable":false,"verdict":format!("irraggiungibile: {e}")}))),
     }
+}
+
+// ============ ThingsBoard PULL: specchio device + telemetria -> regole/incidenti ============
+// Completa il connettore TB (prima solo push Rule Engine): YouWorkforce fa login JWT, pulla
+// i device nel proprio inventario e l'ultima telemetria, applicando eval_sensor_rules per
+// alzare incidenti critici sullo stesso percorso del push (persist_ingest). On-demand dal
+// pannello o in background dal worker (cadenza per-tenant).
+
+/// Dall'ultima telemetria TB (timeseries {chiave:[{ts,value}]}) costruisce un payload piatto
+/// {chiave: valore} usando il campione piu' recente; prova numero, poi booleano, poi stringa.
+fn tb_latest_payload(ts: &Value) -> Value {
+    let mut m = serde_json::Map::new();
+    if let Some(obj) = ts.as_object() {
+        for (k, v) in obj {
+            let raw = v.as_array().and_then(|a| a.get(0)).and_then(|p| p.get("value"));
+            if let Some(val) = raw {
+                let parsed = match val {
+                    Value::String(s) => s.parse::<f64>().map(|n| json!(n))
+                        .or_else(|_| s.parse::<bool>().map(|b| json!(b)))
+                        .unwrap_or_else(|_| json!(s)),
+                    other => other.clone(),
+                };
+                m.insert(k.clone(), parsed);
+            }
+        }
+    }
+    Value::Object(m)
+}
+
+/// Esegue un pull completo TB per il tenant: specchio device + telemetria -> regole.
+/// Ritorna (device specchiati, incidenti alzati). Non critico: errori -> Err stringa.
+pub async fn tb_pull_once(st: &AppState, tid: Uuid) -> Result<(i64, i64), String> {
+    let (base, user, pass) = tb_conn(st, tid).await.ok_or("connessione ThingsBoard non configurata")?;
+    let token = tb_login(&st.http, &base, &user, &pass).await.ok_or("login ThingsBoard fallito")?;
+    let hdr = format!("Bearer {token}");
+    let dresp = st.http.get(format!("{base}/api/tenant/devices?pageSize=1000&page=0"))
+        .header("X-Authorization", &hdr).send().await.map_err(|e| format!("device irraggiungibili: {e}"))?;
+    if !dresp.status().is_success() { return Err(format!("ThingsBoard /devices HTTP {}", dresp.status())); }
+    let dv: Value = dresp.json().await.map_err(|e| format!("device json non valido: {e}"))?;
+    let empty = vec![];
+    let data = dv.get("data").and_then(|d| d.as_array()).unwrap_or(&empty);
+    let mut dev_count = 0i64; let mut alarms = 0i64;
+    for d in data {
+        let name = d.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if name.is_empty() { continue; }
+        let tbid = d.get("id").and_then(|i| i.get("id")).and_then(|v| v.as_str()).unwrap_or("");
+        let dtype = d.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        dev_count += 1;
+        // specchio nell'inventario (source=thingsboard); id/tipo TB in config.
+        let _ = sqlx::query(
+            "INSERT INTO app.devices(tenant_id,external_id,source,label,config,updated_at)
+             VALUES($1,$2,'thingsboard',$3,$4,now())
+             ON CONFLICT (tenant_id,source,external_id) DO UPDATE SET
+               label=COALESCE(app.devices.label, EXCLUDED.label),
+               config=EXCLUDED.config, updated_at=now()")
+            .bind(tid).bind(name).bind(name).bind(json!({"tb_id":tbid,"type":dtype}))
+            .execute(&st.owner_pool).await;
+        // ultima telemetria -> regole sensori -> incidente critico (stesso percorso del push)
+        if tbid.is_empty() { continue; }
+        let tresp = st.http.get(format!("{base}/api/plugins/telemetry/DEVICE/{tbid}/values/timeseries"))
+            .header("X-Authorization", &hdr).send().await;
+        if let Ok(r) = tresp { if r.status().is_success() {
+            if let Ok(ts) = r.json::<Value>().await {
+                let payload = tb_latest_payload(&ts);
+                if payload.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
+                    if let Some(etype) = eval_sensor_rules(st, tid, &payload).await {
+                        if CRITICAL.contains(&etype.as_str()) {
+                            let corr = format!("tbpull-{}-{}", name, Uuid::new_v4());
+                            let _ = persist_ingest(st, tid, Normalized{
+                                source:"thingsboard".into(), source_event:corr.clone(), idem:corr.clone(),
+                                etype, device_external_id:Some(name.to_string()), site_name:None,
+                                lat:None, lon:None, accuracy_m:None, correlation:corr, payload,
+                                indoor:false, beacon_uid:None, zone:None }).await;
+                            alarms += 1;
+                        }
+                    }
+                }
+            }
+        }}
+    }
+    Ok((dev_count, alarms))
+}
+
+async fn tb_mark_poll(st: &AppState, tid: Uuid, reachable: bool, err: Option<&str>, dev: Option<i64>, alarms: Option<i64>, now: chrono::DateTime<chrono::Utc>) {
+    let _ = sqlx::query(
+        "INSERT INTO app.thingsboard_poll_state(tenant_id,last_poll_at,last_ok_at,reachable,last_error,device_count,alarm_count,updated_at)
+         VALUES($1,$2,CASE WHEN $3 THEN $2 ELSE NULL END,$3,$4,$5,$6,now())
+         ON CONFLICT (tenant_id) DO UPDATE SET last_poll_at=$2,
+           last_ok_at=CASE WHEN $3 THEN $2 ELSE app.thingsboard_poll_state.last_ok_at END,
+           reachable=$3, last_error=$4,
+           device_count=COALESCE($5, app.thingsboard_poll_state.device_count),
+           alarm_count=COALESCE($6, app.thingsboard_poll_state.alarm_count), updated_at=now()")
+        .bind(tid).bind(now).bind(reachable).bind(err).bind(dev).bind(alarms).execute(&st.owner_pool).await;
+}
+/// On-demand: forza un pull e aggiorna lo stato salute. Usato da pannello e agente AI.
+pub async fn tb_poll_now(st: &AppState, tid: Uuid) -> Result<(i64,i64), String> {
+    let now = st.clock.now();
+    match tb_pull_once(st, tid).await {
+        Ok((d,a)) => { tb_mark_poll(st, tid, true, None, Some(d), Some(a), now).await; Ok((d,a)) }
+        Err(e) => { tb_mark_poll(st, tid, false, Some(&e), None, None, now).await; Err(e) }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct TbSyncReq { pub poll_enabled: Option<bool>, pub poll_interval_s: Option<i32> }
+/// Superadmin: imposta poll on/off + cadenza, e forza un sync immediato (reachable-aware).
+pub async fn thingsboard_sync(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, body: Option<Json<TbSyncReq>>) -> R {
+    require_super(&st, &h).await?;
+    let b = body.map(|Json(b)| b).unwrap_or(TbSyncReq{ poll_enabled:None, poll_interval_s:None });
+    if let Some(v) = b.poll_enabled {
+        sqlx::query("UPDATE app.thingsboard_connections SET poll_enabled=$2 WHERE tenant_id=$1").bind(tid).bind(v).execute(&st.owner_pool).await.map_err(ise)?;
+    }
+    if let Some(v) = b.poll_interval_s {
+        sqlx::query("UPDATE app.thingsboard_connections SET poll_interval_s=$2 WHERE tenant_id=$1").bind(tid).bind(v.clamp(15,3600)).execute(&st.owner_pool).await.map_err(ise)?;
+    }
+    match tb_poll_now(&st, tid).await {
+        Ok((d,a)) => { audit(&st, tid, "superadmin", "thingsboard_sync", json!({"devices":d,"alarms":a})).await;
+            Ok(Json(json!({"reachable":true,"device_count":d,"alarm_count":a}))) }
+        Err(e) => Ok(Json(json!({"reachable":false,"verdict":e}))),
+    }
+}
+/// Stato salute poller TB (operatore/admin/auditor).
+pub async fn thingsboard_status(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let cfg = sqlx::query("SELECT poll_enabled,poll_interval_s FROM app.thingsboard_connections WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let (poll_enabled, poll_interval_s) = cfg.as_ref().map(|r| (r.get::<bool,_>("poll_enabled"), r.get::<i32,_>("poll_interval_s"))).unwrap_or((false,60));
+    let st_row = sqlx::query("SELECT last_poll_at,last_ok_at,reachable,last_error,device_count,alarm_count FROM app.thingsboard_poll_state WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({
+        "configured": cfg.is_some(), "poll_enabled": poll_enabled, "poll_interval_s": poll_interval_s,
+        "reachable": st_row.as_ref().and_then(|r| r.try_get::<bool,_>("reachable").ok()),
+        "last_poll_at": st_row.as_ref().and_then(|r| r.try_get::<Dt,_>("last_poll_at").ok()).map(|t| t.to_rfc3339()),
+        "last_ok_at": st_row.as_ref().and_then(|r| r.try_get::<Dt,_>("last_ok_at").ok()).map(|t| t.to_rfc3339()),
+        "last_error": st_row.as_ref().and_then(|r| r.try_get::<String,_>("last_error").ok()),
+        "device_count": st_row.as_ref().and_then(|r| r.try_get::<i32,_>("device_count").ok()),
+        "alarm_count": st_row.as_ref().and_then(|r| r.try_get::<i32,_>("alarm_count").ok()),
+    })))
+}
+/// Telemetria live di un device TB (per nome), via il suo tb_id specchiato. Per l'agente AI.
+pub async fn tb_device_telemetry(st: &AppState, tid: Uuid, name: &str) -> Result<Value, String> {
+    let (base, user, pass) = tb_conn(st, tid).await.ok_or("connessione ThingsBoard non configurata")?;
+    let tbid: Option<String> = sqlx::query_scalar("SELECT config->>'tb_id' FROM app.devices WHERE tenant_id=$1 AND source='thingsboard' AND external_id=$2")
+        .bind(tid).bind(name).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let tbid = tbid.filter(|s| !s.is_empty()).ok_or("device TB sconosciuto (sincronizza prima i device)")?;
+    let token = tb_login(&st.http, &base, &user, &pass).await.ok_or("login ThingsBoard fallito")?;
+    let r = st.http.get(format!("{base}/api/plugins/telemetry/DEVICE/{tbid}/values/timeseries"))
+        .header("X-Authorization", format!("Bearer {token}")).send().await.map_err(|e| format!("irraggiungibile: {e}"))?;
+    if !r.status().is_success() { return Err(format!("ThingsBoard HTTP {}", r.status())); }
+    let ts: Value = r.json().await.map_err(|e| format!("json non valido: {e}"))?;
+    Ok(tb_latest_payload(&ts))
 }
 
 // ======================= youworker.ai — piattaforma AI di YouCo =======================
@@ -4722,12 +4875,13 @@ fn ag_meta(name: &str) -> Option<ToolMeta> {
     match name {
         // lettura/analisi
         "query_incidents"|"query_checkins"|"query_events"|"query_work_orders"|"get_consuntivo"
+        |"tb_list_devices"|"tb_device_telemetry"
             => Some(ToolMeta{sensitive:false, writes:false}),
         // scrittura a basso rischio -> esecuzione diretta (audit)
         "add_diary_entry"|"add_incident_note"|"add_timesheet_line"|"add_expense"|"save_report"
             => Some(ToolMeta{sensitive:false, writes:true}),
         // scrittura sensibile -> richiede conferma operatore
-        "create_work_order"|"create_sensor_rule"
+        "create_work_order"|"create_sensor_rule"|"tb_sync_devices"
             => Some(ToolMeta{sensitive:true, writes:true}),
         _ => None,
     }
@@ -4750,6 +4904,9 @@ fn ag_catalog() -> Vec<(&'static str, &'static str, Value)> {
       ("save_report","Salva un report su DB (consultabile in seguito).", o(json!({"title":{"type":"string"},"kind":{"type":"string"},"body":{"type":"string"}}), json!(["title","body"]))),
       ("create_work_order","Crea una BOZZA di ordine di lavoro (richiede conferma operatore).", o(json!({"title":{"type":"string"},"instructions":{"type":"string"},"priority":{"type":"integer"}}), json!(["title"]))),
       ("create_sensor_rule","Crea una regola sensori (richiede conferma operatore).", o(json!({"metric":{"type":"string"},"op":{"type":"string"},"threshold":{"type":"number"},"etype":{"type":"string"},"label":{"type":"string"}}), json!(["metric","op","etype"]))),
+      ("tb_list_devices","Elenca i device ThingsBoard specchiati nell'inventario.", o(json!({}), json!([]))),
+      ("tb_device_telemetry","Ultima telemetria live di un device ThingsBoard (per nome).", o(json!({"device":{"type":"string"}}), json!(["device"]))),
+      ("tb_sync_devices","Sincronizza i device ThingsBoard e pulla la telemetria (richiede conferma).", o(json!({}), json!([]))),
     ]
 }
 
@@ -4902,6 +5059,29 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
             t.commit().await.map_err(|e| e.to_string())?;
             audit(st, tid, &s.email, "ai_agent_create_rule", json!({"metric":metric,"op":op,"etype":etype})).await;
             Ok(json!({"ok":true,"rule_id":row.get::<Uuid,_>("id")}))
+        }
+        "tb_list_devices" => {
+            if !module_active(st, tid, "thingsboard").await { return Err("modulo thingsboard non abilitato".into()); }
+            let mut t = tx!();
+            let rows = sqlx::query("SELECT external_id,label,config,updated_at FROM app.devices WHERE source='thingsboard' ORDER BY external_id")
+                .fetch_all(&mut *t).await.map_err(|e| e.to_string())?;
+            t.commit().await.ok();
+            Ok(json!(rows.iter().map(|r| json!({"device":r.get::<String,_>("external_id"),
+                "label":r.try_get::<String,_>("label").ok(),"tipo":r.try_get::<Value,_>("config").ok().and_then(|c| c.get("type").and_then(|v| v.as_str()).map(|s| s.to_string())),
+                "aggiornato":r.get::<Dt,_>("updated_at").to_rfc3339()})).collect::<Vec<_>>()))
+        }
+        "tb_device_telemetry" => {
+            if !module_active(st, tid, "thingsboard").await { return Err("modulo thingsboard non abilitato".into()); }
+            let name = gs("device").unwrap_or_default(); if name.trim().is_empty() { return Err("device richiesto".into()); }
+            let tele = tb_device_telemetry(st, tid, name.trim()).await?;
+            Ok(json!({"device":name,"telemetria":tele}))
+        }
+        "tb_sync_devices" => {
+            admin_only(s).map_err(|e| e.1)?;
+            if !module_active(st, tid, "thingsboard").await { return Err("modulo thingsboard non abilitato".into()); }
+            let (d,a) = tb_poll_now(st, tid).await?;
+            audit(st, tid, &s.email, "ai_agent_tb_sync", json!({"devices":d,"alarms":a})).await;
+            Ok(json!({"ok":true,"device_sincronizzati":d,"incidenti_alzati":a}))
         }
         _ => Err("tool sconosciuto".into()),
     }
