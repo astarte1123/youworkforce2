@@ -24,7 +24,10 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     // auto-integrazioni: configura da sola i moduli integrati attivi (idempotente), ~ogni 60s
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
-    if N.fetch_add(1, Ordering::Relaxed) % 30 == 0 { api::reconcile_integrations(st).await; }
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    if n % 30 == 0 { api::reconcile_integrations(st).await; }
+    // #5 sync ack/chiusura da GoAlert -> incidenti (~ogni 14s)
+    if n % 7 == 0 { api::goalert_ack_sync(st).await; }
     Ok(())
 }
 

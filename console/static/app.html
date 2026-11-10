@@ -461,6 +461,11 @@ async function runMoveReport(){
 // ---------------- Mappa (Leaflet/OpenStreetMap) ----------------
 // Due modalità: ALLARMI (dove si sono verificati, indoor/outdoor) e DISPOSITIVI (live+geofence).
 let MAP=null, MARK={}, MAPTRAIL=null, GFLAYER=null, ADDMODE=false, CLUSTER=null, REPLAY=null, ALARMLAYER=null, AMARK={}, MAPMODE='allarmi', GF_LAYERS={};
+// Resize/rotazione: Leaflet non ridimensiona da solo → tile grige. invalidateSize su tutte le mappe vive.
+let _mapRzT=null;
+function invalidateMaps(){ [MAP,FPMAP,DASHMAP].forEach(m=>{ if(m){ try{m.invalidateSize(false);}catch(e){} } }); }
+window.addEventListener('resize',()=>{ clearTimeout(_mapRzT); _mapRzT=setTimeout(invalidateMaps,150); });
+window.addEventListener('orientationchange',()=>setTimeout(invalidateMaps,300));
 // MAPPA (outdoor): ALLARMI (dove si sono verificati) e DISPOSITIVI (live+geofence).
 // L'indoor sta nella voce di menu separata "Piantine" (vPiantine).
 async function vMappa(v){
@@ -474,9 +479,9 @@ async function vMappa(v){
         <button class="btn ghost small ${MAPMODE==='dispositivi'?'ok':''}" onclick="setMapMode('dispositivi')">📟 Dispositivi</button>`:''}
     </div></div>
     <div class="row" id="mapCtl" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px"></div>
-    <div class="grid" style="grid-template-columns:1fr 300px;gap:16px">
-      <div class="card" style="padding:0;overflow:hidden"><div id="map" style="height:68vh;width:100%"></div></div>
-      <div class="card pad" style="height:72vh;overflow:auto" id="mapSide"></div></div>`;
+    <div class="grid map-grid">
+      <div class="card" style="padding:0;overflow:hidden"><div id="map"></div></div>
+      <div class="card pad" id="mapSide"></div></div>`;
   if(typeof L==='undefined'){ $('#map').innerHTML='<div class="pad mut">Libreria mappa non disponibile (serve connessione).</div>'; return; }
   setTimeout(()=>{ initMap(); (MAPMODE==='allarmi'?renderAlarms:renderDevices)(admin); },60);
 }
@@ -485,9 +490,9 @@ async function vPiantine(v){
   const admin=can(['tenant_admin']);
   v.innerHTML=`<div class="page-h"><div><h1>Piantine</h1><div class="mut" id="mapSub">—</div></div></div>
     <div class="row" id="mapCtl" style="gap:10px;flex-wrap:nowrap;align-items:flex-end;margin-bottom:10px;overflow-x:auto"></div>
-    <div class="grid" style="grid-template-columns:1fr 300px;gap:16px">
-      <div class="card" style="padding:0;overflow:hidden"><div id="map" style="height:68vh;width:100%"></div></div>
-      <div class="card pad" style="height:72vh;overflow:auto" id="mapSide"></div></div>`;
+    <div class="grid map-grid">
+      <div class="card" style="padding:0;overflow:hidden"><div id="map"></div></div>
+      <div class="card pad" id="mapSide"></div></div>`;
   if(typeof L==='undefined'){ $('#map').innerHTML='<div class="pad mut">Libreria mappa non disponibile (serve connessione).</div>'; return; }
   setTimeout(()=>renderIndoor(admin),60);
 }
@@ -1787,8 +1792,9 @@ async function tokDel(t){ if(!await askConfirm('Revocare il token? La sorgente c
 
 // ---------------- Gruppi allarme ----------------
 async function vGruppi(v){
-  const [G,users]=await Promise.all([api('/groups').catch(()=>({groups:[],routing:[]})),api('/users').catch(()=>[])]);
-  v._users=users; v._groups=G.groups;
+  const [G,users,ocs]=await Promise.all([api('/groups').catch(()=>({groups:[],routing:[]})),api('/users').catch(()=>[]),
+    api('/oncall-settings').catch(()=>({voice_fallback_on:true,voice_fallback_min:5,status_updates_on:true}))]);
+  v._users=users; v._groups=G.groups; window._OCS=ocs; window._users=users; window._groupsCache=G.groups;
   const ETYPES=['sos','man_down','immobilita','mancato_checkin','sensore_critico',
     'perdita_contatto','manomissione_badge','perdita_alimentazione','jamming','traccar_conn_down',
     'batteria_critica','batteria_bassa'];
@@ -1820,8 +1826,30 @@ async function vGruppi(v){
               <select id="ocType_${g.id}" class="small">${['hourly','daily','weekly','monthly'].map(t=>`<option value="${t}" ${g.oncall_type===t?'selected':''}>${({hourly:'orario',daily:'giorn.',weekly:'settim.',monthly:'mensile'})[t]}</option>`).join('')}</select>
               <input id="ocShift_${g.id}" type="number" min="1" max="999" value="${g.oncall_shift||1}" style="width:56px" title="lunghezza turno">
             </span>
-            <button class="btn ghost small" onclick="grpOncallSave('${g.id}')">Salva turni</button>
+            <button class="btn ghost small" onclick="grpOncallSave('${g.id}')">Salva</button>
           </div>
+          <details style="margin-top:6px"><summary class="small mut" style="cursor:pointer">⚙ Copertura · handoff · Slack</summary>
+            <div class="col small" style="gap:8px;margin-top:8px">
+              <label class="row" style="gap:6px;align-items:center">Copertura
+                <select id="cov_${g.id}" class="small" onchange="covToggle('${g.id}')">
+                  <option value="24_7" ${g.coverage_mode!=='orari'?'selected':''}>24/7 (sempre)</option>
+                  <option value="orari" ${g.coverage_mode==='orari'?'selected':''}>Solo fasce orarie</option></select></label>
+              <div id="covP_${g.id}" style="display:${g.coverage_mode==='orari'?'block':'none'}">
+                <span>Dalle <input id="covS_${g.id}" type="time" value="${g.cov_start||'08:00'}"> alle <input id="covE_${g.id}" type="time" value="${g.cov_end||'20:00'}"></span>
+                <div class="row" style="gap:4px;margin-top:4px">${['Lu','Ma','Me','Gi','Ve','Sa','Do'].map((d,i)=>`<label class="small" style="display:inline-flex;flex-direction:column;align-items:center"><span>${d}</span><input type="checkbox" id="covD_${g.id}_${i}" ${((g.cov_days||'1111111')[i]==='1')?'checked':''}></label>`).join('')}</div>
+              </div>
+              <div id="hoP_${g.id}" style="display:${g.oncall_mode==='turni'?'flex':'none'};gap:6px;align-items:center;flex-wrap:wrap">Handoff turno
+                <input id="hoT_${g.id}" type="time" value="${g.handoff_time||'09:00'}" title="ora di passaggio">
+                <select id="hoD_${g.id}" class="small" title="giorno (settimanale)">${['lun','mar','mer','gio','ven','sab','dom'].map((d,i)=>`<option value="${i}" ${g.handoff_day===i?'selected':''}>${d}</option>`).join('')}</select>
+              </div>
+              <label class="row" style="gap:6px;align-items:center">Canale Slack <input id="slC_${g.id}" value="${esc(g.slack_channel_id||'')}" placeholder="ID canale Slack" style="width:140px"></label>
+              <label class="row" style="gap:6px;align-items:center">Avviso on-call Slack
+                <select id="slN_${g.id}" class="small">
+                  <option value="off" ${(g.slack_notify||'off')==='off'?'selected':''}>off</option>
+                  <option value="onchange" ${g.slack_notify==='onchange'?'selected':''}>a ogni cambio turno</option>
+                  <option value="08:00" ${g.slack_notify==='08:00'?'selected':''}>ogni giorno 08:00</option></select></label>
+            </div>
+          </details>
           <div class="small faint" style="margin-top:3px">${g.oncall_mode==='turni'?'Il reperibile di turno viene avvisato per primo (rotazione in GoAlert).':'Tutti i membri vengono avvisati insieme.'} Applica con <b>Sincronizza con GoAlert</b>.</div>
         </div>
       </div>`).join('')||'<div class="small mut">Nessun gruppo. Creane uno.</div>'}
@@ -1835,8 +1863,104 @@ async function vGruppi(v){
         </select></div>`).join('')}
       <div class="small mut" style="margin-top:12px">Il routing indica quale gruppo è responsabile per tipo di allarme (base per l'escalation).</div>
     </div>
-  </div>`;
+  </div>
+  <details class="card pad" style="margin-top:12px">
+    <summary style="cursor:pointer;font-weight:600">🛡 Reperibilità avanzata (recapiti, fallback vocale, assenze, manutenzione, calendario)</summary>
+    <div class="grid g2" style="margin-top:12px">
+      <div>
+        <h3 style="margin:0 0 8px">Notifiche</h3>
+        <label class="row small" style="gap:8px;align-items:center"><input type="checkbox" id="ocVoice" ${ocs.voice_fallback_on?'checked':''}> Fallback vocale (chiama se l'SMS non riceve risposta)</label>
+        <label class="row small" style="gap:8px;align-items:center;margin-top:6px">dopo <input id="ocVoiceMin" type="number" min="1" max="60" value="${ocs.voice_fallback_min||5}" style="width:56px"> minuti</label>
+        <label class="row small" style="gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="ocStatus" ${ocs.status_updates_on?'checked':''}> Avvisa il reperibile sugli aggiornamenti dell'allarme</label>
+        <button class="btn ghost small" style="margin-top:8px" onclick="ocSettingsSave(this)">Salva impostazioni</button>
+        <div class="small faint" style="margin-top:4px">Applica con <b>Sincronizza con GoAlert</b>.</div>
+      </div>
+      <div>
+        <h3 style="margin:0 0 8px">Manutenzione (sospende escalation)</h3>
+        <div class="row" style="gap:6px"><button class="btn ghost small" onclick="ocMaint(1)">1h</button>
+          <button class="btn ghost small" onclick="ocMaint(2)">2h</button>
+          <button class="btn ghost small" onclick="ocMaint(4)">4h</button>
+          <button class="btn ghost small" onclick="ocMaint(0)">Termina</button></div>
+        <div id="ocMaintOut" class="small mut" style="margin-top:6px"></div>
+        <h3 style="margin:14px 0 8px">Il mio calendario reperibilità</h3>
+        <button class="btn ghost small" onclick="ocCalendar(this)">📅 Genera URL (Apple/Google Calendar)</button>
+        <div id="ocCalOut" class="small" style="margin-top:6px;word-break:break-all"></div>
+      </div>
+    </div>
+    <div style="margin-top:14px">
+      <h3 style="margin:0 0 8px">Recapiti dei reperibili (verifica)</h3>
+      <button class="btn ghost small" onclick="ocContacts(this)">Mostra recapiti e verifica</button>
+      <div id="ocContactsOut" style="margin-top:8px"></div>
+    </div>
+    <div style="margin-top:14px">
+      <h3 style="margin:0 0 8px">Assenze e sostituzioni</h3>
+      <div class="row small" style="gap:6px;align-items:center">Gruppo
+        <select id="ocAbsGrp" class="small">${G.groups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')||'<option value="">—</option>'}</select>
+        <button class="btn ghost small" onclick="ocAbsences(this)">Gestisci</button></div>
+      <div id="ocAbsOut" style="margin-top:8px"></div>
+    </div>
+  </details>`;
 }
+async function ocSettingsSave(btn){
+  const body={voice_fallback_on:$('#ocVoice').checked, voice_fallback_min:+($('#ocVoiceMin').value||5), status_updates_on:$('#ocStatus').checked};
+  try{ await api('/oncall-settings',{method:'POST',body:JSON.stringify(body)}); toast('Salvato — Sincronizza con GoAlert','ok'); }
+  catch(e){ toast(e.message,'bad'); }
+}
+async function ocMaint(hours){
+  const out=$('#ocMaintOut');
+  if(hours>0 && !await askConfirm(`Sospendere l'escalation per ${hours}h? Gli allarmi verranno creati ma non inoltrati.`)) return;
+  try{ const r=await api('/oncall-maintenance',{method:'POST',body:JSON.stringify({hours})});
+    out.innerHTML = r.active?`<span style="color:var(--warn,#b45309)">⏸ Manutenzione attiva su ${r.services} servizi fino alle ${new Date(r.until).toLocaleString('it-IT')}</span>`
+      :`<span style="color:var(--ok,green)">▶ Manutenzione terminata (${r.services} servizi)</span>`; }
+  catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; }
+}
+async function ocCalendar(btn){
+  try{ const r=await api('/oncall-calendar/url'); const full=location.origin+r.url;
+    $('#ocCalOut').innerHTML=`<div class="mut">Copia in Apple/Google Calendar (abbonamento):</div><code>${esc(full)}</code> <button class="btn ghost small" onclick="navigator.clipboard.writeText('${full}');toast('Copiato','ok')">copia</button>`; }
+  catch(e){ toast(e.message,'bad'); }
+}
+async function ocContacts(btn){
+  const out=$('#ocContactsOut'); out.innerHTML='<div class="small mut">Carico…</div>';
+  try{ const r=await api('/oncall-contacts');
+    out.innerHTML = (r.members||[]).map(m=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+      <b class="small">${esc(m.email)}</b>${(m.contacts||[]).length?('<div style="margin-top:4px">'+m.contacts.map(c=>`<div class="row small" style="gap:6px;align-items:center;flex-wrap:wrap">
+        <span class="tag">${esc(c.type)}</span> <span>${esc(c.value||'')}</span>
+        ${c.pending?'<span style="color:var(--warn,#b45309)">⏳ da verificare</span>':'<span style="color:var(--ok,green)">✓ verificato</span>'}
+        <button class="btn ghost small" onclick="ocCmVerify('${c.id}')">invia codice</button>
+        <button class="btn ghost small" onclick="ocCmCode('${c.id}')">inserisci codice</button>
+        <button class="btn ghost small" onclick="ocCmTest('${c.id}')">prova</button></div>`).join('')+'</div>'):'<div class="small mut">nessun recapito (fai Sincronizza con GoAlert)</div>'}
+    </div>`).join('')||'<div class="small mut">Nessun reperibile sincronizzato. Aggiungi membri ai gruppi e premi Sincronizza con GoAlert.</div>'; }
+  catch(e){ out.innerHTML='<span class="small" style="color:var(--bad)">'+esc(e.message)+'</span>'; }
+}
+async function ocCmVerify(id){ try{ await api('/oncall-contacts/verify',{method:'POST',body:JSON.stringify({contact_method_id:id})}); toast('Codice inviato','ok'); }catch(e){ toast(e.message,'bad'); } }
+async function ocCmCode(id){ const c=await askPrompt('Codice ricevuto?'); if(!c)return; try{ await api('/oncall-contacts/code',{method:'POST',body:JSON.stringify({contact_method_id:id,code:+c})}); toast('Recapito verificato','ok'); ocContacts(); }catch(e){ toast(e.message,'bad'); } }
+async function ocCmTest(id){ try{ await api('/oncall-contacts/test',{method:'POST',body:JSON.stringify({contact_method_id:id})}); toast('Messaggio di prova inviato','ok'); }catch(e){ toast(e.message,'bad'); } }
+async function ocAbsences(btn){
+  const gid=$('#ocAbsGrp').value; if(!gid){ toast('nessun gruppo','bad'); return; }
+  const out=$('#ocAbsOut'); out.innerHTML='<div class="small mut">Carico…</div>';
+  const grp=(window._groupsCache||[]).find(x=>x.id===gid);
+  const members=(grp?grp.members:[]);
+  try{ const r=await api('/oncall-overrides?group_id='+gid);
+    const list=(r.overrides||[]).map(o=>`<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:4px">
+      <span>${o.removeUser?('➖ '+esc(o.removeUser.name)):''}${o.addUser?(' ➕ '+esc(o.addUser.name)):''} · ${new Date(o.start).toLocaleDateString('it-IT')}→${new Date(o.end).toLocaleDateString('it-IT')}</span>
+      <button class="btn ghost small" onclick="ocAbsDel('${o.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessuna assenza.</div>';
+    out.innerHTML=`${r.note?`<div class="small mut">${esc(r.note)}</div>`:list}
+      <div class="row small" style="gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        Assente <select id="absRem" class="small"><option value="">—</option>${(window._users||[]).filter(u=>['reperibile','operatore','tenant_admin'].includes(u.role)).map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
+        Sostituto <select id="absAdd" class="small"><option value="">—</option>${(window._users||[]).filter(u=>['reperibile','operatore','tenant_admin'].includes(u.role)).map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
+        dal <input id="absS" type="date"> al <input id="absE" type="date">
+        <button class="btn small" onclick="ocAbsAdd('${gid}')">Aggiungi</button></div>`;
+  }catch(e){ out.innerHTML='<span class="small" style="color:var(--bad)">'+esc(e.message)+'</span>'; }
+}
+async function ocAbsAdd(gid){
+  const rem=$('#absRem').value, add=$('#absAdd').value, s=$('#absS').value, e=$('#absE').value;
+  if(!s||!e){ toast('indica le date','bad'); return; }
+  if(!rem&&!add){ toast('indica assente e/o sostituto','bad'); return; }
+  const body={group_id:gid, start:s+'T00:00:00Z', end:e+'T23:59:59Z', remove_user_id:rem||null, add_user_id:add||null};
+  try{ await api('/oncall-overrides',{method:'POST',body:JSON.stringify(body)}); toast('Assenza registrata','ok'); ocAbsences(); }
+  catch(err){ toast(err.message,'bad'); }
+}
+async function ocAbsDel(id){ try{ await api('/oncall-overrides/delete',{method:'POST',body:JSON.stringify({id})}); toast('Rimossa','ok'); ocAbsences(); }catch(e){ toast(e.message,'bad'); } }
 async function syncGoalert(btn){
   const out=$('#gaSyncOut'); if(btn){btn.disabled=true;btn.textContent='Sincronizzo…';}
   try{ const r=await api('/alarm/sync-goalert',{method:'POST'});
@@ -1847,10 +1971,15 @@ async function syncGoalert(btn){
   }catch(e){ if(out) out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; toast(e.message,'bad'); }
   finally{ if(btn){btn.disabled=false;btn.textContent='🔄 Sincronizza con GoAlert';} }
 }
-function grpOncallToggle(gid){ const m=$('#ocMode_'+gid).value; const p=$('#ocParams_'+gid); if(p) p.style.display=m==='turni'?'inline-flex':'none'; }
+function grpOncallToggle(gid){ const m=$('#ocMode_'+gid).value; const p=$('#ocParams_'+gid); if(p) p.style.display=m==='turni'?'inline-flex':'none'; const h=$('#hoP_'+gid); if(h) h.style.display=m==='turni'?'flex':'none'; }
+function covToggle(gid){ const m=$('#cov_'+gid).value; const p=$('#covP_'+gid); if(p) p.style.display=m==='orari'?'block':'none'; }
 async function grpOncallSave(gid){
-  const body={mode:$('#ocMode_'+gid).value, oncall_type:$('#ocType_'+gid)?.value||'weekly', shift:+($('#ocShift_'+gid)?.value||1)};
-  try{ await api('/groups/'+gid+'/oncall',{method:'POST',body:JSON.stringify(body)}); toast('Turni salvati — premi Sincronizza con GoAlert','ok'); }
+  let days=''; for(let i=0;i<7;i++){ days += ($('#covD_'+gid+'_'+i)?.checked)?'1':'0'; }
+  const body={mode:$('#ocMode_'+gid).value, oncall_type:$('#ocType_'+gid)?.value||'weekly', shift:+($('#ocShift_'+gid)?.value||1),
+    coverage_mode:$('#cov_'+gid)?.value||'24_7', cov_start:$('#covS_'+gid)?.value||null, cov_end:$('#covE_'+gid)?.value||null, cov_days:days,
+    handoff_time:$('#hoT_'+gid)?.value||null, handoff_day:+($('#hoD_'+gid)?.value||0),
+    slack_channel_id:$('#slC_'+gid)?.value||null, slack_notify:$('#slN_'+gid)?.value||'off'};
+  try{ await api('/groups/'+gid+'/oncall',{method:'POST',body:JSON.stringify(body)}); toast('Salvato — premi Sincronizza con GoAlert','ok'); }
   catch(e){ toast(e.message,'bad'); }
 }
 async function grpNew(){ const n=await askPrompt('Nome gruppo?'); if(!n)return;

@@ -92,6 +92,17 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,va
 @media(max-width:900px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:620px){.g2,.g3,.g4{grid-template-columns:1fr}}
 
+/* ---- mappa / piantine: layout responsive (map + pannello laterale) ---- */
+.map-grid{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;align-items:stretch}
+.map-grid>.card{min-width:0}
+.map-grid #map{height:68vh;width:100%}
+.map-grid #mapSide{height:72vh;overflow:auto}
+@media(max-width:860px){
+  .map-grid{grid-template-columns:1fr}
+  .map-grid #map{height:52vh;min-height:300px}
+  .map-grid #mapSide{height:auto;max-height:52vh}
+}
+
 /* ---- kpi ---- */
 .kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:16px;box-shadow:var(--sh)}
 .kpi .n{font-size:30px;font-weight:700;letter-spacing:-.02em;line-height:1.1}
