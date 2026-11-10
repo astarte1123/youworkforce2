@@ -31,10 +31,42 @@ fn traccar_alarm_etype(alarm: &str, sos_as: &str) -> String {
     }
 }
 
+/// Default handling + etype base per tipo evento Traccar (tipi reali da
+/// /api/notifications/types). Safety-first per il lavoratore isolato.
+/// Ritorna (etype_base, default_handling ∈ ignora|registra|critico).
+fn traccar_event_default(evt_type: &str) -> (&'static str, &'static str) {
+    match evt_type {
+        "unaccompaniedMotion" => ("movimento_non_accompagnato", "critico"),
+        "deviceInactive"      => ("dispositivo_inattivo", "critico"),
+        "proximityEnter"      => ("prossimita_ingresso", "registra"),
+        "proximityExit"       => ("prossimita_uscita", "registra"),
+        "deviceOverspeed"     => ("eccesso_velocita", "registra"),
+        "deviceFuelDrop"      => ("calo_carburante", "registra"),
+        "deviceFuelIncrease"  => ("aumento_carburante", "ignora"),
+        "ignitionOn"          => ("accensione_motore", "ignora"),
+        "ignitionOff"         => ("spegnimento_motore", "ignora"),
+        "maintenance"         => ("manutenzione_richiesta", "registra"),
+        "driverChanged"       => ("cambio_conducente", "registra"),
+        "media"               => ("media_ricevuto", "ignora"),
+        "deviceMoving"        => ("device_moving", "ignora"),
+        "geofenceCrossed"     => ("attraversamento_geofence", "registra"),
+        "commandResult"       => ("esito_comando", "ignora"),
+        "deviceOnline" | "deviceUnknown" | "queuedCommandSent" => ("traccar_event", "ignora"),
+        _ => ("traccar_event", "registra"),
+    }
+}
+/// Tipi evento Traccar esposti nella policy (per la UI). Esclusi quelli con
+/// gestione dedicata propria (alarm, deviceOffline, deviceStopped, geofenceEnter/Exit).
+pub const TRACCAR_POLICY_EVENTS: &[&str] = &[
+    "unaccompaniedMotion","deviceInactive","proximityEnter","proximityExit","deviceOverspeed",
+    "deviceFuelDrop","deviceFuelIncrease","ignitionOn","ignitionOff","maintenance","driverChanged",
+    "media","deviceMoving","geofenceCrossed","commandResult","deviceOnline","deviceUnknown"];
+
 /// Mappa un evento Traccar (tipo + eventuale alarm + batteria) nell'etype
-/// normalizzato, applicando la config per-tenant `traccar/alarm_map`.
+/// normalizzato, applicando la config per-tenant `traccar/alarm_map` (incl. `events`).
 /// Usata SIA dal webhook di forwarding SIA dal poller API, così push e pull
-/// producono esattamente lo stesso incidente (idempotente a valle).
+/// producono esattamente lo stesso incidente (idempotente a valle). Ritorna "ignore"
+/// quando la policy è `ignora` (il chiamante salta la persistenza).
 pub fn map_traccar_etype(amap: &Value, evt_type: &str, alarm: Option<&str>, battery: Option<f64>) -> String {
     let sos_as = amap.get("sos_as").and_then(|v| v.as_str()).unwrap_or("sos");
     let offline_critical = amap.get("offline_critical").and_then(|v| v.as_str()).map(|s| s=="si").unwrap_or(false);
@@ -55,7 +87,14 @@ pub fn map_traccar_etype(amap: &Value, evt_type: &str, alarm: Option<&str>, batt
     } else if battery.map(|b| b > 0.0 && b < battery_min as f64).unwrap_or(false) {
         "batteria_bassa".into()
     } else {
-        "traccar_event".into()
+        // event policy configurabile: ignora | registra | critico (etype *_critico)
+        let (base, def) = traccar_event_default(evt_type);
+        let handling = amap.get("events").and_then(|e| e.get(evt_type)).and_then(|v| v.as_str()).unwrap_or(def);
+        match handling {
+            "ignora" => "ignore".into(),
+            "critico" => format!("{base}_critico"),
+            _ => base.into(),
+        }
     };
     // Applica la policy batteria sia al percorso alarm=lowBattery sia alla soglia %.
     if etype == "batteria_bassa" {
@@ -3345,6 +3384,8 @@ pub async fn resolve_indoor(st: &AppState, tid: Uuid, attrs: Option<&Value>)
 /// Persist a normalized event idempotently; open an incident + outbox notify
 /// (one transaction, contract line 48) when the mapped etype is critical.
 pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
+    // policy "ignora": evento non significativo per questo tenant -> nessuna persistenza.
+    if n.etype == "ignore" { return Ok(Json(json!({"ignored":true,"correlation":n.correlation}))); }
     let now = st.clock.now();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
 
@@ -3383,7 +3424,7 @@ pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
     let eid: Uuid = ev.get("id");
 
     let mut incident_id: Option<Uuid> = None;
-    if CRITICAL.contains(&n.etype.as_str()) {
+    if CRITICAL.contains(&n.etype.as_str()) || n.etype.ends_with("_critico") {
         // SOS priority/repeat follow the per-tenant escalation policy; other criticals = 2.
         let (pri, repeat) = if n.etype=="sos" { sos_escalation(st, tid).await } else { (2, 0) };
         let irow = sqlx::query(
@@ -6458,4 +6499,258 @@ pub async fn goalert_ack_sync(st: &AppState) {
             }
         }
     }
+}
+
+// ============================================================================
+// Traccar parity: event policy, report proxy, drivers, maintenance, computed
+// attributes, accumulators. Tutto pilotato da YouWorkforce (tenant_admin).
+// ============================================================================
+
+/// Connessione Traccar del tenant o errore parlante.
+async fn tc_conn_or_err(st: &AppState, tid: Uuid) -> Result<(String,String,String),(StatusCode,String)> {
+    traccar_conn(st, tid).await
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata (chiedi al superadmin)"))
+}
+/// Risolve il nostro device uuid -> id numerico Traccar (via uniqueId).
+async fn tc_device_num(st: &AppState, base: &str, user: &str, pass: &str, tid: Uuid, dev: Uuid) -> Result<i64,(StatusCode,String)> {
+    let ext: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND tenant_id=$2 AND source='traccar'")
+        .bind(dev).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let ext = ext.ok_or_else(|| err(StatusCode::NOT_FOUND, "device Traccar inesistente"))?;
+    let dl = st.http.get(traccar_url(base, &format!("/api/devices?uniqueId={ext}")))
+        .basic_auth(user, Some(pass)).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar non raggiungibile: {e}")))?;
+    if !dl.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, "Traccar: auth/lookup fallito")); }
+    let arr: Value = dl.json().await.map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar: json non valido"))?;
+    arr.as_array().and_then(|a| a.first()).and_then(|d| d.get("id")).and_then(|v| v.as_i64())
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "device non trovato su Traccar"))
+}
+
+// ---- Event policy (ignora|registra|critico per tipo evento Traccar) ----
+pub async fn traccar_event_policy_get(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "traccar").await?;
+    let amap = tool_config(&st, tid, "traccar", "alarm_map").await;
+    let events = amap.get("events").cloned().unwrap_or_else(|| json!({}));
+    // ritorna, per ogni tipo noto, handling corrente o default
+    let mut out = serde_json::Map::new();
+    for &et in TRACCAR_POLICY_EVENTS {
+        let (_, def) = traccar_event_default(et);
+        let cur = events.get(et).and_then(|v| v.as_str()).unwrap_or(def);
+        out.insert(et.to_string(), json!(cur));
+    }
+    Ok(Json(json!({"events":out})))
+}
+#[derive(Deserialize)] pub struct EventPolicyReq { pub events: std::collections::HashMap<String,String> }
+pub async fn traccar_event_policy_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<EventPolicyReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "traccar").await?;
+    // valida chiavi/valori
+    for (k, v) in &b.events {
+        if !TRACCAR_POLICY_EVENTS.contains(&k.as_str()) { return Err(err(StatusCode::BAD_REQUEST, &format!("tipo evento non valido: {k}"))); }
+        if !matches!(v.as_str(), "ignora"|"registra"|"critico") { return Err(err(StatusCode::BAD_REQUEST, &format!("handling non valido per {k}: {v}"))); }
+    }
+    // merge dentro la config esistente alarm_map.events (preserva sos_as/battery_as ecc.)
+    let cur: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='traccar' AND tool_code='alarm_map'")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let mut cfg = cur.and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    let mut events = cfg.get("events").and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    for (k, v) in &b.events { events.insert(k.clone(), json!(v)); }
+    cfg.insert("events".into(), Value::Object(events));
+    let cfg_v = Value::Object(cfg);
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'traccar','alarm_map',$2,$3) ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config=EXCLUDED.config,updated_by=EXCLUDED.updated_by,updated_at=now()")
+        .bind(tid).bind(&cfg_v).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "traccar_event_policy", json!({"n":b.events.len()})).await;
+    Ok(Json(json!({"ok":true,"updated":b.events.len()})))
+}
+
+// ---- Report proxy (trips/stops/summary/route), opzionale CSV ----
+#[derive(Deserialize)] pub struct TcReportQuery { pub device_id: Uuid, pub from: String, pub to: String, pub csv: Option<bool> }
+async fn tc_report(st: &AppState, tid: Uuid, kind: &str, q: &TcReportQuery) -> Result<(bool,String),(StatusCode,String)> {
+    if !matches!(kind, "trips"|"stops"|"summary"|"route") { return Err(err(StatusCode::BAD_REQUEST, "report non valido")); }
+    let (base, user, pass) = tc_conn_or_err(st, tid).await?;
+    let num = tc_device_num(st, &base, &user, &pass, tid, q.device_id).await?;
+    let csv = q.csv.unwrap_or(false);
+    let accept = if csv { "text/csv" } else { "application/json" };
+    // from/to: ISO 8601 (YYYY-MM-DDTHH:MM:SSZ); valido in query senza encoding
+    let fq = q.from.replace(' ', "");
+    let tq = q.to.replace(' ', "");
+    let url = traccar_url(&base, &format!("/api/reports/{kind}?deviceId={num}&from={fq}&to={tq}"));
+    let r = st.http.get(&url).header("accept", accept).basic_auth(&user, Some(&pass)).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar non raggiungibile: {e}")))?;
+    if !r.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("Traccar report {}: HTTP {}", kind, r.status().as_u16()))); }
+    let body = r.text().await.map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar: risposta non leggibile"))?;
+    Ok((csv, body))
+}
+pub async fn traccar_report(State(st): State<AppState>, h: HeaderMap, Path(kind): Path<String>, axum::extract::Query(q): axum::extract::Query<TcReportQuery>) -> impl axum::response::IntoResponse {
+    use axum::response::IntoResponse;
+    let s = match require_tenant(&st, &h).await { Ok(s) => s, Err(e) => return e.into_response() };
+    if !matches!(s.role.as_str(), "tenant_admin"|"operatore"|"auditor") { return err(StatusCode::FORBIDDEN, "ruolo non abilitato").into_response(); }
+    let tid = s.tenant_id.unwrap();
+    if let Err(e) = require_module(&st, tid, "traccar").await { return e.into_response(); }
+    match tc_report(&st, tid, &kind, &q).await {
+        Ok((true, body)) => ([(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8")], body).into_response(),
+        Ok((false, body)) => ([(axum::http::header::CONTENT_TYPE, "application/json")], body).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+// ---- Drivers (proxy Traccar + link device) ----
+pub async fn traccar_drivers_list(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
+    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
+    let r = st.http.get(traccar_url(&base, "/api/drivers?all=true")).basic_auth(&user, Some(&pass)).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
+    let v: Value = r.json().await.unwrap_or_else(|_| json!([]));
+    Ok(Json(v))
+}
+#[derive(Deserialize)] pub struct DriverReq { pub name: String, pub unique_id: String, pub device_id: Option<Uuid> }
+pub async fn traccar_driver_add(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DriverReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
+    if b.name.trim().is_empty() || b.unique_id.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome e identificativo richiesti")); }
+    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
+    let r = st.http.post(traccar_url(&base, "/api/drivers")).basic_auth(&user, Some(&pass))
+        .json(&json!({"name":b.name.trim(),"uniqueId":b.unique_id.trim()})).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
+    if !r.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("Traccar: HTTP {}", r.status().as_u16()))); }
+    let created: Value = r.json().await.map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar: json non valido"))?;
+    let did = created.get("id").and_then(|v| v.as_i64());
+    if let (Some(did), Some(dev)) = (did, b.device_id) {
+        if let Ok(num) = tc_device_num(&st, &base, &user, &pass, tid, dev).await {
+            let _ = st.http.post(traccar_url(&base, "/api/permissions")).basic_auth(&user, Some(&pass))
+                .json(&json!({"deviceId":num,"driverId":did})).send().await;
+        }
+    }
+    audit(&st, tid, &s.email, "traccar_driver_add", json!({"name":b.name})).await;
+    Ok(Json(created))
+}
+pub async fn traccar_driver_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<i64>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
+    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
+    let _ = st.http.delete(traccar_url(&base, &format!("/api/drivers/{id}"))).basic_auth(&user, Some(&pass)).send().await;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---- Maintenance (proxy Traccar + link device) ----
+pub async fn traccar_maint_list(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
+    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
+    let r = st.http.get(traccar_url(&base, "/api/maintenance?all=true")).basic_auth(&user, Some(&pass)).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
+    let v: Value = r.json().await.unwrap_or_else(|_| json!([]));
+    Ok(Json(v))
+}
+#[derive(Deserialize)] pub struct MaintReqT { pub name: String, #[serde(rename="type")] pub kind: String, pub start: f64, pub period: f64, pub device_id: Option<Uuid> }
+pub async fn traccar_maint_add(State(st): State<AppState>, h: HeaderMap, Json(b): Json<MaintReqT>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    if !matches!(b.kind.as_str(), "totalDistance"|"hours"|"fixTime"|"odometer") { return Err(err(StatusCode::BAD_REQUEST, "tipo: totalDistance|hours|fixTime|odometer")); }
+    if b.period <= 0.0 { return Err(err(StatusCode::BAD_REQUEST, "periodo deve essere positivo")); }
+    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
+    let r = st.http.post(traccar_url(&base, "/api/maintenance")).basic_auth(&user, Some(&pass))
+        .json(&json!({"name":b.name.trim(),"type":b.kind,"start":b.start,"period":b.period})).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
+    if !r.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("Traccar: HTTP {}", r.status().as_u16()))); }
+    let created: Value = r.json().await.map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar: json non valido"))?;
+    let mid = created.get("id").and_then(|v| v.as_i64());
+    if let (Some(mid), Some(dev)) = (mid, b.device_id) {
+        if let Ok(num) = tc_device_num(&st, &base, &user, &pass, tid, dev).await {
+            let _ = st.http.post(traccar_url(&base, "/api/permissions")).basic_auth(&user, Some(&pass))
+                .json(&json!({"deviceId":num,"maintenanceId":mid})).send().await;
+        }
+    }
+    audit(&st, tid, &s.email, "traccar_maint_add", json!({"name":b.name})).await;
+    Ok(Json(created))
+}
+pub async fn traccar_maint_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<i64>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
+    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
+    let _ = st.http.delete(traccar_url(&base, &format!("/api/maintenance/{id}"))).basic_auth(&user, Some(&pass)).send().await;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---- Computed attributes (proxy Traccar + link device) ----
+pub async fn traccar_computed_list(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
+    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
+    let r = st.http.get(traccar_url(&base, "/api/attributes/computed?all=true")).basic_auth(&user, Some(&pass)).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
+    let v: Value = r.json().await.unwrap_or_else(|_| json!([]));
+    Ok(Json(v))
+}
+#[derive(Deserialize)] pub struct ComputedReq { pub description: String, pub attribute: String, pub expression: String, #[serde(rename="type")] pub kind: String, pub device_id: Option<Uuid> }
+pub async fn traccar_computed_add(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ComputedReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
+    if b.attribute.trim().is_empty() || b.expression.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "attributo ed espressione richiesti")); }
+    if !matches!(b.kind.as_str(), "number"|"boolean"|"string") { return Err(err(StatusCode::BAD_REQUEST, "tipo: number|boolean|string")); }
+    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
+    let r = st.http.post(traccar_url(&base, "/api/attributes/computed")).basic_auth(&user, Some(&pass))
+        .json(&json!({"description":b.description,"attribute":b.attribute.trim(),"expression":b.expression.trim(),"type":b.kind})).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
+    if !r.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("Traccar: HTTP {} (espressione non valida?)", r.status().as_u16()))); }
+    let created: Value = r.json().await.map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar: json non valido"))?;
+    let aid = created.get("id").and_then(|v| v.as_i64());
+    if let (Some(aid), Some(dev)) = (aid, b.device_id) {
+        if let Ok(num) = tc_device_num(&st, &base, &user, &pass, tid, dev).await {
+            let _ = st.http.post(traccar_url(&base, "/api/permissions")).basic_auth(&user, Some(&pass))
+                .json(&json!({"deviceId":num,"attributeId":aid})).send().await;
+        }
+    }
+    audit(&st, tid, &s.email, "traccar_computed_add", json!({"attribute":b.attribute})).await;
+    Ok(Json(created))
+}
+pub async fn traccar_computed_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<i64>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
+    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
+    let _ = st.http.delete(traccar_url(&base, &format!("/api/attributes/computed/{id}"))).basic_auth(&user, Some(&pass)).send().await;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---- Accumulators (lettura ultima posizione + reset) ----
+pub async fn traccar_accumulators_get(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
+    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
+    let num = tc_device_num(&st, &base, &user, &pass, tid, dev).await?;
+    // leggi device -> positionId -> posizione -> attributi
+    let dl = st.http.get(traccar_url(&base, &format!("/api/devices?id={num}"))).basic_auth(&user, Some(&pass)).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
+    let devs: Value = dl.json().await.unwrap_or_else(|_| json!([]));
+    let pos_id = devs.as_array().and_then(|a| a.first()).and_then(|d| d.get("positionId")).and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut total = Value::Null; let mut hours = Value::Null;
+    if pos_id > 0 {
+        let pl = st.http.get(traccar_url(&base, &format!("/api/positions?id={pos_id}"))).basic_auth(&user, Some(&pass)).send().await;
+        if let Ok(pl) = pl { if let Ok(arr) = pl.json::<Value>().await {
+            if let Some(a) = arr.as_array().and_then(|a| a.first()).and_then(|p| p.get("attributes")) {
+                total = a.get("totalDistance").cloned().unwrap_or(Value::Null);
+                hours = a.get("hours").cloned().unwrap_or(Value::Null);
+            }
+        }}
+    }
+    Ok(Json(json!({"total_distance":total,"hours":hours})))
+}
+#[derive(Deserialize)] pub struct AccumSet { pub total_distance: Option<f64>, pub hours: Option<f64> }
+pub async fn traccar_accumulators_set(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>, Json(b): Json<AccumSet>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
+    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
+    let num = tc_device_num(&st, &base, &user, &pass, tid, dev).await?;
+    let payload = json!({"deviceId":num,"totalDistance":b.total_distance.unwrap_or(0.0),"hours":b.hours.unwrap_or(0.0)});
+    let r = st.http.put(traccar_url(&base, &format!("/api/devices/{num}/accumulators"))).basic_auth(&user, Some(&pass))
+        .json(&payload).send().await.map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
+    if !r.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("Traccar: HTTP {}", r.status().as_u16()))); }
+    audit(&st, tid, &s.email, "traccar_accumulators", json!({"device":dev})).await;
+    Ok(Json(json!({"ok":true})))
 }

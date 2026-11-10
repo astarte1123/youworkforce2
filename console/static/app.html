@@ -349,7 +349,18 @@ const ALARM_ETYPES=['sos','man_down','immobilita','mancato_checkin','sensore_cri
 const ETYPE_LAB={sos:'SOS / richiesta soccorso',man_down:'Uomo a terra (man down)',immobilita:'Immobilità prolungata',
   mancato_checkin:'Check-in mancato',sensore_critico:'Sensore critico',manomissione_badge:'Manomissione / rimozione badge',
   perdita_alimentazione:'Perdita alimentazione',jamming:'Jamming / disturbo segnale',perdita_contatto:'Perdita contatto (badge silente)',
-  traccar_conn_down:'Sistema di tracciamento irraggiungibile',batteria_critica:'Batteria in esaurimento (critico)',batteria_bassa:'Batteria bassa'};
+  traccar_conn_down:'Sistema di tracciamento irraggiungibile',batteria_critica:'Batteria in esaurimento (critico)',batteria_bassa:'Batteria bassa',
+  ingresso_sito:'Ingresso in sito',uscita_sito:'Uscita dal sito',
+  movimento_non_accompagnato:'Movimento non accompagnato',movimento_non_accompagnato_critico:'Movimento non accompagnato (critico)',
+  dispositivo_inattivo:'Dispositivo inattivo',dispositivo_inattivo_critico:'Dispositivo inattivo (critico)',
+  prossimita_ingresso:'Prossimità: ingresso',prossimita_uscita:'Prossimità: uscita',
+  prossimita_ingresso_critico:'Prossimità ingresso (critico)',prossimita_uscita_critico:'Prossimità uscita (critico)',
+  eccesso_velocita:'Eccesso di velocità',eccesso_velocita_critico:'Eccesso di velocità (critico)',
+  calo_carburante:'Calo carburante',aumento_carburante:'Aumento carburante',
+  accensione_motore:'Accensione motore',spegnimento_motore:'Spegnimento motore',
+  manutenzione_richiesta:'Manutenzione richiesta',manutenzione_richiesta_critico:'Manutenzione richiesta (critico)',
+  cambio_conducente:'Cambio conducente',media_ricevuto:'Media ricevuto',attraversamento_geofence:'Attraversamento geofence',
+  esito_comando:'Esito comando',device_moving:'In movimento',device_offline:'Dispositivo offline',device_alarm:'Allarme dispositivo',traccar_event:'Evento Traccar'};
 function etLab(e){ return ETYPE_LAB[e]||e; }
 function fmtD(s){ return s? new Date(s).toLocaleString('it-IT') : '—'; }
 function fmtResp(sec){ if(sec==null) return '—'; return sec>=60 ? Math.floor(sec/60)+'m '+(sec%60)+'s' : sec+'s'; }
@@ -1353,6 +1364,16 @@ function devEdit(d){
        <div id="cmdMsg" class="small mut" style="margin-top:6px"></div>
        <div class="small mut" style="margin-top:8px">Storico comandi</div>
        <div id="cmdHist" class="small mut">…</div></div>`:''}
+    ${(!isNew && d.source==='traccar')?`<div class="card pad" style="margin-top:8px">
+       <b class="small">Report tracciamento</b>
+       <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
+         <button class="btn ghost small" onclick="devReport('${d.id}','trips')">🚗 Viaggi</button>
+         <button class="btn ghost small" onclick="devReport('${d.id}','stops')">⏸ Soste</button>
+         <button class="btn ghost small" onclick="devReport('${d.id}','summary')">📊 Riepilogo</button>
+         <a class="btn ghost small" href="#" onclick="devReportCsv('${d.id}','trips');return false">⬇ CSV viaggi</a></div>
+       <div id="devRepOut" class="small" style="margin-top:6px"></div>
+       <div class="spread" style="margin-top:10px"><b class="small">Contatori (odometro / ore)</b><button class="btn ghost small" onclick="devAccum('${d.id}')">mostra</button></div>
+       <div id="devAccOut" class="small mut" style="margin-top:4px"></div></div>`:''}
     <div class="cfg-msg small"></div></div>`);
   if(!isNew && d.last_lat!=null && d.last_lon!=null) loadAddr(d.last_lat,d.last_lon);
   if(!isNew && d.source==='traccar'){ devCmds(d.id); devCmdTypes(d.id); }
@@ -1375,6 +1396,26 @@ async function devCmdTypes(id){ const el=$('#cmdBtns'); if(!el)return;
     (T||[]).forEach(t=>{ const ty=t.type||t; if(!ty||seen.has(ty))return; seen.add(ty);
       el.insertAdjacentHTML('beforeend',`<button class="btn ghost small" onclick="devCmd('${id}','${esc(ty)}')">${esc(known[ty]||ty)}</button>`); });
   }catch(e){} }
+function _repRange(){ const to=new Date(); const from=new Date(Date.now()-7*864e5);
+  return {from:from.toISOString().slice(0,19)+'Z', to:to.toISOString().slice(0,19)+'Z'}; }
+async function devReport(id,kind){ const out=$('#devRepOut'); if(!out)return; out.innerHTML='<span class="mut">Carico…</span>';
+  const r=_repRange();
+  try{ const d=await api('/traccar/reports/'+kind+'?device_id='+id+'&from='+r.from+'&to='+r.to);
+    const arr=Array.isArray(d)?d:[];
+    if(!arr.length){ out.innerHTML='<span class="mut">Nessun dato negli ultimi 7 giorni.</span>'; return; }
+    if(kind==='summary'){ const s=arr[0]; out.innerHTML=`<div>Distanza: <b>${(s.distance/1000).toFixed(1)} km</b> · vel. media ${(s.averageSpeed*1.852).toFixed(0)} km/h · max ${(s.maxSpeed*1.852).toFixed(0)} km/h</div>`; return; }
+    out.innerHTML='<table class="table"><thead><tr><th>Inizio</th><th>Fine</th><th>'+(kind==='trips'?'Distanza':'Durata')+'</th></tr></thead><tbody>'+
+      arr.slice(0,20).map(t=>`<tr><td>${new Date(t.startTime).toLocaleString('it-IT')}</td><td>${new Date(t.endTime).toLocaleString('it-IT')}</td><td>${kind==='trips'?((t.distance/1000).toFixed(1)+' km'):(Math.round((t.duration||0)/60000)+' min')}</td></tr>`).join('')+'</tbody></table>';
+  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+function devReportCsv(id,kind){ const r=_repRange();
+  window.open('/api/traccar/reports/'+kind+'?device_id='+id+'&from='+r.from+'&to='+r.to+'&csv=true','_blank'); }
+async function devAccum(id){ const out=$('#devAccOut'); if(!out)return; out.innerHTML='Carico…';
+  try{ const a=await api('/traccar/accumulators/'+id);
+    const km=a.total_distance!=null?(a.total_distance/1000).toFixed(1)+' km':'n/d'; const hrs=a.hours!=null?(a.hours/3600000).toFixed(0)+' h':'n/d';
+    out.innerHTML=`Odometro: <b>${km}</b> · Ore: <b>${hrs}</b> <button class="btn ghost small" onclick="devAccumReset('${id}')">azzera</button>`;
+  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function devAccumReset(id){ if(!await askConfirm('Azzerare odometro e ore del device?'))return;
+  try{ await api('/traccar/accumulators/'+id,{method:'POST',body:JSON.stringify({total_distance:0,hours:0})}); toast('Contatori azzerati','ok'); devAccum(id); }catch(e){ toast(e.message,'bad'); } }
 async function loadAddr(lat,lon){ const el=$('#addr'); if(!el)return;
   try{ const r=await api('/geocode/reverse?lat='+lat+'&lon='+lon);
     el.innerHTML='📍 '+(r.address?esc(r.address):'<span class="mut">indirizzo non disponibile</span>'); }
@@ -1739,10 +1780,69 @@ function traccarHealthCard(s){
     ${s.outbox_stuck>0?`<div class="small" style="color:var(--bad);margin-top:8px">⛔ ${s.outbox_stuck} notifica/e di sicurezza bloccata/e verso GoAlert — in ritentativo continuo${s.outbox_last_error?': '+esc(s.outbox_last_error):''}</div>`:''}
     <div class="small mut" style="margin-top:8px">Pull via API Traccar: recupera eventi persi (backfill da cursore) e rileva il silenzio dei badge anche se Traccar non invia <i>deviceOffline</i>. Il forwarding resta come percorso rapido.</div>
     ${can(['tenant_admin'])?`<div class="row" style="gap:8px;margin-top:10px"><button class="btn ghost small" onclick="trVerify(this)">Verifica collegamento</button>
-      <button class="btn ghost small" onclick="trSettings(this)">⚙ Impostazioni sicurezza</button></div>
-      <div id="trVerifyOut"></div><div id="trSettingsOut"></div>`:''}
+      <button class="btn ghost small" onclick="trSettings(this)">⚙ Impostazioni sicurezza</button>
+      <button class="btn ghost small" onclick="trAdvanced(this)">🛠 Traccar avanzato</button></div>
+      <div id="trVerifyOut"></div><div id="trSettingsOut"></div><div id="trAdvOut"></div>`:''}
   </div>`;
 }
+async function trAdvanced(btn){
+  const out=$('#trAdvOut'); if(!out)return;
+  if(out.dataset.open){ out.innerHTML=''; out.dataset.open=''; return; } out.dataset.open='1';
+  out.innerHTML='<div class="small mut" style="margin-top:8px">Carico…</div>';
+  try{
+    const [pol,devs,drv,mnt,cmp]=await Promise.all([
+      api('/traccar/event-policy').catch(()=>({events:{}})),
+      api('/devices').catch(()=>[]),
+      api('/traccar/drivers').catch(()=>[]),
+      api('/traccar/maintenance').catch(()=>[]),
+      api('/traccar/computed').catch(()=>[])]);
+    window._trDevs=(devs||[]).filter(d=>d.source==='traccar'||!d.source);
+    const LAB={unaccompaniedMotion:'Movimento non accompagnato',deviceInactive:'Dispositivo inattivo',proximityEnter:'Prossimità ingresso',proximityExit:'Prossimità uscita',deviceOverspeed:'Eccesso velocità',deviceFuelDrop:'Calo carburante',deviceFuelIncrease:'Aumento carburante',ignitionOn:'Accensione motore',ignitionOff:'Spegnimento motore',maintenance:'Manutenzione richiesta',driverChanged:'Cambio conducente',media:'Media ricevuto',deviceMoving:'In movimento',geofenceCrossed:'Attraversamento geofence',commandResult:'Esito comando',deviceOnline:'Online',deviceUnknown:'Sconosciuto'};
+    const ev=pol.events||{};
+    const polRows=Object.keys(LAB).map(k=>`<div class="row small" style="justify-content:space-between;gap:8px;padding:3px 0">
+      <span>${LAB[k]}</span>
+      <select id="tep_${k}" class="small">
+        <option value="ignora" ${ev[k]==='ignora'?'selected':''}>ignora</option>
+        <option value="registra" ${ev[k]==='registra'?'selected':''}>registra</option>
+        <option value="critico" ${ev[k]==='critico'?'selected':''}>critico (allarme)</option></select></div>`).join('');
+    const devOpts=`<option value="">— nessun device —</option>`+window._trDevs.map(d=>`<option value="${d.id}">${esc(d.label||d.external_id)}</option>`).join('');
+    out.innerHTML=`<div class="card pad" style="margin-top:10px;background:var(--bg2)">
+      <details open><summary style="cursor:pointer;font-weight:600">Policy eventi</summary>
+        <div class="small mut" style="margin:6px 0">Decidi come trattare ogni evento Traccar. <b>critico</b> = allarme + escalation.</div>
+        ${polRows}
+        <button class="btn small" style="margin-top:8px" onclick="trPolicySave(this)">Salva policy</button></details>
+      <details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">Conducenti (drivers)</summary>
+        <div id="trDrvList" style="margin-top:6px">${(drv||[]).map(d=>`<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:4px"><span>${esc(d.name)} · <span class="mono">${esc(d.uniqueId)}</span></span><button class="btn-ico btn ghost" onclick="trDrvDel(${d.id})">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessun conducente.</div>'}</div>
+        <div class="row small" style="gap:6px;margin-top:6px;flex-wrap:wrap">Nome <input id="drvName" style="width:120px"> ID (RFID/iButton) <input id="drvUid" style="width:120px"> device <select id="drvDev" class="small">${devOpts}</select><button class="btn small" onclick="trDrvAdd(this)">+ aggiungi</button></div></details>
+      <details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">Manutenzioni</summary>
+        <div id="trMntList" style="margin-top:6px">${(mnt||[]).map(m=>`<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:4px"><span>${esc(m.name)} · ${esc(m.type)} · ogni ${m.period}</span><button class="btn-ico btn ghost" onclick="trMntDel(${m.id})">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessuna manutenzione.</div>'}</div>
+        <div class="row small" style="gap:6px;margin-top:6px;flex-wrap:wrap">Nome <input id="mntName" style="width:110px"> tipo <select id="mntType" class="small"><option value="totalDistance">distanza</option><option value="hours">ore motore</option><option value="fixTime">data/tempo</option></select> inizio <input id="mntStart" type="number" style="width:90px"> periodo <input id="mntPeriod" type="number" style="width:90px"> device <select id="mntDev" class="small">${devOpts}</select><button class="btn small" onclick="trMntAdd(this)">+ aggiungi</button></div></details>
+      <details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">Attributi calcolati (computed)</summary>
+        <div id="trCmpList" style="margin-top:6px">${(cmp||[]).map(c=>`<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:4px"><span><b>${esc(c.attribute)}</b> = <span class="mono">${esc(c.expression)}</span></span><button class="btn-ico btn ghost" onclick="trCmpDel(${c.id})">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessun attributo calcolato.</div>'}</div>
+        <div class="small mut" style="margin-top:6px">Esempio: ignition da voltaggio → <span class="mono">power ? power &gt; 13.2 : null</span></div>
+        <div class="row small" style="gap:6px;margin-top:6px;flex-wrap:wrap">Attributo <input id="cmpAttr" style="width:100px"> Espressione (JEXL) <input id="cmpExpr" style="width:200px"> tipo <select id="cmpType" class="small"><option value="boolean">bool</option><option value="number">num</option><option value="string">testo</option></select> device <select id="cmpDev" class="small">${devOpts}</select><button class="btn small" onclick="trCmpAdd(this)">+ aggiungi</button></div></details>
+    </div>`;
+  }catch(e){ out.innerHTML='<div class="small" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
+}
+async function trPolicySave(btn){
+  const LABK=['unaccompaniedMotion','deviceInactive','proximityEnter','proximityExit','deviceOverspeed','deviceFuelDrop','deviceFuelIncrease','ignitionOn','ignitionOff','maintenance','driverChanged','media','deviceMoving','geofenceCrossed','commandResult','deviceOnline','deviceUnknown'];
+  const events={}; LABK.forEach(k=>{ const el=$('#tep_'+k); if(el) events[k]=el.value; });
+  try{ await api('/traccar/event-policy',{method:'POST',body:JSON.stringify({events})}); toast('Policy salvata','ok'); }
+  catch(e){ toast(e.message,'bad'); }
+}
+async function trDrvAdd(btn){ const name=$('#drvName').value.trim(), uid=$('#drvUid').value.trim(), dev=$('#drvDev').value||null;
+  if(!name||!uid){ toast('nome e ID richiesti','bad'); return; }
+  try{ await api('/traccar/drivers',{method:'POST',body:JSON.stringify({name,unique_id:uid,device_id:dev})}); toast('Conducente aggiunto','ok'); trRefreshAdv(); }catch(e){ toast(e.message,'bad'); } }
+async function trDrvDel(id){ try{ await api('/traccar/drivers/'+id,{method:'DELETE'}); toast('Rimosso','ok'); trRefreshAdv(); }catch(e){ toast(e.message,'bad'); } }
+async function trMntAdd(btn){ const name=$('#mntName').value.trim(), type=$('#mntType').value, start=+($('#mntStart').value||0), period=+($('#mntPeriod').value||0), dev=$('#mntDev').value||null;
+  if(!name||period<=0){ toast('nome e periodo (>0) richiesti','bad'); return; }
+  try{ await api('/traccar/maintenance',{method:'POST',body:JSON.stringify({name,type,start,period,device_id:dev})}); toast('Manutenzione aggiunta','ok'); trRefreshAdv(); }catch(e){ toast(e.message,'bad'); } }
+async function trMntDel(id){ try{ await api('/traccar/maintenance/'+id,{method:'DELETE'}); toast('Rimossa','ok'); trRefreshAdv(); }catch(e){ toast(e.message,'bad'); } }
+async function trCmpAdd(btn){ const attribute=$('#cmpAttr').value.trim(), expression=$('#cmpExpr').value.trim(), type=$('#cmpType').value, dev=$('#cmpDev').value||null;
+  if(!attribute||!expression){ toast('attributo ed espressione richiesti','bad'); return; }
+  try{ await api('/traccar/computed',{method:'POST',body:JSON.stringify({description:attribute,attribute,expression,type,device_id:dev})}); toast('Attributo aggiunto','ok'); trRefreshAdv(); }catch(e){ toast(e.message,'bad'); } }
+async function trCmpDel(id){ try{ await api('/traccar/computed/'+id,{method:'DELETE'}); toast('Rimosso','ok'); trRefreshAdv(); }catch(e){ toast(e.message,'bad'); } }
+function trRefreshAdv(){ const out=$('#trAdvOut'); if(out){ out.dataset.open=''; trAdvanced(); } }
 function trSettings(btn){
   const out=$('#trSettingsOut'); if(!out)return;
   if(out.dataset.open){ out.innerHTML=''; out.dataset.open=''; return; } out.dataset.open='1';
