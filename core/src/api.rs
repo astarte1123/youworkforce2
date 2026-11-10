@@ -3306,7 +3306,7 @@ pub async fn list_geofences(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     require_module(&st, s.tenant_id.unwrap(), "traccar").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT g.id,g.name,g.kind,g.geom,g.site_id,g.floorplan_id,si.name AS site
+    let rows = sqlx::query("SELECT g.id,g.name,g.kind,g.geom,g.site_id,g.floorplan_id,g.color,si.name AS site
         FROM app.geofences g LEFT JOIN app.sites si ON si.id=g.site_id ORDER BY g.name").fetch_all(&mut *tx).await.map_err(ise)?;
     let gd = sqlx::query("SELECT geofence_id,device_id FROM app.geofence_devices").fetch_all(&mut *tx).await.map_err(ise)?;
     let ge = sqlx::query("SELECT geofence_id,etype FROM app.geofence_events").fetch_all(&mut *tx).await.map_err(ise)?;
@@ -3317,11 +3317,17 @@ pub async fn list_geofences(State(st): State<AppState>, h: HeaderMap) -> R {
         json!({
         "id":gid,"name":r.get::<String,_>("name"),"kind":r.get::<String,_>("kind"),
         "geom":r.get::<Value,_>("geom"),"site_id":r.try_get::<Uuid,_>("site_id").ok(),"site":r.try_get::<String,_>("site").ok(),
+        "color":r.try_get::<String,_>("color").ok(),
         "floorplan_id":r.try_get::<Uuid,_>("floorplan_id").ok(),"device_ids":devs,"etypes":evs }) }).collect();
     Ok(Json(json!(out)))
 }
+fn clean_hex_color(c: Option<&str>) -> String {
+    let c = c.unwrap_or("").trim();
+    let ok = c.starts_with('#') && (c.len()==7 || c.len()==4) && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
+    if ok { c.to_string() } else { "#16a34a".to_string() }
+}
 #[derive(Deserialize)]
-pub struct GeofenceReq { pub name: String, pub kind: String, pub geom: Value, pub site_id: Option<Uuid>, pub floorplan_id: Option<Uuid> }
+pub struct GeofenceReq { pub name: String, pub kind: String, pub geom: Value, pub site_id: Option<Uuid>, pub floorplan_id: Option<Uuid>, pub color: Option<String> }
 pub async fn create_geofence(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GeofenceReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
@@ -3337,9 +3343,10 @@ pub async fn create_geofence(State(st): State<AppState>, h: HeaderMap, Json(b): 
         "polygon" => { if b.geom.get("points").and_then(|v|v.as_array()).map(|a| a.len()<3).unwrap_or(true) { return Err(err(StatusCode::BAD_REQUEST, "poligono: almeno 3 punti")); } }
         _ => return Err(err(StatusCode::BAD_REQUEST, "kind non valido (circle|polygon)")),
     }
+    let color = clean_hex_color(b.color.as_deref());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let row = sqlx::query("INSERT INTO app.geofences(tenant_id,name,kind,geom,site_id,floorplan_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
-        .bind(tid).bind(b.name.trim()).bind(&b.kind).bind(&b.geom).bind(b.site_id).bind(b.floorplan_id)
+    let row = sqlx::query("INSERT INTO app.geofences(tenant_id,name,kind,geom,site_id,floorplan_id,color) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(&b.kind).bind(&b.geom).bind(b.site_id).bind(b.floorplan_id).bind(&color)
         .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "nome gia' presente"))?;
     tx.commit().await.map_err(ise)?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id");
@@ -3362,19 +3369,20 @@ pub const ASSOC_ETYPES: &[&str] = &["sos","man_down","immobilita","mancato_check
     "jamming","presenza_ingresso","presenza_uscita","telemetria"];
 
 #[derive(Deserialize)]
-pub struct GeofenceUpdate { pub name: Option<String>, pub geom: Option<Value> }
-/// Modifica nome e/o geometria di una geofence (rinomina, sposta, ridimensiona).
+pub struct GeofenceUpdate { pub name: Option<String>, pub geom: Option<Value>, pub color: Option<String> }
+/// Modifica nome, geometria e/o colore di una geofence (rinomina, sposta, ridimensiona, colore).
 pub async fn update_geofence(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GeofenceUpdate>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
     let name = b.name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    let color = b.color.as_deref().map(|c| clean_hex_color(Some(c)));
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.geofences SET name=COALESCE($2,name), geom=COALESCE($3,geom) WHERE id=$1")
-        .bind(id).bind(&name).bind(&b.geom).execute(&mut *tx).await
+    let n = sqlx::query("UPDATE app.geofences SET name=COALESCE($2,name), geom=COALESCE($3,geom), color=COALESCE($4,color) WHERE id=$1")
+        .bind(id).bind(&name).bind(&b.geom).bind(&color).execute(&mut *tx).await
         .map_err(|_| err(StatusCode::CONFLICT, "nome gia' presente"))?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "geofence inesistente")); }
-    audit(&st, tid, &s.email, "update_geofence", json!({"id":id,"renamed":name.is_some(),"moved":b.geom.is_some()})).await;
+    audit(&st, tid, &s.email, "update_geofence", json!({"id":id,"renamed":name.is_some(),"moved":b.geom.is_some(),"recolored":color.is_some()})).await;
     Ok(Json(json!({"ok":true})))
 }
 

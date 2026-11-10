@@ -566,7 +566,8 @@ async function renderDevices(admin){
   const D=D0.filter(d=>d.last_lat!=null&&d.last_lon!=null);
   $('#mapCtl').innerHTML=admin?`<span class="small mut">Disegna geofence:</span>
     <button class="btn ghost small" id="fhBtn" onclick="toggleFreehand(this)">✎ Mano libera</button>
-    <span class="small mut">(o usa gli strumenti ⬡ in alto a sinistra sulla mappa)</span>`:'';
+    <label class="small mut" style="display:inline-flex;align-items:center;gap:4px">Colore <input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" style="width:34px;height:26px;padding:1px"></label>
+    <span class="small mut">(o usa gli strumenti ⬡ in alto a sinistra)</span>`:'';
   GFLAYER=L.layerGroup().addTo(MAP); GF_LAYERS={}; window._GF_CACHE=GF; GF.forEach(g=>drawGeofence(g,admin));
   CLUSTER=(typeof L.markerClusterGroup==='function')?L.markerClusterGroup({maxClusterRadius:50}):L.layerGroup();
   const pts=[];
@@ -585,6 +586,7 @@ async function renderDevices(admin){
         <button class="btn small" data-save style="display:none" onclick="gfSaveShape('${g.id}')">💾 Salva</button>
         <button class="btn ghost small" data-cancel style="display:none" onclick="gfCancelShape('${g.id}')">Annulla</button>
         <button class="btn ghost small" onclick="gfRename('${g.id}','${esc((g.name||'').replace(/'/g,'&#39;'))}')">✎ Rinomina</button>
+        <input type="color" value="${g.color||'#16a34a'}" onchange="gfColor('${g.id}',this.value,false)" title="Colore area" style="width:30px;height:26px;padding:1px;border:1px solid var(--line);border-radius:6px;cursor:pointer">
         <button class="btn ghost small" onclick="gfAssoc('${g.id}','${esc((g.name||'').replace(/'/g,'&#39;'))}')">🔗 Associa</button>
         <button class="btn ghost small" onclick="gfDel('${g.id}')">🗑 Elimina</button></div></div>`).join(''):'<div class="small mut">Nessuna area. Disegnane una con gli strumenti ⬡.</div>'}`:'';
   $('#mapSide').innerHTML=`<h2 style="margin-bottom:4px">Presenza</h2>
@@ -612,7 +614,7 @@ function setupGeofenceTools(map, opts){
       const name=prompt('Nome della geofence?'); if(!name){ return; }
       const kind = geom.radius!=null ? 'circle':'polygon';
       if(opts.onSave){ opts.onSave(name, kind, geom); return; }
-      try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind,geom})}); toast('Geofence creata','ok'); route(); }
+      try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind,geom,color:window._gfColor||'#16a34a'})}); toast('Geofence creata','ok'); route(); }
       catch(err){ toast(err.message,'bad'); }
     });
   }
@@ -636,7 +638,7 @@ function toggleFreehand(btn){
   const onMove=(e)=>{ if(!drawing)return; if(last&&!far(last,e.latlng))return; pts.push(e.latlng); last=e.latlng; line.setLatLngs(pts); };
   const onUp=async()=>{ if(!drawing)return; drawing=false; if(line)MAP.removeLayer(line);
     if(pts.length>=3){ const geom={points:pts.map(p=>[p.lat,p.lng])}; const name=prompt('Nome della geofence (mano libera)?');
-      if(name){ try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind:'polygon',geom})}); toast('Geofence creata','ok'); route(); }catch(e){toast(e.message,'bad');} } }
+      if(name){ try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind:'polygon',geom,color:window._gfColor||'#16a34a'})}); toast('Geofence creata','ok'); route(); }catch(e){toast(e.message,'bad');} } }
     endFreehand();
   };
   FH={onDown,onMove,onUp}; MAP.on('mousedown',onDown); MAP.on('mousemove',onMove); MAP.on('mouseup',onUp);
@@ -668,6 +670,7 @@ async function renderIndoor(admin,selectId){
     +(admin&&FP.length?`<div class="field"><label>Posiziona dispositivo</label>
         <div class="row" style="gap:6px"><select id="devPlaceSel"><option value="">— scegli —</option></select>
         <button class="btn ghost small" id="devPlaceBtn" onclick="fpArmPlace(this,'device')">📍 sulla mappa</button></div></div>`:'')
+    +(admin&&FP.length?`<label class="field" style="max-width:150px"><label>Colore nuova area</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" style="height:34px;padding:2px;width:60px"></label>`:'')
     +(admin?`<button class="btn ghost small" onclick="configIndoor()">⚙ Configura indoor</button>`:'');
   if(FP.length){ fpOpen(); }
   else {
@@ -748,14 +751,19 @@ async function fpOpen(){
 }
 function drawIndoorGeofence(g,lg){
   let layer=null;
-  if(g.kind==='circle'&&g.geom.radius){ layer=L.circle([g.geom.cy,g.geom.cx],{radius:g.geom.radius,color:'#16a34a',fillOpacity:0.1}); }
-  else if(g.kind==='polygon'&&g.geom.points){ layer=L.polygon(g.geom.points.map(p=>[p[1],p[0]]),{color:'#16a34a',fillOpacity:0.1}); }
+  const col=g.color||'#16a34a';
+  if(g.kind==='circle'&&g.geom.radius){ layer=L.circle([g.geom.cy,g.geom.cx],{radius:g.geom.radius,color:col,fillColor:col,fillOpacity:0.14}); }
+  else if(g.kind==='polygon'&&g.geom.points){ layer=L.polygon(g.geom.points.map(p=>[p[1],p[0]]),{color:col,fillColor:col,fillOpacity:0.14}); }
   if(!layer)return;
-  layer.bindPopup(`<b>${esc(g.name)}</b>${window._fpAdmin?`<br><a href="#" onclick="gfDel('${g.id}');return false">Elimina</a>`:''}`);
+  const acts=window._fpAdmin?`<br><div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <label style="display:inline-flex;align-items:center;gap:3px">🎨<input type="color" value="${g.color||'#16a34a'}" onchange="gfColor('${g.id}',this.value,true)" style="width:28px;height:24px;padding:1px"></label>
+    <a href="#" onclick="gfRename('${g.id}');return false">✎ Rinomina</a>
+    <a href="#" style="color:var(--bad)" onclick="gfDel('${g.id}');return false">🗑 Elimina</a></div>`:'';
+  layer.bindPopup(`<b>${esc(g.name)}</b>${acts}`);
   layer.addTo(lg);
 }
 async function saveIndoorGeofence(name,kind,geom,fid){
-  try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind,geom,floorplan_id:fid})}); toast('Geofence creata','ok'); fpOpen(); }
+  try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind,geom,floorplan_id:fid,color:window._gfColor||'#16a34a'})}); toast('Geofence creata','ok'); fpOpen(); }
   catch(e){ toast(e.message,'bad'); }
 }
 // Posizionamento: si arma scegliendo un'entità (beacon o dispositivo) GIA' registrata,
@@ -881,21 +889,23 @@ async function beaconDel(id){ if(!await askConfirm('Eliminare questo beacon?'))r
   try{ await api('/beacons/'+id,{method:'DELETE'}); toast('Eliminato','ok'); configIndoor(); await refreshPiantine($('#fpSel')?.value); }catch(e){ toast(e.message,'bad'); } }
 function drawGeofence(g,admin){
   if(!GFLAYER)return; let layer=null;
-  if(g.kind==='circle'&&g.geom.radius){ layer=L.circle([g.geom.lat,g.geom.lon],{radius:g.geom.radius,color:'#16a34a',fillOpacity:0.08}); }
-  else if(g.kind==='polygon'&&g.geom.points){ layer=L.polygon(g.geom.points,{color:'#16a34a',fillOpacity:0.08}); }
+  const col=g.color||'#16a34a';
+  if(g.kind==='circle'&&g.geom.radius){ layer=L.circle([g.geom.lat,g.geom.lon],{radius:g.geom.radius,color:col,fillColor:col,fillOpacity:0.12}); }
+  else if(g.kind==='polygon'&&g.geom.points){ layer=L.polygon(g.geom.points,{color:col,fillColor:col,fillOpacity:0.12}); }
   if(!layer)return;
   layer._gf=g; GF_LAYERS[g.id]=layer;
-  const acts=admin?`<br><div style="margin-top:6px;display:flex;gap:10px;flex-wrap:wrap">
+  const acts=admin?`<br><div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <label style="display:inline-flex;align-items:center;gap:3px">🎨<input type="color" value="${g.color||'#16a34a'}" onchange="gfColor('${g.id}',this.value,false)" style="width:28px;height:24px;padding:1px"></label>
     <a href="#" onclick="gfRename('${g.id}');return false">✎ Rinomina</a>
     <a href="#" onclick="gfAssoc('${g.id}');return false">🔗 Associa</a>
     <a href="#" style="color:var(--bad)" onclick="gfDel('${g.id}');return false">🗑 Elimina</a></div>`:'';
   layer.bindPopup(`<b>${esc(g.name)}</b><br><span style="color:#666">${esc(g.kind)}</span>${acts}`);
   layer.addTo(GFLAYER);
 }
-// Geometria corrente dal layer Leaflet (dopo edit Geoman).
-function geomFromLayer(layer){
-  if(layer.getRadius){ const ll=layer.getLatLng(); return {kind:'circle',geom:{lat:ll.lat,lon:ll.lng,radius:Math.round(layer.getRadius())}}; }
-  const ll=layer.getLatLngs()[0]||[]; return {kind:'polygon',geom:{points:ll.map(p=>[p.lat,p.lng])}};
+// Geometria corrente dal layer Leaflet (dopo edit Geoman). Outdoor: lat/lon; indoor: cx/cy o points xy.
+function geomFromEditLayer(layer, indoor){
+  if(layer.getRadius){ const ll=layer.getLatLng(); return indoor?{cx:ll.lng,cy:ll.lat,radius:Math.round(layer.getRadius())}:{lat:ll.lat,lon:ll.lng,radius:Math.round(layer.getRadius())}; }
+  const ll=layer.getLatLngs()[0]||[]; return indoor?{points:ll.map(p=>[p.lng,p.lat])}:{points:ll.map(p=>[p.lat,p.lng])};
 }
 async function gfRename(id,cur){ if(cur==null){ const g=(window._GF_CACHE||[]).find(x=>x.id===id); cur=g?g.name:''; }
   const name=await askPrompt('Nuovo nome della geofence:',cur); if(name==null)return; if(!name.trim())return toast('Nome vuoto','warn');
@@ -905,8 +915,8 @@ function gfEditShape(id){ const layer=GF_LAYERS[id]; if(!layer||!layer.pm){ toas
   const row=document.getElementById('gfrow_'+id); if(row){ row.querySelector('[data-edit]').style.display='none'; row.querySelector('[data-save]').style.display='inline-block'; row.querySelector('[data-cancel]').style.display='inline-block'; }
   toast('Trascina per spostare/ridimensionare, poi “Salva forma”','ok');
 }
-async function gfSaveShape(id){ const layer=GF_LAYERS[id]; if(!layer)return; const g=geomFromLayer(layer);
-  try{ await api('/geofences/'+id,{method:'PUT',body:JSON.stringify({geom:g.geom})}); try{layer.pm.disable();}catch(e){} window._gfEditing=null; toast('Forma salvata','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
+async function gfSaveShape(id){ const layer=GF_LAYERS[id]; if(!layer)return; const geom=geomFromEditLayer(layer,false);
+  try{ await api('/geofences/'+id,{method:'PUT',body:JSON.stringify({geom})}); try{layer.pm.disable();}catch(e){} window._gfEditing=null; toast('Forma salvata','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
 function gfCancelShape(id){ const layer=GF_LAYERS[id]; if(layer){ try{layer.pm.disable();}catch(e){} } window._gfEditing=null; route(); }
 const GF_ETYPES=[['sos','SOS'],['man_down','Uomo a terra'],['immobilita','Immobilità'],['mancato_checkin','Mancato check-in'],['sensore_critico','Sensore critico'],['batteria_critica','Batteria critica'],['batteria_bassa','Batteria bassa'],['perdita_alimentazione','Perdita alimentazione'],['device_offline','Device offline'],['manomissione_badge','Manomissione badge'],['jamming','Jamming'],['presenza_ingresso','Ingresso area'],['presenza_uscita','Uscita area'],['telemetria','Telemetria']];
 async function gfAssoc(id,name){
@@ -929,12 +939,13 @@ async function gfSaveAssoc(id){
     await api('/geofences/'+id+'/events',{method:'PUT',body:JSON.stringify({etypes:evs})});
     toast('Associazioni salvate ('+devs.length+' device, '+evs.length+' eventi)','ok'); closeDrawer(); route();
   }catch(e){ toast(e.message,'bad'); } }
+async function gfColor(id,color,indoor){ try{ await api('/geofences/'+id,{method:'PUT',body:JSON.stringify({color})}); toast('Colore aggiornato','ok'); indoor?fpOpen():route(); }catch(e){ toast(e.message,'bad'); } }
 async function gfDel(id){ if(!await askConfirm('Eliminare la geofence? (rimuove area e associazioni)'))return;
   try{ await api('/geofences/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
 async function addCircle(lat,lon){
   const name=prompt('Nome geofence?'); if(!name)return;
   const r=parseInt(prompt('Raggio in metri?','300')||'0',10); if(!r||r<10)return toast('raggio non valido','bad');
-  try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind:'circle',geom:{lat,lon,radius:r}})});
+  try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind:'circle',geom:{lat,lon,radius:r},color:window._gfColor||'#16a34a'})});
     toast('Geofence creata','ok'); route(); }catch(e){ toast(e.message,'bad'); }
 }
 function popupHtml(d){
