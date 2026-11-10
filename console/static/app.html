@@ -1516,41 +1516,60 @@ async function vCruscotti(v){
 }
 function scnDashSel(code){ $$('#scnTabs button').forEach(b=>b.classList.toggle('on',b.dataset.c===code)); renderScenarioDash(code); }
 function fmtNum(x){ return (Math.round(x*10)/10).toString(); }
-function spark(series){ if(!series||series.length<2)return'';
+let _sparkId=0;
+function spark(series,color){ if(!series||series.length<2)return'';
   const vs=series.map(p=>typeof p.v==='number'?p.v:parseFloat(p.v)).filter(x=>!isNaN(x)); if(vs.length<2)return'';
-  const mn=Math.min(...vs),mx=Math.max(...vs),rg=(mx-mn)||1,W=200,H=34;
-  const pts=vs.map((y,i)=>`${((i/(vs.length-1))*W).toFixed(1)},${(H-((y-mn)/rg)*H).toFixed(1)}`).join(' ');
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="34" preserveAspectRatio="none" style="margin-top:6px"><polyline points="${pts}" fill="none" stroke="var(--brand)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
+  const c=color||'var(--brand)'; const mn=Math.min(...vs),mx=Math.max(...vs),rg=(mx-mn)||1,W=220,H=40,id='sg'+(++_sparkId);
+  const xy=vs.map((y,i)=>[((i/(vs.length-1))*W),(H-4-((y-mn)/rg)*(H-8))]);
+  const line=xy.map((p,i)=>`${i?'L':'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('');
+  const area=`M0,${H} `+xy.map(p=>`L${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ')+` L${W},${H} Z`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="40" preserveAspectRatio="none" style="margin-top:8px;display:block">
+    <defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity="0.28"/><stop offset="1" stop-color="${c}" stop-opacity="0"/></linearGradient></defs>
+    <path d="${area}" fill="url(#${id})"/><path d="${line}" fill="none" stroke="${c}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
 }
+// Gauge radiale (semicerchio) stile cruscotto IoT: traccia + arco valore + tacca soglia.
+function arcGauge(w,num,col){
+  const min=w.min,max=w.max,thr=w.threshold; const n=num==null?0:Math.max(0,Math.min(1,(num-min)/((max-min)||1)));
+  const cx=95,cy=98,r=74; const pt=(f,rr)=>{const a=Math.PI*(1-f);return [cx+(rr||r)*Math.cos(a),cy-(rr||r)*Math.sin(a)];};
+  const arc=(f0,f1)=>{const steps=Math.max(1,Math.round(Math.abs(f1-f0)*54));let d='';for(let i=0;i<=steps;i++){const f=f0+(f1-f0)*i/steps;const p=pt(f);d+=(i?'L':'M')+p[0].toFixed(1)+','+p[1].toFixed(1);}return d;};
+  let thrMark=''; if(thr!=null){const tf=Math.max(0,Math.min(1,(thr-min)/((max-min)||1)));const a=pt(tf,r-12),b=pt(tf,r+4);thrMark=`<line x1="${a[0].toFixed(1)}" y1="${a[1].toFixed(1)}" x2="${b[0].toFixed(1)}" y2="${b[1].toFixed(1)}" stroke="var(--mut)" stroke-width="2.5"/>`;}
+  return `<svg viewBox="0 0 190 112" width="100%" height="118" style="display:block">
+    <path d="${arc(0,1)}" fill="none" stroke="var(--line)" stroke-width="12" stroke-linecap="round"/>
+    ${num!=null?`<path d="${arc(0,n)}" fill="none" stroke="${col}" stroke-width="12" stroke-linecap="round"/>`:''}
+    ${thrMark}
+    <text x="95" y="90" text-anchor="middle" font-size="30" font-weight="800" fill="${col}">${num==null?'—':fmtNum(num)}</text>
+    <text x="95" y="107" text-anchor="middle" font-size="12" fill="var(--mut)">${esc(w.unit||'')}</text></svg>`;
+}
+const DASH_CARD='background:var(--surface,var(--card,#fff));border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:var(--sh-sm,0 1px 2px rgba(0,0,0,.05))';
 function dashWidget(w){
   const v=w.value;
+  const head=`<div class="spread" style="margin-bottom:6px"><span class="small" style="font-weight:600;letter-spacing:.2px">${esc(w.label)}</span>${w.unit?`<span class="small mut">${esc(w.unit)}</span>`:''}</div>`;
   if(w.kind==='status'){ const on=(v===true||v==='true');
-    return `<div class="card pad"><div class="small mut">${esc(w.label)}</div>
-      <div style="font-size:22px;font-weight:700;margin:6px 0">${v==null?'—':(on?'⚠':'OK')}</div>
-      <span class="chip ${on?'s-critico':'s-attivo'}">${v==null?'nessun dato':(on?'allarme':'normale')}</span></div>`;
+    return `<div style="${DASH_CARD}">${head}
+      <div style="display:flex;align-items:center;gap:10px;margin-top:8px"><div style="width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;background:${on?'var(--bad)':'var(--ok)'};color:#fff">${v==null?'·':(on?'!':'✓')}</div>
+      <div><div style="font-weight:800;font-size:16px">${v==null?'—':(on?'Allarme':'Normale')}</div><div class="small mut">${v==null?'nessun dato':'stato corrente'}</div></div></div></div>`;
   }
   const num=(typeof v==='number')?v:(v!=null&&!isNaN(parseFloat(v))?parseFloat(v):null);
   const min=w.min, max=w.max, thr=w.threshold;
-  const n=num==null?0:Math.max(0,Math.min(1,(num-min)/((max-min)||1)));
   const tripped = num!=null&&thr!=null && ({'>=':num>=thr,'>':num>thr,'<=':num<=thr,'<':num<thr}[w.op]||false);
-  const col=tripped?'var(--bad)':'var(--ok)';
-  const head=`<div class="spread"><span class="small mut">${esc(w.label)}</span><span class="small mut">${esc(w.unit||'')}</span></div>`;
-  const big=`<div style="font-size:26px;font-weight:800;color:${w.kind==='stat'?'var(--brand)':col};margin:2px 0">${num==null?'<span style="color:var(--mut)">—</span>':fmtNum(num)}</div>`;
-  // stat: solo numero (KPI); line: numero + trend marcato; gauge: barra+soglia+trend
-  if(w.kind==='stat'){ return `<div class="card pad">${head}${big}${spark(w.series)}</div>`; }
-  if(w.kind==='line'){ return `<div class="card pad">${head}${big}${spark(w.series)}
-    <span class="chip ${tripped?'s-critico':'s-attivo'}" style="margin-top:6px">${num==null?'nessun dato':(tripped?'allarme':'ok')}</span></div>`; }
-  return `<div class="card pad">${head}${big}
-    <div style="height:8px;border-radius:999px;background:var(--line);overflow:hidden"><div style="height:100%;width:${(n*100).toFixed(0)}%;background:${col};transition:width .3s"></div></div>
-    <div class="spread small mut" style="margin-top:4px"><span>${fmtNum(min)}</span>${thr!=null?`<span>soglia ${fmtNum(thr)}</span>`:'<span></span>'}<span>${fmtNum(max)}</span></div>
-    ${spark(w.series)}
-    <span class="chip ${tripped?'s-critico':'s-attivo'}" style="margin-top:6px">${num==null?'nessun dato':(tripped?'allarme':'ok')}</span></div>`;
+  const col=tripped?'var(--bad)':(w.critical?'var(--ok)':'var(--brand)');
+  const badge=`<span class="chip ${tripped?'s-critico':(w.critical?'s-attivo':'')}" style="margin-top:8px">${num==null?'nessun dato':(tripped?'allarme':(w.critical?'ok':'live'))}</span>`;
+  if(w.kind==='stat'){ return `<div style="${DASH_CARD}">${head}
+    <div style="font-size:30px;font-weight:800;color:var(--brand);margin:2px 0">${num==null?'<span class="mut">—</span>':fmtNum(num)}</div>${spark(w.series,'var(--brand)')}</div>`; }
+  if(w.kind==='line'){ return `<div style="${DASH_CARD}">${head}
+    <div style="font-size:28px;font-weight:800;color:${col};margin:2px 0">${num==null?'<span class="mut">—</span>':fmtNum(num)}</div>${spark(w.series,col)}${badge}</div>`; }
+  // gauge radiale + soglia + trend
+  return `<div style="${DASH_CARD}">${head}${arcGauge(w,num,col)}
+    <div class="spread small mut" style="margin-top:2px"><span>${fmtNum(min)}</span>${thr!=null?`<span>soglia ${fmtNum(thr)}</span>`:'<span></span>'}<span>${fmtNum(max)}</span></div>
+    ${spark(w.series,col)}${badge}</div>`;
 }
 let DASHMAP=null;
 function dashKpis(k){ if(!k)return'';
-  const tile=(lab,val,bad)=>`<div class="card pad" style="text-align:center"><div style="font-size:26px;font-weight:800;color:${bad?'var(--bad)':'var(--brand)'}">${val}</div><div class="small mut">${lab}</div></div>`;
-  return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px;margin-bottom:14px">
-    ${tile('Device',k.device_count)}${tile('Metriche',k.metrics_tracked)}${tile('Allarmi ora',k.alarms_now,k.alarms_now>0)}${tile('Incidenti aperti',k.open_incidents,k.open_incidents>0)}${tile('Eventi 24h',k.events_24h)}</div>`;
+  const tile=(ico,lab,val,bad)=>`<div style="${DASH_CARD};display:flex;align-items:center;gap:12px">
+    <div style="width:42px;height:42px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px;background:${bad?'var(--brand-soft)':'var(--surface2,var(--bg2,#f4f5f7))'}">${ico}</div>
+    <div><div style="font-size:24px;font-weight:800;color:${bad?'var(--bad)':'var(--ink,inherit)'};line-height:1">${val}</div><div class="small mut" style="margin-top:2px">${lab}</div></div></div>`;
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:14px">
+    ${tile('📟','Device',k.device_count)}${tile('📊','Metriche',k.metrics_tracked)}${tile('⚠️','Allarmi ora',k.alarms_now,k.alarms_now>0)}${tile('🚨','Incidenti aperti',k.open_incidents,k.open_incidents>0)}${tile('📈','Eventi 24h',k.events_24h)}</div>`;
 }
 function dashMulti(widgets){
   const num=(widgets||[]).filter(w=>w.kind==='gauge'&&(w.series||[]).length>1);

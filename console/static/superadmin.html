@@ -333,7 +333,13 @@ async function aiVerify(tid){
 async function scnOpen(tid,btn){
   const box=document.getElementById('cfg_'+tid);
   if(box.dataset.open==='scn'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
-  box.dataset.open='scn'; cfgExclusive(btn); btnOn(btn,true); box.innerHTML='<div class="small mut">carico…</div>';
+  box.dataset.open='scn'; cfgExclusive(btn); btnOn(btn,true);
+  scnRender(tid);
+}
+// Render del pannello scenari, indipendente dal toggle/pulsante (richiamabile dopo attiva/rimuovi).
+async function scnRender(tid){
+  const box=document.getElementById('cfg_'+tid); if(!box)return;
+  box.innerHTML='<div class="small mut">carico…</div>';
   let cat=[], app=[];
   try{ [cat,app]=await Promise.all([api('/superadmin/scenarios'), api('/superadmin/tenants/'+tid+'/scenarios')]); }catch(e){ box.innerHTML='<div class="small" style="color:var(--bad)">'+e.message+'</div>'; return; }
   const applied=new Set(app.map(a=>a.code));
@@ -358,8 +364,7 @@ async function scnOpen(tid,btn){
 async function scnApply(tid,code){
   const demo=document.getElementById('scn_demo_'+tid).checked; const msg=document.getElementById('scn_msg_'+tid); if(msg)msg.textContent='Attivo…';
   try{ const r=await api('/superadmin/tenants/'+tid+'/scenarios',{method:'POST',body:JSON.stringify({code,with_demo:demo})});
-    toast('Scenario attivato ('+r.rules_added+' regole, '+r.devices_added+' device)','ok');
-    const box=document.getElementById('cfg_'+tid); if(box)box.dataset.open=''; scnOpen(tid,document.querySelector('.cfgbtn.on'));
+    toast('Scenario attivato ('+r.rules_added+' regole, '+r.devices_added+' device)','ok'); scnRender(tid);
   }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
 }
 async function scnDemo(tid,code){
@@ -369,12 +374,15 @@ async function scnDemo(tid,code){
     if(msg)msg.innerHTML=`<span class="s-attivo">✓ ${r.events} eventi · ${r.incidents} incidenti</span> (vedi Centrale allarmi del tenant)`;
   }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
 }
+// Rimozione in due passi senza confirm() (bloccato in alcune webview): primo click arma, secondo conferma.
 async function scnRemove(tid,code){
-  if(!confirm('Rimuovere lo scenario? (regole bundle + device demo non referenziati)'))return;
+  const msg=document.getElementById('scn_msg_'+tid);
+  if(window._scnArm!==code){ window._scnArm=code; if(msg)msg.innerHTML=`<span style="color:var(--bad)">Clicca di nuovo “Rimuovi” su <b>${esc(code)}</b> per confermare.</span>`;
+    setTimeout(()=>{ if(window._scnArm===code) window._scnArm=null; }, 4000); return; }
+  window._scnArm=null;
   try{ const r=await api('/superadmin/tenants/'+tid+'/scenarios/'+code,{method:'DELETE'});
-    toast('Scenario rimosso ('+r.rules_removed+' regole)','ok');
-    const box=document.getElementById('cfg_'+tid); if(box)box.dataset.open=''; scnOpen(tid,document.querySelector('.cfgbtn.on'));
-  }catch(e){ toast(e.message,'bad'); }
+    toast('Scenario rimosso ('+r.rules_removed+' regole)','ok'); scnRender(tid);
+  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
 }
 async function trConfig(tid,btn){
   const box=document.getElementById('cfg_'+tid);
