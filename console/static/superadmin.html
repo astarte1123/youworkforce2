@@ -267,7 +267,9 @@ async function aiConn(tid,btn){
   box.dataset.open='ai'; cfgExclusive(btn); btnOn(btn,true); box.innerHTML='<div class="small mut">carico…</div>';
   let c; try{ c=await api('/superadmin/tenants/'+tid+'/ai'); }catch(e){ c={configured:false}; }
   box.innerHTML=`<div class="card" style="padding:12px">
-    <div class="small mut" style="margin-bottom:8px">Connessione alla piattaforma AI di YouCo (<b>youworker.ai</b>): base URL + API key (cifrata a riposo). Pilota tutti i processi AI della suite. Contratto OpenAI-compatibile, path/model configurabili. Se assente, i processi AI degradano al piano deterministico locale.</div>
+    <div class="small mut" style="margin-bottom:8px">Provider AI del tenant: <b>youworker.ai</b> (AI di YouCo) o esterno (OpenAI, DeepSeek, Anthropic, custom). base URL + API key (cifrata a riposo). Pilota tutti i processi AI e l'agente operativo. Se assente, i processi AI degradano al piano deterministico locale.</div>
+    <label class="small mut" style="display:block;margin:4px 0">Provider<select id="ai_prov_${tid}" onchange="aiProvDefaults('${tid}')">
+      ${['youworker','openai','deepseek','anthropic','custom'].map(p=>`<option value="${p}" ${(c.provider||'youworker')===p?'selected':''}>${p}</option>`).join('')}</select></label>
     <label class="small mut" style="display:block;margin:4px 0">Base URL<input id="ai_url_${tid}" placeholder="https://api.youworker.ai" value="${esc(c.base_url||'')}"></label>
     <label class="small mut" style="display:block;margin:4px 0">API key${c.has_api_key?' <span class="small">(impostata — lascia vuoto per non cambiarla)</span>':''}<input id="ai_key_${tid}" type="password" placeholder="${c.has_api_key?'•••••• invariata':'sk-…'}"></label>
     <label class="small mut" style="display:block;margin:4px 0">Modello<input id="ai_model_${tid}" placeholder="youworker-1" value="${esc(c.model||'youworker-1')}"></label>
@@ -279,7 +281,21 @@ async function aiConn(tid,btn){
       ${c.configured?'<span class="chip s-attivo">configurata</span>':'<span class="chip">assente</span>'}</div>
     <div id="ai_msg_${tid}" class="small mut" style="margin-top:6px"></div></div>`;
 }
+const AI_PROV_DEF={
+  youworker:{base:'https://api.youworker.ai',model:'youworker-1',chat:'/v1/chat/completions',stt:'/v1/audio/transcriptions'},
+  openai:{base:'https://api.openai.com',model:'gpt-4o-mini',chat:'/v1/chat/completions',stt:'/v1/audio/transcriptions'},
+  deepseek:{base:'https://api.deepseek.com',model:'deepseek-chat',chat:'/chat/completions',stt:'/v1/audio/transcriptions'},
+  anthropic:{base:'https://api.anthropic.com',model:'claude-3-5-sonnet-latest',chat:'/v1/messages',stt:'/v1/audio/transcriptions'},
+  custom:{base:'',model:'',chat:'/v1/chat/completions',stt:'/v1/audio/transcriptions'},
+};
+function aiProvDefaults(tid){ const p=document.getElementById('ai_prov_'+tid).value; const d=AI_PROV_DEF[p]||AI_PROV_DEF.custom;
+  const set=(id,v)=>{const e=document.getElementById(id); if(e&&!e.value) e.value=v;};
+  set('ai_url_'+tid,d.base); // model/chat/stt: sovrascrivi come suggerimento provider
+  document.getElementById('ai_model_'+tid).value=d.model;
+  document.getElementById('ai_chat_'+tid).value=d.chat;
+  document.getElementById('ai_stt_'+tid).value=d.stt; }
 async function aiConnSave(tid){
+  const provider=document.getElementById('ai_prov_'+tid).value;
   const url=document.getElementById('ai_url_'+tid).value.trim();
   const key=document.getElementById('ai_key_'+tid).value;
   const model=document.getElementById('ai_model_'+tid).value.trim();
@@ -287,7 +303,7 @@ async function aiConnSave(tid){
   const stt=document.getElementById('ai_stt_'+tid).value.trim();
   const msg=document.getElementById('ai_msg_'+tid);
   if(!url){ toast('Base URL obbligatorio','bad'); return; }
-  try{ const body={base_url:url,model:model,chat_path:chat,stt_path:stt}; if(key) body.api_key=key;
+  try{ const body={provider:provider,base_url:url,model:model,chat_path:chat,stt_path:stt}; if(key) body.api_key=key;
     await api('/superadmin/tenants/'+tid+'/ai',{method:'POST',body:JSON.stringify(body)});
     toast('Connessione youworker.ai salvata','ok'); if(msg)msg.innerHTML='<span class="s-attivo">salvata</span>';
   }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }

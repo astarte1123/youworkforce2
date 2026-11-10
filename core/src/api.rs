@@ -903,17 +903,22 @@ pub async fn thingsboard_verify(State(st): State<AppState>, h: HeaderMap, Path(t
 // connessione manca o fallisce, si degrada al piano deterministico locale senza mai
 // togliere l'inserimento manuale, il check-in o l'SOS.
 
-pub const AI_FEATURES: &[&str] = &["assistant","incident_summary","sensor_suggest","checkin_anomaly","interventi_assist","consuntivi_summary","voice_diary"];
+pub const AI_FEATURES: &[&str] = &["assistant","agent","incident_summary","sensor_suggest","checkin_anomaly","interventi_assist","consuntivi_summary","voice_diary"];
 
 #[derive(Clone)]
-pub struct AiConn { pub base_url: String, pub api_key: String, pub model: String, pub chat_path: String, pub stt_path: String }
+pub struct AiConn { pub provider: String, pub base_url: String, pub api_key: String, pub model: String, pub chat_path: String, pub stt_path: String }
+impl AiConn {
+    /// L'adattatore da usare: anthropic nativo, altrimenti OpenAI-compatibile (youworker/openai/deepseek/custom).
+    pub fn is_anthropic(&self) -> bool { self.provider.eq_ignore_ascii_case("anthropic") }
+}
+pub const AI_PROVIDERS: &[&str] = &["youworker","openai","deepseek","anthropic","custom"];
 
-/// Connessione youworker.ai del tenant (API key decifrata a riposo). None se non configurata.
+/// Connessione AI del tenant (API key decifrata a riposo). None se non configurata.
 pub async fn ai_conn(st: &AppState, tid: Uuid) -> Option<AiConn> {
-    let r = sqlx::query("SELECT base_url,api_key,model,chat_path,stt_path FROM app.ai_connections WHERE tenant_id=$1")
+    let r = sqlx::query("SELECT provider,base_url,api_key,model,chat_path,stt_path FROM app.ai_connections WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten()?;
     let key: String = r.get("api_key");
-    Some(AiConn{ base_url: r.get("base_url"), api_key: st.secrets.decrypt(&key),
+    Some(AiConn{ provider: r.get("provider"), base_url: r.get("base_url"), api_key: st.secrets.decrypt(&key),
         model: r.get("model"), chat_path: r.get("chat_path"), stt_path: r.get("stt_path") })
 }
 
@@ -926,25 +931,36 @@ pub async fn ai_feature_on(st: &AppState, tid: Uuid, feature: &str) -> bool {
         .bind(tid).bind(feature).fetch_optional(&st.owner_pool).await.ok().flatten().unwrap_or(false)
 }
 
-/// Chiamata chat a youworker.ai (OpenAI-compatibile). system = istruzioni/guardrail,
+/// Chiamata chat semplice (solo testo), provider-aware. system = istruzioni/guardrail,
 /// user = richiesta+contesto (gia' ristretto al tenant). Ritorna il testo o Err diagnostico.
 pub async fn ai_chat(st: &AppState, c: &AiConn, system: &str, user: &str) -> Result<String, String> {
     let url = format!("{}{}", c.base_url, c.chat_path);
-    let body = json!({
-        "model": c.model,
-        "temperature": 0.1,
-        "max_tokens": 700,
-        "messages": [ {"role":"system","content":system}, {"role":"user","content":user} ]
-    });
-    let resp = st.http.post(&url).bearer_auth(&c.api_key).json(&body).send().await
-        .map_err(|e| format!("youworker.ai irraggiungibile: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("youworker.ai HTTP {}", resp.status()));
+    if c.is_anthropic() {
+        let body = json!({"model":c.model,"max_tokens":800,"system":system,
+            "messages":[{"role":"user","content":user}]});
+        let resp = st.http.post(&url).header("x-api-key", &c.api_key).header("anthropic-version","2023-06-01")
+            .json(&body).send().await.map_err(|e| format!("provider AI irraggiungibile: {e}"))?;
+        if !resp.status().is_success() { return Err(format!("provider AI HTTP {}", resp.status())); }
+        let v: Value = resp.json().await.map_err(|e| format!("risposta non valida: {e}"))?;
+        return anthropic_text(&v).ok_or_else(|| "provider AI: nessun contenuto".to_string());
     }
+    let body = json!({"model":c.model,"temperature":0.1,"max_tokens":800,
+        "messages":[{"role":"system","content":system},{"role":"user","content":user}]});
+    let resp = st.http.post(&url).bearer_auth(&c.api_key).json(&body).send().await
+        .map_err(|e| format!("provider AI irraggiungibile: {e}"))?;
+    if !resp.status().is_success() { return Err(format!("provider AI HTTP {}", resp.status())); }
     let v: Value = resp.json().await.map_err(|e| format!("risposta non valida: {e}"))?;
     v.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("message"))
         .and_then(|m| m.get("content")).and_then(|t| t.as_str()).map(|s| s.trim().to_string())
-        .ok_or_else(|| "youworker.ai: nessun contenuto nella risposta".to_string())
+        .ok_or_else(|| "provider AI: nessun contenuto nella risposta".to_string())
+}
+fn anthropic_text(v: &Value) -> Option<String> {
+    let arr = v.get("content")?.as_array()?;
+    let mut out = String::new();
+    for b in arr { if b.get("type").and_then(|t| t.as_str())==Some("text") {
+        if let Some(t)=b.get("text").and_then(|t| t.as_str()) { out.push_str(t); } } }
+    let out = out.trim().to_string();
+    if out.is_empty() { None } else { Some(out) }
 }
 
 /// Speech-to-text youworker.ai (diario vocale lato server). Audio multipart -> testo.
@@ -963,39 +979,52 @@ pub async fn ai_stt(st: &AppState, c: &AiConn, audio: Vec<u8>, filename: &str, m
 
 // ---- Connessione youworker.ai: set/get mascherato/verifica (superadmin) ----
 #[derive(Deserialize)]
-pub struct SetAiConn { pub base_url: String, pub api_key: Option<String>, pub model: Option<String>,
+pub struct SetAiConn { pub provider: Option<String>, pub base_url: String, pub api_key: Option<String>, pub model: Option<String>,
     pub chat_path: Option<String>, pub stt_path: Option<String> }
+
+/// Default di path/model sensati per provider (l'admin puo' sovrascrivere).
+fn ai_provider_defaults(p: &str) -> (&'static str, &'static str, &'static str) {
+    // (model, chat_path, stt_path)
+    match p {
+        "openai"    => ("gpt-4o-mini", "/v1/chat/completions", "/v1/audio/transcriptions"),
+        "deepseek"  => ("deepseek-chat", "/chat/completions", "/v1/audio/transcriptions"),
+        "anthropic" => ("claude-3-5-sonnet-latest", "/v1/messages", "/v1/audio/transcriptions"),
+        _            => ("youworker-1", "/v1/chat/completions", "/v1/audio/transcriptions"),
+    }
+}
 
 pub async fn super_set_ai(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetAiConn>) -> R {
     require_super(&st, &h).await?;
+    let provider = b.provider.map(|p| p.trim().to_lowercase()).filter(|p| AI_PROVIDERS.contains(&p.as_str())).unwrap_or_else(|| "youworker".into());
+    let (dm, dc, ds) = ai_provider_defaults(&provider);
     let base = b.base_url.trim_end_matches('/').to_string();
-    let model = b.model.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "youworker-1".into());
-    let chat = b.chat_path.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "/v1/chat/completions".into());
-    let stt = b.stt_path.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "/v1/audio/transcriptions".into());
+    let model = b.model.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| dm.into());
+    let chat = b.chat_path.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| dc.into());
+    let stt = b.stt_path.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| ds.into());
     let key = b.api_key.unwrap_or_default();
     if key.is_empty() {
-        let n = sqlx::query("UPDATE app.ai_connections SET base_url=$2,model=$3,chat_path=$4,stt_path=$5,updated_at=now() WHERE tenant_id=$1")
-            .bind(tid).bind(&base).bind(&model).bind(&chat).bind(&stt).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+        let n = sqlx::query("UPDATE app.ai_connections SET provider=$2,base_url=$3,model=$4,chat_path=$5,stt_path=$6,updated_at=now() WHERE tenant_id=$1")
+            .bind(tid).bind(&provider).bind(&base).bind(&model).bind(&chat).bind(&stt).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
         if n == 0 { return Err(err(StatusCode::BAD_REQUEST, "API key richiesta per la prima configurazione")); }
     } else {
         let enc = st.secrets.encrypt(&key);
-        sqlx::query("INSERT INTO app.ai_connections(tenant_id,base_url,api_key,model,chat_path,stt_path) VALUES($1,$2,$3,$4,$5,$6)
-            ON CONFLICT (tenant_id) DO UPDATE SET base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,model=EXCLUDED.model,chat_path=EXCLUDED.chat_path,stt_path=EXCLUDED.stt_path,updated_at=now()")
-            .bind(tid).bind(&base).bind(&enc).bind(&model).bind(&chat).bind(&stt).execute(&st.owner_pool).await.map_err(ise)?;
+        sqlx::query("INSERT INTO app.ai_connections(tenant_id,provider,base_url,api_key,model,chat_path,stt_path) VALUES($1,$2,$3,$4,$5,$6,$7)
+            ON CONFLICT (tenant_id) DO UPDATE SET provider=EXCLUDED.provider,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,model=EXCLUDED.model,chat_path=EXCLUDED.chat_path,stt_path=EXCLUDED.stt_path,updated_at=now()")
+            .bind(tid).bind(&provider).bind(&base).bind(&enc).bind(&model).bind(&chat).bind(&stt).execute(&st.owner_pool).await.map_err(ise)?;
     }
-    audit(&st, tid, "superadmin", "set_ai_conn", json!({"base_url":base,"model":model})).await;
+    audit(&st, tid, "superadmin", "set_ai_conn", json!({"provider":provider,"base_url":base,"model":model})).await;
     Ok(Json(json!({"ok":true})))
 }
 
 pub async fn super_get_ai(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
     require_super(&st, &h).await?;
-    let r = sqlx::query("SELECT base_url,api_key,model,chat_path,stt_path FROM app.ai_connections WHERE tenant_id=$1")
+    let r = sqlx::query("SELECT provider,base_url,api_key,model,chat_path,stt_path FROM app.ai_connections WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
     match r {
-        Some(r) => Ok(Json(json!({"configured":true,"base_url":r.get::<String,_>("base_url"),
+        Some(r) => Ok(Json(json!({"configured":true,"provider":r.get::<String,_>("provider"),"base_url":r.get::<String,_>("base_url"),
             "model":r.get::<String,_>("model"),"chat_path":r.get::<String,_>("chat_path"),
             "stt_path":r.get::<String,_>("stt_path"),"has_api_key":!r.get::<String,_>("api_key").is_empty()}))),
-        None => Ok(Json(json!({"configured":false,"model":"youworker-1","chat_path":"/v1/chat/completions","stt_path":"/v1/audio/transcriptions"}))),
+        None => Ok(Json(json!({"configured":false,"provider":"youworker","model":"youworker-1","chat_path":"/v1/chat/completions","stt_path":"/v1/audio/transcriptions","providers":AI_PROVIDERS}))),
     }
 }
 
@@ -4674,6 +4703,414 @@ pub async fn diary_transcribe(State(st): State<AppState>, h: HeaderMap, body: ax
     };
     audit(&st, tid, &s.email, "ai_diary_transcribe", json!({"bytes":body.len()})).await;
     Ok(Json(json!({"provider":"youworker.ai","text":text})))
+}
+
+// ================= Agente AI: tool-calling che ESEGUE sul DB (non cosmetico) =================
+// Il provider (youworker.ai o esterno) non solo risponde: analizza i dati, genera report e
+// SCRIVE nelle tabelle tramite un catalogo di "tool" che Rust valida ed esegue con gli stessi
+// servizi/permessi/RLS della UI. Invarianti: tenant/identita' dal contesto (mai dal modello);
+// scritture a basso rischio eseguite subito (audit); azioni sensibili (crea ordine/regola)
+// richiedono conferma dell'operatore; catena di sicurezza SEMPRE vietata all'agente.
+
+#[derive(Clone)]
+struct AgCall { id: String, name: String, args: Value }
+struct AgReply { text: Option<String>, calls: Vec<AgCall> }
+enum AgTurn { User(String), Assistant { text: Option<String>, calls: Vec<AgCall> }, ToolResult { id: String, content: String } }
+
+struct ToolMeta { sensitive: bool, writes: bool }
+fn ag_meta(name: &str) -> Option<ToolMeta> {
+    match name {
+        // lettura/analisi
+        "query_incidents"|"query_checkins"|"query_events"|"query_work_orders"|"get_consuntivo"
+            => Some(ToolMeta{sensitive:false, writes:false}),
+        // scrittura a basso rischio -> esecuzione diretta (audit)
+        "add_diary_entry"|"add_incident_note"|"add_timesheet_line"|"add_expense"|"save_report"
+            => Some(ToolMeta{sensitive:false, writes:true}),
+        // scrittura sensibile -> richiede conferma operatore
+        "create_work_order"|"create_sensor_rule"
+            => Some(ToolMeta{sensitive:true, writes:true}),
+        _ => None,
+    }
+}
+
+/// Catalogo tool (name, descrizione, JSON-schema parametri). Unica fonte verso i due provider.
+fn ag_catalog() -> Vec<(&'static str, &'static str, Value)> {
+    let o = |props: Value, req: Value| json!({"type":"object","properties":props,"required":req});
+    vec![
+      ("query_incidents","Elenca gli incidenti del tenant (opz. filtro stato).",
+        o(json!({"state":{"type":"string","enum":["aperto","preso_in_carico","chiuso","tutti"]},"limit":{"type":"integer"}}), json!([]))),
+      ("query_checkins","Elenca i check-in attivi e quanti sono scaduti.", o(json!({}), json!([]))),
+      ("query_events","Eventi recenti dei dispositivi (default ultime 24h).", o(json!({"hours":{"type":"integer"}}), json!([]))),
+      ("query_work_orders","Elenca gli ordini di lavoro (opz. filtro stato).", o(json!({"state":{"type":"string"}}), json!([]))),
+      ("get_consuntivo","Dettaglio di un consuntivo (ore/spese/totali) dato il suo id.", o(json!({"timesheet_id":{"type":"string"}}), json!(["timesheet_id"]))),
+      ("add_diary_entry","Registra una nota di diario di lavoro.", o(json!({"body":{"type":"string"},"work_order_id":{"type":"string"}}), json!(["body"]))),
+      ("add_incident_note","Aggiunge una nota alla timeline di un incidente.", o(json!({"incident_id":{"type":"string"},"text":{"type":"string"}}), json!(["incident_id","text"]))),
+      ("add_timesheet_line","Aggiunge una riga a un consuntivo (minuti + attivita').", o(json!({"timesheet_id":{"type":"string"},"activity":{"type":"string"},"work_date":{"type":"string","description":"YYYY-MM-DD"},"minutes":{"type":"integer"},"rate_eur":{"type":"number"}}), json!(["timesheet_id","activity","work_date","minutes"]))),
+      ("add_expense","Aggiunge una spesa a un consuntivo.", o(json!({"timesheet_id":{"type":"string"},"description":{"type":"string"},"amount_eur":{"type":"number"}}), json!(["timesheet_id","description","amount_eur"]))),
+      ("save_report","Salva un report su DB (consultabile in seguito).", o(json!({"title":{"type":"string"},"kind":{"type":"string"},"body":{"type":"string"}}), json!(["title","body"]))),
+      ("create_work_order","Crea una BOZZA di ordine di lavoro (richiede conferma operatore).", o(json!({"title":{"type":"string"},"instructions":{"type":"string"},"priority":{"type":"integer"}}), json!(["title"]))),
+      ("create_sensor_rule","Crea una regola sensori (richiede conferma operatore).", o(json!({"metric":{"type":"string"},"op":{"type":"string"},"threshold":{"type":"number"},"etype":{"type":"string"},"label":{"type":"string"}}), json!(["metric","op","etype"]))),
+    ]
+}
+
+// ---- esecuzione reale di un tool (stessi permessi/RLS della UI, audit) ----
+async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Value, String> {
+    let tid = s.tenant_id.unwrap();
+    let gs = |k: &str| a.get(k).and_then(|v| v.as_str()).map(|x| x.to_string());
+    let gu = |k: &str| a.get(k).and_then(|v| v.as_str()).and_then(|x| Uuid::parse_str(x).ok());
+    let gi = |k: &str| a.get(k).and_then(|v| v.as_i64());
+    let gf = |k: &str| a.get(k).and_then(|v| v.as_f64());
+    macro_rules! tx { () => { db::begin_tenant(&st.rt_pool, tid).await.map_err(|e| e.to_string())? } }
+    match name {
+        "query_incidents" => {
+            let state = gs("state").unwrap_or_else(|| "tutti".into());
+            let lim = gi("limit").unwrap_or(20).clamp(1,100);
+            let mut t = tx!();
+            let base = "SELECT i.id,i.etype,i.state,i.priority,i.outcome,i.opened_at,s.name AS site FROM app.incidents i LEFT JOIN app.sites s ON s.id=i.site_id";
+            let rows = if state=="tutti" {
+                sqlx::query(&format!("{base} ORDER BY i.opened_at DESC LIMIT {lim}")).fetch_all(&mut *t).await
+            } else {
+                sqlx::query(&format!("{base} WHERE i.state=$1 ORDER BY i.opened_at DESC LIMIT {lim}")).bind(&state).fetch_all(&mut *t).await
+            }.map_err(|e| e.to_string())?;
+            t.commit().await.ok();
+            Ok(json!(rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"etype":r.get::<String,_>("etype"),
+                "stato":r.get::<String,_>("state"),"priorita":r.get::<i32,_>("priority"),
+                "sito":r.try_get::<String,_>("site").ok(),"esito":r.try_get::<String,_>("outcome").ok(),
+                "aperto":r.get::<Dt,_>("opened_at").to_rfc3339()})).collect::<Vec<_>>()))
+        }
+        "query_checkins" => {
+            let mut t = tx!();
+            let rows = sqlx::query("SELECT c.state,c.due_at,u.email,s.name AS site FROM app.checkins c
+                JOIN app.users u ON u.id=c.user_id LEFT JOIN app.sites s ON s.id=c.site_id
+                WHERE c.state IN ('attivo','scaduto') ORDER BY c.due_at").fetch_all(&mut *t).await.map_err(|e| e.to_string())?;
+            t.commit().await.ok();
+            let scaduti = rows.iter().filter(|r| r.get::<String,_>("state")=="scaduto").count();
+            Ok(json!({"totale":rows.len(),"scaduti":scaduti,"checkin":rows.iter().map(|r| json!({
+                "lavoratore":r.get::<String,_>("email"),"stato":r.get::<String,_>("state"),
+                "sito":r.try_get::<String,_>("site").ok(),"scadenza":r.get::<Dt,_>("due_at").to_rfc3339()})).collect::<Vec<_>>()}))
+        }
+        "query_events" => {
+            let hours = gi("hours").unwrap_or(24).clamp(1,168);
+            let mut t = tx!();
+            let rows = sqlx::query("SELECT e.etype,e.origin_ts,d.external_id FROM app.events e
+                LEFT JOIN app.devices d ON d.id=e.device_id WHERE e.origin_ts > now()-($1||' hours')::interval
+                ORDER BY e.origin_ts DESC LIMIT 100").bind(hours.to_string()).fetch_all(&mut *t).await.map_err(|e| e.to_string())?;
+            t.commit().await.ok();
+            Ok(json!({"finestra_ore":hours,"eventi":rows.iter().map(|r| json!({"etype":r.get::<String,_>("etype"),
+                "device":r.try_get::<String,_>("external_id").ok(),"ts":r.get::<Dt,_>("origin_ts").to_rfc3339()})).collect::<Vec<_>>()}))
+        }
+        "query_work_orders" => {
+            let mut t = tx!();
+            let rows = if let Some(stt)=gs("state") {
+                sqlx::query("SELECT o.id,o.title,o.state,o.priority FROM app.work_orders o WHERE o.state=$1 ORDER BY o.updated_at DESC LIMIT 50").bind(stt).fetch_all(&mut *t).await
+            } else {
+                sqlx::query("SELECT o.id,o.title,o.state,o.priority FROM app.work_orders o ORDER BY o.updated_at DESC LIMIT 50").fetch_all(&mut *t).await
+            }.map_err(|e| e.to_string())?;
+            t.commit().await.ok();
+            Ok(json!(rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"titolo":r.get::<String,_>("title"),
+                "stato":r.get::<String,_>("state"),"priorita":r.get::<i32,_>("priority")})).collect::<Vec<_>>()))
+        }
+        "get_consuntivo" => {
+            let id = gu("timesheet_id").ok_or("timesheet_id non valido")?;
+            timesheet_detail(st, tid, id).await.map_err(|e| e.1)
+        }
+        "add_diary_entry" => {
+            if !module_active(st, tid, "workforce").await { return Err("modulo workforce non abilitato".into()); }
+            let body = gs("body").unwrap_or_default(); let body=body.trim();
+            if body.is_empty() { return Err("nota vuota".into()); }
+            let mut t = tx!();
+            let row = sqlx::query("INSERT INTO app.diary_entries(tenant_id,user_id,work_order_id,body,source,idem_key)
+                VALUES($1,$2,$3,$4,'ai',$5) RETURNING id").bind(tid).bind(s.user_id).bind(gu("work_order_id")).bind(body)
+                .bind(Uuid::new_v4().to_string()).fetch_one(&mut *t).await.map_err(|e| e.to_string())?;
+            t.commit().await.map_err(|e| e.to_string())?;
+            audit(st, tid, &s.email, "ai_agent_diary", json!({"id":row.get::<Uuid,_>("id")})).await;
+            Ok(json!({"ok":true,"diary_id":row.get::<Uuid,_>("id")}))
+        }
+        "add_incident_note" => {
+            if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err("ruolo non abilitato alle note incidente".into()); }
+            let iid = gu("incident_id").ok_or("incident_id non valido")?;
+            let text = gs("text").unwrap_or_default(); let text=text.trim();
+            if text.is_empty() { return Err("nota vuota".into()); }
+            let mut t = tx!();
+            let n = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail)
+                SELECT $1,$2,'nota',$3 WHERE EXISTS(SELECT 1 FROM app.incidents WHERE id=$2)")
+                .bind(tid).bind(iid).bind(json!({"body":text,"by":format!("{} (AI)", s.email)})).execute(&mut *t).await.map_err(|e| e.to_string())?.rows_affected();
+            t.commit().await.map_err(|e| e.to_string())?;
+            if n==0 { return Err("incidente inesistente".into()); }
+            audit(st, tid, &s.email, "ai_agent_incident_note", json!({"incident_id":iid})).await;
+            Ok(json!({"ok":true}))
+        }
+        "add_timesheet_line" => {
+            let id = gu("timesheet_id").ok_or("timesheet_id non valido")?;
+            guard_owner_editable(st, tid, id, s.user_id).await.map_err(|e| e.1)?;
+            let wd = chrono::NaiveDate::parse_from_str(&gs("work_date").unwrap_or_default(), "%Y-%m-%d").map_err(|_| "data non valida (YYYY-MM-DD)")?;
+            let act = gs("activity").unwrap_or_default(); if act.trim().is_empty() { return Err("attivita' richiesta".into()); }
+            let minutes = gi("minutes").unwrap_or(0) as i32; if minutes<=0 { return Err("minuti > 0".into()); }
+            let rate_cents = gf("rate_eur").map(|r| (r*100.0).round() as i64);
+            let cur = tool_config(st, tid, "consuntivi", "rates").await.get("currency").and_then(|v| v.as_str()).unwrap_or("EUR").to_string();
+            let mut t = tx!();
+            sqlx::query("INSERT INTO app.timesheet_lines(tenant_id,timesheet_id,activity,work_date,minutes,rate_cents,currency) VALUES($1,$2,$3,$4,$5,$6,$7)")
+                .bind(tid).bind(id).bind(act.trim()).bind(wd).bind(minutes).bind(rate_cents).bind(cur).execute(&mut *t).await.map_err(|e| e.to_string())?;
+            t.commit().await.map_err(|e| e.to_string())?;
+            audit(st, tid, &s.email, "ai_agent_ts_line", json!({"timesheet_id":id})).await;
+            Ok(json!({"ok":true}))
+        }
+        "add_expense" => {
+            let id = gu("timesheet_id").ok_or("timesheet_id non valido")?;
+            guard_owner_editable(st, tid, id, s.user_id).await.map_err(|e| e.1)?;
+            let desc = gs("description").unwrap_or_default(); if desc.trim().is_empty() { return Err("descrizione richiesta".into()); }
+            let amt = gf("amount_eur").ok_or("importo non valido")?; let cents=(amt*100.0).round() as i64;
+            let cur = tool_config(st, tid, "consuntivi", "rates").await.get("currency").and_then(|v| v.as_str()).unwrap_or("EUR").to_string();
+            let mut t = tx!();
+            sqlx::query("INSERT INTO app.expenses(tenant_id,timesheet_id,description,amount_cents,currency,has_receipt) VALUES($1,$2,$3,$4,$5,false)")
+                .bind(tid).bind(id).bind(desc.trim()).bind(cents).bind(cur).execute(&mut *t).await.map_err(|e| e.to_string())?;
+            t.commit().await.map_err(|e| e.to_string())?;
+            audit(st, tid, &s.email, "ai_agent_expense", json!({"timesheet_id":id})).await;
+            Ok(json!({"ok":true}))
+        }
+        "save_report" => {
+            let title = gs("title").unwrap_or_default(); if title.trim().is_empty() { return Err("titolo richiesto".into()); }
+            let body = gs("body").unwrap_or_default(); if body.trim().is_empty() { return Err("corpo richiesto".into()); }
+            let kind = gs("kind").unwrap_or_else(|| "generico".into());
+            let id = ai_report_save(st, s, &kind, title.trim(), body.trim(), json!({"via":"agent"})).await.map_err(|e| e.1)?;
+            Ok(json!({"ok":true,"report_id":id}))
+        }
+        "create_work_order" => {
+            if !is_planner(&s.role) { return Err("solo pianificatore/admin puo' creare ordini".into()); }
+            if !module_active(st, tid, "interventi").await { return Err("modulo interventi non abilitato".into()); }
+            let title = gs("title").unwrap_or_default(); if title.trim().is_empty() { return Err("titolo richiesto".into()); }
+            let pri = gi("priority").unwrap_or(2).clamp(1,3) as i32;
+            let mut t = tx!();
+            let row = sqlx::query("INSERT INTO app.work_orders(tenant_id,title,instructions,state,created_by,priority)
+                VALUES($1,$2,$3,'bozza',$4,$5) RETURNING id").bind(tid).bind(title.trim()).bind(gs("instructions")).bind(s.user_id).bind(pri)
+                .fetch_one(&mut *t).await.map_err(|e| e.to_string())?;
+            t.commit().await.map_err(|e| e.to_string())?;
+            audit(st, tid, &s.email, "ai_agent_create_order", json!({"id":row.get::<Uuid,_>("id")})).await;
+            Ok(json!({"ok":true,"order_id":row.get::<Uuid,_>("id"),"state":"bozza"}))
+        }
+        "create_sensor_rule" => {
+            admin_only(s).map_err(|e| e.1)?;
+            let metric = gs("metric").unwrap_or_default(); if metric.trim().is_empty() { return Err("metrica richiesta".into()); }
+            let op = gs("op").unwrap_or_default(); if !RULE_OPS.contains(&op.as_str()) { return Err("operatore non valido".into()); }
+            let etype = gs("etype").unwrap_or_default(); if !RULE_ETYPES.contains(&etype.as_str()) { return Err("etype non ammesso".into()); }
+            let numeric = !matches!(op.as_str(), "is_true"|"is_false");
+            let thr = gf("threshold"); if numeric && thr.is_none() { return Err("soglia richiesta per questo operatore".into()); }
+            let mut t = tx!();
+            let row = sqlx::query("INSERT INTO app.sensor_rules(tenant_id,metric,op,threshold,etype,label,sort) VALUES($1,$2,$3,$4,$5,$6,100) RETURNING id")
+                .bind(tid).bind(metric.trim()).bind(&op).bind(if numeric { thr } else { None }).bind(&etype).bind(gs("label"))
+                .fetch_one(&mut *t).await.map_err(|e| e.to_string())?;
+            t.commit().await.map_err(|e| e.to_string())?;
+            audit(st, tid, &s.email, "ai_agent_create_rule", json!({"metric":metric,"op":op,"etype":etype})).await;
+            Ok(json!({"ok":true,"rule_id":row.get::<Uuid,_>("id")}))
+        }
+        _ => Err("tool sconosciuto".into()),
+    }
+}
+
+async fn ai_report_save(st: &AppState, s: &Session, kind: &str, title: &str, body: &str, params: Value) -> Result<Uuid,(StatusCode,String)> {
+    let tid = s.tenant_id.unwrap();
+    let mut t = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.ai_reports(tenant_id,kind,title,body,params,created_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
+        .bind(tid).bind(kind).bind(title).bind(body).bind(params).bind(&s.email).fetch_one(&mut *t).await.map_err(ise)?;
+    t.commit().await.map_err(ise)?;
+    let id: Uuid = row.get("id");
+    audit(st, tid, &s.email, "ai_report_save", json!({"id":id,"kind":kind})).await;
+    Ok(id)
+}
+
+// ---- adattatori provider: serializzazione/parse del tool-calling ----
+async fn ai_complete(st: &AppState, c: &AiConn, system: &str, turns: &[AgTurn]) -> Result<AgReply, String> {
+    let tools = ag_catalog();
+    if c.is_anthropic() {
+        let mut msgs: Vec<Value> = Vec::new();
+        let mut i = 0;
+        while i < turns.len() {
+            match &turns[i] {
+                AgTurn::User(s) => { msgs.push(json!({"role":"user","content":[{"type":"text","text":s}]})); i+=1; }
+                AgTurn::Assistant{text,calls} => {
+                    let mut content: Vec<Value> = Vec::new();
+                    if let Some(t)=text { if !t.is_empty() { content.push(json!({"type":"text","text":t})); } }
+                    for c in calls { content.push(json!({"type":"tool_use","id":c.id,"name":c.name,"input":c.args})); }
+                    msgs.push(json!({"role":"assistant","content":content})); i+=1;
+                }
+                AgTurn::ToolResult{..} => { // raggruppa i tool_result consecutivi in un unico messaggio user
+                    let mut content: Vec<Value> = Vec::new();
+                    while i < turns.len() { if let AgTurn::ToolResult{id,content:cnt} = &turns[i] {
+                        content.push(json!({"type":"tool_result","tool_use_id":id,"content":cnt})); i+=1; } else { break; } }
+                    msgs.push(json!({"role":"user","content":content}));
+                }
+            }
+        }
+        let tdefs: Vec<Value> = tools.iter().map(|(n,d,s)| json!({"name":n,"description":d,"input_schema":s})).collect();
+        let body = json!({"model":c.model,"max_tokens":1024,"system":system,"messages":msgs,"tools":tdefs});
+        let resp = st.http.post(format!("{}{}", c.base_url, c.chat_path)).header("x-api-key", &c.api_key)
+            .header("anthropic-version","2023-06-01").json(&body).send().await.map_err(|e| format!("provider AI irraggiungibile: {e}"))?;
+        if !resp.status().is_success() { return Err(format!("provider AI HTTP {}", resp.status())); }
+        let v: Value = resp.json().await.map_err(|e| format!("risposta non valida: {e}"))?;
+        let mut text=None; let mut calls=Vec::new();
+        if let Some(arr)=v.get("content").and_then(|c| c.as_array()) {
+            let mut t=String::new();
+            for b in arr { match b.get("type").and_then(|x| x.as_str()) {
+                Some("text") => { if let Some(x)=b.get("text").and_then(|x| x.as_str()) { t.push_str(x); } }
+                Some("tool_use") => { calls.push(AgCall{ id:b.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    name:b.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    args:b.get("input").cloned().unwrap_or(json!({})) }); }
+                _=>{} } }
+            if !t.trim().is_empty() { text=Some(t.trim().to_string()); }
+        }
+        return Ok(AgReply{text, calls});
+    }
+    // OpenAI-compatibile (youworker/openai/deepseek/custom)
+    let mut msgs: Vec<Value> = vec![json!({"role":"system","content":system})];
+    for t in turns { match t {
+        AgTurn::User(s) => msgs.push(json!({"role":"user","content":s})),
+        AgTurn::Assistant{text,calls} => {
+            let tc: Vec<Value> = calls.iter().map(|c| json!({"id":c.id,"type":"function",
+                "function":{"name":c.name,"arguments":serde_json::to_string(&c.args).unwrap_or("{}".into())}})).collect();
+            let mut m = json!({"role":"assistant","content":text.clone()});
+            if !tc.is_empty() { m["tool_calls"]=json!(tc); }
+            msgs.push(m);
+        }
+        AgTurn::ToolResult{id,content} => msgs.push(json!({"role":"tool","tool_call_id":id,"content":content})),
+    }}
+    let tdefs: Vec<Value> = tools.iter().map(|(n,d,s)| json!({"type":"function","function":{"name":n,"description":d,"parameters":s}})).collect();
+    let body = json!({"model":c.model,"temperature":0.1,"max_tokens":1024,"messages":msgs,"tools":tdefs});
+    let resp = st.http.post(format!("{}{}", c.base_url, c.chat_path)).bearer_auth(&c.api_key).json(&body).send().await
+        .map_err(|e| format!("provider AI irraggiungibile: {e}"))?;
+    if !resp.status().is_success() { return Err(format!("provider AI HTTP {}", resp.status())); }
+    let v: Value = resp.json().await.map_err(|e| format!("risposta non valida: {e}"))?;
+    let m = v.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("message")).cloned().unwrap_or(json!({}));
+    let text = m.get("content").and_then(|t| t.as_str()).filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_string());
+    let mut calls = Vec::new();
+    if let Some(arr)=m.get("tool_calls").and_then(|t| t.as_array()) {
+        for c in arr {
+            let f = c.get("function").cloned().unwrap_or(json!({}));
+            let args: Value = f.get("arguments").and_then(|a| a.as_str()).and_then(|s| serde_json::from_str(s).ok()).unwrap_or(json!({}));
+            calls.push(AgCall{ id:c.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                name:f.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(), args });
+        }
+    }
+    Ok(AgReply{text, calls})
+}
+
+const AG_SYSTEM: &str = "Sei l'agente operativo di YouWorkforce, piattaforma di sicurezza lavoratori. \
+Aiuti l'operatore sul campo e in centrale: ANALIZZA i dati con i tool di lettura, poi AGISCI con i tool \
+di scrittura per registrare informazioni (note di diario, note incidente, righe/spese di consuntivo, report). \
+Usa SEMPRE i tool per leggere e scrivere: non inventare dati, non dire di aver fatto qualcosa senza il tool. \
+Gli id (incidente, consuntivo, ordine) ricavali prima con i tool di lettura. Le azioni 'create_*' sono sensibili \
+e verranno confermate dall'operatore prima di scrivere. NON puoi in alcun modo agire sulla catena di sicurezza \
+(chiudere/mettere a tacere/escalare allarmi o SOS, modificare reperibilita'): quelle restano manuali. \
+Quando hai finito, rispondi in italiano riassumendo cosa hai letto e cosa hai scritto.";
+
+#[derive(Deserialize)]
+pub struct AgentReq { pub goal: String }
+/// Ciclo agentico: il modello usa i tool; Rust li esegue (lettura + scrittura) con permessi/RLS.
+pub async fn ai_agent(State(st): State<AppState>, h: HeaderMap, Json(b): Json<AgentReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let c = ai_gate(&st, tid, "agent").await?;
+    if b.goal.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "richiesta vuota")); }
+    audit(&st, tid, &s.email, "ai_agent_goal", json!({"len":b.goal.len()})).await;
+    let mut turns: Vec<AgTurn> = vec![AgTurn::User(b.goal.clone())];
+    let mut actions: Vec<Value> = Vec::new();
+    let mut pending: Vec<Value> = Vec::new();
+    let mut answer: Option<String> = None;
+    for _step in 0..6u8 {
+        let reply = ai_complete(&st, &c, AG_SYSTEM, &turns).await.map_err(|e| err(StatusCode::BAD_GATEWAY, &e))?;
+        if reply.calls.is_empty() { answer = reply.text; break; }
+        let calls = reply.calls.clone();
+        turns.push(AgTurn::Assistant{ text: reply.text.clone(), calls: reply.calls });
+        let mut stop = false;
+        for call in &calls {
+            // difesa: nomi sospetti sulla catena di sicurezza -> rifiuto esplicito
+            let lname = call.name.to_lowercase();
+            let danger = ["close","ack","escalat","silence","silenzia","delete","drop","module","imperson","connection","secret","goalert"];
+            if danger.iter().any(|w| lname.contains(w)) {
+                turns.push(AgTurn::ToolResult{ id: call.id.clone(), content: "VIETATO: l'agente non agisce sulla catena di sicurezza ne' su configurazioni; resta manuale.".into() });
+                continue;
+            }
+            match ag_meta(&call.name) {
+                None => turns.push(AgTurn::ToolResult{ id: call.id.clone(), content: "tool sconosciuto".into() }),
+                Some(m) if m.sensitive => {
+                    pending.push(json!({"name":call.name,"args":call.args,"reason":"azione sensibile: richiede conferma dell'operatore"}));
+                    turns.push(AgTurn::ToolResult{ id: call.id.clone(), content: "In attesa di conferma dell'operatore; NON eseguito.".into() });
+                    stop = true;
+                }
+                Some(m) => match ag_run(&st, &s, &call.name, &call.args).await {
+                    Ok(v) => { actions.push(json!({"name":call.name,"args":call.args,"wrote":m.writes,"result":v}));
+                        turns.push(AgTurn::ToolResult{ id: call.id.clone(), content: v.to_string() }); }
+                    Err(e) => { actions.push(json!({"name":call.name,"args":call.args,"error":e}));
+                        turns.push(AgTurn::ToolResult{ id: call.id.clone(), content: format!("errore: {e}") }); }
+                },
+            }
+        }
+        if stop { answer = reply.text; break; }
+    }
+    Ok(Json(json!({"provider":c.provider,"answer":answer,"actions":actions,"pending":pending})))
+}
+
+#[derive(Deserialize)]
+pub struct AgentConfirm { pub name: String, pub args: Value }
+/// Conferma ed esegue UNA azione sensibile proposta dall'agente (operatore autorizza).
+pub async fn ai_agent_confirm(State(st): State<AppState>, h: HeaderMap, Json(b): Json<AgentConfirm>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let _ = ai_gate(&st, tid, "agent").await?;
+    match ag_meta(&b.name) {
+        Some(m) if m.sensitive => {}
+        _ => return Err(err(StatusCode::BAD_REQUEST, "azione non confermabile")),
+    }
+    let r = ag_run(&st, &s, &b.name, &b.args).await.map_err(|e| err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({"ok":true,"result":r})))
+}
+
+// ---- Report AI: generazione + persistenza + consultazione ----
+#[derive(Deserialize)]
+pub struct GenReportReq { pub prompt: String, pub kind: Option<String> }
+pub async fn ai_report_generate(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GenReportReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let c = ai_gate(&st, tid, "agent").await?;
+    // grounding: snapshot operativo del tenant (RLS)
+    let mut t = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let inc = sqlx::query("SELECT etype,state,priority,opened_at FROM app.incidents WHERE opened_at > now()-interval '30 days' ORDER BY opened_at DESC LIMIT 100")
+        .fetch_all(&mut *t).await.map_err(ise)?;
+    let ck = sqlx::query("SELECT state,count(*) AS n FROM app.checkins GROUP BY state").fetch_all(&mut *t).await.map_err(ise)?;
+    t.commit().await.ok();
+    let facts = json!({
+        "incidenti_30g": inc.iter().map(|r| json!({"etype":r.get::<String,_>("etype"),"stato":r.get::<String,_>("state"),
+            "priorita":r.get::<i32,_>("priority"),"aperto":r.get::<Dt,_>("opened_at").to_rfc3339()})).collect::<Vec<_>>(),
+        "checkin_per_stato": ck.iter().map(|r| json!({"stato":r.get::<String,_>("state"),"n":r.get::<i64,_>("n")})).collect::<Vec<_>>(),
+    });
+    let sys = "Sei un analista di YouWorkforce. Scrivi un report chiaro e strutturato in italiano (titolo breve, \
+        poi corpo con sezioni e numeri) usando SOLO i fatti forniti. Non inventare. Non proporre azioni sulla catena di sicurezza.";
+    let user = format!("Richiesta: {}\n\nFatti (grounding): {}", b.prompt, serde_json::to_string(&facts).unwrap_or_default());
+    let body = ai_chat(&st, &c, sys, &user).await.map_err(|e| err(StatusCode::BAD_GATEWAY, &e))?;
+    let kind = b.kind.unwrap_or_else(|| "generico".into());
+    let title = b.prompt.chars().take(80).collect::<String>();
+    let id = ai_report_save(&st, &s, &kind, &title, &body, json!({"prompt":b.prompt})).await?;
+    Ok(Json(json!({"provider":c.provider,"id":id,"title":title,"kind":kind,"body":body})))
+}
+pub async fn ai_reports_list(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let mut t = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT id,kind,title,created_by,created_at FROM app.ai_reports ORDER BY created_at DESC LIMIT 100")
+        .fetch_all(&mut *t).await.map_err(ise)?;
+    t.commit().await.ok();
+    Ok(Json(json!(rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"kind":r.get::<String,_>("kind"),
+        "title":r.get::<String,_>("title"),"created_by":r.get::<String,_>("created_by"),
+        "created_at":r.get::<Dt,_>("created_at").to_rfc3339()})).collect::<Vec<_>>())))
+}
+pub async fn ai_report_get(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let mut t = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let r = sqlx::query("SELECT id,kind,title,body,created_by,created_at FROM app.ai_reports WHERE id=$1")
+        .bind(id).fetch_optional(&mut *t).await.map_err(ise)?;
+    t.commit().await.ok();
+    let r = r.ok_or_else(|| err(StatusCode::NOT_FOUND, "report non trovato"))?;
+    Ok(Json(json!({"id":r.get::<Uuid,_>("id"),"kind":r.get::<String,_>("kind"),"title":r.get::<String,_>("title"),
+        "body":r.get::<String,_>("body"),"created_by":r.get::<String,_>("created_by"),
+        "created_at":r.get::<Dt,_>("created_at").to_rfc3339()})))
 }
 
 // SSE stream helper module

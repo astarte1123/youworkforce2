@@ -35,12 +35,14 @@ const NAV = [
   {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','thingsboard','goalert','iot']},
   {k:'gruppi',    t:'Gruppi allarme', ico:'users', roles:['tenant_admin'], mod:['loneworker']},
   {k:'anagrafiche',t:'Utenti e sedi', ico:'receipt', roles:['tenant_admin']},
+  {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent'},
   {k:'ai',        t:'AI · youworker.ai', ico:'sliders', roles:['tenant_admin'], mod:['assistant']},
   {k:'moduli',    t:'Moduli', ico:'sliders', roles:['tenant_admin']},
 ];
 const modOk = n => !n.mod || n.mod.some(m=>ACTIVE_MODS.has(m));
 const featOk = n => !n.feat || UI_FEAT[n.feat]!==false;
-const visibleNav = ()=>NAV.filter(n=>(!n.roles||n.roles.includes(ME.role)) && modOk(n) && featOk(n));
+const aiFeatOk = n => !n.aiFeat || AI_FEAT[n.aiFeat]===true;
+const visibleNav = ()=>NAV.filter(n=>(!n.roles||n.roles.includes(ME.role)) && modOk(n) && featOk(n) && aiFeatOk(n));
 // carica stato moduli + feature flag UI del tenant (voci menu Mappa/Piantine configurabili dall'admin)
 let BRANDING={};
 async function loadCtx(){
@@ -172,7 +174,7 @@ function route(){
   if(!visibleNav().some(n=>n.k===k)) k=visibleNav()[0].k;
   setActive(k); const v=$('#view'); v.innerHTML='<div class="col"><div class="skel" style="height:90px"></div><div class="skel" style="height:260px"></div></div>';
   ({dashboard:vDashboard,centrale:vCentrale,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,piantine:vPiantine,report:vReport,ai:vAI}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -1392,6 +1394,7 @@ async function ruleDel(id){ if(!confirm('Eliminare la regola?'))return;
 // ---------------- AI · youworker.ai (impostazioni per-processo) ----------------
 const AI_FEAT_LAB={
   assistant:['Assistente operativo','Risposte in linguaggio naturale su dati del tenant (fab ✦). Senza AI resta il piano deterministico.'],
+  agent:['Agente AI (azioni su DB)','L\\'AI analizza i dati e SCRIVE nelle tabelle (nota diario, riga consuntivo, nota incidente, report). Scritture sensibili con conferma; catena sicurezza vietata.'],
   incident_summary:['Sintesi incidenti','Riassunto e prossime verifiche su un incidente (in Centrale allarmi).'],
   sensor_suggest:['Suggerimento regole sensori','Proposte di regole dai dati telemetrici (in Connettori).'],
   checkin_anomaly:['Anomalie check-in','Pattern e anomalie sui mancati check-in (in Centrale).'],
@@ -1399,7 +1402,7 @@ const AI_FEAT_LAB={
   consuntivi_summary:['Sintesi consuntivi','Riepilogo leggibile di ore/spese per l\\'approvatore.'],
   voice_diary:['Diario vocale (STT)','Trascrizione server-side dell\\'audio del diario via youworker.ai.'],
 };
-const AI_FEAT_ORDER=['assistant','incident_summary','sensor_suggest','checkin_anomaly','interventi_assist','consuntivi_summary','voice_diary'];
+const AI_FEAT_ORDER=['assistant','agent','incident_summary','sensor_suggest','checkin_anomaly','interventi_assist','consuntivi_summary','voice_diary'];
 async function vAI(v){
   let d; try{ d=await api('/ai/features'); }catch(e){ v.innerHTML='<div class="card pad" style="color:var(--bad)">'+esc(e.message)+'</div>'; return; }
   const conf=d.connection_configured, F=d.features||{};
@@ -1420,6 +1423,68 @@ async function aiFeatSet(feature,el){
   try{ await api('/ai/features',{method:'POST',body:JSON.stringify({feature,enabled:el.checked})}); toast('Impostazione salvata','ok'); }
   catch(e){ el.checked=!el.checked; toast(e.message,'bad'); }
 }
+// ---------------- Agente AI (tool-calling che agisce su DB) ----------------
+const AG_ACT_LAB={query_incidents:'Letto: incidenti',query_checkins:'Letto: check-in',query_events:'Letto: eventi',query_work_orders:'Letto: ordini',get_consuntivo:'Letto: consuntivo',add_diary_entry:'Scritto: nota diario',add_incident_note:'Scritto: nota incidente',add_timesheet_line:'Scritto: riga consuntivo',add_expense:'Scritto: spesa',save_report:'Scritto: report',create_work_order:'Crea ordine (bozza)',create_sensor_rule:'Crea regola sensori'};
+function agLab(n){ return AG_ACT_LAB[n]||n; }
+async function vAgente(v){
+  v.innerHTML=`<div class="page-h"><div><h1>Agente AI</h1><div class="mut">l'AI analizza i dati e registra informazioni; le azioni sensibili le confermi tu. La catena di sicurezza resta manuale.</div></div></div>
+  <div class="card pad">
+    <div class="field"><label>Cosa deve fare l'agente?</label>
+      <textarea id="agGoal" rows="3" placeholder="es. «controlla i check-in scaduti e registra una nota di diario», «riepiloga gli incidenti aperti del sito Milano in un report»"></textarea></div>
+    <button class="btn" onclick="agentRun(this)">✦ Esegui</button>
+    <div id="agOut" style="margin-top:12px"></div></div>
+  <div class="card pad" style="margin-top:16px"><div class="card-h" style="padding:0 0 10px"><h2>Report AI</h2></div>
+    <div class="row" style="gap:6px;align-items:flex-end;flex-wrap:wrap">
+      <label class="small mut grow">Richiesta report<input id="repPrompt" placeholder="es. report incidenti ultimi 30 giorni"></label>
+      <label class="small mut">Tipo<select id="repKind">${['generico','incidenti','consuntivi','sensori','turni'].map(k=>`<option>${k}</option>`).join('')}</select></label>
+      <button class="btn" onclick="reportGen(this)">Genera e salva</button></div>
+    <div id="repOut" style="margin-top:10px"></div>
+    <div id="repList" style="margin-top:10px"></div></div>`;
+  loadReports();
+}
+async function agentRun(btn){
+  const goal=$('#agGoal').value.trim(); if(!goal)return toast('Scrivi una richiesta','warn');
+  const box=$('#agOut'); btn.disabled=true; box.innerHTML='<div class="small mut">L\'agente lavora (legge e scrive)…</div>';
+  try{ const r=await api('/ai/agent',{method:'POST',body:JSON.stringify({goal})});
+    let h='';
+    if(r.answer) h+=`<div class="card pad" style="background:var(--brand-soft);margin-bottom:10px"><div class="small mut">✦ ${esc(r.provider)}</div><div style="white-space:pre-wrap;margin-top:4px">${esc(r.answer)}</div></div>`;
+    if((r.actions||[]).length){ h+=`<div class="small mut" style="margin:6px 0">Azioni eseguite:</div>`+r.actions.map(a=>{
+      const okw=a.error?`<span class="chip s-da_correggere">errore: ${esc(a.error)}</span>`:(a.wrote?'<span class="chip s-attivo">scritto su DB</span>':'<span class="chip">lettura</span>');
+      return `<div class="spread" style="padding:4px 0;border-bottom:1px solid var(--line)"><span>${esc(agLab(a.name))}</span>${okw}</div>`;}).join(''); }
+    if((r.pending||[]).length){ h+=`<div class="card pad" style="background:var(--warn-soft);margin-top:10px"><b class="small">Conferma richiesta</b>`+r.pending.map((p,i)=>`
+      <div class="spread" style="padding:6px 0;align-items:flex-start;gap:10px">
+        <div><b>${esc(agLab(p.name))}</b><div class="small mut mono">${esc(JSON.stringify(p.args))}</div></div>
+        <div class="row" style="gap:6px"><button class="btn ok small" onclick='agentConfirm(this,${JSON.stringify(p).replace(/'/g,"&#39;")})'>Conferma</button>
+          <button class="btn ghost small" onclick="this.closest('.spread').remove()">Annulla</button></div></div>`).join('')+`</div>`; }
+    if(!h) h='<div class="small mut">Nessuna azione.</div>';
+    box.innerHTML=h;
+  }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; }
+  finally{ btn.disabled=false; }
+}
+async function agentConfirm(btn,p){ btn.disabled=true;
+  try{ await api('/ai/agent/confirm',{method:'POST',body:JSON.stringify({name:p.name,args:p.args})});
+    toast('Azione eseguita','ok'); const row=btn.closest('.spread'); if(row){ row.innerHTML=`<span>${esc(agLab(p.name))}</span><span class="chip s-attivo">scritto su DB</span>`; }
+  }catch(e){ btn.disabled=false; toast(e.message,'bad'); } }
+async function reportGen(btn){
+  const prompt=$('#repPrompt').value.trim(); if(!prompt)return toast('Scrivi la richiesta del report','warn');
+  const kind=$('#repKind').value; const box=$('#repOut'); btn.disabled=true; box.innerHTML='<div class="small mut">Genero e salvo…</div>';
+  try{ const r=await api('/ai/reports/generate',{method:'POST',body:JSON.stringify({prompt,kind})});
+    box.innerHTML=`<div class="card pad" style="background:var(--brand-soft)"><b>${esc(r.title)}</b> <span class="chip">${esc(r.kind)}</span><div style="white-space:pre-wrap;margin-top:6px">${esc(r.body)}</div></div>`;
+    loadReports();
+  }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; }
+  finally{ btn.disabled=false; }
+}
+async function loadReports(){ const box=$('#repList'); if(!box)return;
+  let L=[]; try{ L=await api('/ai/reports'); }catch(e){}
+  box.innerHTML=`<table class="table"><thead><tr><th>Titolo</th><th>Tipo</th><th>Autore</th><th>Data</th></tr></thead>
+    <tbody>${L.map(r=>`<tr class="clk" onclick="reportOpen('${r.id}')"><td>${esc(r.title)}</td><td>${esc(r.kind)}</td>
+      <td class="small mut">${esc((r.created_by||'').split('@')[0])}</td><td class="small mut">${new Date(r.created_at).toLocaleString('it-IT')}</td></tr>`).join('')
+      ||'<tr><td colspan="4" class="empty">nessun report salvato</td></tr>'}</tbody></table>`;
+}
+async function reportOpen(id){ try{ const r=await api('/ai/reports/'+id);
+  drawer('Report · '+esc(r.title), `<div class="row" style="margin-bottom:10px"><span class="chip">${esc(r.kind)}</span><span class="chip">${esc((r.created_by||'').split('@')[0])}</span></div>
+    <div style="white-space:pre-wrap">${esc(r.body)}</div>`);
+  }catch(e){ toast(e.message,'bad'); } }
 async function aiSuggestRules(btn){
   const box=$('#srSuggest'); if(!box)return; btn.disabled=true; box.innerHTML='<div class="small mut">youworker.ai analizza la telemetria recente…</div>';
   try{ const r=await api('/sensor-rules/suggest',{method:'POST'});

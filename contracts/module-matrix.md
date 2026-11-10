@@ -10,7 +10,7 @@
 | `workforce` | Forza lavoro e turni | prodotto | parziale (assegnazione manuale) | — |
 | `interventi` | Interventi e cantieri | prodotto | **implementato** (ordini) | assegnazione manuale |
 | `consuntivi` | Ore, spese, consuntivi | prodotto | **implementato** (righe+spese+CSV) | fonte dati dichiarata; **no AI** |
-| `assistant` | youworker.ai (AI di YouCo) in ogni processo + diario vocale | prodotto | **REALE**: connessione youworker.ai (enc:v1) da superadmin, feature per-processo da tenant_admin; assistente con grounding deterministico, sintesi incidenti, suggerimento regole sensori, anomalie check-in, assist interventi/consuntivi, diario vocale STT server; fallback deterministico se non configurato | provider OpenAI-compatibile intercambiabile; azioni critiche sempre manuali |
+| `assistant` | AI (youworker.ai o esterno) ATTORE in ogni processo + diario vocale | prodotto | **REALE**: connessione multi-provider (youworker/openai/deepseek/anthropic/custom, enc:v1) da superadmin, feature per-processo da tenant_admin; assistente con grounding, sintesi incidenti, suggerimento regole, anomalie check-in, assist interventi/consuntivi, diario vocale STT; **agente tool-calling** che legge e SCRIVE su DB (nota diario/incidente, riga/spesa consuntivo, report) con permessi/RLS della UI (sensibili con conferma); report generati e salvati; fallback deterministico | multi-provider; scritture sensibili confermate; catena sicurezza sempre manuale |
 | `qualifiche`,`prevenzione` | — | prodotto | `available=false` ("non disponibile in questa release") | — |
 
 ## Regole invarianti

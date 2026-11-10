@@ -239,6 +239,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/assistant", post(api::assistant_query))
         // youworker.ai (AI di YouCo) agganciata ai processi: feature per-tenant + endpoint per-modulo
         .route("/api/ai/features", get(api::ai_features_get).post(api::ai_features_set))
+        .route("/api/ai/agent", post(api::ai_agent))
+        .route("/api/ai/agent/confirm", post(api::ai_agent_confirm))
+        .route("/api/ai/reports", get(api::ai_reports_list))
+        .route("/api/ai/reports/generate", post(api::ai_report_generate))
+        .route("/api/ai/reports/:id", get(api::ai_report_get))
         .route("/api/incidents/:id/ai-summary", get(api::incident_ai_summary))
         .route("/api/sensor-rules/suggest", post(api::sensor_rules_suggest))
         .route("/api/checkin/ai-anomaly", get(api::checkin_ai_anomaly))

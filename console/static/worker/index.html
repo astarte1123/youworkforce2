@@ -29,9 +29,9 @@
 <div id="root"></div>
 <script src="/app.js"></script>
 <script>
-let ME=null, CI=null, CITimer=null, ORDERS=[], AIVOICE=false;
+let ME=null, CI=null, CITimer=null, ORDERS=[], AIVOICE=false, AIAGENT=false;
 (async function(){ try{ME=await api('/me'); if(ME.is_super||!ME.tenant_id)ME=null;}catch(e){ME=null;}
-  if(ME){ try{ const A=await api('/ai/features'); AIVOICE=!!(A&&A.features&&A.features.voice_diary); }catch(e){ AIVOICE=false; } }
+  if(ME){ try{ const A=await api('/ai/features'); AIVOICE=!!(A&&A.features&&A.features.voice_diary); AIAGENT=!!(A&&A.features&&A.features.agent); }catch(e){ AIVOICE=false; AIAGENT=false; } }
   ME?app():login(); })();
 
 function login(){
@@ -73,6 +73,8 @@ function app(){
         <span class="grow">Detta una nota di lavoro</span><span class="tag" id="noteBadge"></span></button>
       <button class="act" onclick="askDocs()"><span class="ic">${ICON.doc}</span>
         <span class="grow">Chiedi ai documenti</span><span class="tag sim">RAG backlog</span></button>
+      ${AIAGENT?`<button class="act" onclick="openAgent()"><span class="ic">✦</span>
+        <span class="grow">Assistente AI sul campo</span><span class="tag">agente</span></button>`:''}
     </div>
     <div class="small mut center" style="margin-top:8px">Input manuale sempre disponibile. La dettatura usa il riconoscimento vocale del browser; se assente o negato, scrivi a mano.</div>
     <div id="diaryList" class="col" style="gap:8px;margin-top:10px"></div></div>
@@ -186,6 +188,33 @@ function openNote(){
   document.body.appendChild(m);
 }
 function closeNote(){ stopDictation(); const m=$('#noteModal'); if(m)m.remove(); }
+// Agente AI sul campo: analizza e registra (diario/consuntivo). Sensibili -> conferma.
+function openAgent(){
+  const m=document.createElement('div'); m.className='modal'; m.id='agModal';
+  m.onclick=(e)=>{ if(e.target===m) m.remove(); };
+  m.innerHTML=`<div class="sheet">
+    <div class="spread"><b>Assistente AI</b><button class="btn-ico btn ghost" onclick="document.getElementById('agModal').remove()">✕</button></div>
+    <div class="field" style="margin-top:8px"><label>Cosa ti serve?</label>
+      <textarea id="agGoal" rows="3" placeholder="es. «registra nota: impianto verificato, tutto ok», «quanti miei ordini sono aperti?»"></textarea></div>
+    <button class="btn block lg" onclick="agentGo(this)">✦ Esegui</button>
+    <div id="agOut" style="margin-top:10px"></div></div>`;
+  document.body.appendChild(m);
+}
+async function agentGo(btn){
+  const goal=($('#agGoal').value||'').trim(); if(!goal)return toast('Scrivi una richiesta','warn');
+  const box=$('#agOut'); btn.disabled=true; box.innerHTML='<div class="small mut">L\'agente lavora…</div>';
+  try{ const r=await api('/ai/agent',{method:'POST',body:JSON.stringify({goal})});
+    let h=''; if(r.answer) h+=`<div class="card pad" style="margin-bottom:8px">${esc(r.answer)}</div>`;
+    (r.actions||[]).forEach(a=>{ h+=`<div class="small">${a.error?'⚠ ':'✓ '}${esc(a.name)}${a.wrote?' — salvato':''}${a.error?' ('+esc(a.error)+')':''}</div>`; });
+    (r.pending||[]).forEach(p=>{ h+=`<div class="card pad" style="margin-top:6px"><div class="small">Confermi: <b>${esc(p.name)}</b>?</div>
+      <button class="btn block" onclick='agentConf(this,${JSON.stringify(p).replace(/'/g,"&#39;")})'>Conferma</button></div>`; });
+    box.innerHTML=h||'<div class="small mut">Nessuna azione.</div>'; loadDiary();
+  }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; }
+  finally{ btn.disabled=false; }
+}
+async function agentConf(btn,p){ btn.disabled=true;
+  try{ await api('/ai/agent/confirm',{method:'POST',body:JSON.stringify({name:p.name,args:p.args})}); toast('Fatto','ok'); btn.outerHTML='<span class="small">✓ salvato</span>'; loadDiary(); }
+  catch(e){ btn.disabled=false; toast(e.message,'bad'); } }
 function toggleDictation(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   const st=$('#micState');
