@@ -681,13 +681,28 @@ pub async fn super_integrations_status(State(st): State<AppState>, h: HeaderMap,
     Ok(Json(json!({"goalert":ga,"traccar":tr,"thingsboard":tb})))
 }
 
+/// Elimina la configurazione di un motore quando il modulo NON è attivo (non serve -> via).
+async fn deauto_integration(st: &AppState, tid: Uuid, module: &str) {
+    if module_active(st, tid, module).await { return; }
+    let (table, extra): (&str, Option<&str>) = match module {
+        "goalert" => ("app.goalert_services", None),
+        "traccar" => ("app.traccar_connections", Some("app.traccar_poll_state")),
+        "thingsboard" => ("app.thingsboard_connections", Some("app.thingsboard_poll_state")),
+        _ => return,
+    };
+    let n = sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id=$1")).bind(tid).execute(&st.owner_pool).await.map(|r| r.rows_affected()).unwrap_or(0);
+    if let Some(ps) = extra { let _ = sqlx::query(&format!("DELETE FROM {ps} WHERE tenant_id=$1")).bind(tid).execute(&st.owner_pool).await; }
+    if n > 0 { audit(st, tid, "system", "deauto_integration", json!({"module":module})).await; }
+}
 /// Riconcilia tutte le integrazioni dei tenant (idempotente). Chiamata dal worker.
+/// Auto-provisioning se il modulo è attivo (serve); eliminazione se è spento (non serve).
 pub async fn reconcile_integrations(st: &AppState) {
     let tids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM app.tenants").fetch_all(&st.owner_pool).await.unwrap_or_default();
     for tid in tids {
         if let Err(e) = auto_provision_goalert(st, tid).await { tracing::debug!("auto goalert {tid}: {e}"); }
         if let Err(e) = auto_connect_traccar(st, tid).await { tracing::debug!("auto traccar {tid}: {e}"); }
         if let Err(e) = auto_connect_thingsboard(st, tid).await { tracing::debug!("auto thingsboard {tid}: {e}"); }
+        for m in ["goalert","traccar","thingsboard"] { deauto_integration(st, tid, m).await; }
     }
 }
 

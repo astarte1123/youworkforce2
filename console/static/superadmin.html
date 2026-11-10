@@ -77,11 +77,14 @@ async function load(){
 async function loadInteg(tid){
   const box=document.getElementById('integ_'+tid); if(!box)return;
   let d; try{ d=await api('/superadmin/tenants/'+tid+'/integrations'); }catch(e){ box.textContent=''; return; }
+  const LAB={goalert:'GoAlert',traccar:'Traccar',thingsboard:'ThingsBoard'};
+  const on=['goalert','traccar','thingsboard'].filter(k=>d[k]&&d[k].module); // solo i motori che servono
+  if(!on.length){ box.innerHTML='<span class="mut">nessun motore integrato attivo</span>'; return; }
   const dot=s=>s.status==='ok'?'🟢':(s.status==='anomalia'?'🔴':'⚪');
-  const chip=(name,s)=>`<span title="${esc(s.detail||s.status)}" style="margin-left:10px">${dot(s)} ${name}</span>`;
-  const anomalies=['goalert','traccar','thingsboard'].filter(k=>d[k]&&d[k].status==='anomalia');
-  box.innerHTML=chip('GoAlert',d.goalert)+chip('Traccar',d.traccar)+chip('ThingsBoard',d.thingsboard)
-    + (anomalies.length?`<span style="color:var(--bad);margin-left:10px">⚠ ${anomalies.map(k=>esc(d[k].detail||k)).join(' · ')}</span>`:'');
+  const chip=k=>`<span title="${esc(d[k].detail||d[k].status)}" style="margin-left:10px">${dot(d[k])} ${LAB[k]}</span>`;
+  const anomalies=on.filter(k=>d[k].status==='anomalia');
+  box.innerHTML=on.map(chip).join('')
+    + (anomalies.length?`<span style="color:var(--bad);margin-left:10px">⚠ ${anomalies.map(k=>esc(d[k].detail||k)).join(' · ')}</span>`:'<span class="s-attivo" style="margin-left:10px">tutto ok</span>');
 }
 function tenantCard(t,mods){
   return `<div class="card"><div class="card-h">
