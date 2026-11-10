@@ -1062,10 +1062,10 @@ fn scenario_catalog() -> Vec<Scenario> {
     let d = |suffix, label| ScnDev{ suffix, label };
     let crit = "sensore_critico"; let tele = "telemetria";
     vec![
-      Scenario{ code:"smart_energy", name:"Smart Energy", sector:"Energia", desc:"Raccolta dati smart meter e consumo energetico in tempo reale e storico.",
+      Scenario{ code:"smart_energy", name:"Smart Energy", sector:"Energia", desc:"Consumo elettrico per piano con uno smart meter per piano: tensione, corrente, frequenza, energia; allarmi su sovra/sotto-tensione e calo di frequenza.",
         modules:vec!["iot","thingsboard"],
-        rules:vec![ r("power_kw",">=",Some(50.0),crit), r("voltage",">=",Some(250.0),crit), r("voltage","<=",Some(200.0),crit), r("energy_kwh",">=",Some(1000.0),tele) ],
-        devices:vec![ d("meter-1","Contatore energia 1"), d("meter-2","Contatore energia 2") ] },
+        rules:vec![ r("voltage",">=",Some(253.0),crit), r("voltage","<=",Some(207.0),crit), r("frequency","<=",Some(49.5),crit), r("current",">=",Some(32.0),tele), r("energy_total",">=",Some(1000.0),tele) ],
+        devices:vec![ d("meter-a","Smart Meter A (Piano 1)"), d("meter-b","Smart Meter B (Piano 2)"), d("meter-c","Smart Meter C (Piano 3)") ] },
       Scenario{ code:"environment_monitoring", name:"Environment Monitoring", sector:"Ambiente", desc:"Monitoraggio ambientale indoor/outdoor con sensori multipli.",
         modules:vec!["iot"],
         rules:vec![ r("temperature",">=",Some(35.0),crit), r("humidity",">=",Some(85.0),tele), r("co2",">=",Some(1500.0),crit) ],
@@ -1251,15 +1251,54 @@ pub async fn super_scenario_demo(State(st): State<AppState>, h: HeaderMap, Path(
     // nomi device demo (se lo scenario non ha device demo, usa un nome sintetico)
     let devs: Vec<String> = if scn.devices.is_empty() { vec![format!("scn-{}-demo", scn.code)] }
         else { scn.devices.iter().map(|d| format!("scn-{}-{}", scn.code, d.suffix)).collect() };
-    // payload tutto-normale
-    let mut normal = serde_json::Map::new();
-    for ru in &scn.rules { normal.insert(ru.metric.to_string(), demo_normal_value(ru.op, ru.threshold)); }
-    // costruiamo la lista dei payload: normale + un allarme per ogni regola critica (max 3)
-    let mut payloads: Vec<Value> = vec![Value::Object(normal.clone())];
-    for ru in scn.rules.iter().filter(|r| CRITICAL.contains(&r.etype)).take(3) {
-        let mut p = normal.clone();
-        p.insert(ru.metric.to_string(), demo_alarm_value(ru.op, ru.threshold));
-        payloads.push(Value::Object(p));
+    // Telemetria demo: spec-driven (realistica, multi-metrica) se esiste la spec generata,
+    // altrimenti derivata dalle regole (comportamento storico).
+    let spec = scenario_spec(scn.code);
+    let mut payloads: Vec<Value> = Vec::new();
+    if let Some(ms) = spec.as_ref().and_then(|s| s.get("metrics")).and_then(|m| m.as_array()) {
+        use rand::Rng as _;
+        let mut rng = rand::thread_rng();
+        let normal_val = |m: &Value, rng: &mut rand::rngs::ThreadRng| -> Value {
+            if m.get("widget").and_then(|v| v.as_str()) == Some("status") { return json!(false); }
+            if let Some(a) = m.get("normal").and_then(|v| v.as_array()) {
+                let lo = a.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let hi = a.get(1).and_then(|v| v.as_f64()).unwrap_or(lo);
+                let v = if hi > lo { lo + rng.gen::<f64>()*(hi-lo) } else { lo };
+                return json!((v*100.0).round()/100.0);
+            }
+            let mn = m.get("min").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let mx = m.get("max").and_then(|v| v.as_f64()).unwrap_or(1.0);
+            json!((((mn+mx)/2.0)*100.0).round()/100.0)
+        };
+        // 12 campioni normali (variati) -> serie/grafici realistici
+        for _ in 0..12 {
+            let mut p = serde_json::Map::new();
+            for m in ms { if let Some(k)=m.get("key").and_then(|v| v.as_str()) { p.insert(k.into(), normal_val(m, &mut rng)); } }
+            payloads.push(Value::Object(p));
+        }
+        // un allarme per metrica con regola critica (max 3)
+        let mut na = 0;
+        for m in ms {
+            if na >= 3 { break; }
+            let k = m.get("key").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(rule) = scn.rules.iter().find(|r| r.metric==k && CRITICAL.contains(&r.etype)) {
+                let mut p = serde_json::Map::new();
+                for mm in ms { if let Some(kk)=mm.get("key").and_then(|v| v.as_str()) { p.insert(kk.into(), normal_val(mm, &mut rng)); } }
+                let av = m.get("alarm").and_then(|v| v.as_f64()).map(|x| json!(x)).unwrap_or_else(|| demo_alarm_value(rule.op, rule.threshold));
+                p.insert(k.into(), av);
+                payloads.push(Value::Object(p));
+                na += 1;
+            }
+        }
+    } else {
+        let mut normal = serde_json::Map::new();
+        for ru in &scn.rules { normal.insert(ru.metric.to_string(), demo_normal_value(ru.op, ru.threshold)); }
+        payloads.push(Value::Object(normal.clone()));
+        for ru in scn.rules.iter().filter(|r| CRITICAL.contains(&r.etype)).take(3) {
+            let mut p = normal.clone();
+            p.insert(ru.metric.to_string(), demo_alarm_value(ru.op, ru.threshold));
+            payloads.push(Value::Object(p));
+        }
     }
     let mut events = 0i64; let mut incidents = 0i64;
     for (i, payload) in payloads.iter().enumerate() {
@@ -1284,6 +1323,7 @@ fn metric_unit(m: &str) -> &'static str {
         "temperature"|"engine_temp" => "°C", "humidity"|"soil_moisture"|"fill_level"|"power_factor" => "%",
         "co2" => "ppm", "pm25" => "µg/m³", "power_kw"|"demand_kw" => "kW", "energy_kwh"|"consumption" => "kWh",
         "voltage" => "V", "pressure" => "bar", "flow" => "L/min", "level" => "%", "fuel" => "%",
+        "current" => "A", "frequency" => "Hz", "energy_total" => "kWh",
         "heart_rate" => "bpm", "gas" => "%LEL", "chlorine" => "mg/L", "ph" => "pH", "vibration" => "mm/s",
         _ => "",
     }
@@ -1295,6 +1335,7 @@ fn metric_label(m: &str) -> String {
         "soil_moisture" => "Umidità suolo", "fill_level" => "Riempimento", "level" => "Livello", "fuel" => "Carburante",
         "heart_rate" => "Battito", "gas" => "Gas", "chlorine" => "Cloro", "ph" => "pH", "pressure" => "Pressione",
         "flow" => "Flusso", "vibration" => "Vibrazione", "power_factor" => "Fattore di potenza", "consumption" => "Consumo",
+        "current" => "Corrente", "frequency" => "Frequenza", "energy_total" => "Energia",
         "engine_temp" => "Temp. motore", "leak" => "Perdita", "fraud" => "Frode", "smoke" => "Fumo",
         "door_open" => "Porta aperta", "fall" => "Caduta",
         _ => m,
@@ -1329,6 +1370,39 @@ fn scenario_widgets(scn: &Scenario) -> Vec<Value> {
         }));
     }
     out
+}
+
+/// Spec di scenario GENERATA (dal progetto multiagentico da descrizione+immagini del sito):
+/// JSON opzionale in SCENARIO_SPECS_DIR/<code>.json che arricchisce widget/narrativa/demo.
+/// Additiva: se assente, si usa la derivazione dalle regole. Mai copia di asset del sito.
+fn scenario_spec(code: &str) -> Option<Value> {
+    let dir = std::env::var("SCENARIO_SPECS_DIR").unwrap_or_else(|_| "scenario_specs".into());
+    let path = std::path::Path::new(&dir).join(format!("{code}.json"));
+    let txt = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&txt).ok()
+}
+/// Widget dal spec (se presente) altrimenti derivati dalle regole. Il spec definisce
+/// metrica/etichetta/unità/tipo/range; la soglia/direzione d'allarme viene dalle regole.
+fn scenario_widgets_spec(scn: &Scenario, spec: Option<&Value>) -> Vec<Value> {
+    if let Some(ms) = spec.and_then(|s| s.get("metrics")).and_then(|m| m.as_array()) {
+        return ms.iter().map(|m| {
+            let key = m.get("key").and_then(|v| v.as_str()).unwrap_or("");
+            let rules_m: Vec<&ScnRule> = scn.rules.iter().filter(|r| r.metric==key).collect();
+            let critr = rules_m.iter().find(|r| CRITICAL.contains(&r.etype));
+            let op = critr.map(|r| r.op).or_else(|| rules_m.first().map(|r| r.op)).unwrap_or("");
+            json!({
+                "metric": key,
+                "label": m.get("label").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| metric_label(key)),
+                "unit": m.get("unit").and_then(|v| v.as_str()).unwrap_or(metric_unit(key)),
+                "kind": m.get("widget").and_then(|v| v.as_str()).unwrap_or("gauge"),
+                "op": op, "threshold": critr.and_then(|r| r.threshold),
+                "min": m.get("min").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                "max": m.get("max").and_then(|v| v.as_f64()).unwrap_or(100.0),
+                "critical": critr.is_some(),
+            })
+        }).collect();
+    }
+    scenario_widgets(scn)
 }
 
 /// Scenari applicati al tenant corrente (per il cruscotto in-app; qualsiasi ruolo).
@@ -1378,7 +1452,9 @@ async fn scenario_applied<'a>(st: &AppState, tid: Uuid, code: &str, cat: &'a [Sc
 /// Dati completi del cruscotto: widget (valore/serie), KPI aggregati, device (coord mappa),
 /// multi-metrica, incidenti recenti. Riusato dal cruscotto e dall'analisi AI.
 async fn scenario_dash_json(st: &AppState, tid: Uuid, scn: &Scenario) -> Result<Value, (StatusCode,String)> {
-    let widgets = scenario_widgets(scn);
+    let spec = scenario_spec(scn.code);
+    let widgets = scenario_widgets_spec(scn, spec.as_ref());
+    let narrative = spec.as_ref().and_then(|s| s.get("narrative")).and_then(|v| v.as_str()).map(|s| s.to_string());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let devs = sqlx::query("SELECT id,external_id,label,last_lat,last_lon FROM app.devices WHERE source='scenario' AND external_id LIKE $1 ORDER BY external_id")
         .bind(format!("scn-{}-%", scn.code)).fetch_all(&mut *tx).await.map_err(ise)?;
@@ -1422,6 +1498,7 @@ async fn scenario_dash_json(st: &AppState, tid: Uuid, scn: &Scenario) -> Result<
         "label":r.try_get::<String,_>("label").ok(),"lat":r.try_get::<f64,_>("last_lat").ok(),"lon":r.try_get::<f64,_>("last_lon").ok()})).collect();
     Ok(json!({
         "code":scn.code, "name":scn.name, "sector":scn.sector, "ai_focus":scenario_ai_focus(scn.code),
+        "narrative": narrative, "generated": spec.is_some(),
         "device_count": devs.len(), "widgets": widgets_out, "incidents": incidents, "devices": devices,
         "kpis": {"device_count":devs.len(),"open_incidents":open_inc,"events_24h":ev24,"metrics_tracked":widgets_out.len(),"alarms_now":alarms_now}
     }))

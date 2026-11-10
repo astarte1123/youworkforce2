@@ -1,0 +1,17 @@
+{
+  "code": "smart_energy",
+  "name": "Smart Energy",
+  "source": "https://thingsboard.io/use-cases/smart-energy/",
+  "generated_by": "multi-agent scenario generator (descrizione+immagini -> spec, ricostruito da zero)",
+  "narrative": "Monitoraggio dei consumi elettrici per piano, un contatore intelligente per piano (A/B/C). Il cruscotto segue tensione, corrente, frequenza ed energia in tempo reale; allarmi su sovra/sotto-tensione e calo di frequenza; drill dal contatore all'incidente. Nessuna mappa geografica (contatori per piano).",
+  "map": false,
+  "metrics": [
+    { "key": "voltage", "label": "Tensione", "unit": "V", "min": 200, "max": 260, "normal": [228, 232], "alarm": 255, "widget": "gauge" },
+    { "key": "current", "label": "Corrente", "unit": "A", "min": 0, "max": 35, "normal": [5, 22], "alarm": 34, "widget": "gauge" },
+    { "key": "frequency", "label": "Frequenza", "unit": "Hz", "min": 49, "max": 51, "normal": [49.9, 50.1], "alarm": 49.3, "widget": "gauge" },
+    { "key": "power", "label": "Potenza", "unit": "kW", "min": 0, "max": 8, "normal": [1, 5], "widget": "line" },
+    { "key": "power_factor", "label": "Fattore di potenza", "unit": "", "min": 0.8, "max": 1.0, "normal": [0.9, 0.99], "widget": "gauge" },
+    { "key": "energy_total", "label": "Energia", "unit": "kWh", "min": 0, "max": 600, "normal": [120, 420], "widget": "stat" }
+  ],
+  "kpis": ["device_count", "alarms_now", "open_incidents", "events_24h"]
+}

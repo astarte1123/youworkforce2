@@ -1534,9 +1534,13 @@ function dashWidget(w){
   const n=num==null?0:Math.max(0,Math.min(1,(num-min)/((max-min)||1)));
   const tripped = num!=null&&thr!=null && ({'>=':num>=thr,'>':num>thr,'<=':num<=thr,'<':num<thr}[w.op]||false);
   const col=tripped?'var(--bad)':'var(--ok)';
-  return `<div class="card pad">
-    <div class="spread"><span class="small mut">${esc(w.label)}</span><span class="small mut">${esc(w.unit||'')}</span></div>
-    <div style="font-size:26px;font-weight:800;color:${col};margin:2px 0">${num==null?'<span style="color:var(--mut)">—</span>':fmtNum(num)}</div>
+  const head=`<div class="spread"><span class="small mut">${esc(w.label)}</span><span class="small mut">${esc(w.unit||'')}</span></div>`;
+  const big=`<div style="font-size:26px;font-weight:800;color:${w.kind==='stat'?'var(--brand)':col};margin:2px 0">${num==null?'<span style="color:var(--mut)">—</span>':fmtNum(num)}</div>`;
+  // stat: solo numero (KPI); line: numero + trend marcato; gauge: barra+soglia+trend
+  if(w.kind==='stat'){ return `<div class="card pad">${head}${big}${spark(w.series)}</div>`; }
+  if(w.kind==='line'){ return `<div class="card pad">${head}${big}${spark(w.series)}
+    <span class="chip ${tripped?'s-critico':'s-attivo'}" style="margin-top:6px">${num==null?'nessun dato':(tripped?'allarme':'ok')}</span></div>`; }
+  return `<div class="card pad">${head}${big}
     <div style="height:8px;border-radius:999px;background:var(--line);overflow:hidden"><div style="height:100%;width:${(n*100).toFixed(0)}%;background:${col};transition:width .3s"></div></div>
     <div class="spread small mut" style="margin-top:4px"><span>${fmtNum(min)}</span>${thr!=null?`<span>soglia ${fmtNum(thr)}</span>`:'<span></span>'}<span>${fmtNum(max)}</span></div>
     ${spark(w.series)}
@@ -1572,8 +1576,9 @@ async function renderScenarioDash(code){
   const mapCard=geo.length?`<div class="card" style="padding:0;overflow:hidden;margin-top:14px"><div class="card-h"><h2 style="margin:0">Mappa device</h2></div><div id="dashMap" style="height:300px"></div></div>`:'';
   const inc=(d.incidents||[]).length?`<div class="card pad" style="margin-top:14px"><div class="card-h" style="padding:0 0 8px"><h2>Allarmi recenti</h2></div>
     <table class="table"><tbody>${d.incidents.map(i=>`<tr><td><b>${esc(i.etype)}</b></td><td>${chip(i.state)}</td><td class="small mut">${new Date(i.at).toLocaleString('it-IT')}</td></tr>`).join('')}</tbody></table></div>`:'';
-  box.innerHTML=`<div class="spread" style="margin-bottom:10px"><div class="small mut">${esc(d.sector)} · ${d.device_count} device demo${d.device_count?'':' (attiva la demo dal superadmin)'}</div>
+  box.innerHTML=`<div class="spread" style="margin-bottom:10px"><div class="small mut">${esc(d.sector)} · ${d.device_count} device demo${d.generated?' · <span class="chip s-attivo">generato da descrizione+immagini</span>':''}${d.device_count?'':' (attiva la demo dal superadmin)'}</div>
       <button class="btn ghost small" onclick="scnAiAnalysis('${code}',this)">✦ Analisi AI</button></div>
+    ${d.narrative?`<div class="card pad" style="margin-bottom:12px"><div class="small mut">${esc(d.narrative)}</div></div>`:''}
     <div id="scnAiOut"></div>
     ${dashKpis(d.kpis)}
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px">${cards}</div>
