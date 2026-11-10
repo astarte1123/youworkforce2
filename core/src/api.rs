@@ -461,7 +461,7 @@ pub async fn set_module(State(st): State<AppState>, h: HeaderMap, Path(tid): Pat
 pub struct SetTraccarConn { pub base_url: String, pub username: String, pub password: Option<String> }
 pub async fn super_set_traccar(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetTraccarConn>) -> R {
     require_super(&st, &h).await?;
-    let base = b.base_url.trim_end_matches('/').to_string();
+    let base = { let b = b.base_url.trim_end_matches('/'); b.strip_suffix("/api").unwrap_or(b).to_string() };
     let pw = b.password.unwrap_or_default();
     if pw.is_empty() {
         // password invariata: aggiorna solo URL/utente (richiede connessione esistente)
@@ -843,14 +843,34 @@ pub async fn traccar_conn(st: &AppState, tid: Uuid) -> Option<(String,String,Str
     let pass: String = r.get("password");
     Some((r.get("base_url"), r.get("username"), st.secrets.decrypt(&pass)))   // P3: decifra a riposo
 }
-pub async fn traccar_login(http: &reqwest::Client, base: &str, user: &str, pass: &str) -> Option<String> {
-    let resp = http.post(format!("{base}/api/session"))
-        .form(&[("email", user), ("password", pass)]).send().await.ok()?;
-    if !resp.status().is_success() { return None; }
+/// Compone base_url Traccar + path tollerando il caso comune in cui l'utente include "/api"
+/// nel base URL (es. http://host:8082/api) oppure lo slash finale.
+pub fn traccar_url(base: &str, path: &str) -> String {
+    let b = base.trim_end_matches('/');
+    let b = b.strip_suffix("/api").unwrap_or(b);
+    let p = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
+    format!("{b}{p}")
+}
+/// Login con diagnostica: distingue irraggiungibile / credenziali / HTTP / cookie assente.
+pub async fn traccar_login_diag(http: &reqwest::Client, base: &str, user: &str, pass: &str) -> Result<String, String> {
+    let resp = http.post(traccar_url(base, "/api/session"))
+        .form(&[("email", user), ("password", pass)]).send().await
+        .map_err(|e| format!("server Traccar irraggiungibile: {e}"))?;
+    let code = resp.status();
+    if !code.is_success() {
+        return Err(match code.as_u16() {
+            401 | 403 => "credenziali Traccar non valide (controlla utente/password)".into(),
+            404 => "endpoint Traccar non trovato (controlla il base URL, senza /api finale)".into(),
+            c => format!("Traccar HTTP {c}"),
+        });
+    }
     let mut c = Vec::new();
     for v in resp.headers().get_all(reqwest::header::SET_COOKIE).iter() {
         if let Ok(s)=v.to_str() { if let Some(p)=s.split(';').next() { c.push(p.to_string()); } } }
-    if c.is_empty() { None } else { Some(c.join("; ")) }
+    if c.is_empty() { Err("Traccar: nessun cookie di sessione (versione/endpoint inatteso)".into()) } else { Ok(c.join("; ")) }
+}
+pub async fn traccar_login(http: &reqwest::Client, base: &str, user: &str, pass: &str) -> Option<String> {
+    traccar_login_diag(http, base, user, pass).await.ok()
 }
 // ====== Connessione ThingsBoard, gestita DA YouWorkforce (superadmin) ======
 pub async fn tb_conn(st: &AppState, tid: Uuid) -> Option<(String,String,String)> {
@@ -1752,8 +1772,8 @@ pub async fn ai_features_set(State(st): State<AppState>, h: HeaderMap, Json(b): 
 pub async fn traccar_get_config(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
     require_super(&st, &h).await?;
     let (base,user,pass) = traccar_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata"))?;
-    let cookie = traccar_login(&st.http, &base, &user, &pass).await.ok_or_else(|| err(StatusCode::BAD_GATEWAY, "login Traccar fallito"))?;
-    let srv: Value = st.http.get(format!("{base}/api/server")).header("Cookie", &cookie).send().await
+    let cookie = traccar_login_diag(&st.http, &base, &user, &pass).await.map_err(|e| err(StatusCode::BAD_GATEWAY, &e))?;
+    let srv: Value = st.http.get(traccar_url(&base, "/api/server")).header("Cookie", &cookie).send().await
         .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar irraggiungibile"))?.json().await
         .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar json"))?;
     let mut out = Vec::new();
@@ -1765,8 +1785,8 @@ pub async fn traccar_get_config(State(st): State<AppState>, h: HeaderMap, Path(t
 pub async fn traccar_set_config(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<GaCfgSet>) -> R {
     require_super(&st, &h).await?;
     let (base,user,pass) = traccar_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata"))?;
-    let cookie = traccar_login(&st.http, &base, &user, &pass).await.ok_or_else(|| err(StatusCode::BAD_GATEWAY, "login Traccar fallito"))?;
-    let mut srv: Value = st.http.get(format!("{base}/api/server")).header("Cookie", &cookie).send().await
+    let cookie = traccar_login_diag(&st.http, &base, &user, &pass).await.map_err(|e| err(StatusCode::BAD_GATEWAY, &e))?;
+    let mut srv: Value = st.http.get(traccar_url(&base, "/api/server")).header("Cookie", &cookie).send().await
         .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar irraggiungibile"))?.json().await
         .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar json"))?;
     let o = srv.as_object_mut().ok_or_else(|| err(StatusCode::BAD_GATEWAY, "server model"))?;
@@ -1775,7 +1795,7 @@ pub async fn traccar_set_config(State(st): State<AppState>, h: HeaderMap, Path(t
         else if TR_CFG_STR.contains(&e.id.as_str()) { o.insert(e.id.clone(), json!(e.value)); }
         else if TR_CFG_NUM.contains(&e.id.as_str()) { o.insert(e.id.clone(), json!(e.value.parse::<f64>().unwrap_or(0.0))); }
     }
-    let put = st.http.put(format!("{base}/api/server")).header("Cookie", &cookie).json(&srv).send().await
+    let put = st.http.put(traccar_url(&base, "/api/server")).header("Cookie", &cookie).json(&srv).send().await
         .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar PUT fallito"))?;
     if !put.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("Traccar PUT {}", put.status()))); }
     audit(&st, tid, "superadmin", "traccar_set_config", json!({"n":b.entries.len()})).await;
