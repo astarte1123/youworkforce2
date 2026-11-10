@@ -2062,11 +2062,20 @@ pub async fn ingest_event(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     if idem.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "idem key required")); }
     let correlation = b.correlation.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
 
+    // Motore regole sensori: se il payload telemetria sfora una regola critica, l'etype
+    // viene elevato (il dispositivo generico non deve decidere da solo la criticita').
+    let mut etype = b.etype.clone();
+    if let Some(p) = &b.payload {
+        if let Some(e) = eval_sensor_rules(&st, tid, p).await {
+            if CRITICAL.contains(&e.as_str()) { etype = e; }
+        }
+    }
+
     persist_ingest(&st, tid, Normalized {
         source,
         source_event: b.source_event.clone(),
         idem,
-        etype: b.etype.clone(),
+        etype,
         device_external_id: b.device_external_id.clone(),
         site_name: b.site_name.clone(),
         lat: b.lat, lon: b.lon, accuracy_m: b.accuracy_m,
@@ -3163,6 +3172,80 @@ pub async fn list_device_positions(State(st): State<AppState>, h: HeaderMap, Pat
 /// The ThingsBoard rule chain decides WHAT to forward; the core decides severity:
 /// an explicit alarm flag or a temperature threshold breach -> `sensore_critico`
 /// (critical -> incident -> GoAlert); anything else is stored as `telemetria`.
+// ---------------- Motore regole sensori (parametrico, da YouWorkforce) ----------------
+fn rule_num(v: &Value) -> Option<f64> { v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())) }
+fn rule_truthy(v: &Value) -> bool {
+    v.as_bool().unwrap_or_else(|| v.as_f64().map(|n| n != 0.0)
+        .unwrap_or_else(|| matches!(v.as_str().map(|s| s.to_ascii_lowercase()).as_deref(), Some("true")|Some("1")|Some("on")|Some("yes")|Some("si"))))
+}
+fn rule_matches(op: &str, thr: Option<f64>, v: &Value) -> bool {
+    match op {
+        "is_true" => rule_truthy(v),
+        "is_false" => !rule_truthy(v),
+        _ => match (thr, rule_num(v)) {
+            (Some(t), Some(x)) => match op { ">=" => x>=t, "<=" => x<=t, ">" => x>t, "<" => x<t, "==" => (x-t).abs()<1e-9, _ => false },
+            _ => false,
+        }
+    }
+}
+/// Valuta le regole sensori del tenant sul payload telemetria. Ritorna l'etype della
+/// prima regola abilitata che fa match (ordine: sort, poi creazione). System scope.
+pub async fn eval_sensor_rules(st: &AppState, tid: Uuid, payload: &Value) -> Option<String> {
+    let rows = sqlx::query("SELECT metric,op,threshold,etype FROM app.sensor_rules WHERE tenant_id=$1 AND enabled=true ORDER BY sort,created_at")
+        .bind(tid).fetch_all(&st.owner_pool).await.ok()?;
+    for r in &rows {
+        let metric: String = r.get("metric");
+        let op: String = r.get("op");
+        let thr: Option<f64> = r.try_get("threshold").ok();
+        let et: String = r.get("etype");
+        if let Some(v) = payload.get(&metric) {
+            if rule_matches(&op, thr, v) { return Some(et); }
+        }
+    }
+    None
+}
+const RULE_ETYPES: &[&str] = &["sensore_critico","batteria_critica","man_down","perdita_alimentazione","telemetria"];
+const RULE_OPS: &[&str] = &[">=","<=",">","<","==","is_true","is_false"];
+#[derive(Deserialize)]
+pub struct SensorRuleReq { pub metric: String, pub op: String, pub threshold: Option<f64>, pub etype: String, pub label: Option<String>, pub sort: Option<i32> }
+pub async fn list_sensor_rules(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT id,metric,op,threshold,etype,label,enabled,sort FROM app.sensor_rules ORDER BY sort,created_at")
+        .fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id": r.get::<Uuid,_>("id"), "metric": r.get::<String,_>("metric"), "op": r.get::<String,_>("op"),
+        "threshold": r.try_get::<f64,_>("threshold").ok(), "etype": r.get::<String,_>("etype"),
+        "label": r.try_get::<String,_>("label").ok(), "enabled": r.get::<bool,_>("enabled"), "sort": r.get::<i32,_>("sort") })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn create_sensor_rule(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SensorRuleReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if b.metric.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "metrica richiesta")); }
+    if !RULE_OPS.contains(&b.op.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "operatore non valido")); }
+    if !RULE_ETYPES.contains(&b.etype.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "etype non ammesso")); }
+    let numeric = !matches!(b.op.as_str(), "is_true"|"is_false");
+    if numeric && b.threshold.is_none() { return Err(err(StatusCode::BAD_REQUEST, "soglia richiesta per questo operatore")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.sensor_rules(tenant_id,metric,op,threshold,etype,label,sort) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        .bind(tid).bind(b.metric.trim()).bind(&b.op).bind(if numeric { b.threshold } else { None })
+        .bind(&b.etype).bind(&b.label).bind(b.sort.unwrap_or(100)).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "sensor_rule_create", json!({"metric":b.metric,"op":b.op,"etype":b.etype})).await;
+    Ok(Json(json!({"id": row.get::<Uuid,_>("id")})))
+}
+pub async fn delete_sensor_rule(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.sensor_rules WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "regola inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+
 pub async fn ingest_thingsboard(
     State(st): State<AppState>,
     h: HeaderMap,
@@ -3181,14 +3264,16 @@ pub async fn ingest_thingsboard(
     }
     let device = q.get("device").cloned().filter(|s| !s.is_empty());
 
-    let temp = b.get("temperature").and_then(|v| v.as_f64());
-    let alarm_flag = b.get("alarm").and_then(|v| v.as_bool()).unwrap_or(false)
-        || b.get("critical").and_then(|v| v.as_bool()).unwrap_or(false);
-    // Per-tenant severity threshold (thingsboard/severity_gate).
-    let gate = tool_config(&st, tid, "thingsboard", "severity_gate").await;
-    let temp_max = gate.get("temperature_max").and_then(|v| v.as_f64()).unwrap_or(90.0);
-    let critical = alarm_flag || temp.map(|t| t >= temp_max).unwrap_or(false);
-    let etype = if critical { "sensore_critico" } else { "telemetria" }.to_string();
+    // Motore regole sensori parametrico (da YouWorkforce). Se nessuna regola fa match,
+    // fallback alla policy legacy (flag alarm/critical + soglia temperatura di severity_gate).
+    let etype = if let Some(e) = eval_sensor_rules(&st, tid, &b).await { e } else {
+        let temp = b.get("temperature").and_then(|v| v.as_f64());
+        let alarm_flag = b.get("alarm").and_then(|v| v.as_bool()).unwrap_or(false)
+            || b.get("critical").and_then(|v| v.as_bool()).unwrap_or(false);
+        let gate = tool_config(&st, tid, "thingsboard", "severity_gate").await;
+        let temp_max = gate.get("temperature_max").and_then(|v| v.as_f64()).unwrap_or(90.0);
+        if alarm_flag || temp.map(|t| t >= temp_max).unwrap_or(false) { "sensore_critico".into() } else { "telemetria".into() }
+    };
 
     let corr = format!("tb-{}-{}", device.clone().unwrap_or_else(|| "dev".into()), Uuid::new_v4());
     persist_ingest(&st, tid, Normalized {

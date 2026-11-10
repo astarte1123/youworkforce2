@@ -153,6 +153,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/groups/:gid/members/:uid", axum::routing::delete(api::remove_group_member))
         .route("/api/routing", post(api::set_routing))
         .route("/api/alarm/sync-goalert", post(api::goalert_sync_handler))
+        .route("/api/sensor-rules", get(api::list_sensor_rules).post(api::create_sensor_rule))
+        .route("/api/sensor-rules/:id", axum::routing::delete(api::delete_sensor_rule))
         .route("/api/checkins/list", get(api::list_checkins))
         .route("/api/teams", get(api::list_teams).post(api::create_team))
         .route("/api/teams/:id", axum::routing::delete(api::delete_team))

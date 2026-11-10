@@ -1326,8 +1326,48 @@ async function vConnettori(v){
       <td class="small mut">${new Date(t.created_at).toLocaleDateString('it-IT')}</td>
       <td style="text-align:right"><button class="btn-ico btn ghost" onclick="tokDel('${esc(t.token)}')">${ICON.x}</button></td></tr>`).join('')
       ||`<tr><td colspan="4" class="empty">nessun token</td></tr>`}</tbody></table>
-    <div class="small mut" style="margin-top:8px">Il tenant deriva sempre dal token di ingest: usalo nella configurazione del device/connettore. Revocarlo blocca subito quella sorgente.</div></div>`;
+    <div class="small mut" style="margin-top:8px">Il tenant deriva sempre dal token di ingest: usalo nella configurazione del device/connettore. Revocarlo blocca subito quella sorgente.</div></div>
+  <div id="sensorRulesCard" style="margin-top:16px"></div>`;
+  if(ACTIVE_MODS.has('iot')||ACTIVE_MODS.has('thingsboard')) renderSensorRules();
 }
+const RULE_OPS=[['>=','≥'],['<=','≤'],['>','>'],['<','<'],['==','='],['is_true','è vero'],['is_false','è falso']];
+const RULE_ETYPES=['sensore_critico','batteria_critica','man_down','perdita_alimentazione','telemetria'];
+const RULE_ET_LAB={sensore_critico:'Sensore critico',batteria_critica:'Batteria critica',man_down:'Uomo a terra',perdita_alimentazione:'Perdita alimentazione',telemetria:'Telemetria (nessun allarme)'};
+async function renderSensorRules(){
+  const box=$('#sensorRulesCard'); if(!box)return;
+  let R=[]; try{ R=await api('/sensor-rules'); }catch(e){}
+  const opLab=o=>(RULE_OPS.find(x=>x[0]===o)||[o,o])[1];
+  const numeric=o=>!['is_true','is_false'].includes(o);
+  box.innerHTML=`<div class="card pad"><div class="card-h" style="padding:0 0 10px"><h2>Regole sensori (IoT / ThingsBoard)</h2></div>
+    <div class="small mut" style="margin-bottom:8px">Trasformano la telemetria in allarmi, in modo parametrico: <b>metrica</b> (chiave nel payload) + <b>operatore</b> + <b>soglia</b> → <b>evento</b>. Gli eventi critici attivano la catena allarmi (incidente + GoAlert). Valgono sia per ThingsBoard sia per l'IoT generico.</div>
+    <table class="table"><thead><tr><th>Metrica</th><th>Condizione</th><th>Evento</th><th>Etichetta</th><th></th></tr></thead>
+    <tbody>${R.map(r=>`<tr><td class="mono small">${esc(r.metric)}</td>
+      <td class="small">${opLab(r.op)}${numeric(r.op)?' '+(r.threshold??''):''}</td>
+      <td><span class="chip ${r.etype==='telemetria'?'':'s-critico'}">${esc(RULE_ET_LAB[r.etype]||r.etype)}</span></td>
+      <td class="small mut">${esc(r.label||'')}</td>
+      <td style="text-align:right"><button class="btn-ico btn ghost" onclick="ruleDel('${r.id}')">${ICON.x}</button></td></tr>`).join('')
+      ||'<tr><td colspan="5" class="empty">Nessuna regola. Senza regole, ThingsBoard usa la soglia temperatura legacy.</td></tr>'}</tbody></table>
+    <div class="card pad" style="margin-top:8px;background:var(--bg2)"><b class="small">Nuova regola</b>
+      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:flex-end">
+        <label class="small mut">Metrica<input id="srMetric" placeholder="es. gas, co, smoke, temperature, water" style="width:200px"></label>
+        <label class="small mut">Operatore<select id="srOp" onchange="srOpChange()">${RULE_OPS.map(o=>`<option value="${o[0]}">${o[1]}</option>`).join('')}</select></label>
+        <label class="small mut" id="srThrWrap">Soglia<input id="srThr" type="number" step="any" style="width:90px"></label>
+        <label class="small mut">Evento<select id="srEtype">${RULE_ETYPES.map(e=>`<option value="${e}">${RULE_ET_LAB[e]}</option>`).join('')}</select></label>
+        <label class="small mut">Etichetta<input id="srLabel" placeholder="opz." style="width:140px"></label>
+        <button class="btn" onclick="ruleAdd(this)">+ Aggiungi</button>
+      </div></div></div>`;
+}
+function srOpChange(){ const num=!['is_true','is_false'].includes($('#srOp').value); const w=$('#srThrWrap'); if(w)w.style.display=num?'inline-flex':'none'; }
+async function ruleAdd(btn){
+  const op=$('#srOp').value, numeric=!['is_true','is_false'].includes(op);
+  const body={metric:$('#srMetric').value.trim(), op, etype:$('#srEtype').value, label:$('#srLabel').value.trim()||null};
+  if(numeric){ const t=$('#srThr').value; if(t==='') return toast('Soglia richiesta','bad'); body.threshold=Number(t); }
+  if(!body.metric) return toast('Metrica richiesta','bad');
+  try{ await api('/sensor-rules',{method:'POST',body:JSON.stringify(body)}); toast('Regola aggiunta','ok'); renderSensorRules(); }
+  catch(e){ toast(e.message,'bad'); }
+}
+async function ruleDel(id){ if(!confirm('Eliminare la regola?'))return;
+  try{ await api('/sensor-rules/'+id,{method:'DELETE'}); toast('Eliminata','ok'); renderSensorRules(); }catch(e){ toast(e.message,'bad'); } }
 function traccarHealthCard(s){
   if(!s) return '';
   if(!s.configured) return `<div class="card pad" style="margin-bottom:14px"><div class="spread"><b>Traccar — salute connessione</b><span class="chip">non configurata</span></div>
