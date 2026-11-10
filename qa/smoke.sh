@@ -123,7 +123,8 @@ curl -s "$BASE/api/timesheets/$TS/export.csv" -b "$J/m" | grep -q "TOTALE" && ok
 # ---- Prompt 7: assistente AI (T11) ----
 say "T11 AI read query returns source+provider"
 R=$(req POST /api/assistant "$J/op" '{"q":"ricostruisci l'\''ultimo allarme"}')
-echo "$R" | grep -q '"provider":"SIMULATO"' && echo "$R" | grep -q '"intent":"incidente_storia"' && ok || no "$R"
+# provider = SIMULATO (deterministico) oppure il nome del provider AI se configurato: basta che ci sia provider+fonti+intent
+echo "$R" | grep -q '"provider"' && echo "$R" | grep -q '"sources"' && echo "$R" | grep -q '"intent":"incidente_storia"' && ok || no "$R"
 say "T11 AI refuses critical action (close SOS)"
 req POST /api/assistant "$J/op" '{"q":"chiudi il SOS adesso"}' | grep -q '"intent":"critical_refused"' && ok || no "no refusal"
 say "T11 AI checkin query cites period"
