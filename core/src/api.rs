@@ -1578,10 +1578,22 @@ pub async fn ai_feature_on(st: &AppState, tid: Uuid, feature: &str) -> bool {
         .bind(tid).bind(feature).fetch_optional(&st.owner_pool).await.ok().flatten().unwrap_or(false)
 }
 
+/// Compone base_url + path per l'endpoint AI, tollerando il caso comune in cui l'utente
+/// mette "/v1" sia nel base URL sia nel path (server OpenAI-compatibili tipo llama.cpp/vLLM):
+/// collassa i segmenti "/v1" duplicati così entrambe le forme funzionano.
+pub fn ai_url(base: &str, path: &str) -> String {
+    let b = base.trim_end_matches('/');
+    let p = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
+    let mut url = format!("{b}{p}");
+    while let Some(i) = url.find("/v1/v1/") { url.replace_range(i..i+7, "/v1/"); }
+    if url.ends_with("/v1/v1") { let n = url.len(); url.replace_range(n-6..n, "/v1"); }
+    url
+}
+
 /// Chiamata chat semplice (solo testo), provider-aware. system = istruzioni/guardrail,
 /// user = richiesta+contesto (gia' ristretto al tenant). Ritorna il testo o Err diagnostico.
 pub async fn ai_chat(st: &AppState, c: &AiConn, system: &str, user: &str) -> Result<String, String> {
-    let url = format!("{}{}", c.base_url, c.chat_path);
+    let url = ai_url(&c.base_url, &c.chat_path);
     if c.is_anthropic() {
         let body = json!({"model":c.model,"max_tokens":800,"system":system,
             "messages":[{"role":"user","content":user}]});
@@ -1612,7 +1624,7 @@ fn anthropic_text(v: &Value) -> Option<String> {
 
 /// Speech-to-text youworker.ai (diario vocale lato server). Audio multipart -> testo.
 pub async fn ai_stt(st: &AppState, c: &AiConn, audio: Vec<u8>, filename: &str, mime: &str) -> Result<String, String> {
-    let url = format!("{}{}", c.base_url, c.stt_path);
+    let url = ai_url(&c.base_url, &c.stt_path);
     let part = reqwest::multipart::Part::bytes(audio).file_name(filename.to_string())
         .mime_str(mime).map_err(|e| format!("audio non valido: {e}"))?;
     let form = reqwest::multipart::Form::new().text("model", c.model.clone()).part("file", part);
@@ -5617,7 +5629,7 @@ async fn ai_complete(st: &AppState, c: &AiConn, system: &str, turns: &[AgTurn]) 
         }
         let tdefs: Vec<Value> = tools.iter().map(|(n,d,s)| json!({"name":n,"description":d,"input_schema":s})).collect();
         let body = json!({"model":c.model,"max_tokens":1024,"system":system,"messages":msgs,"tools":tdefs});
-        let resp = st.http.post(format!("{}{}", c.base_url, c.chat_path)).header("x-api-key", &c.api_key)
+        let resp = st.http.post(ai_url(&c.base_url, &c.chat_path)).header("x-api-key", &c.api_key)
             .header("anthropic-version","2023-06-01").json(&body).send().await.map_err(|e| format!("provider AI irraggiungibile: {e}"))?;
         if !resp.status().is_success() { return Err(format!("provider AI HTTP {}", resp.status())); }
         let v: Value = resp.json().await.map_err(|e| format!("risposta non valida: {e}"))?;
@@ -5649,7 +5661,7 @@ async fn ai_complete(st: &AppState, c: &AiConn, system: &str, turns: &[AgTurn]) 
     }}
     let tdefs: Vec<Value> = tools.iter().map(|(n,d,s)| json!({"type":"function","function":{"name":n,"description":d,"parameters":s}})).collect();
     let body = json!({"model":c.model,"temperature":0.1,"max_tokens":1024,"messages":msgs,"tools":tdefs});
-    let resp = st.http.post(format!("{}{}", c.base_url, c.chat_path)).bearer_auth(&c.api_key).json(&body).send().await
+    let resp = st.http.post(ai_url(&c.base_url, &c.chat_path)).bearer_auth(&c.api_key).json(&body).send().await
         .map_err(|e| format!("provider AI irraggiungibile: {e}"))?;
     if !resp.status().is_success() { return Err(format!("provider AI HTTP {}", resp.status())); }
     let v: Value = resp.json().await.map_err(|e| format!("risposta non valida: {e}"))?;
