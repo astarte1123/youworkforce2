@@ -931,8 +931,6 @@ async function addCircle(lat,lon){
   try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind:'circle',geom:{lat,lon,radius:r}})});
     toast('Geofence creata','ok'); route(); }catch(e){ toast(e.message,'bad'); }
 }
-async function gfDel(id){ if(!await askConfirm('Eliminare la geofence?'))return;
-  try{ await api('/geofences/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
 function popupHtml(d){
   return `<b>${esc(d.label||d.external_id)}</b><br>
     <span style="color:#666">${d.last_lat.toFixed(5)}, ${d.last_lon.toFixed(5)}</span><br>
@@ -2003,7 +2001,7 @@ function closeDrawer(){ $('#drawer').classList.remove('open'); $('#scrim').class
 // Conferma non-bloccante (window.confirm è bloccato in alcune webview): modale con Promise.
 function askConfirm(msg){ return new Promise(res=>{
   const m=document.createElement('div');
-  m.style.cssText='position:fixed;inset:0;z-index:300;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)';
+  m.style.cssText='position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)';
   m.innerHTML=`<div class="card pad" style="max-width:430px;width:92%"><div style="margin-bottom:14px">${esc(msg)}</div>
     <div class="row" style="gap:8px;justify-content:flex-end"><button class="btn ghost" data-no>Annulla</button><button class="btn" data-yes>Conferma</button></div></div>`;
   const done=v=>{ try{m.remove();}catch(e){} res(v); };
@@ -2015,7 +2013,7 @@ function askConfirm(msg){ return new Promise(res=>{
 // Prompt non-bloccante con un valore iniziale (per rinominare). Ritorna stringa o null.
 function askPrompt(msg,val){ return new Promise(res=>{
   const m=document.createElement('div');
-  m.style.cssText='position:fixed;inset:0;z-index:300;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)';
+  m.style.cssText='position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)';
   m.innerHTML=`<div class="card pad" style="max-width:430px;width:92%"><div style="margin-bottom:10px">${esc(msg)}</div>
     <input id="_apIn" value="${esc(val||'')}" style="width:100%;margin-bottom:12px">
     <div class="row" style="gap:8px;justify-content:flex-end"><button class="btn ghost" data-no>Annulla</button><button class="btn" data-yes>OK</button></div></div>`;
