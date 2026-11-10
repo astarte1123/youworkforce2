@@ -87,16 +87,20 @@ function tenantCard(t,mods){
         :'<span class="tag">N/D</span>'}
     </div>`).join('')}
     </div>
-    <div class="row" style="margin-top:10px;gap:8px"><button class="btn" onclick="openAdmin('${t.id}',this)">⚙ Amministrazione</button>
-      <button class="btn ghost" onclick="impersonate('${t.id}')">👤 Impersona admin</button>
-      <button class="btn ghost" onclick="openTools('${t.id}',this)">Strumenti disponibili</button>
-      <button class="btn ghost" onclick="gaProvision('${t.id}',this)">Provisiona GoAlert</button>
-      <button class="btn ghost cfgbtn" onclick="gaConfig('${t.id}',this)">Trasporto notifiche</button>
-      <button class="btn ghost cfgbtn" onclick="trConn('${t.id}',this)">Connessione Traccar</button>
-      <button class="btn ghost cfgbtn" onclick="trConfig('${t.id}',this)">Config Traccar</button>
-      <button class="btn ghost cfgbtn" onclick="tbConn('${t.id}',this)">Connessione ThingsBoard</button>
-      <button class="btn ghost cfgbtn" onclick="aiConn('${t.id}',this)">Connessione youworker.ai</button>
-      <button class="btn ghost cfgbtn" onclick="scnOpen('${t.id}',this)">Ambienti (casi d'uso)</button></div>
+    <div style="margin-top:12px">
+      <div class="small mut" style="margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px">Gestione</div>
+      <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn" onclick="openAdmin('${t.id}',this)">⚙ Amministrazione</button>
+        <button class="btn ghost" onclick="impersonate('${t.id}')">👤 Impersona admin</button>
+        <button class="btn ghost" onclick="openTools('${t.id}',this)">Strumenti disponibili</button>
+        <button class="btn ghost cfgbtn" onclick="scnOpen('${t.id}',this)">Ambienti (casi d'uso)</button></div>
+      <div class="small mut" style="margin:12px 0 5px;text-transform:uppercase;letter-spacing:.5px">Connessioni &amp; integrazioni</div>
+      <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn ghost" onclick="gaProvision('${t.id}',this)">Provisiona GoAlert</button>
+        <button class="btn ghost cfgbtn" onclick="gaConfig('${t.id}',this)">Trasporto notifiche</button>
+        <button class="btn ghost cfgbtn" onclick="trConn('${t.id}',this)">Connessione Traccar</button>
+        <button class="btn ghost cfgbtn" onclick="trConfig('${t.id}',this)">Config Traccar</button>
+        <button class="btn ghost cfgbtn" onclick="tbConn('${t.id}',this)">Connessione ThingsBoard</button>
+        <button class="btn ghost cfgbtn" onclick="aiConn('${t.id}',this)">Connessione AI</button></div>
+    </div>
     <div id="admin_${t.id}" style="margin-top:8px"></div>
     <div id="tools_${t.id}" style="margin-top:8px"></div>
     <div id="cfg_${t.id}" style="margin-top:8px"></div>
@@ -281,16 +285,17 @@ async function aiConn(tid,btn){
   if(box.dataset.open==='ai'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
   box.dataset.open='ai'; cfgExclusive(btn); btnOn(btn,true); box.innerHTML='<div class="small mut">carico…</div>';
   let c; try{ c=await api('/superadmin/tenants/'+tid+'/ai'); }catch(e){ c={configured:false}; }
+  const prov=c.provider||'youworker'; const def=AI_PROV_DEF[prov]||AI_PROV_DEF.custom;
   box.innerHTML=`<div class="card" style="padding:12px">
-    <div class="small mut" style="margin-bottom:8px">Provider AI del tenant: <b>youworker.ai</b> (AI di YouCo) o esterno (OpenAI, DeepSeek, Anthropic, custom). base URL + API key (cifrata a riposo). Pilota tutti i processi AI e l'agente operativo. Se assente, i processi AI degradano al piano deterministico locale.</div>
+    <div class="small mut" style="margin-bottom:8px">Provider AI del tenant: <b>youworker.ai</b> (AI di YouCo) o esterno (OpenAI, DeepSeek, Anthropic, custom). Base URL + API key (cifrata a riposo). Pilota tutti i processi AI e l'agente operativo. <b>Salva</b> registra e attiva la connessione; <b>Verifica</b> prova a raggiungere il provider (serve rete + chiave valida). Se non configurata, i processi AI usano il piano deterministico locale.</div>
     <label class="small mut" style="display:block;margin:4px 0">Provider<select id="ai_prov_${tid}" onchange="aiProvDefaults('${tid}')">
-      ${['youworker','openai','deepseek','anthropic','custom'].map(p=>`<option value="${p}" ${(c.provider||'youworker')===p?'selected':''}>${p}</option>`).join('')}</select></label>
-    <label class="small mut" style="display:block;margin:4px 0">Base URL<input id="ai_url_${tid}" placeholder="https://api.youworker.ai" value="${esc(c.base_url||'')}"></label>
+      ${['youworker','openai','deepseek','anthropic','custom'].map(p=>`<option value="${p}" ${prov===p?'selected':''}>${p}</option>`).join('')}</select></label>
+    <label class="small mut" style="display:block;margin:4px 0">Base URL<input id="ai_url_${tid}" placeholder="https://api.openai.com" value="${esc(c.base_url||def.base)}"></label>
     <label class="small mut" style="display:block;margin:4px 0">API key${c.has_api_key?' <span class="small">(impostata — lascia vuoto per non cambiarla)</span>':''}<input id="ai_key_${tid}" type="password" placeholder="${c.has_api_key?'•••••• invariata':'sk-…'}"></label>
-    <label class="small mut" style="display:block;margin:4px 0">Modello<input id="ai_model_${tid}" placeholder="youworker-1" value="${esc(c.model||'youworker-1')}"></label>
+    <label class="small mut" style="display:block;margin:4px 0">Modello<input id="ai_model_${tid}" placeholder="${def.model||'modello'}" value="${esc(c.model||def.model)}"></label>
     <div class="row" style="gap:8px">
-      <label class="small mut" style="flex:1">Chat path<input id="ai_chat_${tid}" placeholder="/v1/chat/completions" value="${esc(c.chat_path||'/v1/chat/completions')}"></label>
-      <label class="small mut" style="flex:1">STT path<input id="ai_stt_${tid}" placeholder="/v1/audio/transcriptions" value="${esc(c.stt_path||'/v1/audio/transcriptions')}"></label></div>
+      <label class="small mut" style="flex:1">Chat path<input id="ai_chat_${tid}" placeholder="/v1/chat/completions" value="${esc(c.chat_path||def.chat)}"></label>
+      <label class="small mut" style="flex:1">STT path<input id="ai_stt_${tid}" placeholder="/v1/audio/transcriptions" value="${esc(c.stt_path||def.stt)}"></label></div>
     <div class="row" style="gap:8px;margin-top:6px"><button class="btn" onclick="aiConnSave('${tid}')">Salva</button>
       <button class="btn ghost" onclick="aiVerify('${tid}')">Verifica collegamento</button>
       ${c.configured?'<span class="chip s-attivo">configurata</span>':'<span class="chip">assente</span>'}</div>
@@ -304,8 +309,7 @@ const AI_PROV_DEF={
   custom:{base:'',model:'',chat:'/v1/chat/completions',stt:'/v1/audio/transcriptions'},
 };
 function aiProvDefaults(tid){ const p=document.getElementById('ai_prov_'+tid).value; const d=AI_PROV_DEF[p]||AI_PROV_DEF.custom;
-  const set=(id,v)=>{const e=document.getElementById(id); if(e&&!e.value) e.value=v;};
-  set('ai_url_'+tid,d.base); // model/chat/stt: sovrascrivi come suggerimento provider
+  const u=document.getElementById('ai_url_'+tid); if(u && d.base) u.value=d.base; // suggerimento base URL del provider
   document.getElementById('ai_model_'+tid).value=d.model;
   document.getElementById('ai_chat_'+tid).value=d.chat;
   document.getElementById('ai_stt_'+tid).value=d.stt; }
@@ -317,17 +321,18 @@ async function aiConnSave(tid){
   const chat=document.getElementById('ai_chat_'+tid).value.trim();
   const stt=document.getElementById('ai_stt_'+tid).value.trim();
   const msg=document.getElementById('ai_msg_'+tid);
-  if(!url){ toast('Base URL obbligatorio','bad'); return; }
+  if(!url){ toast('Base URL obbligatorio: scegli un provider (precompila l\'URL) o incollalo','bad'); if(msg)msg.innerHTML='<span style="color:var(--bad)">Base URL mancante</span>'; return; }
   try{ const body={provider:provider,base_url:url,model:model,chat_path:chat,stt_path:stt}; if(key) body.api_key=key;
     await api('/superadmin/tenants/'+tid+'/ai',{method:'POST',body:JSON.stringify(body)});
-    toast('Connessione youworker.ai salvata','ok'); if(msg)msg.innerHTML='<span class="s-attivo">salvata</span>';
+    toast('Connessione AI salvata e attiva','ok'); if(msg)msg.innerHTML='<span class="s-attivo">salvata e attiva</span> — verifico la raggiungibilità…';
+    aiVerify(tid); // feedback immediato sulla raggiungibilità (opzionale)
   }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
 }
 async function aiVerify(tid){
-  const msg=document.getElementById('ai_msg_'+tid); if(msg)msg.textContent='Verifico…';
+  const msg=document.getElementById('ai_msg_'+tid); if(msg && msg.textContent.indexOf('verifico')<0) msg.textContent='Verifico…';
   try{ const r=await api('/superadmin/tenants/'+tid+'/ai/verify',{method:'POST'});
-    if(msg) msg.innerHTML=r.reachable?`<span class="s-attivo">✓ ${esc(r.verdict)}</span>${r.sample?' · '+esc(r.sample):''}`:`<span style="color:var(--bad)">✗ ${esc(r.verdict)}</span>`;
-    toast(r.reachable?'youworker.ai collegato':'youworker.ai irraggiungibile', r.reachable?'ok':'bad');
+    if(msg) msg.innerHTML=r.reachable?`<span class="s-attivo">✓ ${esc(r.verdict)}</span>${r.sample?' · '+esc(r.sample):''}`:`<span style="color:var(--bad)">✗ ${esc(r.verdict)}</span> — la connessione è comunque salvata; controlla URL/chiave/rete.`;
+    toast(r.reachable?'Provider AI collegato':'Salvata, ma provider non raggiungibile', r.reachable?'ok':'warn');
   }catch(e){ if(msg)msg.textContent=e.message; toast(e.message,'bad'); }
 }
 async function scnOpen(tid,btn){
