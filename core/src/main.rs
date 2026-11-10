@@ -116,6 +116,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/superadmin/tenants/:id/goalert", post(api::super_set_goalert))
         .route("/api/superadmin/tenants/:id/traccar", get(api::super_get_traccar).post(api::super_set_traccar))
         .route("/api/superadmin/tenants/:id/goalert/provision", post(api::goalert_provision))
+        .route("/api/superadmin/tenants/:id/integrations", get(api::super_integrations_status))
         .route("/api/superadmin/tenants/:id/goalert/config", get(api::goalert_get_config).post(api::goalert_set_config))
         .route("/api/superadmin/tenants/:id/traccar/config", get(api::traccar_get_config).post(api::traccar_set_config))
         .route("/api/superadmin/tenants/:id/thingsboard", get(api::super_get_thingsboard).post(api::super_set_thingsboard))

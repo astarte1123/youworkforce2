@@ -72,6 +72,16 @@ async function load(){
   TENANTS=await api('/superadmin/tenants').catch(()=>[]);
   const mods=await Promise.all(TENANTS.map(t=>api('/superadmin/tenants/'+t.id+'/modules').catch(()=>[])));
   $('#list').innerHTML=TENANTS.map((t,i)=>tenantCard(t,mods[i])).join('')||'<div class="empty">nessun tenant</div>';
+  TENANTS.forEach(t=>loadInteg(t.id));
+}
+async function loadInteg(tid){
+  const box=document.getElementById('integ_'+tid); if(!box)return;
+  let d; try{ d=await api('/superadmin/tenants/'+tid+'/integrations'); }catch(e){ box.textContent=''; return; }
+  const dot=s=>s.status==='ok'?'🟢':(s.status==='anomalia'?'🔴':'⚪');
+  const chip=(name,s)=>`<span title="${esc(s.detail||s.status)}" style="margin-left:10px">${dot(s)} ${name}</span>`;
+  const anomalies=['goalert','traccar','thingsboard'].filter(k=>d[k]&&d[k].status==='anomalia');
+  box.innerHTML=chip('GoAlert',d.goalert)+chip('Traccar',d.traccar)+chip('ThingsBoard',d.thingsboard)
+    + (anomalies.length?`<span style="color:var(--bad);margin-left:10px">⚠ ${anomalies.map(k=>esc(d[k].detail||k)).join(' · ')}</span>`:'');
 }
 function tenantCard(t,mods){
   return `<div class="card"><div class="card-h">
@@ -93,7 +103,8 @@ function tenantCard(t,mods){
         <button class="btn ghost" onclick="impersonate('${t.id}')">👤 Impersona admin</button>
         <button class="btn ghost" onclick="openTools('${t.id}',this)">Strumenti disponibili</button>
         <button class="btn ghost cfgbtn" onclick="scnOpen('${t.id}',this)">Ambienti (casi d'uso)</button></div>
-      <div class="small mut" style="margin:12px 0 5px;text-transform:uppercase;letter-spacing:.5px">Connessioni &amp; integrazioni</div>
+      <div class="spread" style="margin:12px 0 5px"><div class="small mut" style="text-transform:uppercase;letter-spacing:.5px">Connessioni &amp; integrazioni</div><div id="integ_${t.id}" class="small mut">semaforo…</div></div>
+      <div class="small mut" style="margin-bottom:6px">I motori integrati (GoAlert/Traccar/ThingsBoard) si configurano da soli dai default del prodotto. I pulsanti sotto servono solo per override o diagnosi. I provider AI sono esterni: richiedono la chiave del cliente.</div>
       <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn ghost" onclick="gaProvision('${t.id}',this)">Provisiona GoAlert</button>
         <button class="btn ghost cfgbtn" onclick="gaConfig('${t.id}',this)">Trasporto notifiche</button>
         <button class="btn ghost cfgbtn" onclick="trConn('${t.id}',this)">Connessione Traccar</button>

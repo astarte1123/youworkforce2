@@ -21,6 +21,10 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     heartbeats(st).await?;
     traccar_poll(st).await?;
     thingsboard_poll(st).await?;
+    // auto-integrazioni: configura da sola i moduli integrati attivi (idempotente), ~ogni 60s
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    if N.fetch_add(1, Ordering::Relaxed) % 30 == 0 { api::reconcile_integrations(st).await; }
     Ok(())
 }
 

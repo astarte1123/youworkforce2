@@ -603,6 +603,94 @@ pub async fn goalert_provision(State(st): State<AppState>, h: HeaderMap, Path(ti
     let out = do_goalert_provision(&st, tid, &user, &pass, b.name.as_deref()).await?;
     Ok(Json(out))
 }
+// ============ Auto-integrazioni: moduli integrati configurati dal prodotto, non dall'uomo ============
+// I motori integrati (GoAlert, Traccar, ThingsBoard) girano sulla nostra infrastruttura: base URL e
+// credenziali admin vengono dai default del prodotto (env), così l'attivazione di un modulo li
+// configura DA SOLA, senza intervento dell'amministratore. I provider AI restano esterni (chiave cliente).
+fn env_opt(k: &str) -> Option<String> { std::env::var(k).ok().filter(|s| !s.trim().is_empty()) }
+fn norm_base(b: &str) -> String { let b=b.trim_end_matches('/'); b.strip_suffix("/api").unwrap_or(b).to_string() }
+
+/// Provisiona GoAlert automaticamente se il modulo è attivo e non è già provisionato.
+pub async fn auto_provision_goalert(st: &AppState, tid: Uuid) -> Result<bool, String> {
+    if !module_active(st, tid, "goalert").await { return Ok(false); }
+    if st.goalert_base.is_none() { return Err("motore GoAlert non raggiungibile (GOALERT_BASE)".into()); }
+    let has: i64 = sqlx::query_scalar("SELECT count(*) FROM app.goalert_services WHERE tenant_id=$1")
+        .bind(tid).fetch_one(&st.owner_pool).await.map_err(|e| e.to_string())?;
+    if has > 0 { return Ok(false); }
+    let (u,p) = goalert_admin_creds();
+    do_goalert_provision(st, tid, &u, &p, None).await.map(|_| true).map_err(|e| e.1)
+}
+/// Connette Traccar automaticamente dai default del prodotto se il modulo è attivo.
+pub async fn auto_connect_traccar(st: &AppState, tid: Uuid) -> Result<bool, String> {
+    if !module_active(st, tid, "traccar").await { return Ok(false); }
+    let base = env_opt("TRACCAR_BASE").ok_or("motore Traccar non configurato nel prodotto (TRACCAR_BASE)")?;
+    let has: i64 = sqlx::query_scalar("SELECT count(*) FROM app.traccar_connections WHERE tenant_id=$1")
+        .bind(tid).fetch_one(&st.owner_pool).await.map_err(|e| e.to_string())?;
+    if has > 0 { return Ok(false); }
+    let user = env_opt("TRACCAR_USER").unwrap_or_else(|| "admin".into());
+    let pass = env_opt("TRACCAR_PASS").unwrap_or_else(|| "admin".into());
+    let enc = st.secrets.encrypt(&pass);
+    sqlx::query("INSERT INTO app.traccar_connections(tenant_id,base_url,username,password,poll_enabled) VALUES($1,$2,$3,$4,true)
+        ON CONFLICT (tenant_id) DO NOTHING")
+        .bind(tid).bind(norm_base(&base)).bind(&user).bind(&enc).execute(&st.owner_pool).await.map_err(|e| e.to_string())?;
+    audit(st, tid, "system", "auto_connect_traccar", json!({"base":norm_base(&base)})).await;
+    Ok(true)
+}
+/// Connette ThingsBoard automaticamente dai default del prodotto se il modulo è attivo.
+pub async fn auto_connect_thingsboard(st: &AppState, tid: Uuid) -> Result<bool, String> {
+    if !module_active(st, tid, "thingsboard").await { return Ok(false); }
+    let base = env_opt("THINGSBOARD_BASE").ok_or("motore ThingsBoard non configurato nel prodotto (THINGSBOARD_BASE)")?;
+    let has: i64 = sqlx::query_scalar("SELECT count(*) FROM app.thingsboard_connections WHERE tenant_id=$1")
+        .bind(tid).fetch_one(&st.owner_pool).await.map_err(|e| e.to_string())?;
+    if has > 0 { return Ok(false); }
+    let user = env_opt("THINGSBOARD_USER").unwrap_or_else(|| "tenant@thingsboard.org".into());
+    let pass = env_opt("THINGSBOARD_PASS").unwrap_or_else(|| "tenant".into());
+    let enc = st.secrets.encrypt(&pass);
+    sqlx::query("INSERT INTO app.thingsboard_connections(tenant_id,base_url,username,password,poll_enabled) VALUES($1,$2,$3,$4,true)
+        ON CONFLICT (tenant_id) DO NOTHING")
+        .bind(tid).bind(norm_base(&base)).bind(&user).bind(&enc).execute(&st.owner_pool).await.map_err(|e| e.to_string())?;
+    audit(st, tid, "system", "auto_connect_thingsboard", json!({"base":norm_base(&base)})).await;
+    Ok(true)
+}
+/// Stato delle integrazioni di un tenant (semaforo: ok / anomalia / spento). Segnala solo i problemi.
+pub async fn super_integrations_status(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
+    require_super(&st, &h).await?;
+    // GoAlert
+    let ga_on = module_active(&st, tid, "goalert").await;
+    let ga_prov: i64 = sqlx::query_scalar("SELECT count(*) FROM app.goalert_services WHERE tenant_id=$1").bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
+    let ga = if !ga_on { json!({"module":false,"status":"spento"}) }
+        else if st.goalert_base.is_none() { json!({"module":true,"status":"anomalia","detail":"motore GoAlert non raggiungibile"}) }
+        else if ga_prov==0 { json!({"module":true,"status":"anomalia","detail":"provisioning in corso o fallito"}) }
+        else { json!({"module":true,"status":"ok","detail":"provisionato"}) };
+    // Traccar
+    let tr_on = module_active(&st, tid, "traccar").await;
+    let tr_cfg: i64 = sqlx::query_scalar("SELECT count(*) FROM app.traccar_connections WHERE tenant_id=$1").bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
+    let tr_reach: Option<bool> = sqlx::query_scalar("SELECT reachable FROM app.traccar_poll_state WHERE tenant_id=$1").bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
+    let tr = if !tr_on { json!({"module":false,"status":"spento"}) }
+        else if tr_cfg==0 { json!({"module":true,"status":"anomalia","detail":"motore Traccar non configurato nel prodotto (TRACCAR_BASE)"}) }
+        else if tr_reach==Some(false) { json!({"module":true,"status":"anomalia","detail":"server Traccar irraggiungibile"}) }
+        else { json!({"module":true,"status":"ok","detail":"connesso"}) };
+    // ThingsBoard
+    let tb_on = module_active(&st, tid, "thingsboard").await;
+    let tb_cfg: i64 = sqlx::query_scalar("SELECT count(*) FROM app.thingsboard_connections WHERE tenant_id=$1").bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
+    let tb_reach: Option<bool> = sqlx::query_scalar("SELECT reachable FROM app.thingsboard_poll_state WHERE tenant_id=$1").bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
+    let tb = if !tb_on { json!({"module":false,"status":"spento"}) }
+        else if tb_cfg==0 { json!({"module":true,"status":"anomalia","detail":"motore ThingsBoard non configurato nel prodotto (THINGSBOARD_BASE)"}) }
+        else if tb_reach==Some(false) { json!({"module":true,"status":"anomalia","detail":"server ThingsBoard irraggiungibile"}) }
+        else { json!({"module":true,"status":"ok","detail":"connesso"}) };
+    Ok(Json(json!({"goalert":ga,"traccar":tr,"thingsboard":tb})))
+}
+
+/// Riconcilia tutte le integrazioni dei tenant (idempotente). Chiamata dal worker.
+pub async fn reconcile_integrations(st: &AppState) {
+    let tids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM app.tenants").fetch_all(&st.owner_pool).await.unwrap_or_default();
+    for tid in tids {
+        if let Err(e) = auto_provision_goalert(st, tid).await { tracing::debug!("auto goalert {tid}: {e}"); }
+        if let Err(e) = auto_connect_traccar(st, tid).await { tracing::debug!("auto traccar {tid}: {e}"); }
+        if let Err(e) = auto_connect_thingsboard(st, tid).await { tracing::debug!("auto thingsboard {tid}: {e}"); }
+    }
+}
+
 async fn goalert_provision_inner(st: &AppState, tid: Uuid, base: &str, cookie: &str, b: &GoalertProvision) -> Result<Value,(StatusCode,String)> {
     let user = b.user.clone().unwrap_or_default();
     let pass = b.pass.clone().unwrap_or_default();
