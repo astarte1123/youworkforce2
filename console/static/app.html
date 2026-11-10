@@ -1412,13 +1412,13 @@ async function ruleDel(id){ if(!confirm('Eliminare la regola?'))return;
 // ---------------- AI · youworker.ai (impostazioni per-processo) ----------------
 const AI_FEAT_LAB={
   assistant:['Assistente operativo','Risposte in linguaggio naturale su dati del tenant (fab ✦). Senza AI resta il piano deterministico.'],
-  agent:['Agente AI (azioni su DB)','L\\'AI analizza i dati e SCRIVE nelle tabelle (nota diario, riga consuntivo, nota incidente, report). Scritture sensibili con conferma; catena sicurezza vietata.'],
+  agent:['Agente AI (azioni su DB)','L\'AI analizza i dati e SCRIVE nelle tabelle (nota diario, riga consuntivo, nota incidente, report). Scritture sensibili con conferma; catena sicurezza vietata.'],
   incident_summary:['Sintesi incidenti','Riassunto e prossime verifiche su un incidente (in Centrale allarmi).'],
   sensor_suggest:['Suggerimento regole sensori','Proposte di regole dai dati telemetrici (in Connettori).'],
   checkin_anomaly:['Anomalie check-in','Pattern e anomalie sui mancati check-in (in Centrale).'],
   interventi_assist:['Assistenza interventi','Brief operativo su un ordine di lavoro.'],
-  consuntivi_summary:['Sintesi consuntivi','Riepilogo leggibile di ore/spese per l\\'approvatore.'],
-  voice_diary:['Diario vocale (STT)','Trascrizione server-side dell\\'audio del diario via youworker.ai.'],
+  consuntivi_summary:['Sintesi consuntivi','Riepilogo leggibile di ore/spese per l\'approvatore.'],
+  voice_diary:['Diario vocale (STT)','Trascrizione server-side dell\'audio del diario via youworker.ai.'],
 };
 const AI_FEAT_ORDER=['assistant','agent','incident_summary','sensor_suggest','checkin_anomaly','interventi_assist','consuntivi_summary','voice_diary'];
 async function vAI(v){
