@@ -47,13 +47,22 @@ sapi "$BASE/api/superadmin/tenants/$TID/scenarios" | grep -q "$SCN" && ok "scena
 R2=$(sapi -H 'content-type: application/json' -X POST "$BASE/api/superadmin/tenants/$TID/scenarios" -d "{\"code\":\"$SCN\",\"with_demo\":true}")
 [ "$(echo "$R2" | jv 'd["rules_added"]')" = "0" ] && ok "riapplicazione idempotente (0 regole nuove)" || no "duplica regole" "$R2"
 
+# 5b) telemetria demo: inietta eventi normali + allarmi -> incidenti reali
+D=$(sapi -X POST "$BASE/api/superadmin/tenants/$TID/scenarios/$SCN/demo")
+[ "$(echo "$D" | jv 'd["events"]')" -ge 2 ] && ok "demo: eventi iniettati ($(echo "$D"|jv 'd["events"]'))" || no "demo senza eventi" "$D"
+[ "$(echo "$D" | jv 'd["incidents"]')" -ge 1 ] && ok "demo: incidenti alzati dalle regole ($(echo "$D"|jv 'd["incidents"]'))" || no "demo senza incidenti" "$D"
+INCD=$(sql "SELECT count(*) FROM app.incidents WHERE tenant_id=$TIDQ AND correlation LIKE 'scndemo-$SCN-%'")
+[ "$INCD" -ge 1 ] && ok "demo: incidenti presenti su DB (centrale)" || no "incidenti demo non su DB" "$INCD"
+
 # 6) rimozione pulita
 R3=$(sapi -X DELETE "$BASE/api/superadmin/tenants/$TID/scenarios/$SCN")
 echo "$R3" | grep -q '"ok":true' && ok "scenario rimosso" || no "remove fallito" "$R3"
 [ "$(sql "SELECT count(*) FROM app.sensor_rules WHERE tenant_id=$TIDQ AND label LIKE 'scn:$SCN:%'")" = "0" ] && ok "regole bundle rimosse" || no "regole non rimosse" "-"
 [ "$(sql "SELECT count(*) FROM app.tenant_scenarios WHERE tenant_id=$TIDQ AND scenario_code='$SCN'")" = "0" ] && ok "stato scenario rimosso" || no "stato non rimosso" "-"
 
-# cleanup demo residuo
+# cleanup demo residuo (prima incidenti/eventi demo, poi device/sito FK-safe)
+sql "DELETE FROM app.incidents WHERE tenant_id=$TIDQ AND correlation LIKE 'scndemo-$SCN-%'" >/dev/null
+sql "DELETE FROM app.events WHERE tenant_id=$TIDQ AND correlation LIKE 'scndemo-$SCN-%'" >/dev/null
 sql "DELETE FROM app.devices WHERE tenant_id=$TIDQ AND source='scenario' AND external_id LIKE 'scn-$SCN-%' AND id NOT IN (SELECT device_id FROM app.events WHERE device_id IS NOT NULL)" >/dev/null
 sql "DELETE FROM app.sites WHERE tenant_id=$TIDQ AND name='Air Quality Monitoring (demo)'" >/dev/null
 echo "== $PASS passed, $FAIL failed =="

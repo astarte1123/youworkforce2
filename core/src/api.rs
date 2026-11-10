@@ -1216,6 +1216,65 @@ pub async fn super_remove_scenario(State(st): State<AppState>, h: HeaderMap, Pat
     Ok(Json(json!({"ok":true,"rules_removed":rules,"devices_removed":devs,"note":"moduli lasciati abilitati"})))
 }
 
+// Valori demo derivati da una regola: uno che la fa scattare, uno "normale" che non scatta.
+fn demo_alarm_value(op: &str, thr: Option<f64>) -> Value {
+    match op {
+        ">=" | ">" => json!(thr.map(|t| t + (t.abs()*0.1).max(1.0)).unwrap_or(1.0)),
+        "<=" | "<" => json!(thr.map(|t| t - (t.abs()*0.1).max(1.0)).unwrap_or(-1.0)),
+        "==" => thr.map(|t| json!(t)).unwrap_or(json!(0.0)),
+        "is_true" => json!(true),
+        "is_false" => json!(false),
+        _ => json!(thr.unwrap_or(0.0)),
+    }
+}
+fn demo_normal_value(op: &str, thr: Option<f64>) -> Value {
+    match op {
+        ">=" | ">" => json!(thr.map(|t| if t > 0.0 { t*0.5 } else { t - 5.0 }).unwrap_or(0.0)),
+        "<=" | "<" => json!(thr.map(|t| t + (t.abs()*0.5).max(5.0)).unwrap_or(1.0)),
+        "==" => thr.map(|t| json!(t + 1.0)).unwrap_or(json!(1.0)),
+        "is_true" => json!(false),
+        "is_false" => json!(true),
+        _ => json!(0.0),
+    }
+}
+/// Genera telemetria demo per uno scenario: 1 payload tutto-normale (telemetria) + un payload
+/// d'allarme per ciascuna regola critica (max 3), iniettati per i device demo sullo STESSO
+/// percorso del push (eval_sensor_rules -> persist_ingest). Così lo scenario mostra subito
+/// incidenti reali nella centrale.
+pub async fn super_scenario_demo(State(st): State<AppState>, h: HeaderMap, Path((tid,code)): Path<(Uuid,String)>) -> R {
+    require_super(&st, &h).await?;
+    let cat = scenario_catalog();
+    let scn = cat.iter().find(|s| s.code==code).ok_or_else(|| err(StatusCode::BAD_REQUEST, "scenario sconosciuto"))?;
+    // nomi device demo (se lo scenario non ha device demo, usa un nome sintetico)
+    let devs: Vec<String> = if scn.devices.is_empty() { vec![format!("scn-{}-demo", scn.code)] }
+        else { scn.devices.iter().map(|d| format!("scn-{}-{}", scn.code, d.suffix)).collect() };
+    // payload tutto-normale
+    let mut normal = serde_json::Map::new();
+    for ru in &scn.rules { normal.insert(ru.metric.to_string(), demo_normal_value(ru.op, ru.threshold)); }
+    // costruiamo la lista dei payload: normale + un allarme per ogni regola critica (max 3)
+    let mut payloads: Vec<Value> = vec![Value::Object(normal.clone())];
+    for ru in scn.rules.iter().filter(|r| CRITICAL.contains(&r.etype)).take(3) {
+        let mut p = normal.clone();
+        p.insert(ru.metric.to_string(), demo_alarm_value(ru.op, ru.threshold));
+        payloads.push(Value::Object(p));
+    }
+    let mut events = 0i64; let mut incidents = 0i64;
+    for (i, payload) in payloads.iter().enumerate() {
+        let device = devs[i % devs.len()].clone();
+        let etype = eval_sensor_rules(&st, tid, payload).await.unwrap_or_else(|| "telemetria".into());
+        let is_crit = CRITICAL.contains(&etype.as_str());
+        let corr = format!("scndemo-{}-{}", scn.code, Uuid::new_v4());
+        let _ = persist_ingest(&st, tid, Normalized{
+            source:"scenario_demo".into(), source_event:corr.clone(), idem:corr.clone(),
+            etype, device_external_id:Some(device), site_name:None,
+            lat:None, lon:None, accuracy_m:None, correlation:corr, payload:payload.clone(),
+            indoor:false, beacon_uid:None, zone:None }).await;
+        events += 1; if is_crit { incidents += 1; }
+    }
+    audit(&st, tid, "superadmin", "scenario_demo", json!({"code":scn.code,"events":events,"incidents":incidents})).await;
+    Ok(Json(json!({"ok":true,"events":events,"incidents":incidents})))
+}
+
 // ======================= youworker.ai — piattaforma AI di YouCo =======================
 // Integrazione AI DI TUTTA la suite, configurata DA YouWorkforce (mai da sistemi a monte).
 // - Connessione per-tenant (base URL + API key cifrata enc:v1) impostata dal superadmin.

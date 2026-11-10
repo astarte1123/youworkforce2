@@ -126,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/superadmin/scenarios", get(api::super_scenarios_list))
         .route("/api/superadmin/tenants/:id/scenarios", get(api::super_tenant_scenarios).post(api::super_apply_scenario))
         .route("/api/superadmin/tenants/:id/scenarios/:code", axum::routing::delete(api::super_remove_scenario))
+        .route("/api/superadmin/tenants/:id/scenarios/:code/demo", post(api::super_scenario_demo))
         .route("/api/superadmin/tenants/:id/tools", get(api::super_list_tools).post(api::super_set_tool))
         .route("/api/superadmin/tenants/:id/admin", post(api::super_set_tenant_admin))
         .route("/api/superadmin/tenants/:id/logo", get(api::super_get_logo).post(api::super_set_logo).delete(api::super_del_logo))

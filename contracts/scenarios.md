@@ -60,11 +60,19 @@ convergono sullo stesso motore regole.
 - Idempotente: riapplicare non duplica le regole.
 - Solo superadmin applica/rimuove (audit `scenario_apply`/`scenario_remove`).
 
+## Telemetria demo (dimostrazione end-to-end)
+`POST /api/superadmin/tenants/:id/scenarios/:code/demo` inietta, per i device demo dello
+scenario, 1 payload tutto-normale (telemetria) + 1 payload d'allarme per ogni regola critica
+(max 3). I valori sono derivati dalle soglie (`demo_alarm_value`/`demo_normal_value`) e passano
+dallo **stesso percorso del push** (`eval_sensor_rules` → `persist_ingest`): gli allarmi
+diventano **incidenti reali** in Centrale (con GoAlert/routing). UI: pulsante **⚡ Demo** accanto
+allo scenario attivo. Non lascia regole/device nuovi: solo eventi/incidenti (correlation
+`scndemo-<code>-…`).
+
 ## Estensione
 Aggiungere uno scenario = una voce in `scenario_catalog()` (nessuna migrazione). Soglie,
-moduli e device demo sono dati. Possibili estensioni: preset AI per-scenario (report/analisi
-tipici), generazione di telemetria demo per dimostrazioni end-to-end.
+moduli e device demo sono dati. Estensione residua: preset AI per-scenario (report/analisi tipici).
 
 ## Test
-`qa/scenarios-e2e.sh` (15): catalogo 16, applica air_quality+demo (moduli/regole/sito/device/
-stato), elenco tenant, idempotenza, rimozione pulita.
+`qa/scenarios-e2e.sh` (18): catalogo 16, applica air_quality+demo (moduli/regole/sito/device/
+stato), elenco tenant, idempotenza, **telemetria demo → incidenti reali**, rimozione pulita.

@@ -347,7 +347,8 @@ async function scnOpen(tid,btn){
         <div><b>${esc(s.name)}</b> ${on?'<span class="chip s-attivo">attivo</span>':''}
           <div class="small mut">${esc(s.desc)}</div>
           <div class="small mut">moduli: ${s.modules.map(m=>`<span class="chip">${esc(m)}</span>`).join(' ')} · ${s.rule_count} regole · ${s.device_count} device demo</div></div>
-        <div>${on?`<button class="btn ghost small" onclick="scnRemove('${tid}','${s.code}')">Rimuovi</button>`
+        <div class="row" style="gap:6px">${on?`<button class="btn ghost small" onclick="scnDemo('${tid}','${s.code}')" title="Inietta telemetria demo (allarmi reali)">⚡ Demo</button>
+                   <button class="btn ghost small" onclick="scnRemove('${tid}','${s.code}')">Rimuovi</button>`
                   :`<button class="btn small" onclick="scnApply('${tid}','${s.code}')">Attiva</button>`}</div></div>`;
     });
   });
@@ -359,6 +360,13 @@ async function scnApply(tid,code){
   try{ const r=await api('/superadmin/tenants/'+tid+'/scenarios',{method:'POST',body:JSON.stringify({code,with_demo:demo})});
     toast('Scenario attivato ('+r.rules_added+' regole, '+r.devices_added+' device)','ok');
     const box=document.getElementById('cfg_'+tid); if(box)box.dataset.open=''; scnOpen(tid,document.querySelector('.cfgbtn.on'));
+  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
+}
+async function scnDemo(tid,code){
+  const msg=document.getElementById('scn_msg_'+tid); if(msg)msg.textContent='Genero telemetria demo…';
+  try{ const r=await api('/superadmin/tenants/'+tid+'/scenarios/'+code+'/demo',{method:'POST'});
+    toast('Telemetria demo: '+r.events+' eventi, '+r.incidents+' incidenti','ok');
+    if(msg)msg.innerHTML=`<span class="s-attivo">✓ ${r.events} eventi · ${r.incidents} incidenti</span> (vedi Centrale allarmi del tenant)`;
   }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
 }
 async function scnRemove(tid,code){
