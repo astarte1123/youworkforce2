@@ -333,7 +333,7 @@ async function incAssign(id){ const u=$('#asgSel').value||null;
 async function incNote(id){ const b=$('#noteInp').value.trim(); if(!b)return;
   try{await api('/incidents/'+id+'/note',{method:'POST',body:JSON.stringify({body:b})}); toast('Nota aggiunta','ok'); openIncident(id);}catch(e){toast(e.message,'bad');} }
 async function incAck(id){ try{await api('/incidents/'+id+'/ack',{method:'POST'}); toast('Preso in carico','ok'); closeDrawer(); route(); }catch(e){toast(e.message,'bad');} }
-async function incClose(id){ const o=prompt('Esito chiusura?','risolto sul posto'); if(o==null)return;
+async function incClose(id){ const o=await askPrompt('Esito chiusura?','risolto sul posto'); if(o==null)return;
   try{await api('/incidents/'+id+'/close',{method:'POST',body:JSON.stringify({outcome:o})}); toast('Incidente chiuso','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 
 // ---------------- Report (module-aware) ----------------
@@ -608,7 +608,7 @@ function setupGeofenceTools(map, opts){
     map.on('pm:create', async (e)=>{
       const geom=geomFromLayer(e.layer, e.shape, opts); map.removeLayer(e.layer);
       if(!geom){ toast('Forma non valida','bad'); return; }
-      const name=prompt('Nome della geofence?'); if(!name){ return; }
+      const name=await askPrompt('Nome della geofence?'); if(!name){ return; }
       const kind = geom.radius!=null ? 'circle':'polygon';
       if(opts.onSave){ opts.onSave(name, kind, geom); return; }
       try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind,geom,color:window._gfColor||'#16a34a'})}); toast('Geofence creata','ok'); route(); }
@@ -634,7 +634,7 @@ function toggleFreehand(btn){
     line=L.polyline(pts,{color:'#2563eb',weight:2}).addTo(MAP); };
   const onMove=(e)=>{ if(!drawing)return; if(last&&!far(last,e.latlng))return; pts.push(e.latlng); last=e.latlng; line.setLatLngs(pts); };
   const onUp=async()=>{ if(!drawing)return; drawing=false; if(line)MAP.removeLayer(line);
-    if(pts.length>=3){ const geom={points:pts.map(p=>[p.lat,p.lng])}; const name=prompt('Nome della geofence (mano libera)?');
+    if(pts.length>=3){ const geom={points:pts.map(p=>[p.lat,p.lng])}; const name=await askPrompt('Nome della geofence (mano libera)?');
       if(name){ try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind:'polygon',geom,color:window._gfColor||'#16a34a'})}); toast('Geofence creata','ok'); route(); }catch(e){toast(e.message,'bad');} } }
     endFreehand();
   };
@@ -869,7 +869,7 @@ async function fpFormUpload(btn){
   finally { btn.disabled=false; }
 }
 async function fpRename(id){ const f=(await api('/floorplans').catch(()=>[])).find(x=>x.id===id);
-  const name=prompt('Nuovo nome della piantina:', f?f.name:''); if(name===null)return;
+  const name=await askPrompt('Nuovo nome della piantina:', f?f.name:''); if(name===null)return;
   try{ await api('/floorplans/'+id,{method:'POST',body:JSON.stringify({name})}); toast('Rinominata','ok'); configIndoor(); await refreshPiantine(id); }catch(e){ toast(e.message,'bad'); } }
 async function fpDel(id){ if(!await askConfirm('Eliminare questa piantina? I beacon restano registrati ma perdono la posizione.'))return;
   try{ await api('/floorplans/'+id,{method:'DELETE'}); toast('Piantina eliminata','ok'); configIndoor(); await refreshPiantine(); }catch(e){ toast(e.message,'bad'); } }
@@ -967,8 +967,8 @@ async function gfColor(id,color){ try{ await api('/geofences/'+id,{method:'PUT',
 async function gfDel(id){ if(!await askConfirm('Eliminare la geofence? (rimuove area e associazioni)'))return;
   try{ await api('/geofences/'+id,{method:'DELETE'}); toast('Eliminata','ok'); gfRefresh(id); }catch(e){ toast(e.message,'bad'); } }
 async function addCircle(lat,lon){
-  const name=prompt('Nome geofence?'); if(!name)return;
-  const r=parseInt(prompt('Raggio in metri?','300')||'0',10); if(!r||r<10)return toast('raggio non valido','bad');
+  const name=await askPrompt('Nome geofence?'); if(!name)return;
+  const r=parseInt(await askPrompt('Raggio in metri?','300')||'0',10); if(!r||r<10)return toast('raggio non valido','bad');
   try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind:'circle',geom:{lat,lon,radius:r},color:window._gfColor||'#16a34a'})});
     toast('Geofence creata','ok'); route(); }catch(e){ toast(e.message,'bad'); }
 }
@@ -1103,9 +1103,9 @@ async function editOrder(o){
 async function ordAssign(id,v){ const u=$('#asg').value.trim(); if(!u)return toast('inserisci user id','warn');
   try{await api('/orders/'+id+'/assign',{method:'POST',body:JSON.stringify({version:v,user_id:u})}); toast('Assegnato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 async function ordAct(id,act,v){ try{await api('/orders/'+id+'/'+act,{method:'POST',body:JSON.stringify({version:v})}); toast('Aggiornato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
-async function ordComplete(id,v){ const o=prompt('Esito?','completato'); if(o==null)return;
+async function ordComplete(id,v){ const o=await askPrompt('Esito?','completato'); if(o==null)return;
   try{await api('/orders/'+id+'/complete',{method:'POST',body:JSON.stringify({version:v,outcome:o})}); toast('Completato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
-async function ordCancel(id,v){ const r=prompt('Motivo annullamento?'); if(r==null)return;
+async function ordCancel(id,v){ const r=await askPrompt('Motivo annullamento?'); if(r==null)return;
   try{await api('/orders/'+id+'/cancel',{method:'POST',body:JSON.stringify({version:v,reason:r})}); toast('Annullato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 
 // ---------------- Consuntivi ----------------
@@ -1172,7 +1172,7 @@ async function addExp(id){ try{
   toast('Spesa aggiunta','ok'); openTimesheet(id);}catch(e){toast(e.message,'bad');} }
 async function tsSubmit(id){ try{await api('/timesheets/'+id+'/submit',{method:'POST'}); toast('Inviato in revisione','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 async function tsApprove(id){ try{await api('/timesheets/'+id+'/approve',{method:'POST'}); toast('Approvato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
-async function tsReqChanges(id){ const n=prompt('Cosa correggere?'); if(n==null)return;
+async function tsReqChanges(id){ const n=await askPrompt('Cosa correggere?'); if(n==null)return;
   try{await api('/timesheets/'+id+'/request-changes',{method:'POST',body:JSON.stringify({note:n})}); toast('Rimandato per correzioni','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 
 // ---------------- Moduli ----------------
@@ -1853,7 +1853,7 @@ async function grpOncallSave(gid){
   try{ await api('/groups/'+gid+'/oncall',{method:'POST',body:JSON.stringify(body)}); toast('Turni salvati — premi Sincronizza con GoAlert','ok'); }
   catch(e){ toast(e.message,'bad'); }
 }
-async function grpNew(){ const n=prompt('Nome gruppo?'); if(!n)return;
+async function grpNew(){ const n=await askPrompt('Nome gruppo?'); if(!n)return;
   try{await api('/groups',{method:'POST',body:JSON.stringify({name:n})}); toast('Gruppo creato','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function grpDel(id){ if(!await askConfirm('Eliminare il gruppo?'))return;
   try{await api('/groups/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
@@ -1892,12 +1892,12 @@ async function vAnagrafiche(v){
       <td style="text-align:right"><button class="btn-ico btn ghost" onclick="assetDel('${a.id}')">${ICON.x}</button></td></tr>`).join('')
       ||'<tr><td colspan="4" class="empty">nessun asset</td></tr>'}</tbody></table></div>`;
 }
-async function assetNew(){ const n=prompt('Nome asset/mezzo?'); if(!n)return;
-  const k=prompt('Tipo (veicolo/attrezzatura/varco/altro)?','veicolo')||'attrezzatura';
-  const id=prompt('Matricola/targa (opz.)?')||null;
+async function assetNew(){ const n=await askPrompt('Nome asset/mezzo?'); if(!n)return;
+  const k=await askPrompt('Tipo (veicolo/attrezzatura/varco/altro)?','veicolo')||'attrezzatura';
+  const id=await askPrompt('Matricola/targa (opz.)?')||null;
   try{await api('/assets',{method:'POST',body:JSON.stringify({name:n,kind:k,identifier:id})}); toast('Asset creato','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function assetDel(id){ if(!await askConfirm('Eliminare asset?'))return; try{await api('/assets/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
-async function teamNew(){ const n=prompt('Nome squadra?'); if(!n)return; try{await api('/teams',{method:'POST',body:JSON.stringify({name:n})}); toast('Squadra creata','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function teamNew(){ const n=await askPrompt('Nome squadra?'); if(!n)return; try{await api('/teams',{method:'POST',body:JSON.stringify({name:n})}); toast('Squadra creata','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function teamDel(id){ if(!await askConfirm('Eliminare squadra?'))return; try{await api('/teams/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function teamAdd(tid){ const uid=$('#tm_'+tid).value; if(!uid)return; try{await api('/teams/'+tid+'/members',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Aggiunto','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function teamRm(tid,uid){ try{await api('/teams/'+tid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
@@ -1941,9 +1941,9 @@ async function userSave(id,scoped){
 }
 async function userDel(id){ if(!await askConfirm('Eliminare utente?'))return;
   try{await api('/users/'+id,{method:'DELETE'}); toast('Eliminato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
-async function siteNew(){ const n=prompt('Nome sede?'); if(!n)return;
+async function siteNew(){ const n=await askPrompt('Nome sede?'); if(!n)return;
   try{await api('/sites',{method:'POST',body:JSON.stringify({name:n})}); toast('Sede creata','ok'); route();}catch(e){toast(e.message,'bad');} }
-async function siteRen(id,cur){ const n=prompt('Nuovo nome?',cur); if(!n||n===cur)return;
+async function siteRen(id,cur){ const n=await askPrompt('Nuovo nome?',cur); if(!n||n===cur)return;
   try{await api('/sites/'+id,{method:'POST',body:JSON.stringify({name:n})}); toast('Rinominata','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function siteDel(id){ if(!await askConfirm('Eliminare sede?'))return;
   try{await api('/sites/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }

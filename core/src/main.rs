@@ -59,7 +59,9 @@ async fn main() -> anyhow::Result<()> {
     let (bus, _) = broadcast::channel(256);
     let st = AppState {
         owner_pool, rt_pool,
-        clock: Arc::new(clock::Clock::new(env("TEST_CLOCK","1")=="1")),
+        // SICUREZZA: test clock OFF di default. /api/_test/advance (CSRF-exempt, non autenticato)
+        // è inerte in produzione; in dev/test si abilita con TEST_CLOCK=1.
+        clock: Arc::new(clock::Clock::new(env("TEST_CLOCK","0")=="1")),
         bus,
         http: reqwest::Client::new(),
         goalert_base: std::env::var("GOALERT_BASE").ok().filter(|s| !s.is_empty()),
@@ -275,15 +277,31 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Idempotent seed: default superadmin + demo tenant "acme" (contract: test recipients only).
+/// Idempotent seed. SICUREZZA: nessun superadmin/tenant demo hardcoded in produzione.
+/// - Superadmin iniziale: da YW_SUPERADMIN_EMAIL/YW_SUPERADMIN_PASS; in mancanza, solo se
+///   YW_SEED_DEMO=1 si usa l'admin di sviluppo; altrimenti si avvisa e non si crea nulla.
+/// - Tenant demo (acme/globex con password "demo"): solo con YW_SEED_DEMO=1.
 async fn bootstrap(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    let seed_demo = std::env::var("YW_SEED_DEMO").ok().as_deref() == Some("1");
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM app.superadmins").fetch_one(pool).await?;
     if n == 0 {
-        sqlx::query("INSERT INTO app.superadmins(email,pass_hash) VALUES($1,$2)")
-            .bind("admin@loneworker.eu").bind(auth::hash_password("admin"))
-            .execute(pool).await?;
-        tracing::info!("seeded superadmin admin@loneworker.eu / admin");
+        let email = std::env::var("YW_SUPERADMIN_EMAIL").ok().filter(|s| !s.is_empty());
+        let pass = std::env::var("YW_SUPERADMIN_PASS").ok().filter(|s| !s.is_empty());
+        match (email, pass) {
+            (Some(e), Some(p)) => {
+                sqlx::query("INSERT INTO app.superadmins(email,pass_hash) VALUES($1,$2)")
+                    .bind(&e).bind(auth::hash_password(&p)).execute(pool).await?;
+                tracing::info!("seeded superadmin {e} (da env)");
+            }
+            _ if seed_demo => {
+                sqlx::query("INSERT INTO app.superadmins(email,pass_hash) VALUES($1,$2)")
+                    .bind("admin@loneworker.eu").bind(auth::hash_password("admin")).execute(pool).await?;
+                tracing::info!("seeded superadmin DEV admin@loneworker.eu / admin (YW_SEED_DEMO=1)");
+            }
+            _ => tracing::warn!("nessun superadmin: imposta YW_SUPERADMIN_EMAIL/YW_SUPERADMIN_PASS (o YW_SEED_DEMO=1 in dev)"),
+        }
     }
+    if !seed_demo { return Ok(()); }
     let acme: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.tenants WHERE slug='acme'")
         .fetch_optional(pool).await?;
     if acme.is_none() {

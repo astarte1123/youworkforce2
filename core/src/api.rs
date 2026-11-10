@@ -681,9 +681,14 @@ pub async fn super_integrations_status(State(st): State<AppState>, h: HeaderMap,
     Ok(Json(json!({"goalert":ga,"traccar":tr,"thingsboard":tb})))
 }
 
-/// Elimina la configurazione di un motore quando il modulo NON è attivo (non serve -> via).
+/// Elimina la configurazione di un motore SOLO quando il modulo è esplicitamente spento
+/// (non_abilitato o assente). Stati intermedi (da_configurare/degradato/in_disattivazione)
+/// MANTENGONO le credenziali: non si cancella un segreto su uno stato transitorio.
 async fn deauto_integration(st: &AppState, tid: Uuid, module: &str) {
-    if module_active(st, tid, module).await { return; }
+    let state: Option<String> = sqlx::query_scalar("SELECT state FROM app.tenant_modules WHERE tenant_id=$1 AND module_code=$2")
+        .bind(tid).bind(module).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let off = matches!(state.as_deref(), None | Some("non_abilitato"));
+    if !off { return; }
     let (table, extra): (&str, Option<&str>) = match module {
         "goalert" => ("app.goalert_services", None),
         "traccar" => ("app.traccar_connections", Some("app.traccar_poll_state")),
@@ -2316,6 +2321,16 @@ async fn allowed_sites(st: &AppState, s: &Session) -> Option<std::collections::H
 fn site_allowed(set: &Option<std::collections::HashSet<Uuid>>, site_id: Option<Uuid>) -> bool {
     match set { None => true, Some(s) => site_id.map(|x| s.contains(&x)).unwrap_or(false) }
 }
+/// ACL per-sito sulle AZIONI di incidente: un operatore ristretto a certe sedi non può
+/// ack/chiudere/assegnare/annotare/leggere la timeline di incidenti di altre sedi (coerente
+/// col filtro di lettura su list_incidents). Nessun effetto per ruoli non ristretti.
+async fn guard_incident_site(st: &AppState, s: &Session, iid: Uuid) -> Result<(), (StatusCode,String)> {
+    let allowed = allowed_sites(st, s).await;
+    if allowed.is_none() { return Ok(()); }
+    let site_id: Option<Uuid> = sqlx::query_scalar("SELECT site_id FROM app.incidents WHERE tenant_id=$1 AND id=$2")
+        .bind(s.tenant_id.unwrap()).bind(iid).fetch_optional(&st.owner_pool).await.map_err(ise)?.flatten();
+    if site_allowed(&allowed, site_id) { Ok(()) } else { Err(err(StatusCode::FORBIDDEN, "incidente fuori dalle tue sedi")) }
+}
 
 #[derive(Deserialize)]
 pub struct UserSitesReq { pub site_ids: Vec<Uuid> }
@@ -2846,6 +2861,7 @@ pub struct AssignReq { pub user_id: Option<Uuid> }
 pub async fn assign_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>, Json(b): Json<AssignReq>) -> R {
     let s = require_tenant(&st, &h).await?;
     if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    guard_incident_site(&st, &s, iid).await?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("UPDATE app.incidents SET assigned_user=$2 WHERE id=$1").bind(iid).bind(b.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
@@ -2863,6 +2879,7 @@ pub struct NoteReq { pub body: String }
 pub async fn add_incident_note(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>, Json(b): Json<NoteReq>) -> R {
     let s = require_tenant(&st, &h).await?;
     if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    guard_incident_site(&st, &s, iid).await?;
     let tid = s.tenant_id.unwrap();
     let body = b.body.trim();
     if body.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nota vuota")); }
@@ -4441,6 +4458,7 @@ pub async fn list_incidents(State(st): State<AppState>, h: HeaderMap) -> R {
 
 pub async fn incident_timeline(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
+    guard_incident_site(&st, &s, iid).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = sqlx::query("SELECT kind,detail,at FROM app.incident_timeline WHERE incident_id=$1 ORDER BY at")
         .bind(iid).fetch_all(&mut *tx).await.map_err(ise)?;
@@ -4456,6 +4474,7 @@ pub async fn ack_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): P
     if !matches!(s.role.as_str(), "operatore"|"tenant_admin") {
         return Err(err(StatusCode::FORBIDDEN, "role cannot ack"));
     }
+    guard_incident_site(&st, &s, iid).await?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("UPDATE app.incidents SET state='preso_in_carico',version=version+1 WHERE id=$1 AND state='aperto'")
@@ -4475,6 +4494,7 @@ pub async fn close_incident(State(st): State<AppState>, h: HeaderMap, Path(iid):
     if !matches!(s.role.as_str(), "operatore"|"tenant_admin") {
         return Err(err(StatusCode::FORBIDDEN, "role cannot close"));
     }
+    guard_incident_site(&st, &s, iid).await?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$2,closed_at=now(),version=version+1 WHERE id=$1 AND state<>'chiuso' RETURNING correlation,etype")
@@ -5010,16 +5030,20 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
 #[derive(Deserialize)]
 pub struct OrderAction { pub version: i32, pub user_id: Option<Uuid>, pub outcome: Option<String>, pub reason: Option<String> }
 
+/// Valore (controllato dall'utente) per il campo SET della transizione: sempre BINDATO, mai interpolato.
+enum SetVal { Txt(String), Id(Uuid) }
 async fn order_transition(st: &AppState, s: &Session, iid: Uuid, b: &OrderAction,
-    to: &str, set_sql: &str, from_states: &[&str]) -> R {
+    to: &str, set_col: Option<&str>, set_val: Option<SetVal>, from_states: &[&str]) -> R {
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    // version check + state check inside the UPDATE (optimistic concurrency)
+    // version/state check dentro l'UPDATE (concorrenza ottimistica). `to`/`from_states` sono
+    // costanti interne; il valore utente (outcome/reason/assigned_user) è bindato come $3.
     let states = from_states.iter().map(|x| format!("'{x}'")).collect::<Vec<_>>().join(",");
-    let extra = if set_sql.is_empty() { String::new() } else { format!("{set_sql}, ") };
+    let extra = set_col.map(|c| format!("{c}=$3, ")).unwrap_or_default();
     let sql = format!("UPDATE app.work_orders SET {extra}state='{to}', version=version+1, updated_at=now()
          WHERE id=$1 AND version=$2 AND state IN ({states})");
-    let q = sqlx::query(&sql).bind(iid).bind(b.version);
+    let mut q = sqlx::query(&sql).bind(iid).bind(b.version);
+    if let Some(v) = set_val { q = match v { SetVal::Txt(t) => q.bind(t), SetVal::Id(u) => q.bind(u) }; }
     let n = q.execute(&mut *tx).await.map_err(ise)?.rows_affected();
     if n == 0 { let _=tx.rollback().await; return Err(err(StatusCode::CONFLICT, "versione superata o stato non valido")); }
     tx.commit().await.map_err(ise)?;
@@ -5031,7 +5055,7 @@ pub async fn order_assign(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
     let uid = b.user_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "user_id richiesto"))?;
     order_transition(&st, &s, id, &b, "assegnato",
-        &format!("assigned_user='{uid}'"), &["bozza","assegnato"]).await
+        Some("assigned_user"), Some(SetVal::Id(uid)), &["bozza","assegnato"]).await
 }
 pub async fn order_start(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
     let s = require_tenant(&st, &h).await?;
@@ -5041,18 +5065,18 @@ pub async fn order_start(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     let owner: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.work_orders WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.flatten();
     let _ = tx.commit().await;
     if owner != Some(s.user_id) && !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "non assegnato a te")); }
-    order_transition(&st, &s, id, &b, "in_corso", "", &["assegnato"]).await
+    order_transition(&st, &s, id, &b, "in_corso", None, None, &["assegnato"]).await
 }
 pub async fn order_complete(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
     let s = require_tenant(&st, &h).await?;
-    let outcome = b.outcome.clone().unwrap_or_default().replace('\'', "''");
-    order_transition(&st, &s, id, &b, "completato", &format!("outcome='{outcome}'"), &["in_corso"]).await
+    let outcome = b.outcome.clone().unwrap_or_default();
+    order_transition(&st, &s, id, &b, "completato", Some("outcome"), Some(SetVal::Txt(outcome)), &["in_corso"]).await
 }
 pub async fn order_cancel(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
     let s = require_tenant(&st, &h).await?;
     if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
-    let reason = b.reason.clone().unwrap_or_default().replace('\'', "''");
-    order_transition(&st, &s, id, &b, "annullato", &format!("cancel_reason='{reason}'"), &["bozza","assegnato","in_corso"]).await
+    let reason = b.reason.clone().unwrap_or_default();
+    order_transition(&st, &s, id, &b, "annullato", Some("cancel_reason"), Some(SetVal::Txt(reason)), &["bozza","assegnato","in_corso"]).await
 }
 
 // ---- consuntivi ----
