@@ -93,7 +93,8 @@ function tenantCard(t,mods){
       <button class="btn ghost" onclick="gaProvision('${t.id}',this)">Provisiona GoAlert</button>
       <button class="btn ghost cfgbtn" onclick="gaConfig('${t.id}',this)">Trasporto notifiche</button>
       <button class="btn ghost cfgbtn" onclick="trConn('${t.id}',this)">Connessione Traccar</button>
-      <button class="btn ghost cfgbtn" onclick="trConfig('${t.id}',this)">Config Traccar</button></div>
+      <button class="btn ghost cfgbtn" onclick="trConfig('${t.id}',this)">Config Traccar</button>
+      <button class="btn ghost cfgbtn" onclick="tbConn('${t.id}',this)">Connessione ThingsBoard</button></div>
     <div id="admin_${t.id}" style="margin-top:8px"></div>
     <div id="tools_${t.id}" style="margin-top:8px"></div>
     <div id="cfg_${t.id}" style="margin-top:8px"></div>
@@ -225,6 +226,39 @@ async function trConnSave(tid){
     toast('Connessione salvata','ok');
     if(msg){ msg.innerHTML='<span class="s-attivo">salvata</span> — ora l\'admin del tenant può usare “Verifica collegamento” nella pagina Connettori.'; }
   }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
+}
+async function tbConn(tid,btn){
+  const box=document.getElementById('cfg_'+tid);
+  if(box.dataset.open==='tb'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
+  box.dataset.open='tb'; cfgExclusive(btn); btnOn(btn,true); box.innerHTML='<div class="small mut">carico…</div>';
+  let c; try{ c=await api('/superadmin/tenants/'+tid+'/thingsboard'); }catch(e){ c={configured:false}; }
+  box.innerHTML=`<div class="card" style="padding:12px">
+    <div class="small mut" style="margin-bottom:8px">Connessione al server ThingsBoard del tenant (base URL + credenziali). Abilita la verifica del collegamento e lo specchio dei device. Il push via Rule Engine resta il percorso di ingestione.</div>
+    <label class="small mut" style="display:block;margin:4px 0">Base URL<input id="tb_url_${tid}" placeholder="http://host:8080" value="${esc(c.base_url||'')}"></label>
+    <label class="small mut" style="display:block;margin:4px 0">Utente<input id="tb_user_${tid}" placeholder="tenant@tb.test" value="${esc(c.username||'')}"></label>
+    <label class="small mut" style="display:block;margin:4px 0">Password${c.has_password?' <span class="small">(impostata — lascia vuoto per non cambiarla)</span>':''}<input id="tb_pw_${tid}" type="password" placeholder="${c.has_password?'•••••• invariata':'password'}"></label>
+    <div class="row" style="gap:8px;margin-top:6px"><button class="btn" onclick="tbConnSave('${tid}')">Salva</button>
+      <button class="btn ghost" onclick="tbVerify('${tid}')">Verifica collegamento</button>
+      ${c.configured?'<span class="chip s-attivo">configurata</span>':'<span class="chip">assente</span>'}</div>
+    <div id="tb_msg_${tid}" class="small mut" style="margin-top:6px"></div></div>`;
+}
+async function tbConnSave(tid){
+  const url=document.getElementById('tb_url_'+tid).value.trim();
+  const user=document.getElementById('tb_user_'+tid).value.trim();
+  const pw=document.getElementById('tb_pw_'+tid).value;
+  const msg=document.getElementById('tb_msg_'+tid);
+  if(!url||!user){ toast('Base URL e utente obbligatori','bad'); return; }
+  try{ const body={base_url:url,username:user}; if(pw) body.password=pw;
+    await api('/superadmin/tenants/'+tid+'/thingsboard',{method:'POST',body:JSON.stringify(body)});
+    toast('Connessione salvata','ok'); if(msg)msg.innerHTML='<span class="s-attivo">salvata</span>';
+  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
+}
+async function tbVerify(tid){
+  const msg=document.getElementById('tb_msg_'+tid); if(msg)msg.textContent='Verifico…';
+  try{ const r=await api('/superadmin/tenants/'+tid+'/thingsboard/verify',{method:'POST'});
+    if(msg) msg.innerHTML=r.reachable?`<span class="s-attivo">✓ ${esc(r.verdict)}</span> · device: <b>${r.device_count}</b>`:`<span style="color:var(--bad)">✗ ${esc(r.verdict)}</span>`;
+    toast(r.reachable?'ThingsBoard collegato':'ThingsBoard irraggiungibile', r.reachable?'ok':'bad');
+  }catch(e){ if(msg)msg.textContent=e.message; toast(e.message,'bad'); }
 }
 async function trConfig(tid,btn){
   const box=document.getElementById('cfg_'+tid);

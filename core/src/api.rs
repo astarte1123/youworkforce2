@@ -828,6 +828,70 @@ pub async fn traccar_login(http: &reqwest::Client, base: &str, user: &str, pass:
         if let Ok(s)=v.to_str() { if let Some(p)=s.split(';').next() { c.push(p.to_string()); } } }
     if c.is_empty() { None } else { Some(c.join("; ")) }
 }
+// ====== Connessione ThingsBoard, gestita DA YouWorkforce (superadmin) ======
+pub async fn tb_conn(st: &AppState, tid: Uuid) -> Option<(String,String,String)> {
+    let r = sqlx::query("SELECT base_url,username,password FROM app.thingsboard_connections WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten()?;
+    let pass: String = r.get("password");
+    Some((r.get("base_url"), r.get("username"), st.secrets.decrypt(&pass)))
+}
+/// Login ThingsBoard (JWT). POST /api/auth/login {username,password} -> {token}.
+pub async fn tb_login(http: &reqwest::Client, base: &str, user: &str, pass: &str) -> Option<String> {
+    let resp = http.post(format!("{base}/api/auth/login"))
+        .json(&json!({"username":user,"password":pass})).send().await.ok()?;
+    if !resp.status().is_success() { return None; }
+    resp.json::<Value>().await.ok()?.get("token").and_then(|v| v.as_str().map(String::from))
+}
+#[derive(Deserialize)]
+pub struct SetTbConn { pub base_url: String, pub username: String, pub password: Option<String> }
+pub async fn super_set_thingsboard(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetTbConn>) -> R {
+    require_super(&st, &h).await?;
+    let base = b.base_url.trim_end_matches('/').to_string();
+    let pw = b.password.unwrap_or_default();
+    if pw.is_empty() {
+        let n = sqlx::query("UPDATE app.thingsboard_connections SET base_url=$2,username=$3,updated_at=now() WHERE tenant_id=$1")
+            .bind(tid).bind(&base).bind(&b.username).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+        if n == 0 { return Err(err(StatusCode::BAD_REQUEST, "password richiesta per la prima configurazione")); }
+    } else {
+        let enc = st.secrets.encrypt(&pw);
+        sqlx::query("INSERT INTO app.thingsboard_connections(tenant_id,base_url,username,password) VALUES($1,$2,$3,$4)
+            ON CONFLICT (tenant_id) DO UPDATE SET base_url=EXCLUDED.base_url,username=EXCLUDED.username,password=EXCLUDED.password,updated_at=now()")
+            .bind(tid).bind(&base).bind(&b.username).bind(&enc).execute(&st.owner_pool).await.map_err(ise)?;
+    }
+    audit(&st, tid, "superadmin", "set_thingsboard_conn", json!({"base_url":base})).await;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn super_get_thingsboard(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
+    require_super(&st, &h).await?;
+    let r = sqlx::query("SELECT base_url,username,password FROM app.thingsboard_connections WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    match r {
+        Some(r) => Ok(Json(json!({"configured":true,"base_url":r.get::<String,_>("base_url"),
+            "username":r.get::<String,_>("username"),"has_password":!r.get::<String,_>("password").is_empty()}))),
+        None => Ok(Json(json!({"configured":false}))),
+    }
+}
+/// Verifica collegamento ThingsBoard: login + conteggio device (specchio).
+pub async fn thingsboard_verify(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
+    require_super(&st, &h).await?;
+    let (base,user,pass) = tb_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione ThingsBoard non configurata"))?;
+    let token = match tb_login(&st.http, &base, &user, &pass).await {
+        Some(t) => t,
+        None => return Ok(Json(json!({"reachable":false,"verdict":"login fallito o server irraggiungibile"}))),
+    };
+    let dev = st.http.get(format!("{base}/api/tenant/devices?pageSize=1&page=0"))
+        .header("X-Authorization", format!("Bearer {token}")).send().await;
+    match dev {
+        Ok(r) if r.status().is_success() => {
+            let count = r.json::<Value>().await.ok().and_then(|v| v.get("totalElements").and_then(|x| x.as_i64())).unwrap_or(0);
+            audit(&st, tid, "superadmin", "thingsboard_verify", json!({"devices":count})).await;
+            Ok(Json(json!({"reachable":true,"verdict":"collegato","device_count":count})))
+        }
+        Ok(r) => Ok(Json(json!({"reachable":false,"verdict":format!("ThingsBoard HTTP {}", r.status())}))),
+        Err(e) => Ok(Json(json!({"reachable":false,"verdict":format!("irraggiungibile: {e}")}))),
+    }
+}
+
 pub async fn traccar_get_config(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
     require_super(&st, &h).await?;
     let (base,user,pass) = traccar_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata"))?;
