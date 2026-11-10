@@ -885,7 +885,11 @@ function drawGeofence(g,admin){
   else if(g.kind==='polygon'&&g.geom.points){ layer=L.polygon(g.geom.points,{color:'#16a34a',fillOpacity:0.08}); }
   if(!layer)return;
   layer._gf=g; GF_LAYERS[g.id]=layer;
-  layer.bindPopup(`<b>${esc(g.name)}</b><br><span style="color:#666">${esc(g.kind)}</span>`);
+  const acts=admin?`<br><div style="margin-top:6px;display:flex;gap:10px;flex-wrap:wrap">
+    <a href="#" onclick="gfRename('${g.id}');return false">✎ Rinomina</a>
+    <a href="#" onclick="gfAssoc('${g.id}');return false">🔗 Associa</a>
+    <a href="#" style="color:var(--bad)" onclick="gfDel('${g.id}');return false">🗑 Elimina</a></div>`:'';
+  layer.bindPopup(`<b>${esc(g.name)}</b><br><span style="color:#666">${esc(g.kind)}</span>${acts}`);
   layer.addTo(GFLAYER);
 }
 // Geometria corrente dal layer Leaflet (dopo edit Geoman).
@@ -893,7 +897,8 @@ function geomFromLayer(layer){
   if(layer.getRadius){ const ll=layer.getLatLng(); return {kind:'circle',geom:{lat:ll.lat,lon:ll.lng,radius:Math.round(layer.getRadius())}}; }
   const ll=layer.getLatLngs()[0]||[]; return {kind:'polygon',geom:{points:ll.map(p=>[p.lat,p.lng])}};
 }
-async function gfRename(id,cur){ const name=await askPrompt('Nuovo nome della geofence:',cur); if(name==null)return; if(!name.trim())return toast('Nome vuoto','warn');
+async function gfRename(id,cur){ if(cur==null){ const g=(window._GF_CACHE||[]).find(x=>x.id===id); cur=g?g.name:''; }
+  const name=await askPrompt('Nuovo nome della geofence:',cur); if(name==null)return; if(!name.trim())return toast('Nome vuoto','warn');
   try{ await api('/geofences/'+id,{method:'PUT',body:JSON.stringify({name:name.trim()})}); toast('Rinominata','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
 function gfEditShape(id){ const layer=GF_LAYERS[id]; if(!layer||!layer.pm){ toast('Editor non disponibile','bad'); return; }
   layer.pm.enable({draggable:true}); window._gfEditing=id;
@@ -906,6 +911,7 @@ function gfCancelShape(id){ const layer=GF_LAYERS[id]; if(layer){ try{layer.pm.d
 const GF_ETYPES=[['sos','SOS'],['man_down','Uomo a terra'],['immobilita','Immobilità'],['mancato_checkin','Mancato check-in'],['sensore_critico','Sensore critico'],['batteria_critica','Batteria critica'],['batteria_bassa','Batteria bassa'],['perdita_alimentazione','Perdita alimentazione'],['device_offline','Device offline'],['manomissione_badge','Manomissione badge'],['jamming','Jamming'],['presenza_ingresso','Ingresso area'],['presenza_uscita','Uscita area'],['telemetria','Telemetria']];
 async function gfAssoc(id,name){
   const g=(window._GF_CACHE||[]).find(x=>x.id===id)||{device_ids:[],etypes:[]};
+  if(name==null) name=g.name||'area';
   const D=await api('/devices').catch(()=>[]);
   const selD=new Set(g.device_ids||[]), selE=new Set(g.etypes||[]);
   const devHtml=D.length?D.map(d=>`<label class="row small" style="gap:8px;padding:3px 0"><input type="checkbox" class="gfd" value="${d.id}" ${selD.has(d.id)?'checked':''}> ${esc(d.label||d.external_id)} <span class="mut">(${esc(d.source||'')})</span></label>`).join(''):'<div class="small mut">Nessun dispositivo registrato.</div>';
