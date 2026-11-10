@@ -97,8 +97,8 @@ RID=$(echo "$G" | jv 'd["id"]')
 aapi "$BASE/api/ai/reports/$RID" | grep -q '"body"' && ok "report consultabile (get by id)" || no "report non leggibile" "-"
 aapi "$BASE/api/ai/reports" | grep -q "$RID" && ok "report in elenco" || no "report non in elenco" "-"
 
-# cleanup: feature off, regola/diario/report di test, connessione se non c'era
-aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"agent","enabled":false}' >/dev/null
+# cleanup: cancella la riga feature creata (torna al default), regola/diario/report, connessione se non c'era
+sql "DELETE FROM app.ai_features WHERE tenant_id=$TIDQ AND feature='agent'" >/dev/null
 sql "DELETE FROM app.sensor_rules WHERE tenant_id=$TIDQ AND metric='gas' AND label='AI agent'" >/dev/null
 sql "DELETE FROM app.diary_entries WHERE tenant_id=$TIDQ AND source='ai'" >/dev/null
 sql "DELETE FROM app.ai_reports WHERE id='$RID'" >/dev/null

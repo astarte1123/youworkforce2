@@ -55,7 +55,9 @@ R=$(aapi -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -X P
 R=$(oapi -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"assistant","enabled":true}')
 [ "$R" = "403" ] && ok "operatore non imposta feature -> 403" || no "operatore ha impostato feature" "$R"
 
-# 10) processo con feature OFF -> 403 (sintesi incidente)
+# 10) processo con feature OFF -> 403 (sintesi incidente). Con provider configurato le feature
+# sono ON di default: qui disattivo ESPLICITAMENTE incident_summary per testare il gating OFF.
+aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"incident_summary","enabled":false}' >/dev/null
 IID=$(sql "SELECT id FROM app.incidents WHERE tenant_id=$TIDQ ORDER BY opened_at DESC LIMIT 1")
 if [ -n "$IID" ]; then
   R=$(oapi -o /dev/null -w '%{http_code}' "$BASE/api/incidents/$IID/ai-summary")
@@ -80,9 +82,8 @@ if [ -n "$IID" ]; then
   [ "$R" = "502" ] && ok "sintesi incidente feature ON, AI giu' -> 502 (onesto)" || no "sintesi non 502" "$R"
 fi
 
-# ripristino stato feature + connessione di test
-aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"assistant","enabled":false}' >/dev/null
-aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"incident_summary","enabled":false}' >/dev/null
+# ripristino: cancella le righe feature create dal test (così tornano al default-ON del prodotto)
+sql "DELETE FROM app.ai_features WHERE tenant_id=$TIDQ AND feature IN ('assistant','incident_summary')" >/dev/null
 [ "$HAD" = "0" ] && sql "DELETE FROM app.ai_connections WHERE tenant_id=$TIDQ" >/dev/null
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
