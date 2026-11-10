@@ -3308,11 +3308,16 @@ pub async fn list_geofences(State(st): State<AppState>, h: HeaderMap) -> R {
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = sqlx::query("SELECT g.id,g.name,g.kind,g.geom,g.site_id,g.floorplan_id,si.name AS site
         FROM app.geofences g LEFT JOIN app.sites si ON si.id=g.site_id ORDER BY g.name").fetch_all(&mut *tx).await.map_err(ise)?;
+    let gd = sqlx::query("SELECT geofence_id,device_id FROM app.geofence_devices").fetch_all(&mut *tx).await.map_err(ise)?;
+    let ge = sqlx::query("SELECT geofence_id,etype FROM app.geofence_events").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    let out: Vec<Value> = rows.iter().map(|r| json!({
-        "id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"kind":r.get::<String,_>("kind"),
+    let out: Vec<Value> = rows.iter().map(|r| { let gid: Uuid = r.get("id");
+        let devs: Vec<Uuid> = gd.iter().filter(|x| x.get::<Uuid,_>("geofence_id")==gid).map(|x| x.get::<Uuid,_>("device_id")).collect();
+        let evs: Vec<String> = ge.iter().filter(|x| x.get::<Uuid,_>("geofence_id")==gid).map(|x| x.get::<String,_>("etype")).collect();
+        json!({
+        "id":gid,"name":r.get::<String,_>("name"),"kind":r.get::<String,_>("kind"),
         "geom":r.get::<Value,_>("geom"),"site_id":r.try_get::<Uuid,_>("site_id").ok(),"site":r.try_get::<String,_>("site").ok(),
-        "floorplan_id":r.try_get::<Uuid,_>("floorplan_id").ok() })).collect();
+        "floorplan_id":r.try_get::<Uuid,_>("floorplan_id").ok(),"device_ids":devs,"etypes":evs }) }).collect();
     Ok(Json(json!(out)))
 }
 #[derive(Deserialize)]
@@ -3347,7 +3352,70 @@ pub async fn delete_geofence(State(st): State<AppState>, h: HeaderMap, Path(id):
     let n = sqlx::query("DELETE FROM app.geofences WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "geofence inesistente")); }
+    audit(&st, s.tenant_id.unwrap(), &s.email, "delete_geofence", json!({"id":id})).await;
     Ok(Json(json!({"ok":true})))
+}
+
+// Etype associabili a un'area geofence (eventi rilevanti/monitorati nella zona).
+pub const ASSOC_ETYPES: &[&str] = &["sos","man_down","immobilita","mancato_checkin","sensore_critico",
+    "batteria_critica","batteria_bassa","perdita_alimentazione","device_offline","manomissione_badge",
+    "jamming","presenza_ingresso","presenza_uscita","telemetria"];
+
+#[derive(Deserialize)]
+pub struct GeofenceUpdate { pub name: Option<String>, pub geom: Option<Value> }
+/// Modifica nome e/o geometria di una geofence (rinomina, sposta, ridimensiona).
+pub async fn update_geofence(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GeofenceUpdate>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let name = b.name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.geofences SET name=COALESCE($2,name), geom=COALESCE($3,geom) WHERE id=$1")
+        .bind(id).bind(&name).bind(&b.geom).execute(&mut *tx).await
+        .map_err(|_| err(StatusCode::CONFLICT, "nome gia' presente"))?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "geofence inesistente")); }
+    audit(&st, tid, &s.email, "update_geofence", json!({"id":id,"renamed":name.is_some(),"moved":b.geom.is_some()})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
+#[derive(Deserialize)]
+pub struct GeofenceDevicesReq { pub device_ids: Vec<Uuid> }
+/// Associa (sostituisce) i dispositivi IoT appartenenti all'area.
+pub async fn set_geofence_devices(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GeofenceDevicesReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // la geofence deve esistere (RLS la limita al tenant)
+    let ok: i64 = sqlx::query_scalar("SELECT count(*) FROM app.geofences WHERE id=$1").bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
+    if ok==0 { let _=tx.rollback().await; return Err(err(StatusCode::NOT_FOUND, "geofence inesistente")); }
+    sqlx::query("DELETE FROM app.geofence_devices WHERE geofence_id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    for d in &b.device_ids {
+        sqlx::query("INSERT INTO app.geofence_devices(tenant_id,geofence_id,device_id) VALUES($1,$2,$3)
+            ON CONFLICT DO NOTHING").bind(tid).bind(id).bind(d).execute(&mut *tx).await.map_err(ise)?;
+    }
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "set_geofence_devices", json!({"id":id,"n":b.device_ids.len()})).await;
+    Ok(Json(json!({"ok":true,"count":b.device_ids.len()})))
+}
+
+#[derive(Deserialize)]
+pub struct GeofenceEventsReq { pub etypes: Vec<String> }
+/// Associa (sostituisce) i tipi di evento rilevanti per l'area.
+pub async fn set_geofence_events(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GeofenceEventsReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    for e in &b.etypes { if !ASSOC_ETYPES.contains(&e.as_str()) { return Err(err(StatusCode::BAD_REQUEST, &format!("etype non ammesso: {e}"))); } }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let ok: i64 = sqlx::query_scalar("SELECT count(*) FROM app.geofences WHERE id=$1").bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
+    if ok==0 { let _=tx.rollback().await; return Err(err(StatusCode::NOT_FOUND, "geofence inesistente")); }
+    sqlx::query("DELETE FROM app.geofence_events WHERE geofence_id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    for e in &b.etypes {
+        sqlx::query("INSERT INTO app.geofence_events(tenant_id,geofence_id,etype) VALUES($1,$2,$3)
+            ON CONFLICT DO NOTHING").bind(tid).bind(id).bind(e).execute(&mut *tx).await.map_err(ise)?;
+    }
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "set_geofence_events", json!({"id":id,"n":b.etypes.len()})).await;
+    Ok(Json(json!({"ok":true,"count":b.etypes.len()})))
 }
 /// Presenza corrente: chi e' dentro quale geofence adesso.
 pub async fn list_presence(State(st): State<AppState>, h: HeaderMap) -> R {
