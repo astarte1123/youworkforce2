@@ -69,9 +69,20 @@ diventano **incidenti reali** in Centrale (con GoAlert/routing). UI: pulsante **
 allo scenario attivo. Non lascia regole/device nuovi: solo eventi/incidenti (correlation
 `scndemo-<code>-…`).
 
+## Cruscotti parametrici (dashboard in-app, ricostruiti da zero)
+Ogni scenario deriva i **widget** dalle sue regole (`scenario_widgets`): una card per metrica
+— **gauge** numerico (valore, barra, soglia, direzione, sparkline) o **stato** booleano — con
+unità/etichetta per metrica. Non si copia la grafica del sito: si ricostruisce con la palette
+YouCo e i **dati reali** del tenant.
+- `GET /api/scenarios` — scenari attivi del tenant corrente.
+- `GET /api/scenarios/:code/dashboard` — widget + ultimo valore + serie (ultimi 30 punti) +
+  incidenti recenti, dai device demo dello scenario (RLS; solo se lo scenario è attivo).
+- UI: voce menu **Cruscotti IoT** (operatore/admin/auditor, moduli iot/thingsboard), tab per
+  scenario, gauge/sparkline SVG inline.
+
 ## Estensione
-Aggiungere uno scenario = una voce in `scenario_catalog()` (nessuna migrazione). Soglie,
-moduli e device demo sono dati. Estensione residua: preset AI per-scenario (report/analisi tipici).
+Aggiungere uno scenario = una voce in `scenario_catalog()` (nessuna migrazione): regole, moduli,
+device demo e widget si derivano da lì. Estensione residua: preset AI per-scenario (report/analisi tipici).
 
 ## Test
 `qa/scenarios-e2e.sh` (18): catalogo 16, applica air_quality+demo (moduli/regole/sito/device/

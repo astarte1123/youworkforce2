@@ -54,6 +54,16 @@ D=$(sapi -X POST "$BASE/api/superadmin/tenants/$TID/scenarios/$SCN/demo")
 INCD=$(sql "SELECT count(*) FROM app.incidents WHERE tenant_id=$TIDQ AND correlation LIKE 'scndemo-$SCN-%'")
 [ "$INCD" -ge 1 ] && ok "demo: incidenti presenti su DB (centrale)" || no "incidenti demo non su DB" "$INCD"
 
+# 5c) cruscotto parametrico (tenant): widget derivati + valori dalla telemetria demo
+AD=$(mktemp); curl -s -o /dev/null -c "$AD" -X POST "$BASE/api/login" -H 'content-type: application/json' -H 'x-tenant-slug: acme' -d '{"email":"admin@acme.loneworker.eu","password":"demo"}'
+ACX=$(awk '$6=="yw_csrf"{print $7}' "$AD"|tail -1)
+aapi(){ curl -s -b "$AD" -H 'x-tenant-slug: acme' -H "x-csrf-token: $ACX" "$@"; }
+aapi "$BASE/api/scenarios" | grep -q "$SCN" && ok "cruscotto: scenario attivo elencato al tenant" || no "scenario non elencato al tenant" "-"
+DASH=$(aapi "$BASE/api/scenarios/$SCN/dashboard")
+[ "$(echo "$DASH" | jv 'len(d["widgets"])')" -ge 3 ] && ok "cruscotto: widget derivati dalle regole" || no "nessun widget" "$DASH"
+echo "$DASH" | jv '[w for w in d["widgets"] if w["metric"]=="pm25"][0]["value"]' | grep -qiE '[0-9]' && ok "cruscotto: valore pm25 dalla telemetria demo" || no "valore pm25 assente" "$DASH"
+[ "$(echo "$DASH" | jv 'len(d["incidents"])')" -ge 1 ] && ok "cruscotto: allarmi recenti presenti" || no "nessun allarme nel cruscotto" "$DASH"
+
 # 6) rimozione pulita
 R3=$(sapi -X DELETE "$BASE/api/superadmin/tenants/$TID/scenarios/$SCN")
 echo "$R3" | grep -q '"ok":true' && ok "scenario rimosso" || no "remove fallito" "$R3"

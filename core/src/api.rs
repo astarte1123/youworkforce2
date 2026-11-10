@@ -1265,7 +1265,7 @@ pub async fn super_scenario_demo(State(st): State<AppState>, h: HeaderMap, Path(
         let is_crit = CRITICAL.contains(&etype.as_str());
         let corr = format!("scndemo-{}-{}", scn.code, Uuid::new_v4());
         let _ = persist_ingest(&st, tid, Normalized{
-            source:"scenario_demo".into(), source_event:corr.clone(), idem:corr.clone(),
+            source:"scenario".into(), source_event:corr.clone(), idem:corr.clone(),
             etype, device_external_id:Some(device), site_name:None,
             lat:None, lon:None, accuracy_m:None, correlation:corr, payload:payload.clone(),
             indoor:false, beacon_uid:None, zone:None }).await;
@@ -1273,6 +1273,121 @@ pub async fn super_scenario_demo(State(st): State<AppState>, h: HeaderMap, Path(
     }
     audit(&st, tid, "superadmin", "scenario_demo", json!({"code":scn.code,"events":events,"incidents":incidents})).await;
     Ok(Json(json!({"ok":true,"events":events,"incidents":incidents})))
+}
+
+// ---- Motore dashboard parametrico per scenario (widget derivati dalle regole) ----
+fn metric_unit(m: &str) -> &'static str {
+    match m {
+        "temperature"|"engine_temp" => "°C", "humidity"|"soil_moisture"|"fill_level"|"power_factor" => "%",
+        "co2" => "ppm", "pm25" => "µg/m³", "power_kw"|"demand_kw" => "kW", "energy_kwh"|"consumption" => "kWh",
+        "voltage" => "V", "pressure" => "bar", "flow" => "L/min", "level" => "%", "fuel" => "%",
+        "heart_rate" => "bpm", "gas" => "%LEL", "chlorine" => "mg/L", "ph" => "pH", "vibration" => "mm/s",
+        _ => "",
+    }
+}
+fn metric_label(m: &str) -> String {
+    let base = match m {
+        "temperature" => "Temperatura", "humidity" => "Umidità", "co2" => "CO₂", "pm25" => "PM2.5",
+        "power_kw" => "Potenza", "demand_kw" => "Domanda", "energy_kwh" => "Energia", "voltage" => "Tensione",
+        "soil_moisture" => "Umidità suolo", "fill_level" => "Riempimento", "level" => "Livello", "fuel" => "Carburante",
+        "heart_rate" => "Battito", "gas" => "Gas", "chlorine" => "Cloro", "ph" => "pH", "pressure" => "Pressione",
+        "flow" => "Flusso", "vibration" => "Vibrazione", "power_factor" => "Fattore di potenza", "consumption" => "Consumo",
+        "engine_temp" => "Temp. motore", "leak" => "Perdita", "fraud" => "Frode", "smoke" => "Fumo",
+        "door_open" => "Porta aperta", "fall" => "Caduta",
+        _ => m,
+    };
+    base.to_string()
+}
+/// Deriva i widget di uno scenario dalle sue regole: una card per metrica (gauge numerico
+/// o stato booleano), con soglia/direzione per colorare l'allarme.
+fn scenario_widgets(scn: &Scenario) -> Vec<Value> {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut out: Vec<Value> = Vec::new();
+    for ru in &scn.rules {
+        if seen.contains(&ru.metric) { continue; }
+        seen.push(ru.metric);
+        let rules_m: Vec<&ScnRule> = scn.rules.iter().filter(|r| r.metric==ru.metric).collect();
+        let is_bool = rules_m.iter().any(|r| matches!(r.op, "is_true"|"is_false"));
+        let crit = rules_m.iter().find(|r| CRITICAL.contains(&r.etype)).and_then(|r| r.threshold);
+        let any_thr: Vec<f64> = rules_m.iter().filter_map(|r| r.threshold).collect();
+        let op = rules_m.iter().find(|r| CRITICAL.contains(&r.etype)).map(|r| r.op).unwrap_or(rules_m[0].op);
+        let (min, max) = if is_bool { (0.0, 1.0) } else {
+            let maxt = any_thr.iter().cloned().fold(f64::MIN, f64::max);
+            let mint = any_thr.iter().cloned().fold(f64::MAX, f64::min);
+            let lo = if mint < 0.0 { mint - mint.abs()*0.3 } else { 0.0 };
+            let hi = if maxt > 0.0 { maxt * 1.4 } else { maxt * 0.6 + 10.0 };
+            (lo, hi)
+        };
+        out.push(json!({
+            "metric": ru.metric, "label": metric_label(ru.metric), "unit": metric_unit(ru.metric),
+            "kind": if is_bool { "status" } else { "gauge" }, "op": op, "threshold": crit,
+            "min": min, "max": max,
+            "critical": rules_m.iter().any(|r| CRITICAL.contains(&r.etype)),
+        }));
+    }
+    out
+}
+
+/// Scenari applicati al tenant corrente (per il cruscotto in-app; qualsiasi ruolo).
+pub async fn tenant_scenarios_list(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let rows = sqlx::query("SELECT scenario_code FROM app.tenant_scenarios WHERE tenant_id=$1 ORDER BY applied_at")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let cat = scenario_catalog();
+    let out: Vec<Value> = rows.iter().filter_map(|r| { let code: String = r.get("scenario_code");
+        cat.iter().find(|s| s.code==code).map(|s| json!({"code":s.code,"name":s.name,"sector":s.sector})) }).collect();
+    Ok(Json(json!(out)))
+}
+
+/// Dati del cruscotto di uno scenario: widget + ultimo valore/serie + incidenti recenti.
+pub async fn scenario_dashboard(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let cat = scenario_catalog();
+    let scn = cat.iter().find(|x| x.code==code).ok_or_else(|| err(StatusCode::NOT_FOUND, "scenario sconosciuto"))?;
+    let applied: bool = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM app.tenant_scenarios WHERE tenant_id=$1 AND scenario_code=$2")
+        .bind(tid).bind(&code).fetch_one(&st.owner_pool).await.map_err(ise)? > 0;
+    if !applied { return Err(err(StatusCode::FORBIDDEN, "scenario non attivo per questo tenant")); }
+    let widgets = scenario_widgets(scn);
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let devs = sqlx::query("SELECT id,external_id,label FROM app.devices WHERE source='scenario' AND external_id LIKE $1 ORDER BY external_id")
+        .bind(format!("scn-{}-%", code)).fetch_all(&mut *tx).await.map_err(ise)?;
+    let ids: Vec<Uuid> = devs.iter().map(|r| r.get::<Uuid,_>("id")).collect();
+    // eventi recenti (cronologia telemetria) per i device dello scenario
+    let evs = if ids.is_empty() { Vec::new() } else {
+        sqlx::query("SELECT payload_ref,origin_ts FROM app.events WHERE device_id = ANY($1) AND payload_ref IS NOT NULL ORDER BY origin_ts DESC LIMIT 200")
+            .bind(&ids).fetch_all(&mut *tx).await.map_err(ise)?
+    };
+    // incidenti recenti sui device dello scenario
+    let incs = if ids.is_empty() { Vec::new() } else {
+        sqlx::query("SELECT i.etype,i.state,i.opened_at FROM app.incidents i JOIN app.events e ON e.id=i.event_id
+            WHERE e.device_id = ANY($1) ORDER BY i.opened_at DESC LIMIT 10")
+            .bind(&ids).fetch_all(&mut *tx).await.map_err(ise)?
+    };
+    tx.commit().await.ok();
+    // ultimo valore + serie per ogni widget (eventi sono DESC: il primo e' il piu' recente)
+    let payloads: Vec<(Value, Dt)> = evs.iter().map(|r| (r.try_get::<Value,_>("payload_ref").unwrap_or(json!({})), r.get::<Dt,_>("origin_ts"))).collect();
+    let widgets_out: Vec<Value> = widgets.into_iter().map(|mut w| {
+        let metric = w["metric"].as_str().unwrap_or("").to_string();
+        let mut value: Option<Value> = None;
+        let mut series: Vec<Value> = Vec::new();
+        for (p, ts) in &payloads {
+            if let Some(v) = p.get(&metric) {
+                if value.is_none() { value = Some(v.clone()); }
+                series.push(json!({"t": ts.to_rfc3339(), "v": v}));
+            }
+        }
+        series.reverse(); // cronologico crescente
+        if series.len() > 30 { series = series.split_off(series.len()-30); }
+        if let Value::Object(ref mut m) = w { m.insert("value".into(), value.unwrap_or(Value::Null)); m.insert("series".into(), json!(series)); }
+        w
+    }).collect();
+    let incidents: Vec<Value> = incs.iter().map(|r| json!({"etype":r.get::<String,_>("etype"),
+        "state":r.get::<String,_>("state"),"at":r.get::<Dt,_>("opened_at").to_rfc3339()})).collect();
+    Ok(Json(json!({
+        "code":scn.code, "name":scn.name, "sector":scn.sector,
+        "device_count": devs.len(), "widgets": widgets_out, "incidents": incidents })))
 }
 
 // ======================= youworker.ai — piattaforma AI di YouCo =======================
