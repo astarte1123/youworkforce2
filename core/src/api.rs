@@ -7169,8 +7169,8 @@ fn esc_rot_kind(oc_type: &str) -> (crate::escalation::RotationType, i64) {
     }
 }
 /// Costruisce la Schedule nativa dalla config del gruppo (stessi input di sync_goalert).
-/// FASE 1: gli override (assenze) vivono solo in GoAlert e NON sono modellati qui -> sono una
-/// fonte nota di divergenza, segnalata nel detail.
+/// Gli override (assenze) sono tirati da GoAlert e innestati a valle da [`esc_goalert_overrides`]
+/// (qui `overrides` parte vuoto; serve una query GraphQL async che non appartiene a questa fn pura).
 fn esc_build_schedule(g: &sqlx::postgres::PgRow, members: &[Uuid]) -> crate::escalation::Schedule {
     let mode: String = g.try_get("oncall_mode").unwrap_or_else(|_| "tutti".into());
     let coverage: String = g.try_get("coverage_mode").unwrap_or_else(|_| "24_7".into());
@@ -7207,6 +7207,57 @@ async fn esc_goalert_oncall_emails(st: &AppState, base: &str, cookie: &str, sid:
         .and_then(|v| v.pointer("/data/service/onCallUsers").and_then(|a| a.as_array()).cloned())
         .map(|a| a.iter().filter_map(|u| u.get("userName").and_then(|x| x.as_str()).map(|s| s.to_lowercase())).collect())
         .unwrap_or_default()
+}
+
+/// Uuid sintetico deterministico da un'email (per un sostituto non membro del gruppo: serve
+/// solo al confronto per-email dello shadow, non è un utente reale).
+fn esc_synth_uuid(email: &str) -> Uuid {
+    use std::hash::{Hash, Hasher};
+    let mut h1 = std::collections::hash_map::DefaultHasher::new();
+    email.hash(&mut h1); let a = h1.finish();
+    let mut h2 = std::collections::hash_map::DefaultHasher::new();
+    ("yw-esc-synth", email).hash(&mut h2); let b = h2.finish();
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&a.to_le_bytes());
+    bytes[8..].copy_from_slice(&b.to_le_bytes());
+    Uuid::from_bytes(bytes)
+}
+
+/// Override (assenze) attivi in GoAlert per lo schedule, convertiti nel modello nativo
+/// [`crate::escalation::Override`]. Mappa gli utenti GoAlert -> uuid nostro via l'email
+/// (`userName`/`name` == email in questo sistema); un sostituto esterno al gruppo ottiene un
+/// uuid sintetico e viene aggiunto a `email_of` così il confronto per-email resta corretto.
+async fn esc_goalert_overrides(
+    st: &AppState, base: &str, cookie: &str, schedule_id: &str,
+    email_of: &mut std::collections::HashMap<Uuid, String>,
+) -> Vec<crate::escalation::Override> {
+    let gq = format!("{{userOverrides(input:{{scheduleID:\"{}\"}}){{nodes{{start end addUser{{name}} removeUser{{name}}}}}}}}", esc_gql(schedule_id));
+    let nodes = goalert::graphql(&st.http, base, cookie, &gq).await
+        .and_then(|v| v.pointer("/data/userOverrides/nodes").and_then(|a| a.as_array()).cloned())
+        .unwrap_or_default();
+    let mut uid_of_email: std::collections::HashMap<String, Uuid> =
+        email_of.iter().map(|(u, e)| (e.clone(), *u)).collect();
+    let mut resolve = |name: Option<&str>| -> Option<Uuid> {
+        let e = name?.trim().to_lowercase();
+        if e.is_empty() { return None; }
+        if let Some(u) = uid_of_email.get(&e) { return Some(*u); }
+        let u = esc_synth_uuid(&e);
+        uid_of_email.insert(e.clone(), u);
+        email_of.insert(u, e);
+        Some(u)
+    };
+    let mut out = vec![];
+    for n in &nodes {
+        let parse = |k: &str| n.get(k).and_then(|x| x.as_str())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&chrono::Utc));
+        let (Some(start), Some(end)) = (parse("start"), parse("end")) else { continue };
+        let add = resolve(n.pointer("/addUser/name").and_then(|x| x.as_str()));
+        let remove = resolve(n.pointer("/removeUser/name").and_then(|x| x.as_str()));
+        if add.is_none() && remove.is_none() { continue; }
+        out.push(crate::escalation::Override { start, end, add, remove });
+    }
+    out
 }
 
 /// Risolve il membro on-call della rotation con STATO persistente (semantica GoAlert
@@ -7260,12 +7311,15 @@ pub async fn escalation_shadow_tenant(st: &AppState, tid: Uuid) -> (i64, i64) {
             .bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
         if mrows.is_empty() { continue; }
         let members: Vec<Uuid> = mrows.iter().map(|r| r.get::<Uuid,_>("id")).collect();
-        let email_of: std::collections::HashMap<Uuid,String> = mrows.iter().map(|r| (r.get::<Uuid,_>("id"), r.get::<String,_>("email").to_lowercase())).collect();
+        let mut email_of: std::collections::HashMap<Uuid,String> = mrows.iter().map(|r| (r.get::<Uuid,_>("id"), r.get::<String,_>("email").to_lowercase())).collect();
         // on-call GoAlert (ground truth)
         let mut ga = esc_goalert_oncall_emails(st, &base, &cookie, &sid).await;
         ga.sort(); ga.dedup();
-        // on-call nativo
-        let sched = esc_build_schedule(g, &members);
+        // on-call nativo (override/assenze tirati da GoAlert e modellati nel resolver)
+        let mut sched = esc_build_schedule(g, &members);
+        if let Some(scid) = group_schedule_id(st, tid, gid).await {
+            sched.overrides = esc_goalert_overrides(st, &base, &cookie, &scid, &mut email_of).await;
+        }
         let rot_member = match &sched.rotation {
             Some(rot) => esc_resolve_rot_member(st, tid, gid, rot, &members, &email_of, &ga, now).await,
             None => None,
@@ -7277,7 +7331,8 @@ pub async fn escalation_shadow_tenant(st: &AppState, tid: Uuid) -> (i64, i64) {
         let _ = sqlx::query("INSERT INTO app.esc_shadow_log(tenant_id,group_id,native_oncall,goalert_oncall,match,detail) VALUES($1,$2,$3,$4,$5,$6)")
             .bind(tid).bind(gid).bind(&native).bind(&ga).bind(is_match)
             .bind(json!({"group":g.get::<String,_>("name"),"mode":g.get::<String,_>("oncall_mode"),
-                "note":"FASE 1 shadow: rotation stateful (seed GoAlert + advance nativo); override non ancora modellati"}))
+                "overrides":sched.overrides.len(),
+                "note":"FASE 1 shadow: rotation stateful (seed GoAlert + advance nativo) + override/assenze modellati"}))
             .execute(&st.owner_pool).await;
         n += 1;
     }
