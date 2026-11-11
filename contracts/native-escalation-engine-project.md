@@ -182,8 +182,16 @@ goalert**, immediato). Verifica LIVE globex: delivery sms+slack=sent; ack in sha
 RESIDUO verso FASE 4: soppressione notify GoAlert per tenant native (oggi doppio path) + consegna nativa
 immediata (ora al prossimo scan ~30s) + hardening retry.
 
-**Fase 4 — Spegnimento GoAlert.** Quando tutti i tenant sono `native` e stabili: si rimuove il
-provisioning, `goalert.rs` e la dipendenza dal container. Si aggiorna il manuale.
+**Fase 4 — Spegnimento GoAlert. ⏳ PREP FATTA** (commit c5dadd3). Chiusi i due prerequisiti:
+(1) **Soppressione notify GoAlert** per i tenant `native` con percorso di consegna reale
+(`api::esc_suppress_goalert`: true se engine=`native` E credenziali Twilio live, OPPURE override
+`YW_ESC_SUPPRESS_GOALERT=1`; **guardia SOS**: native senza percorso reale NON sopprime → GoAlert
+continua a pagare). Nel `drain_outbox`: se soppresso → `outbox=done` + timeline
+`goalert_suppressed_native`. (2) **Consegna nativa immediata**: per `goalert_notify` soppresso il drain
+chiama subito `escalation_delivery_shadow_tenant` (latenza ~drain 2s, non il scan ~30s). Verifica LIVE
+globex (native+suppress): outbox done, delivery_log sms=sent, `goalert_sent=0`, `goalert_suppressed_native`
+presente. **Resta la FASE 4 PIENA** (da fare SOLO quando tutti i tenant sono native e stabili): rimozione
+provisioning, `goalert.rs` e dipendenza dal container + aggiornamento manuale. Oggi globex è l'unico pilota.
 
 **Fase 5 — Pulizia.** Deprecazione schema goalert_*; i dati on-call vivono solo in `esc_*`.
 
