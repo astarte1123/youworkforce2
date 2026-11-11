@@ -22,25 +22,32 @@ let ME=null, SSE=null, CACHE={}, ACTIVE_MODS=new Set(), UI_FEAT={map_outdoor:tru
 const can = r => ME && r.includes(ME.role);
 // mod = modulo/i richiesti: la voce appare solo se ALMENO UNO è attivo sul tenant.
 const DEVICE_MODS=['loneworker','traccar','iot','thingsboard'];
+// grp: sezione nav (op=Operatività, work=Lavoro sul campo, cfg=Configurazione)
 const NAV = [
-  {k:'dashboard', t:'Dashboard', ico:'home', roles:null},
-  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker']},
-  {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker']},
-  {k:'mappa',     t:'Mappa', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor'},
-  {k:'piantine',  t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor'},
-  {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar']},
-  {k:'ordini',    t:'Ordini di lavoro', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi']},
-  {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], mod:['consuntivi']},
-  {k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], mod:['workforce']},
-  {k:'dispositivi',t:'Dispositivi', ico:'shield', roles:['tenant_admin'], mod:DEVICE_MODS},
-  {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','thingsboard','goalert','iot']},
-  {k:'gruppi',    t:'Gruppi allarme', ico:'users', roles:['tenant_admin'], mod:['loneworker']},
-  {k:'anagrafiche',t:'Utenti e sedi', ico:'receipt', roles:['tenant_admin']},
-  {k:'cruscotti', t:'Cruscotti IoT', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:['iot','thingsboard']},
-  {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent'},
-  {k:'ai',        t:'AI · youworker.ai', ico:'sliders', roles:['tenant_admin'], mod:['assistant']},
-  {k:'moduli',    t:'Moduli', ico:'sliders', roles:['tenant_admin']},
+  {k:'dashboard', t:'Dashboard', ico:'home', roles:null, grp:'op'},
+  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker'], grp:'op'},
+  {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker'], grp:'op'},
+  {k:'mappa',     t:'Mappa', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'op'},
+  {k:'piantine',  t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor', grp:'op'},
+  {k:'cruscotti', t:'Cruscotti IoT', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:['iot','thingsboard'], grp:'op'},
+  {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar'], grp:'op'},
+  {k:'ordini',    t:'Ordini di lavoro', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
+  {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], mod:['consuntivi'], grp:'work'},
+  {k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], mod:['workforce'], grp:'work'},
+  {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'work'},
+  {k:'dispositivi',t:'Dispositivi', ico:'shield', roles:['tenant_admin'], mod:DEVICE_MODS, grp:'cfg'},
+  {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','thingsboard','goalert','iot'], grp:'cfg'},
+  {k:'gruppi',    t:'Gruppi allarme', ico:'users', roles:['tenant_admin'], mod:['loneworker'], grp:'cfg'},
+  {k:'anagrafiche',t:'Utenti e sedi', ico:'receipt', roles:['tenant_admin'], grp:'cfg'},
+  {k:'ai',        t:'AI · youworker.ai', ico:'sliders', roles:['tenant_admin'], mod:['assistant'], grp:'cfg'},
+  {k:'moduli',    t:'Moduli', ico:'sliders', roles:['tenant_admin'], grp:'cfg'},
 ];
+const NAV_GROUPS=[['op','Operatività'],['work','Lavoro sul campo'],['cfg','Configurazione']];
+// nav raggruppata: intestazioni di sezione, salta i gruppi vuoti dopo i filtri ruolo/modulo.
+function navHtml(){ const items=visibleNav(); let h='';
+  for(const [g,label] of NAV_GROUPS){ const gi=items.filter(n=>(n.grp||'op')===g); if(!gi.length)continue;
+    h+=`<div class="nav-grp">${label}</div>`+gi.map(n=>`<a data-k="${n.k}"><span class="ico">${ICON[n.ico]}</span>${n.t}</a>`).join(''); }
+  return h; }
 const modOk = n => !n.mod || n.mod.some(m=>ACTIVE_MODS.has(m));
 const featOk = n => !n.feat || UI_FEAT[n.feat]!==false;
 const aiFeatOk = n => !n.aiFeat || AI_FEAT[n.aiFeat]===true;
@@ -127,7 +134,7 @@ function renderShell(){
           <span>${brandName()}</span>
           <span style="font-size:8px;color:var(--faint);font-weight:700;letter-spacing:.03em;margin-top:2px;white-space:nowrap">Powered by YouCo</span>
         </div></div>
-      <nav id="nav">${visibleNav().map(n=>`<a data-k="${n.k}"><span class="ico">${ICON[n.ico]}</span>${n.t}</a>`).join('')}</nav>
+      <nav id="nav">${navHtml()}</nav>
       <div class="foot">
         <div class="row"><div class="ava">${initials(ME.email)}</div>
           <div class="grow" style="min-width:0"><div class="small" style="font-weight:650;overflow:hidden;text-overflow:ellipsis">${esc(ME.email.split('@')[0])}</div>
@@ -167,7 +174,7 @@ function renderShell(){
   if(can(['operatore','tenant_admin','auditor'])) connectSSE();
   route();
 }
-function rebuildNav(){ const n=$('#nav'); if(n) n.innerHTML=visibleNav().map(x=>`<a data-k="${x.k}"><span class="ico">${ICON[x.ico]}</span>${x.t}</a>`).join(''); }
+function rebuildNav(){ const n=$('#nav'); if(n) n.innerHTML=navHtml(); }
 function setActive(k){ $$('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.k===k));
   const n=NAV.find(x=>x.k===k); if(n&&$('#pageTitle'))$('#pageTitle').textContent=n.t; }
 

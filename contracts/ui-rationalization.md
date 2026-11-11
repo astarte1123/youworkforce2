@@ -80,7 +80,7 @@ Tre fusioni strutturali: **Piantine → tab dentro Mappa** (segmented `Allarmi �
 |---|---|---|---|
 | 1 | Eliminare il bottone morto "Chiedi ai documenti" (PWA) | Alto | Banale |
 | 2 | Sostituire tutti i `prompt()`/`confirm()` nativi con askPrompt/askConfirm | Alto | Basso |
-| 3 | Raggruppare la nav in sezioni titolate + Impostazioni collassato | Alto | Basso |
+| 3 | ✅ FATTO (parz.) — Nav in sezioni titolate (Operatività/Lavoro/Configurazione) | Alto | Basso |
 | 4 | Icona unica per ogni voce nav | Med-Alto | Banale |
 | 5 | ✅ FATTO — Vista "I miei allarmi" per `reperibile` | Alto | Medio |
 | 6 | Tab bar PWA + SOS sempre ancorato | Alto | Medio |
