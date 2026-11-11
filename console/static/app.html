@@ -44,9 +44,32 @@ const NAV = [
 ];
 const NAV_GROUPS=[['op','Operatività'],['work','Lavoro sul campo'],['cfg','Configurazione']];
 // nav raggruppata: intestazioni di sezione, salta i gruppi vuoti dopo i filtri ruolo/modulo.
+// ---- i18n (chrome): IT sorgente, EN opzionale. Le viste restano IT finché migrate. ----
+const I18N={ en:{
+  app_subtitle:"Client console", lang:"Language", logout:"Sign out",
+  login_tenant:"Tenant", login_tenant_host:"(from domain)", login_email:"Email",
+  login_password:"Password", login_signin:"Sign in", login_quick:"Quick demo access (password <b>demo</b>):",
+  grp_op:"Operations", grp_work:"Field work", grp_cfg:"Configuration",
+  "nav_dashboard":"Dashboard","nav_centrale":"Alarm center","nav_miei-allarmi":"My alarms",
+  "nav_mappa":"Map","nav_piantine":"Floor plans","nav_cruscotti":"IoT dashboards","nav_report":"Reports",
+  "nav_ordini":"Work orders","nav_consuntivi":"Timesheets","nav_turni":"Shifts","nav_agente":"AI agent",
+  "nav_dispositivi":"Devices","nav_connettori":"Connectors","nav_gruppi":"Alarm groups",
+  "nav_anagrafiche":"Users & sites","nav_ai":"AI · youworker.ai","nav_moduli":"Modules"
+}};
+let LANG='it';
+try{ LANG=localStorage.getItem('yw_lang')|| (navigator.language||'it').slice(0,2); }catch(e){}
+if(LANG!=='en') LANG='it';
+function t(k, itFallback){ if(LANG==='en' && I18N.en[k]!=null) return I18N.en[k]; return itFallback!=null?itFallback:(I18N.it&&I18N.it[k])||k; }
+function fmtDT(d){ try{ return new Date(d).toLocaleString(LANG==='en'?'en-GB':'it-IT'); }catch(e){ return ''+d; } }
+function fmtD(d){ try{ return new Date(d).toLocaleDateString(LANG==='en'?'en-GB':'it-IT'); }catch(e){ return ''+d; } }
+function setLang(l){ LANG=(l==='en')?'en':'it'; try{localStorage.setItem('yw_lang',LANG);}catch(e){} try{document.documentElement.lang=LANG;}catch(e){} location.reload(); }
+function langSelect(){ return `<select class="small" onchange="setLang(this.value)" title="${t('lang','Lingua')}" style="width:auto">
+  <option value="it" ${LANG==='it'?'selected':''}>IT</option><option value="en" ${LANG==='en'?'selected':''}>EN</option></select>`; }
+try{ document.documentElement.lang=LANG; }catch(e){}
+function navLabel(n){ return t('nav_'+n.k, n.t); }
 function navHtml(){ const items=visibleNav(); let h='';
   for(const [g,label] of NAV_GROUPS){ const gi=items.filter(n=>(n.grp||'op')===g); if(!gi.length)continue;
-    h+=`<div class="nav-grp">${label}</div>`+gi.map(n=>`<a data-k="${n.k}"><span class="ico">${ICON[n.ico]}</span>${n.t}</a>`).join(''); }
+    h+=`<div class="nav-grp">${t('grp_'+g,label)}</div>`+gi.map(n=>`<a data-k="${n.k}"><span class="ico">${ICON[n.ico]}</span>${navLabel(n)}</a>`).join(''); }
   return h; }
 const modOk = n => !n.mod || n.mod.some(m=>ACTIVE_MODS.has(m));
 const featOk = n => !n.feat || UI_FEAT[n.feat]!==false;
@@ -90,18 +113,19 @@ function renderLogin(){
     <div class="card" style="width:400px;max-width:100%">
       <div class="card-b">
         <div class="row" style="gap:10px;margin-bottom:6px"><div class="logo">${ICON.logomark}</div>
-          <div><h1 style="font-size:19px">YouWorkforce</h1><div class="small mut">Console cliente</div></div>
+          <div><h1 style="font-size:19px">YouWorkforce</h1><div class="small mut">${t('app_subtitle','Console cliente')}</div></div>
           <span class="tag sim" style="margin-left:auto">DEMO</span></div>
         <div class="divider" style="margin:14px 0 16px"></div>
         <div class="col">
-          <div class="field"><label>Tenant${store.slugFromHost?' <span class="small mut">(dal dominio)</span>':''}</label><input id="slug" value="${store.slug}" ${store.slugFromHost?'readonly':''}></div>
-          <div class="field"><label>Email</label><input id="email" placeholder="operatore@acme.loneworker.eu"></div>
-          <div class="field"><label>Password</label><input id="pw" type="password" value="demo"></div>
-          <button class="btn block lg" id="go">Accedi</button>
+          <div class="field"><label>${t('login_tenant','Tenant')}${store.slugFromHost?' <span class="small mut">'+t('login_tenant_host','(dal dominio)')+'</span>':''}</label><input id="slug" value="${store.slug}" ${store.slugFromHost?'readonly':''}></div>
+          <div class="field"><label>${t('login_email','Email')}</label><input id="email" placeholder="operatore@acme.loneworker.eu"></div>
+          <div class="field"><label>${t('login_password','Password')}</label><input id="pw" type="password" value="demo"></div>
+          <button class="btn block lg" id="go">${t('login_signin','Accedi')}</button>
           <div class="small" id="msg" style="color:var(--bad);min-height:18px"></div>
+          <div class="row" style="justify-content:flex-end;margin-top:4px">${langSelect()}</div>
         </div>
         <div class="divider" style="margin:4px 0 12px"></div>
-        <div class="small mut" style="margin-bottom:6px">Accesso rapido demo (password <b>demo</b>):</div>
+        <div class="small mut" style="margin-bottom:6px">${t('login_quick','Accesso rapido demo (password <b>demo</b>):')}</div>
         <div class="row" style="gap:6px">
           ${['operatore','pianificatore','responsabile','mario','admin'].map(u=>
             `<button class="btn ghost sm" onclick="quick('${u}')">${u}</button>`).join('')}
@@ -147,8 +171,9 @@ function renderShell(){
         <span class="chip">${esc(store.slug)}</span>
         <div class="grow"></div>
         <span id="liveWrap"></span>
+        ${langSelect()}
         <button class="btn-ico btn ghost" title="Tema" onclick="toggleTheme()">${ICON.moon}</button>
-        <button class="btn-ico btn ghost" title="Esci" onclick="logout()">${ICON.logout}</button>
+        <button class="btn-ico btn ghost" title="${t('logout','Esci')}" onclick="logout()">${ICON.logout}</button>
       </div>
       ${ME.impersonator?`<div style="background:var(--warn-soft);color:#7a5a00;border-bottom:1px solid var(--line);padding:7px 16px;font-size:13px;display:flex;align-items:center;gap:10px">
         <b>👤 Stai impersonando</b> ${brandName()} come <b>${esc(ME.email)}</b> · supporto superadmin (${esc(ME.impersonator)})
@@ -176,7 +201,7 @@ function renderShell(){
 }
 function rebuildNav(){ const n=$('#nav'); if(n) n.innerHTML=navHtml(); }
 function setActive(k){ $$('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.k===k));
-  const n=NAV.find(x=>x.k===k); if(n&&$('#pageTitle'))$('#pageTitle').textContent=n.t; }
+  const n=NAV.find(x=>x.k===k); if(n&&$('#pageTitle'))$('#pageTitle').textContent=navLabel(n); }
 
 function route(){
   let k=(location.hash.replace('#/','')||'dashboard');

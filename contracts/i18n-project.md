@@ -1,6 +1,24 @@
 # Progetto: i18n / multilingua YouWorkforce
 
-Stato: PROPOSTA (plan-only) · Owner: console (frontend) + core (messaggi API) · Priorità: media
+Stato: INFRA + CHROME FATTI (IT/EN), viste da migrare a fasi · Owner: console + core · Priorità: media
+
+## Fatto (commit i18n chrome)
+- `t(key, itFallback)` + dizionario `I18N.en` inline (chiavi chrome) con fallback IT.
+- `LANG` da `localStorage.yw_lang` / `navigator.language`; selettore IT/EN in login e topbar;
+  `<html lang>` dinamico; `setLang()` persiste e ricarica.
+- Tradotti: login (tenant/email/password/accedi/quick), **nav gruppi + tutte le voci**
+  (`navLabel`/`t('nav_'+k)`, `t('grp_'+g)`), titolo pagina, tooltip logout. `fmtDT`/`fmtD`
+  localizzano date (da adottare nelle viste al posto di `toLocaleString('it-IT')`).
+- Le viste restano IT finché migrate (fallback IT, mai pagina rotta).
+
+## Da fare (migrazione incrementale, per-vista)
+Estrarre i literal inline delle viste (Centrale, Dashboard, Mappa, …) in chiavi `t()` +
+voci in `I18N.en`. Messaggi API utente via `Accept-Language`. Etichette dominio (ETYPE_LAB ecc.).
+
+---
+(Storico piano)
+
+Priorità: media
 (sblocca clienti esteri). Oggi: **tutto hardcoded in italiano** (`lang="it"`, stringhe inline nei
 template, `toLocaleString('it-IT')`, messaggi d'errore API in italiano). Nessun meccanismo i18n.
 
