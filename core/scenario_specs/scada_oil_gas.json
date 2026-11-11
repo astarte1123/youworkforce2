@@ -1,0 +1,55 @@
+{
+  "code": "scada_oil_gas",
+  "name": "SCADA Oil & Gas Drilling",
+  "source": "https://thingsboard.io/use-cases/scada-oil-gas/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Perforazione: pressione, gas e vibrazione con focus sicurezza. Allarme su sovrapressione, gas alto o vibrazione forte.",
+  "map": true,
+  "metrics": [
+    {
+      "key": "pressure",
+      "label": "Pressione",
+      "unit": "bar",
+      "min": 0,
+      "max": 500,
+      "normal": [
+        150,
+        300
+      ],
+      "widget": "gauge",
+      "alarm": 350
+    },
+    {
+      "key": "gas",
+      "label": "Gas",
+      "unit": "%LEL",
+      "min": 0,
+      "max": 100,
+      "normal": [
+        0,
+        10
+      ],
+      "widget": "gauge",
+      "alarm": 20
+    },
+    {
+      "key": "vibration",
+      "label": "Vibrazione",
+      "unit": "mm/s",
+      "min": 0,
+      "max": 120,
+      "normal": [
+        10,
+        50
+      ],
+      "widget": "gauge",
+      "alarm": 80
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}

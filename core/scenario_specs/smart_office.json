@@ -1,0 +1,55 @@
+{
+  "code": "smart_office",
+  "name": "Smart Office",
+  "source": "https://thingsboard.io/use-cases/smart-office/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Clima e sicurezza in ufficio: CO₂, temperatura e rilevazione fumo. Allarme su CO₂ alta e fumo.",
+  "map": false,
+  "metrics": [
+    {
+      "key": "co2",
+      "label": "CO₂",
+      "unit": "ppm",
+      "min": 350,
+      "max": 2500,
+      "normal": [
+        450,
+        900
+      ],
+      "widget": "gauge",
+      "alarm": 1200
+    },
+    {
+      "key": "temperature",
+      "label": "Temperatura",
+      "unit": "°C",
+      "min": 10,
+      "max": 40,
+      "normal": [
+        20,
+        25
+      ],
+      "widget": "gauge",
+      "alarm": 30
+    },
+    {
+      "key": "smoke",
+      "label": "Fumo",
+      "unit": "",
+      "min": 0,
+      "max": 1,
+      "normal": [
+        0,
+        0
+      ],
+      "widget": "state",
+      "alarm": 1
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}

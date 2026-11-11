@@ -1,0 +1,42 @@
+{
+  "code": "smart_irrigation",
+  "name": "Smart Irrigation",
+  "source": "https://thingsboard.io/use-cases/smart-irrigation/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Impianto di irrigazione e campi: umidità del suolo e portata. Allarme su suolo molto secco; portata bassa monitorata.",
+  "map": true,
+  "metrics": [
+    {
+      "key": "soil_moisture",
+      "label": "Umidità suolo",
+      "unit": "%",
+      "min": 0,
+      "max": 100,
+      "normal": [
+        20,
+        45
+      ],
+      "widget": "gauge",
+      "alarm": 15
+    },
+    {
+      "key": "flow",
+      "label": "Portata",
+      "unit": "L/min",
+      "min": 0,
+      "max": 50,
+      "normal": [
+        5,
+        30
+      ],
+      "widget": "line",
+      "alarm": 1
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}

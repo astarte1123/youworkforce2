@@ -44,6 +44,9 @@ fn tb_parity_routes() -> Router<AppState> {
         .route("/api/thingsboard/devices/:dev/shared-attributes", post(api::tb_shared_attr_set))
         .route("/api/thingsboard/devices/:dev/rpc", post(api::tb_device_rpc))
         .route("/api/thingsboard/devices/:dev/history", get(api::tb_device_history))
+        // #7 GDPR
+        .route("/api/gdpr/export/:uid", get(api::gdpr_export))
+        .route("/api/gdpr/anonymize/:uid", post(api::gdpr_anonymize))
 }
 
 #[tokio::main]
@@ -124,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(|| async { Json(json!({"ok":true})) }))
+        .route("/metrics", get(api::metrics))
         // control plane
         .route("/api/superadmin/login", post(api::superadmin_login))
         .route("/api/superadmin/tenants", post(api::create_tenant).get(api::list_tenants))

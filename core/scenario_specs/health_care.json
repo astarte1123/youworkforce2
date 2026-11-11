@@ -1,0 +1,42 @@
+{
+  "code": "health_care",
+  "name": "Health Care (assisted living)",
+  "source": "https://thingsboard.io/use-cases/health-care/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Metriche salute paziente da device connessi in assisted living: battito e rilevazione cadute. Allerta su tachicardia/bradicardia; caduta = uomo a terra.",
+  "map": false,
+  "metrics": [
+    {
+      "key": "heart_rate",
+      "label": "Battito",
+      "unit": "bpm",
+      "min": 30,
+      "max": 160,
+      "normal": [
+        60,
+        90
+      ],
+      "widget": "gauge",
+      "alarm": 120
+    },
+    {
+      "key": "fall",
+      "label": "Caduta",
+      "unit": "",
+      "min": 0,
+      "max": 1,
+      "normal": [
+        0,
+        0
+      ],
+      "widget": "state",
+      "alarm": 1
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}

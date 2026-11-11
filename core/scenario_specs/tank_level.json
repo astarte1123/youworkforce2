@@ -1,0 +1,29 @@
+{
+  "code": "tank_level",
+  "name": "Tank Level Monitoring",
+  "source": "https://thingsboard.io/use-cases/tank-level/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Serbatoi carburante/acqua/chimici: livelli e trend. Allarme su livello troppo basso o troppo alto.",
+  "map": false,
+  "metrics": [
+    {
+      "key": "level",
+      "label": "Livello",
+      "unit": "%",
+      "min": 0,
+      "max": 100,
+      "normal": [
+        20,
+        80
+      ],
+      "widget": "gauge",
+      "alarm": 10
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}

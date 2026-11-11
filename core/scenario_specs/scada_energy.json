@@ -1,0 +1,42 @@
+{
+  "code": "scada_energy",
+  "name": "SCADA Energy Management",
+  "source": "https://thingsboard.io/use-cases/scada-energy/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Flussi energetici e infrastruttura: domanda e fattore di potenza. Allarme su picco di domanda; PF basso monitorato.",
+  "map": false,
+  "metrics": [
+    {
+      "key": "demand_kw",
+      "label": "Domanda",
+      "unit": "kW",
+      "min": 0,
+      "max": 800,
+      "normal": [
+        100,
+        400
+      ],
+      "widget": "gauge",
+      "alarm": 500
+    },
+    {
+      "key": "power_factor",
+      "label": "Fattore potenza",
+      "unit": "",
+      "min": 0.7,
+      "max": 1.0,
+      "normal": [
+        0.9,
+        0.99
+      ],
+      "widget": "gauge",
+      "alarm": 0.8
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}

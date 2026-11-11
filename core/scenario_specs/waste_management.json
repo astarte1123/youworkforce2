@@ -1,0 +1,29 @@
+{
+  "code": "waste_management",
+  "name": "Waste Management",
+  "source": "https://thingsboard.io/use-cases/waste-management/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Cassonetti e raccolta rifiuti: livello di riempimento e pattern. Allarme su cassonetto pieno.",
+  "map": true,
+  "metrics": [
+    {
+      "key": "fill_level",
+      "label": "Riempimento",
+      "unit": "%",
+      "min": 0,
+      "max": 100,
+      "normal": [
+        10,
+        65
+      ],
+      "widget": "gauge",
+      "alarm": 90
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}

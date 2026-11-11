@@ -28,6 +28,8 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     if n % 30 == 0 { api::reconcile_integrations(st).await; }
     // #5 sync ack/chiusura da GoAlert -> incidenti (~ogni 14s)
     if n % 7 == 0 { api::goalert_ack_sync(st).await; }
+    // #7 ritenzione GDPR (opt-in YW_RETENTION_DAYS): ~ogni ora (1800 tick * 2s)
+    if n % 1800 == 0 { api::purge_retention(st).await; }
     Ok(())
 }
 

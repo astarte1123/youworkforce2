@@ -1,0 +1,55 @@
+{
+  "code": "water_metering",
+  "name": "Water Metering",
+  "source": "https://thingsboard.io/use-cases/water-metering/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Consumo acqua dai contatori con rilevazione perdite e frodi. Allarme su perdita o frode; portata monitorata.",
+  "map": false,
+  "metrics": [
+    {
+      "key": "leak",
+      "label": "Perdita",
+      "unit": "",
+      "min": 0,
+      "max": 1,
+      "normal": [
+        0,
+        0
+      ],
+      "widget": "state",
+      "alarm": 1
+    },
+    {
+      "key": "flow",
+      "label": "Portata",
+      "unit": "L/min",
+      "min": 0,
+      "max": 150,
+      "normal": [
+        5,
+        60
+      ],
+      "widget": "line",
+      "alarm": 100
+    },
+    {
+      "key": "fraud",
+      "label": "Frode",
+      "unit": "",
+      "min": 0,
+      "max": 1,
+      "normal": [
+        0,
+        0
+      ],
+      "widget": "state",
+      "alarm": 1
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "code": "smart_retail",
+  "name": "Smart Retail (catena freddo)",
+  "source": "https://thingsboard.io/use-cases/smart-retail/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Frigo e freezer di supermercato: temperatura e apertura porte per qualità alimentare. Allarme fuori banda fredda.",
+  "map": false,
+  "metrics": [
+    {
+      "key": "temperature",
+      "label": "Temperatura",
+      "unit": "°C",
+      "min": -30,
+      "max": 15,
+      "normal": [
+        2,
+        6
+      ],
+      "widget": "gauge",
+      "alarm": 8
+    },
+    {
+      "key": "door_open",
+      "label": "Porta aperta",
+      "unit": "",
+      "min": 0,
+      "max": 1,
+      "normal": [
+        0,
+        0
+      ],
+      "widget": "state",
+      "alarm": 1
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}

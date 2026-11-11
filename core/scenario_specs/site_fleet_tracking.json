@@ -1,0 +1,42 @@
+{
+  "code": "site_fleet_tracking",
+  "name": "Site Fleet Tracking",
+  "source": "https://thingsboard.io/use-cases/site-fleet-tracking/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Escavatori, camion e mezzi in cantiere/miniera: posizione GPS, carburante e temperatura motore. Allarme su carburante basso o surriscaldamento.",
+  "map": true,
+  "metrics": [
+    {
+      "key": "fuel",
+      "label": "Carburante",
+      "unit": "%",
+      "min": 0,
+      "max": 100,
+      "normal": [
+        20,
+        90
+      ],
+      "widget": "gauge",
+      "alarm": 10
+    },
+    {
+      "key": "engine_temp",
+      "label": "Temp. motore",
+      "unit": "°C",
+      "min": 40,
+      "max": 130,
+      "normal": [
+        70,
+        95
+      ],
+      "widget": "gauge",
+      "alarm": 110
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}

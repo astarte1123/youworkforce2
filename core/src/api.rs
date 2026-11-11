@@ -6971,3 +6971,164 @@ pub async fn tb_device_history(State(st): State<AppState>, h: HeaderMap, Path(de
     let v: Value = r.json().await.unwrap_or_else(|_| json!({}));
     Ok(Json(v))
 }
+
+// ============================================================================
+// #8 Osservabilità: /metrics in formato Prometheus (aggregati, nessun dato per-tenant
+// sensibile). Protezione opzionale via YW_METRICS_TOKEN (Bearer). GET -> CSRF-exempt.
+// ============================================================================
+pub async fn metrics(State(st): State<AppState>, h: HeaderMap) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if let Ok(tok) = std::env::var("YW_METRICS_TOKEN") {
+        if !tok.is_empty() {
+            let ok = h.get("authorization").and_then(|v| v.to_str().ok())
+                .map(|s| s == format!("Bearer {tok}")).unwrap_or(false);
+            if !ok { return (StatusCode::UNAUTHORIZED, "unauthorized").into_response(); }
+        }
+    }
+    let c = |p: &sqlx::PgPool, sql: &'static str| {
+        let p = p.clone();
+        async move { sqlx::query_scalar::<_, i64>(sql).fetch_one(&p).await.unwrap_or(0) }
+    };
+    let tenants   = c(&st.owner_pool, "SELECT count(*) FROM app.tenants").await;
+    let users     = c(&st.owner_pool, "SELECT count(*) FROM app.users").await;
+    let inc_open  = c(&st.owner_pool, "SELECT count(*) FROM app.incidents WHERE state<>'chiuso'").await;
+    let inc_total = c(&st.owner_pool, "SELECT count(*) FROM app.incidents").await;
+    let inc_crit  = c(&st.owner_pool, "SELECT count(*) FROM app.incidents WHERE state<>'chiuso' AND priority>=3").await;
+    let ob_pending= c(&st.owner_pool, "SELECT count(*) FROM app.outbox WHERE state='pending'").await;
+    let ob_error  = c(&st.owner_pool, "SELECT count(*) FROM app.outbox WHERE state='error'").await;
+    let ob_stuck  = c(&st.owner_pool, "SELECT count(*) FROM app.outbox WHERE state='pending' AND attempts>=5").await;
+    let sess      = c(&st.owner_pool, "SELECT count(*) FROM app.sessions WHERE expires_at>now()").await;
+    let ck_active = c(&st.owner_pool, "SELECT count(*) FROM app.checkins WHERE state='attivo'").await;
+    let db_ok: i64 = if sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&st.owner_pool).await.is_ok() {1} else {0};
+    let ver = env!("CARGO_PKG_VERSION");
+    let body = format!(
+"# HELP yw_build_info Build info.
+# TYPE yw_build_info gauge
+yw_build_info{{version=\"{ver}\"}} 1
+# HELP yw_up Core process health (1=db reachable).
+# TYPE yw_up gauge
+yw_up {db_ok}
+# HELP yw_tenants_total Number of tenants.
+# TYPE yw_tenants_total gauge
+yw_tenants_total {tenants}
+# HELP yw_users_total Number of users.
+# TYPE yw_users_total gauge
+yw_users_total {users}
+# HELP yw_incidents_open Open incidents (state != chiuso).
+# TYPE yw_incidents_open gauge
+yw_incidents_open {inc_open}
+# HELP yw_incidents_critical_open Open incidents with priority >= 3.
+# TYPE yw_incidents_critical_open gauge
+yw_incidents_critical_open {inc_crit}
+# HELP yw_incidents_total Incidents ever created.
+# TYPE yw_incidents_total counter
+yw_incidents_total {inc_total}
+# HELP yw_outbox_pending Outbox messages waiting delivery.
+# TYPE yw_outbox_pending gauge
+yw_outbox_pending {ob_pending}
+# HELP yw_outbox_stuck Pending outbox messages retried >= 5 times.
+# TYPE yw_outbox_stuck gauge
+yw_outbox_stuck {ob_stuck}
+# HELP yw_outbox_error Outbox messages in error state (non-critical dropped).
+# TYPE yw_outbox_error gauge
+yw_outbox_error {ob_error}
+# HELP yw_sessions_active Active (non-expired) sessions.
+# TYPE yw_sessions_active gauge
+yw_sessions_active {sess}
+# HELP yw_checkins_active Active check-ins.
+# TYPE yw_checkins_active gauge
+yw_checkins_active {ck_active}
+");
+    ([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")], body).into_response()
+}
+
+// ============================================================================
+// #7 GDPR minimo: export dati personali (diritto d'accesso) + anonimizzazione
+// (diritto all'oblio, preservando integrità storica) + ritenzione (worker).
+// Solo tenant_admin. Audit di ogni operazione.
+// ============================================================================
+
+/// Export dei dati personali di un utente del tenant (JSON). Diritto d'accesso.
+pub async fn gdpr_export(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let u = sqlx::query("SELECT id,email,role,phone,created_at,anonymized_at FROM app.users WHERE id=$1 AND tenant_id=$2")
+        .bind(uid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "utente inesistente"))?;
+    let profile = json!({
+        "id": u.get::<Uuid,_>("id"), "email": u.get::<String,_>("email"), "role": u.get::<String,_>("role"),
+        "phone": u.try_get::<Option<String>,_>("phone").ok().flatten(),
+        "created_at": u.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
+        "anonymized_at": u.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("anonymized_at").ok().flatten() });
+    let jrows = |rows: Vec<sqlx::postgres::PgRow>, f: &dyn Fn(&sqlx::postgres::PgRow)->Value| rows.iter().map(f).collect::<Vec<_>>();
+    let checkins = sqlx::query("SELECT id,state,created_at,due_at FROM app.checkins WHERE user_id=$1 AND tenant_id=$2 ORDER BY created_at DESC LIMIT 1000")
+        .bind(uid).bind(tid).fetch_all(&st.owner_pool).await.ok().unwrap_or_default();
+    let diary = sqlx::query("SELECT id,created_at,body FROM app.diary_entries WHERE user_id=$1 AND tenant_id=$2 ORDER BY created_at DESC LIMIT 1000")
+        .bind(uid).bind(tid).fetch_all(&st.owner_pool).await.ok().unwrap_or_default();
+    let oncall = sqlx::query("SELECT id,starts_at,ends_at,note FROM app.oncall WHERE user_id=$1 AND tenant_id=$2 ORDER BY starts_at DESC LIMIT 1000")
+        .bind(uid).bind(tid).fetch_all(&st.owner_pool).await.ok().unwrap_or_default();
+    let incidents = sqlx::query("SELECT id,etype,state,opened_at,closed_at FROM app.incidents WHERE assigned_user=$1 AND tenant_id=$2 ORDER BY opened_at DESC LIMIT 1000")
+        .bind(uid).bind(tid).fetch_all(&st.owner_pool).await.ok().unwrap_or_default();
+    audit(&st, tid, &s.email, "gdpr_export", json!({"user":uid})).await;
+    Ok(Json(json!({
+        "profile": profile,
+        "checkins": jrows(checkins, &|r| json!({"id":r.get::<Uuid,_>("id"),"state":r.get::<String,_>("state"),
+            "created_at":r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("created_at").ok().flatten(),
+            "due_at":r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("due_at").ok().flatten()})),
+        "diary": jrows(diary, &|r| json!({"id":r.get::<Uuid,_>("id"),
+            "created_at":r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
+            "body":r.try_get::<Option<String>,_>("body").ok().flatten()})),
+        "oncall": jrows(oncall, &|r| json!({"id":r.get::<Uuid,_>("id"),
+            "starts_at":r.get::<chrono::DateTime<chrono::Utc>,_>("starts_at"),
+            "ends_at":r.get::<chrono::DateTime<chrono::Utc>,_>("ends_at"),
+            "note":r.try_get::<Option<String>,_>("note").ok().flatten()})),
+        "incidents_assigned": jrows(incidents, &|r| json!({"id":r.get::<Uuid,_>("id"),"etype":r.get::<String,_>("etype"),
+            "state":r.get::<String,_>("state"),"opened_at":r.get::<chrono::DateTime<chrono::Utc>,_>("opened_at"),
+            "closed_at":r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("closed_at").ok().flatten()})),
+        "exported_at": st.clock.now(), "note": "dati personali dell'utente nel tenant"
+    })))
+}
+
+/// Anonimizza un utente (diritto all'oblio). Non elimina la riga per non rompere
+/// l'integrità storica degli incidenti: scrubba la PII e blocca il login.
+pub async fn gdpr_anonymize(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if uid == s.user_id { return Err(err(StatusCode::BAD_REQUEST, "non puoi anonimizzare te stesso")); }
+    let role: Option<String> = sqlx::query_scalar("SELECT role FROM app.users WHERE id=$1 AND tenant_id=$2")
+        .bind(uid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let role = role.ok_or_else(|| err(StatusCode::NOT_FOUND, "utente inesistente"))?;
+    if role == "tenant_admin" {
+        let admins: i64 = sqlx::query_scalar("SELECT count(*) FROM app.users WHERE tenant_id=$1 AND role='tenant_admin' AND anonymized_at IS NULL")
+            .bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
+        if admins <= 1 { return Err(err(StatusCode::BAD_REQUEST, "non puoi anonimizzare l'ultimo admin")); }
+    }
+    let open: i64 = sqlx::query_scalar("SELECT count(*) FROM app.incidents WHERE assigned_user=$1 AND state<>'chiuso'")
+        .bind(uid).fetch_one(&st.owner_pool).await.unwrap_or(0);
+    if open > 0 { return Err(err(StatusCode::CONFLICT, "l'utente ha incidenti aperti assegnati: riassegnali o chiudili prima")); }
+    let anon_email = format!("anon-{}@anonymized.invalid", &uid.to_string()[..8]);
+    let lock = auth::new_token();
+    sqlx::query("UPDATE app.users SET email=$2, phone=NULL, goalert_user_id=NULL, pass_hash=$3, anonymized_at=now() WHERE id=$1 AND tenant_id=$4")
+        .bind(uid).bind(&anon_email).bind(&lock).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
+    let _ = sqlx::query("UPDATE app.diary_entries SET body='[rimosso: anonimizzato]' WHERE user_id=$1 AND tenant_id=$2")
+        .bind(uid).bind(tid).execute(&st.owner_pool).await;
+    let _ = sqlx::query("DELETE FROM app.sessions WHERE user_id=$1").bind(uid).execute(&st.owner_pool).await;
+    audit(&st, tid, &s.email, "gdpr_anonymize", json!({"user":uid})).await;
+    Ok(Json(json!({"ok":true,"anonymized_email":anon_email})))
+}
+
+/// #7 Ritenzione: purga dati vecchi. Opt-in via YW_RETENTION_DAYS (0=off, default).
+/// Conservativa: elimina incidenti CHIUSI + eventi non referenziati + audit_log oltre N giorni.
+pub async fn purge_retention(st: &AppState) {
+    let days: i64 = std::env::var("YW_RETENTION_DAYS").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    if days <= 0 { return; }
+    let cutoff = st.clock.now() - chrono::Duration::days(days);
+    let _ = sqlx::query("DELETE FROM app.incident_timeline WHERE incident_id IN (SELECT id FROM app.incidents WHERE state='chiuso' AND closed_at < $1)")
+        .bind(cutoff).execute(&st.owner_pool).await;
+    let n_inc = sqlx::query("DELETE FROM app.incidents WHERE state='chiuso' AND closed_at < $1")
+        .bind(cutoff).execute(&st.owner_pool).await.map(|r| r.rows_affected()).unwrap_or(0);
+    let _ = sqlx::query("DELETE FROM app.events WHERE received_ts < $1 AND id NOT IN (SELECT event_id FROM app.incidents WHERE event_id IS NOT NULL)")
+        .bind(cutoff).execute(&st.owner_pool).await;
+    let _ = sqlx::query("DELETE FROM app.audit_log WHERE at < $1").bind(cutoff).execute(&st.owner_pool).await;
+    if n_inc > 0 { tracing::info!("retention: purgati {} incidenti chiusi oltre {} giorni", n_inc, days); }
+}

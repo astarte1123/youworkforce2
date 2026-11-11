@@ -1,0 +1,55 @@
+{
+  "code": "scada_pool",
+  "name": "SCADA Swimming Pool",
+  "source": "https://thingsboard.io/use-cases/scada-pool/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Sistemi piscina: pH, cloro, temperatura. Allarme su pH fuori banda o cloro basso.",
+  "map": false,
+  "metrics": [
+    {
+      "key": "ph",
+      "label": "pH",
+      "unit": "",
+      "min": 6.0,
+      "max": 8.5,
+      "normal": [
+        7.0,
+        7.6
+      ],
+      "widget": "gauge",
+      "alarm": 6.8
+    },
+    {
+      "key": "chlorine",
+      "label": "Cloro",
+      "unit": "mg/L",
+      "min": 0,
+      "max": 3,
+      "normal": [
+        1,
+        2
+      ],
+      "widget": "gauge",
+      "alarm": 0.5
+    },
+    {
+      "key": "temperature",
+      "label": "Temperatura",
+      "unit": "°C",
+      "min": 15,
+      "max": 40,
+      "normal": [
+        26,
+        30
+      ],
+      "widget": "line",
+      "alarm": 32
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}

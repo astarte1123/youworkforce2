@@ -1,0 +1,55 @@
+{
+  "code": "smart_farming",
+  "name": "Smart Farming",
+  "source": "https://thingsboard.io/use-cases/smart-farming/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Produzione agricola e strutture: umidità del suolo, temperatura (gelo), umidità aria. Allarme su suolo secco o gelo.",
+  "map": true,
+  "metrics": [
+    {
+      "key": "soil_moisture",
+      "label": "Umidità suolo",
+      "unit": "%",
+      "min": 0,
+      "max": 100,
+      "normal": [
+        25,
+        45
+      ],
+      "widget": "gauge",
+      "alarm": 20
+    },
+    {
+      "key": "temperature",
+      "label": "Temperatura",
+      "unit": "°C",
+      "min": -10,
+      "max": 45,
+      "normal": [
+        8,
+        28
+      ],
+      "widget": "gauge",
+      "alarm": 2
+    },
+    {
+      "key": "humidity",
+      "label": "Umidità",
+      "unit": "%",
+      "min": 0,
+      "max": 100,
+      "normal": [
+        40,
+        70
+      ],
+      "widget": "gauge",
+      "alarm": 90
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}

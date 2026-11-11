@@ -1,0 +1,68 @@
+{
+  "code": "air_quality",
+  "name": "Air Quality Monitoring",
+  "source": "https://thingsboard.io/use-cases/air-quality/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Qualità dell'aria su più sedi: PM2.5, CO₂, umidità, temperatura. Allarme su PM2.5 e CO₂ alte.",
+  "map": true,
+  "metrics": [
+    {
+      "key": "pm25",
+      "label": "PM2.5",
+      "unit": "µg/m³",
+      "min": 0,
+      "max": 200,
+      "normal": [
+        5,
+        25
+      ],
+      "widget": "gauge",
+      "alarm": 35
+    },
+    {
+      "key": "co2",
+      "label": "CO₂",
+      "unit": "ppm",
+      "min": 350,
+      "max": 2000,
+      "normal": [
+        400,
+        800
+      ],
+      "widget": "gauge",
+      "alarm": 1000
+    },
+    {
+      "key": "humidity",
+      "label": "Umidità",
+      "unit": "%",
+      "min": 0,
+      "max": 100,
+      "normal": [
+        40,
+        70
+      ],
+      "widget": "line",
+      "alarm": 90
+    },
+    {
+      "key": "temperature",
+      "label": "Temperatura",
+      "unit": "°C",
+      "min": -10,
+      "max": 50,
+      "normal": [
+        15,
+        30
+      ],
+      "widget": "line",
+      "alarm": 40
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}

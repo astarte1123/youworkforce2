@@ -1,0 +1,55 @@
+{
+  "code": "smart_metering",
+  "name": "Smart Metering",
+  "source": "https://thingsboard.io/use-cases/smart-metering/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Dati smart meter per consumo risorse: perdite, anomalie, frodi. Allarme su perdita o frode.",
+  "map": false,
+  "metrics": [
+    {
+      "key": "leak",
+      "label": "Perdita",
+      "unit": "",
+      "min": 0,
+      "max": 1,
+      "normal": [
+        0,
+        0
+      ],
+      "widget": "state",
+      "alarm": 1
+    },
+    {
+      "key": "fraud",
+      "label": "Frode",
+      "unit": "",
+      "min": 0,
+      "max": 1,
+      "normal": [
+        0,
+        0
+      ],
+      "widget": "state",
+      "alarm": 1
+    },
+    {
+      "key": "consumption",
+      "label": "Consumo",
+      "unit": "L",
+      "min": 0,
+      "max": 1500,
+      "normal": [
+        100,
+        700
+      ],
+      "widget": "line",
+      "alarm": 1000
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}

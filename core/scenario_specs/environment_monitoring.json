@@ -1,0 +1,55 @@
+{
+  "code": "environment_monitoring",
+  "name": "Environment Monitoring",
+  "source": "https://thingsboard.io/use-cases/environment-monitoring/",
+  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
+  "narrative": "Monitoraggio ambientale indoor/outdoor con sensori multipli per sede. Il cruscotto segue temperatura, umidità e CO₂; allarmi su caldo estremo e CO₂ alta.",
+  "map": false,
+  "metrics": [
+    {
+      "key": "temperature",
+      "label": "Temperatura",
+      "unit": "°C",
+      "min": -10,
+      "max": 50,
+      "normal": [
+        18,
+        26
+      ],
+      "widget": "gauge",
+      "alarm": 35
+    },
+    {
+      "key": "humidity",
+      "label": "Umidità",
+      "unit": "%",
+      "min": 0,
+      "max": 100,
+      "normal": [
+        40,
+        60
+      ],
+      "widget": "gauge",
+      "alarm": 85
+    },
+    {
+      "key": "co2",
+      "label": "CO₂",
+      "unit": "ppm",
+      "min": 350,
+      "max": 2500,
+      "normal": [
+        400,
+        800
+      ],
+      "widget": "gauge",
+      "alarm": 1500
+    }
+  ],
+  "kpis": [
+    "device_count",
+    "alarms_now",
+    "open_incidents",
+    "events_24h"
+  ]
+}
