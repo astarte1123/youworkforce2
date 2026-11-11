@@ -6356,6 +6356,29 @@ pub async fn oncall_settings_set(State(st): State<AppState>, h: HeaderMap, Json(
     Ok(Json(json!({"ok":true,"voice_fallback_on":voice_on,"voice_fallback_min":voice_min,"status_updates_on":status_on,"note":"applica con Sincronizza con GoAlert"})))
 }
 
+/// FASE 3 — motore di escalation del tenant (lettura, admin). 'goalert' = shadow; 'native' = cutover.
+pub async fn escalation_engine_get(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let engine = sqlx::query_scalar::<_, String>("SELECT escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_else(|| "goalert".into());
+    Ok(Json(json!({"engine":engine,
+        "note":"goalert=GoAlert motore (nativo in shadow); native=nativo autoritativo (consegna live+ack). GoAlert resta rete di sicurezza."})))
+}
+#[derive(Deserialize)] pub struct EngineReq { pub engine: String }
+/// FASE 3 — cutover/rollback del motore (superadmin). native|goalert. Operazione sulla catena di
+/// sicurezza: solo superadmin. Rollback = rimettere 'goalert' (immediato, GoAlert è sempre acceso).
+pub async fn escalation_engine_set(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<EngineReq>) -> R {
+    require_super(&st, &h).await?;
+    if b.engine != "goalert" && b.engine != "native" {
+        return Err(err(StatusCode::BAD_REQUEST, "engine deve essere 'goalert' o 'native'"));
+    }
+    sqlx::query("INSERT INTO app.tenant_oncall_cfg(tenant_id,escalation_engine) VALUES($1,$2) ON CONFLICT (tenant_id) DO UPDATE SET escalation_engine=EXCLUDED.escalation_engine,updated_at=now()")
+        .bind(tid).bind(&b.engine).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, "superadmin", "escalation_engine_set", json!({"engine":b.engine})).await;
+    Ok(Json(json!({"ok":true,"engine":b.engine})))
+}
+
 // ---- Recapiti GoAlert dei membri (stato verifica) ----
 pub async fn oncall_contacts(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
@@ -7437,9 +7460,43 @@ fn esc_delivery_policy(voice_on: bool, voice_min: i64, repeat: i64) -> (crate::e
     (EscPolicy{ steps, repeat: repeat.max(0) as u32 }, chans)
 }
 
-/// Runner di consegna in ombra per un tenant: per ogni incidente APERTO instradato a un gruppo,
-/// calcola l'on-call nativo e consegna la rung dovuta al SINK DI PROVA (`YW_ESC_SINK_URL`), con
-/// idempotenza su `esc_delivery_log`. Nessun carrier reale. GoAlert resta il motore.
+/// Sceglie l'adapter per un canale e consegna. LIVE (Twilio/Slack/relay) se abilitato, altrimenti
+/// sink/dry. Centralizza la selezione per riusarla sia sui recapiti on-call sia sul canale Slack.
+#[allow(clippy::too_many_arguments)]
+async fn esc_dispatch(
+    st: &AppState, channel: crate::delivery::Channel, to: &str, text: &str, body: &serde_json::Value,
+    live_on: bool, live_cfg: Option<&crate::delivery::TwilioCfg>, slack_token: &str, relay: &str,
+    sink: &str, public_base: &str,
+) -> crate::delivery::SinkResult {
+    use crate::delivery::Channel;
+    match channel {
+        Channel::Sms | Channel::Voice if live_on && live_cfg.is_some() => {
+            let action = format!("{}/api/ingress/twilio/voice", public_base.trim_end_matches('/'));
+            crate::delivery::deliver_twilio_live(&st.http, live_cfg.unwrap(), channel, to, text, &action).await
+        }
+        Channel::Email if !relay.trim().is_empty() => crate::delivery::deliver_email_relay(&st.http, relay, body).await,
+        Channel::Slack if !slack_token.trim().is_empty() => crate::delivery::deliver_slack_live(&st.http, slack_token, to, text).await,
+        _ => crate::delivery::deliver_to_sink(&st.http, sink, body).await,
+    }
+}
+
+/// Persiste l'esito di una consegna: su successo aggiorna la riga; su FALLIMENTO rimuove il claim
+/// così il prossimo giro ritenta (at-least-once, SOS mai perso) e logga in timeline.
+async fn esc_persist_delivery(st: &AppState, tid: Uuid, iid: Uuid, log_id: i64, channel: &str, res: &crate::delivery::SinkResult) {
+    if res.state == "failed" {
+        let _ = sqlx::query("DELETE FROM app.esc_delivery_log WHERE id=$1").bind(log_id).execute(&st.owner_pool).await;
+        let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_delivery_failed',$3)")
+            .bind(tid).bind(iid).bind(json!({"channel":channel,"detail":res.detail})).execute(&st.owner_pool).await;
+    } else {
+        let _ = sqlx::query("UPDATE app.esc_delivery_log SET state=$2,provider_ref=$3,detail=$4 WHERE id=$1")
+            .bind(log_id).bind(res.state).bind(res.provider_ref.clone()).bind(res.detail.clone()).execute(&st.owner_pool).await;
+    }
+}
+
+/// Runner di consegna per un tenant. In SHADOW (`escalation_engine='goalert'`, default) consegna al
+/// SINK di prova e NON tocca gli incidenti: GoAlert resta il motore. In CUTOVER
+/// (`escalation_engine='native'`, FASE 3) usa gli adapter live (se configurati) ed è autoritativo
+/// (l'ack applica la transizione). Idempotenza su `esc_delivery_log`; i fallimenti si ritentano.
 pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64, i64) {
     use crate::escalation::{self, AlertState, EscAction};
     let Some((base, cookie, _)) = goalert_session(st, tid).await else { return (0,0); };
@@ -7448,14 +7505,17 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
     let from = std::env::var("YW_ESC_FROM").unwrap_or_else(|_| "+10000000000".into());
     // adapter LIVE (gate): Twilio reale, Slack, relay email. Default OFF -> sink/dry.
     let live_cfg = crate::delivery::TwilioCfg::from_env();
-    let live_on = crate::delivery::TwilioCfg::live_enabled() && live_cfg.is_some();
     let slack_token = std::env::var("YW_ESC_SLACK_TOKEN").unwrap_or_default();
     let relay = std::env::var("YW_ESC_SMTP_RELAY_URL").unwrap_or_default();
     let public_base = std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_default();
-    // config vocale + repeat del tenant
-    let vrow = sqlx::query("SELECT voice_fallback_on,voice_fallback_min,esc_repeat FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
+    // config vocale + repeat + motore (FASE 3) del tenant
+    let vrow = sqlx::query("SELECT voice_fallback_on,voice_fallback_min,esc_repeat,escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
-    let (voice_on, voice_min, repeat) = vrow.map(|r| (r.get::<bool,_>("voice_fallback_on"), r.get::<i32,_>("voice_fallback_min") as i64, r.get::<i32,_>("esc_repeat") as i64)).unwrap_or((true,5,0));
+    let (voice_on, voice_min, repeat, engine) = vrow.map(|r| (r.get::<bool,_>("voice_fallback_on"), r.get::<i32,_>("voice_fallback_min") as i64, r.get::<i32,_>("esc_repeat") as i64, r.get::<String,_>("escalation_engine")))
+        .unwrap_or((true,5,0,"goalert".into()));
+    let native = engine == "native"; // FASE 3: nativo autoritativo per questo tenant
+    // in cutover usa gli adapter live se configurati; in shadow solo col gate globale.
+    let live_on = live_cfg.is_some() && (native || crate::delivery::TwilioCfg::live_enabled());
     let (policy, chans) = esc_delivery_policy(voice_on, voice_min, repeat);
     let last_step = policy.steps.len().saturating_sub(1) as i32;
 
@@ -7501,37 +7561,36 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
                 let oncall = esc_native_oncall_contacts(st, tid, gid, &base, &cookie, now).await;
                 let short = iid.to_string(); let short = &short[..8];
                 let text = format!("Allarme {etype} (incidente {short})");
-                for (_u, phone, email) in &oncall {
-                    let to = match channel {
-                        Channel::Email => Some(email.clone()),
-                        _ => phone.clone(),
-                    };
-                    let Some(to) = to.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else { continue };
+                // destinatari: recapiti on-call + (opz.) canale Slack del gruppo, una volta per step.
+                let mut targets: Vec<(Channel, String)> = oncall.iter().filter_map(|(_u, phone, email)| {
+                    match channel { Channel::Email => email.clone().into(), _ => phone.clone() }
+                        .map(|s: String| s.trim().to_string()).filter(|s| !s.is_empty()).map(|to| (channel, to))
+                }).collect();
+                // Slack per-gruppo: sul PRIMO step (idx 0) se configurato e notifiche attive.
+                if idx == 0 {
+                    if let Some(sr) = sqlx::query("SELECT slack_channel_id,slack_notify FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
+                        .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten() {
+                        let ch: Option<String> = sr.try_get("slack_channel_id").ok().flatten();
+                        let notify: String = sr.try_get("slack_notify").unwrap_or_else(|_| "off".into());
+                        if notify != "off" { if let Some(ch) = ch.filter(|s| !s.trim().is_empty()) { targets.push((Channel::Slack, ch)); } }
+                    }
+                }
+                for (chn, to) in &targets {
                     // IDEMPOTENZA: claim della rung (incl. attempt). Se gia' presente -> skip.
                     let claimed = sqlx::query("INSERT INTO app.esc_delivery_log(tenant_id,incident_id,step,channel,to_value,attempt,state) VALUES($1,$2,$3,$4,$5,$6,'queued') ON CONFLICT (tenant_id,incident_id,step,channel,to_value,attempt) DO NOTHING RETURNING id")
-                        .bind(tid).bind(iid).bind(idx as i32).bind(channel.as_str()).bind(&to).bind(attempt).fetch_optional(&st.owner_pool).await.ok().flatten();
+                        .bind(tid).bind(iid).bind(idx as i32).bind(chn.as_str()).bind(to).bind(attempt).fetch_optional(&st.owner_pool).await.ok().flatten();
                     let Some(logrow) = claimed else { continue };
                     let log_id: i64 = logrow.get("id");
-                    let body = crate::delivery::request_body(channel, &from, &to, &text, &iid.to_string(), idx as i64);
-                    // selezione adapter: LIVE se gate attivo, altrimenti sink/dry.
-                    let res = match channel {
-                        Channel::Sms | Channel::Voice if live_on => {
-                            let action = format!("{}/api/ingress/twilio/voice", public_base.trim_end_matches('/'));
-                            crate::delivery::deliver_twilio_live(&st.http, live_cfg.as_ref().unwrap(), channel, &to, &text, &action).await
-                        }
-                        Channel::Email if !relay.trim().is_empty() => crate::delivery::deliver_email_relay(&st.http, &relay, &body).await,
-                        Channel::Slack if !slack_token.trim().is_empty() => crate::delivery::deliver_slack_live(&st.http, &slack_token, &to, &text).await,
-                        _ => crate::delivery::deliver_to_sink(&st.http, &sink, &body).await,
-                    };
-                    let _ = sqlx::query("UPDATE app.esc_delivery_log SET state=$2,provider_ref=$3,detail=$4 WHERE id=$1")
-                        .bind(log_id).bind(res.state).bind(res.provider_ref).bind(res.detail).execute(&st.owner_pool).await;
+                    let body = crate::delivery::request_body(*chn, &from, to, &text, &iid.to_string(), idx as i64);
+                    let res = esc_dispatch(st, *chn, to, &text, &body, live_on, live_cfg.as_ref(), &slack_token, &relay, &sink, &public_base).await;
+                    esc_persist_delivery(st, tid, iid, log_id, chn.as_str(), &res).await;
                     delivered += 1;
                 }
                 // avanza/semina lo stato alla rung appena sparata (repeat_count aggiornato)
                 let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,repeat_count,status) VALUES($1,$2,$3,$4,$5,'unack') ON CONFLICT (tenant_id,incident_id) DO UPDATE SET step=$3,step_fired_at=$4,repeat_count=$5,updated_at=now()")
                     .bind(tid).bind(iid).bind(idx as i32).bind(now).bind(new_rc).execute(&st.owner_pool).await;
                 let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_shadow_delivery',$3)")
-                    .bind(tid).bind(iid).bind(json!({"step":idx,"channel":channel.as_str(),"attempt":attempt,"recipients":oncall.len(),"live":live_on})).execute(&st.owner_pool).await;
+                    .bind(tid).bind(iid).bind(json!({"step":idx,"channel":channel.as_str(),"attempt":attempt,"targets":targets.len(),"live":live_on,"engine":engine})).execute(&st.owner_pool).await;
             }
         }
     }
@@ -7611,9 +7670,14 @@ async fn esc_apply_ack(st: &AppState, tid: Uuid, iid: Uuid, action: &str, via: &
     let status = if action == "close" { "closed" } else { "ack" };
     let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,status) VALUES($1,$2,0,now(),$3) ON CONFLICT (tenant_id,incident_id) DO UPDATE SET status=$3,updated_at=now()")
         .bind(tid).bind(iid).bind(status).execute(&st.owner_pool).await;
+    // applica la transizione reale se il tenant è in CUTOVER (escalation_engine='native', FASE 3)
+    // oppure col gate globale YW_ESC_ACK_APPLY=1. In shadow (goalert) NON tocca l'incidente.
+    let native = sqlx::query_scalar::<_, String>("SELECT escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().as_deref() == Some("native");
+    let apply = native || std::env::var("YW_ESC_ACK_APPLY").ok().as_deref() == Some("1");
     let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_ack_inbound',$3)")
-        .bind(tid).bind(iid).bind(json!({"action":action,"via":via,"applied": std::env::var("YW_ESC_ACK_APPLY").ok().as_deref()==Some("1")})).execute(&st.owner_pool).await;
-    if std::env::var("YW_ESC_ACK_APPLY").ok().as_deref() == Some("1") {
+        .bind(tid).bind(iid).bind(json!({"action":action,"via":via,"applied":apply})).execute(&st.owner_pool).await;
+    if apply {
         if action == "close" {
             let _ = sqlx::query("UPDATE app.incidents SET state='chiuso', closed_at=now() WHERE id=$1 AND tenant_id=$2 AND state<>'chiuso'").bind(iid).bind(tid).execute(&st.owner_pool).await;
         } else {

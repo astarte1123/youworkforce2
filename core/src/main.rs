@@ -56,6 +56,9 @@ fn tb_parity_routes() -> Router<AppState> {
         // #4 escalation nativo FASE 2 (consegna in ombra verso sink di prova): report + trigger
         .route("/api/escalation/delivery", get(api::escalation_delivery_report))
         .route("/api/escalation/delivery/run", post(api::escalation_delivery_run))
+        // FASE 3 cutover: lettura motore (admin) + set/rollback (superadmin)
+        .route("/api/escalation/engine", get(api::escalation_engine_get))
+        .route("/api/superadmin/tenants/:id/escalation-engine", post(api::escalation_engine_set))
         // ack inbound Twilio (firma validata; CSRF-exempt come /api/ingress/*)
         .route("/api/ingress/twilio/sms", post(api::twilio_ingress_sms))
         .route("/api/ingress/twilio/voice", post(api::twilio_ingress_voice))
