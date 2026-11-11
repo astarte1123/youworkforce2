@@ -103,9 +103,18 @@ Nessun effetto esterno, modulo non wirato (GoAlert resta il motore). Limite noto
 (fuso/DST da applicare a monte / fase successiva). Prossimo: Fase 1 shadow (calcolo in parallelo a
 GoAlert + diff).
 
-**Fase 1 — Shadow mode.** Per ogni alert reale, il motore nativo calcola *chi/quando* in parallelo
-a GoAlert e **logga** la decisione (`esc_shadow_log`) senza consegnare. Confronto automatico
-GoAlert-vs-nativo su tenant pilota (globex). Obiettivo: 0 divergenze su N giorni.
+**Fase 1 — Shadow mode. ✅ IN ESERCIZIO** (mig 0052 `esc_shadow_log`). Il worker (`escalation_shadow_scan`,
+~ogni 5 min) e il trigger manuale (`POST /api/escalation/shadow/run`) calcolano l'on-call nativo
+(`esc_build_schedule` dalla stessa config di `sync_goalert` → `escalation::Schedule::on_call_at`) e lo
+confrontano con l'on-call corrente di GoAlert (`service.onCallUsers.userName` = email), loggando match/diff.
+Report: `GET /api/escalation/shadow` (match-rate 7gg + ultime divergenze). **Nessuna consegna**, GoAlert
+resta il motore. Verificato su globex: gruppo mode 'tutti' → **match**; gruppo 'turni' weekly → **diff
+rilevato** (native idx1=sh2 vs GoAlert activeUserIndex=0=sh1, nextHandoff 2026-11-16).
+**DIVERGENZA NOTA DA RICONCILIARE (prossima iterazione shadow):** parità dell'indice nelle rotation
+*weekly* vs l'algoritmo GoAlert (allineamento handoff in TZ Europe/Rome). La riconciliazione richiede la
+logica rotation di GoAlert (non va forzata con un off-by-one cieco: romperebbe daily/hourly). Override
+(assenze) non ancora modellati lato nativo → seconda fonte di diff attesa. Obiettivo invariato: 0
+divergenze su N giorni prima del cutover.
 
 **Fase 2 — Consegna in ombra.** Adapter Twilio/SMTP/Slack attivi ma verso **sink di prova**
 (receiver webhook come `goalert-delivery.sh`): verifichiamo consegna reale + ack inbound, ancora

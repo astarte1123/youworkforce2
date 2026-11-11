@@ -30,6 +30,8 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     if n % 7 == 0 { api::goalert_ack_sync(st).await; }
     // #7 ritenzione GDPR (opt-in YW_RETENTION_DAYS): ~ogni ora (1800 tick * 2s)
     if n % 1800 == 0 { api::purge_retention(st).await; }
+    // #4 escalation nativo FASE 1 (shadow): confronto nativo vs GoAlert ~ogni 5 min, nessuna consegna
+    if n % 150 == 0 { api::escalation_shadow_scan(st).await; }
     Ok(())
 }
 

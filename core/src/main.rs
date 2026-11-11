@@ -49,6 +49,9 @@ fn tb_parity_routes() -> Router<AppState> {
         // #7 GDPR
         .route("/api/gdpr/export/:uid", get(api::gdpr_export))
         .route("/api/gdpr/anonymize/:uid", post(api::gdpr_anonymize))
+        // #4 escalation nativo FASE 1 (shadow): report + trigger manuale (nessuna consegna)
+        .route("/api/escalation/shadow", get(api::escalation_shadow_report))
+        .route("/api/escalation/shadow/run", post(api::escalation_shadow_run))
 }
 
 #[tokio::main]
