@@ -25,6 +25,7 @@ const DEVICE_MODS=['loneworker','traccar','iot','thingsboard'];
 const NAV = [
   {k:'dashboard', t:'Dashboard', ico:'home', roles:null},
   {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker']},
+  {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker']},
   {k:'mappa',     t:'Mappa', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor'},
   {k:'piantine',  t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor'},
   {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar']},
@@ -174,7 +175,7 @@ function route(){
   let k=(location.hash.replace('#/','')||'dashboard');
   if(!visibleNav().some(n=>n.k===k)) k=visibleNav()[0].k;
   setActive(k); const v=$('#view'); v.innerHTML='<div class="col"><div class="skel" style="height:90px"></div><div class="skel" style="height:260px"></div></div>';
-  ({dashboard:vDashboard,centrale:vCentrale,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
+  ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
     dispositivi:vDispositivi,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente,cruscotti:vCruscotti}[k]||vDashboard)(v);
 }
 
@@ -256,13 +257,29 @@ async function vCentrale(v){
 async function aiCheckinAnomaly(btn){ const box=$('#aiCkOut'); if(!box)return; btn.disabled=true; box.innerHTML='<div class="small mut" style="padding:0 16px 8px">youworker.ai analizza i check-in…</div>';
   try{ const r=await api('/checkin/ai-anomaly'); box.innerHTML=`<div class="card pad" style="margin:0 16px 10px;background:var(--brand-soft)"><div class="small mut">✦ youworker.ai (${r.count} mancati check-in / 14gg)</div><div style="white-space:pre-wrap;margin-top:4px">${esc(r.analysis)}</div></div>`; }
   catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad);padding:0 16px 8px">${esc(e.message)}</div>`; } finally{ btn.disabled=false; } }
+// Vista reperibile/responsabile: gli incidenti aperti che devono prendere in carico.
+// Il reperibile riceve l'escalation (SMS/voce) e qui vede e gestisce l'allarme.
+async function vMieiAllarmi(v){
+  const [I,OC]=await Promise.all([api('/incidents').catch(()=>[]), api('/oncall-now').catch(()=>({available:false}))]);
+  const aperti=I.filter(i=>i.state!=='chiuso');
+  const onc = OC.available ? `<span class="chip s-attivo" title="reperibili di turno">📞 di turno: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
+  v.innerHTML=`<div class="page-h"><div><h1>I miei allarmi</h1><div class="mut">${aperti.length} aperti · prendi in carico e chiudi</div></div><div>${onc}</div></div>
+  <div class="col" style="gap:10px">${aperti.map(i=>`
+    <div class="card clk" data-inc="${i.id}" style="padding:14px;border-left:4px solid ${i.priority>=3?'var(--bad)':i.priority>=2?'#ea580c':'var(--line)'}">
+      <div class="spread"><b>${esc(etLab(i.etype))}</b>${chip(i.state)}</div>
+      <div class="small mut" style="margin-top:4px">${esc(i.site||'sede n/d')}${i.assignee?' · 👤 '+esc(i.assignee):''}</div>
+      <div class="small" style="margin-top:6px;color:var(--brand)">Tocca per gestire →</div>
+    </div>`).join('')||`<div class="card pad empty">${ICON.check}<div>Nessun allarme aperto. Tutto tranquillo.</div></div>`}</div>`;
+  bindRows(v);
+}
 async function openIncident(id){
+  const canResp=can(['operatore','tenant_admin','reperibile']);
   const [list,tl,users]=await Promise.all([api('/incidents'),api('/incidents/'+id+'/timeline').catch(()=>[]),
     can(['operatore','tenant_admin'])?api('/users').catch(()=>[]):Promise.resolve([])]);
   const i=list.find(x=>x.id===id)||{};
   const canOp=can(['operatore','tenant_admin']);
-  const acts = (i.state==='aperto'&&canOp)?`<button class="btn block" onclick="incAck('${id}')">Prendi in carico</button>`
-    :(i.state==='preso_in_carico'&&canOp)?`<button class="btn ok block" onclick="incClose('${id}')">Chiudi con esito</button>`
+  const acts = (i.state==='aperto'&&canResp)?`<button class="btn block" onclick="incAck('${id}')">Prendi in carico</button>`
+    :(i.state==='preso_in_carico'&&canResp)?`<button class="btn ok block" onclick="incClose('${id}')">Chiudi con esito</button>`
     :`<div class="chip">${esc(i.outcome||'nessuna azione disponibile')}</div>`;
   const ops=users.filter(u=>['operatore','tenant_admin','reperibile'].includes(u.role));
   const assignBox = canOp?`<div class="small mut" style="margin-top:14px">Assegna a operatore</div>

@@ -4705,7 +4705,8 @@ pub async fn incident_timeline(State(st): State<AppState>, h: HeaderMap, Path(ii
 
 pub async fn ack_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") {
+    // il reperibile è il destinatario dell'escalation: deve poter prendere in carico.
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"reperibile") {
         return Err(err(StatusCode::FORBIDDEN, "role cannot ack"));
     }
     guard_incident_site(&st, &s, iid).await?;
@@ -4725,7 +4726,7 @@ pub async fn ack_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): P
 pub struct CloseReq { pub outcome: String }
 pub async fn close_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>, Json(b): Json<CloseReq>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") {
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"reperibile") {
         return Err(err(StatusCode::FORBIDDEN, "role cannot close"));
     }
     guard_incident_site(&st, &s, iid).await?;

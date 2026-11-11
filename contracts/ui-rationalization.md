@@ -52,10 +52,11 @@ Tre fusioni strutturali: **Piantine → tab dentro Mappa** (segmented `Allarmi �
 - **Problemi:** **bottone morto** "Chiedi ai documenti" (toast "non implementato"); **due bottoni dettatura** affiancati; `oComplete` via `prompt()` (ambiente più vincolato); **unico scroll lungo** con 4 sezioni temporali; SOS scrolla via; check-in chiede di digitare i minuti + chip jargon.
 - **Proposta (ergonomia mobile):** **tab bar in basso (Oggi · Check-in · SOS · Diario)** con **SOS sempre ancorato** (barra rossa/FAB) raggiungibile da ogni tab; **eliminare "Chiedi ai documenti"** finché non c'è RAG; **un solo "🎤 Detta"** (sceglie server/browser STT da solo); **sostituire `oComplete` prompt()** con bottom-sheet a esiti preset; **check-in a chip preset** (15/30/60/custom) + stati in lingua piana; **banner offline globale**; redirect del `lavoratore` che entra in console → `/worker/`.
 
-## 7. reperibile — il buco funzionale
+## 7. reperibile — il buco funzionale — ✅ RISOLTO (commit vista "I miei allarmi")
 - **Obiettivo:** sapere quando è reperibile; ricevere/agire sugli allarmi escalati; note.
-- **Problema (strutturale):** gli incidenti possono essere *assegnati a* `reperibile` e GoAlert vi escala, ma **non ha una vista Centrale/incidenti** → la persona a cui l'allarme escala non può vederlo/agirlo in app (solo la notifica GoAlert). È il **principale buco UX funzionale**.
-- **Proposta:** una vista **"I miei allarmi"** (Centrale filtrata: incidenti assegnati a me / al mio gruppo) con drawer incidente ridotto alle azioni consentite; banner stato on-call da `/oncall-now`; accesso al Diario/note della PWA.
+- **Problema (era strutturale):** gli incidenti possono essere *assegnati a* `reperibile` e GoAlert vi escala, ma non aveva una vista incidenti → la persona a cui l'allarme escalava non poteva vederlo/agirlo in app (solo la notifica GoAlert).
+- **Soluzione implementata:** nuova voce menu **"I miei allarmi"** (`vMieiAllarmi`, ruoli `reperibile`+`responsabile`, modulo loneworker): lista incidenti aperti prioritizzati, badge on-call da `/oncall-now`, tocco → drawer incidente con **Prendi in carico** e **Chiudi con esito**. Backend: `ack_incident`/`close_incident` ora ammettono il ruolo `reperibile` (oltre a operatore/tenant_admin); `list_incidents` era già aperto (filtrato per sito). Drawer: `canResp=['operatore','tenant_admin','reperibile']` per ack/close; assegna/nota restano operatore/admin.
+- **Residuo:** integrazione con Diario/note della PWA lavoratore (opzionale).
 
 ## 8. auditor
 - **Obiettivo:** revisione sola lettura di allarmi, movimenti, lavoro, consuntivi, report (compliance).
@@ -81,7 +82,7 @@ Tre fusioni strutturali: **Piantine → tab dentro Mappa** (segmented `Allarmi �
 | 2 | Sostituire tutti i `prompt()`/`confirm()` nativi con askPrompt/askConfirm | Alto | Basso |
 | 3 | Raggruppare la nav in sezioni titolate + Impostazioni collassato | Alto | Basso |
 | 4 | Icona unica per ogni voce nav | Med-Alto | Banale |
-| 5 | Vista "I miei allarmi" per `reperibile` | Alto | Medio |
+| 5 | ✅ FATTO — Vista "I miei allarmi" per `reperibile` | Alto | Medio |
 | 6 | Tab bar PWA + SOS sempre ancorato | Alto | Medio |
 | 7 | Piantine dentro Mappa (tab) + mini-mappa nel drawer incidente | Alto | Medio |
 | 8 | Drawer incidente: un primario, resto sotto "Altre azioni", niente UUID | Alto | Medio |
