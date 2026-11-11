@@ -105,7 +105,8 @@ function tenantCard(t,mods){
       <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn" onclick="openAdmin('${t.id}',this)">⚙ Amministrazione</button>
         <button class="btn ghost" onclick="impersonate('${t.id}')">👤 Impersona admin</button>
         <button class="btn ghost" onclick="openTools('${t.id}',this)">Strumenti disponibili</button>
-        <button class="btn ghost cfgbtn" onclick="scnOpen('${t.id}',this)">Ambienti (casi d'uso)</button></div>
+        <button class="btn ghost cfgbtn" onclick="scnOpen('${t.id}',this)">Ambienti (casi d'uso)</button>
+        <button class="btn ghost cfgbtn" onclick="mapVisOpen('${t.id}',this)">Menu mappa</button></div>
       <div class="spread" style="margin:12px 0 5px"><div class="small mut" style="text-transform:uppercase;letter-spacing:.5px">Connessioni &amp; integrazioni</div><div id="integ_${t.id}" class="small mut">semaforo…</div></div>
       <div class="small mut" style="margin-bottom:6px">I motori integrati (GoAlert/Traccar/ThingsBoard) si configurano da soli dai default del prodotto. I pulsanti sotto servono solo per override o diagnosi. I provider AI sono esterni: richiedono la chiave del cliente.</div>
       <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn ghost" onclick="gaProvision('${t.id}',this)">Provisiona GoAlert</button>
@@ -365,6 +366,25 @@ async function scnOpen(tid,btn){
   if(box.dataset.open==='scn'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
   box.dataset.open='scn'; cfgExclusive(btn); btnOn(btn,true);
   scnRender(tid);
+}
+// Visibilità voci menu mappa (Mappa/Piantine) decisa dal superadmin: entrambe, una o nessuna.
+async function mapVisOpen(tid,btn){
+  const box=document.getElementById('cfg_'+tid);
+  if(box.dataset.open==='mapvis'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
+  box.dataset.open='mapvis'; cfgExclusive(btn); btnOn(btn,true); box.innerHTML='<div class="small mut">carico…</div>';
+  let v; try{ v=await api('/superadmin/tenants/'+tid+'/map-visibility'); }catch(e){ box.innerHTML='<div class="small" style="color:var(--bad)">'+e.message+'</div>'; return; }
+  box.innerHTML=`<div class="card" style="padding:12px"><div class="small mut" style="margin-bottom:8px">Quali voci di menu mappa vede l'admin del tenant (sezione Operations). Richiede un modulo dispositivi attivo (Traccar/ThingsBoard/IoT).</div>
+    <label style="display:block;margin-bottom:6px"><input type="checkbox" id="mv_out_${tid}" ${v.map_outdoor?'checked':''}> <b>Mappa</b> (outdoor)</label>
+    <label style="display:block;margin-bottom:10px"><input type="checkbox" id="mv_in_${tid}" ${v.map_indoor?'checked':''}> <b>Piantine</b> (indoor)</label>
+    <button class="btn small" onclick="mapVisSave('${tid}')">Salva</button>
+    <span id="mv_msg_${tid}" class="small mut" style="margin-left:8px"></span></div>`;
+}
+async function mapVisSave(tid){
+  const out=document.getElementById('mv_out_'+tid).checked, ind=document.getElementById('mv_in_'+tid).checked;
+  const msg=document.getElementById('mv_msg_'+tid); if(msg)msg.textContent='Salvo…';
+  try{ await api('/superadmin/tenants/'+tid+'/map-visibility',{method:'POST',body:JSON.stringify({map_outdoor:out,map_indoor:ind})});
+    toast('Visibilità menu mappa aggiornata','ok'); if(msg)msg.innerHTML='<span class="s-attivo">salvato</span> — l\'admin del tenant la vede al prossimo caricamento';
+  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
 }
 // Render del pannello scenari, indipendente dal toggle/pulsante (richiamabile dopo attiva/rimuovi).
 async function scnRender(tid){

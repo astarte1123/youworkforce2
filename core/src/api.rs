@@ -5078,6 +5078,31 @@ pub async fn ui_features(State(st): State<AppState>, h: HeaderMap) -> R {
     })))
 }
 
+/// Visibilità voci di menu mappa (superadmin): legge/scrive i flag view_mappa/view_piantine
+/// del tool traccar/alarm_map. Il superadmin decide se mostrare Mappa, Piantine, entrambe o nessuna.
+pub async fn super_map_visibility_get(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
+    require_super(&st, &h).await?;
+    let c = tool_config(&st, tid, "traccar", "alarm_map").await;
+    let on = |k: &str, d: bool| c.get(k).and_then(|v| v.as_str()).map(|v| v == "si").unwrap_or(d);
+    Ok(Json(json!({"map_outdoor": on("view_mappa", true), "map_indoor": on("view_piantine", false)})))
+}
+#[derive(Deserialize)] pub struct MapVisibility { pub map_outdoor: bool, pub map_indoor: bool }
+pub async fn super_map_visibility_set(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<MapVisibility>) -> R {
+    require_super(&st, &h).await?;
+    // merge preservando gli altri campi del tool alarm_map
+    let existing: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='traccar' AND tool_code='alarm_map'")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let mut obj = match existing { Some(Value::Object(m)) => m, _ => serde_json::Map::new() };
+    obj.insert("view_mappa".into(), json!(if b.map_outdoor {"si"} else {"no"}));
+    obj.insert("view_piantine".into(), json!(if b.map_indoor {"si"} else {"no"}));
+    let cfg = Value::Object(obj);
+    sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'traccar','alarm_map',$2,NULL)
+         ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config=EXCLUDED.config, updated_at=now()")
+        .bind(tid).bind(&cfg).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, "superadmin", "map_visibility_set", json!({"map_outdoor":b.map_outdoor,"map_indoor":b.map_indoor})).await;
+    Ok(Json(json!({"ok":true,"map_outdoor":b.map_outdoor,"map_indoor":b.map_indoor})))
+}
+
 /// SOS escalation policy (loneworker/sos_escalation): incident priority + repeat cadence.
 /// priority "alta"->3, "media"->2. repeat_seconds carried to the GoAlert connector payload.
 async fn sos_escalation(st: &AppState, tid: Uuid) -> (i32, i64) {
