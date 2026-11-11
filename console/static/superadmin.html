@@ -375,7 +375,9 @@ async function scnRender(tid){
   const applied=new Set(app.map(a=>a.code));
   const bySector={}; cat.forEach(s=>{ (bySector[s.sector]=bySector[s.sector]||[]).push(s); });
   let h=`<div class="card" style="padding:12px"><div class="small mut" style="margin-bottom:8px">Ambienti ispirati ai casi d'uso ThingsBoard. Attivare uno scenario abilita i moduli, inserisce il bundle di regole sensori e (se spuntato) crea device + sito demo. Rimozione pulita; i moduli restano abilitati.</div>
-    <label class="small mut" style="display:block;margin-bottom:8px"><input type="checkbox" id="scn_demo_${tid}" checked> crea anche device/sito demo</label>`;
+    <label class="small mut" style="display:block;margin-bottom:8px"><input type="checkbox" id="scn_demo_${tid}" checked> crea anche device/sito demo</label>
+    <div class="row" style="gap:6px;margin-bottom:8px"><button class="btn small" onclick="scnApplyAll('${tid}')">Attiva tutti (${cat.length})</button>
+      <button class="btn ghost small" onclick="scnRemoveAll('${tid}')">Rimuovi tutti${app.length?' ('+app.length+')':''}</button></div>`;
   Object.keys(bySector).sort().forEach(sec=>{
     h+=`<div class="small mut" style="margin:8px 0 4px;text-transform:uppercase;letter-spacing:.5px">${esc(sec)}</div>`;
     bySector[sec].forEach(s=>{ const on=applied.has(s.code);
@@ -395,6 +397,22 @@ async function scnApply(tid,code){
   const demo=document.getElementById('scn_demo_'+tid).checked; const msg=document.getElementById('scn_msg_'+tid); if(msg)msg.textContent='Attivo…';
   try{ const r=await api('/superadmin/tenants/'+tid+'/scenarios',{method:'POST',body:JSON.stringify({code,with_demo:demo})});
     toast('Scenario attivato ('+r.rules_added+' regole, '+r.devices_added+' device)','ok'); scnRender(tid);
+  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
+}
+async function scnApplyAll(tid){
+  const demo=document.getElementById('scn_demo_'+tid).checked; const msg=document.getElementById('scn_msg_'+tid); if(msg)msg.textContent='Attivo tutti gli ambienti…';
+  try{ const r=await api('/superadmin/tenants/'+tid+'/scenarios/bulk',{method:'POST',body:JSON.stringify({action:'apply',with_demo:demo})});
+    toast('Attivati '+r.applied+' ambienti ('+r.rules_added+' regole, '+r.devices_added+' device)','ok'); scnRender(tid);
+  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
+}
+// Rimozione di massa in due passi (no confirm() in webview): primo click arma, secondo conferma.
+async function scnRemoveAll(tid){
+  const msg=document.getElementById('scn_msg_'+tid);
+  if(window._scnArmAll!==tid){ window._scnArmAll=tid; if(msg)msg.innerHTML=`<span style="color:var(--bad)">Clicca di nuovo “Rimuovi tutti” per confermare la rimozione di TUTTI gli ambienti.</span>`;
+    setTimeout(()=>{ if(window._scnArmAll===tid) window._scnArmAll=null; }, 4000); return; }
+  window._scnArmAll=null; if(msg)msg.textContent='Rimuovo tutti gli ambienti…';
+  try{ const r=await api('/superadmin/tenants/'+tid+'/scenarios/bulk',{method:'POST',body:JSON.stringify({action:'remove'})});
+    toast('Rimossi '+r.removed+' ambienti ('+r.rules_removed+' regole)','ok'); scnRender(tid);
   }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
 }
 async function scnDemo(tid,code){

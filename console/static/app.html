@@ -29,7 +29,6 @@ const NAV = [
   {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker'], grp:'op'},
   {k:'mappa',     t:'Mappa', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'op'},
   {k:'piantine',  t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor', grp:'op'},
-  {k:'cruscotti', t:'Cruscotti IoT', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:['iot','thingsboard'], grp:'op'},
   {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar'], grp:'op'},
   {k:'ordini',    t:'Ordini di lavoro', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
   {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], mod:['consuntivi'], grp:'work'},
@@ -42,14 +41,20 @@ const NAV = [
   {k:'ai',        t:'AI · youworker.ai', ico:'sliders', roles:['tenant_admin'], mod:['assistant'], grp:'cfg'},
   {k:'moduli',    t:'Moduli', ico:'sliders', roles:['tenant_admin'], grp:'cfg'},
 ];
-const NAV_GROUPS=[['op','Operatività'],['work','Lavoro sul campo'],['cfg','Configurazione']];
+const NAV_GROUPS=[['op','Operatività'],['iot','IoT Dashboard'],['work','Lavoro sul campo'],['cfg','Configurazione']];
+// Cruscotti IoT attivi (ambienti/casi d'uso applicati al tenant): voci di menu dinamiche sotto
+// "IoT Dashboard". Se vuoto, il gruppo (e quindi il menu) non compare affatto.
+let SCENARIOS=[];
+function scenarioNavItems(){ return (SCENARIOS||[]).map(s=>({
+  k:'scn_'+s.code, t:s.name, ico:'home', roles:['operatore','tenant_admin','auditor'], grp:'iot', scenario:s.code })); }
+function allNav(){ return NAV.concat(scenarioNavItems()); }
 // nav raggruppata: intestazioni di sezione, salta i gruppi vuoti dopo i filtri ruolo/modulo.
 // ---- i18n (chrome): IT sorgente, EN opzionale. Le viste restano IT finché migrate. ----
 const I18N={ en:{
   app_subtitle:"Client console", lang:"Language", logout:"Sign out",
   login_tenant:"Tenant", login_tenant_host:"(from domain)", login_email:"Email",
   login_password:"Password", login_signin:"Sign in", login_quick:"Quick demo access (password <b>demo</b>):",
-  grp_op:"Operations", grp_work:"Field work", grp_cfg:"Configuration",
+  grp_op:"Operations", grp_iot:"IoT Dashboard", grp_work:"Field work", grp_cfg:"Configuration",
   "nav_dashboard":"Dashboard","nav_centrale":"Alarm center","nav_miei-allarmi":"My alarms",
   "nav_mappa":"Map","nav_piantine":"Floor plans","nav_cruscotti":"IoT dashboards","nav_report":"Reports",
   "nav_ordini":"Work orders","nav_consuntivi":"Timesheets","nav_turni":"Shifts","nav_agente":"AI agent",
@@ -74,7 +79,7 @@ function navHtml(){ const items=visibleNav(); let h='';
 const modOk = n => !n.mod || n.mod.some(m=>ACTIVE_MODS.has(m));
 const featOk = n => !n.feat || UI_FEAT[n.feat]!==false;
 const aiFeatOk = n => !n.aiFeat || AI_FEAT[n.aiFeat]===true;
-const visibleNav = ()=>NAV.filter(n=>(!n.roles||n.roles.includes(ME.role)) && modOk(n) && featOk(n) && aiFeatOk(n));
+const visibleNav = ()=>allNav().filter(n=>(!n.roles||n.roles.includes(ME.role)) && modOk(n) && featOk(n) && aiFeatOk(n));
 // carica stato moduli + feature flag UI del tenant (voci menu Mappa/Piantine configurabili dall'admin)
 let BRANDING={};
 async function loadCtx(){
@@ -82,6 +87,8 @@ async function loadCtx(){
   try{ const F=await api('/ui/features'); if(F&&typeof F==='object') UI_FEAT=F; }catch(e){}
   try{ const B=await api('/branding'); if(B&&typeof B==='object'){ BRANDING=B; applyBranding(B); } }catch(e){}
   try{ if(ACTIVE_MODS.has('assistant')){ const A=await api('/ai/features'); AI_FEAT=(A&&A.features)||{}; } }catch(e){ AI_FEAT={}; }
+  // cruscotti IoT attivi -> voci di menu dinamiche (vuoto => nessun menu "IoT Dashboard")
+  try{ SCENARIOS = await api('/scenarios') || []; }catch(e){ SCENARIOS=[]; }
 }
 // Branding per-tenant: sovrascrive i colori di base (default globale YouCo) via CSS vars su :root.
 function applyBranding(b){
@@ -201,14 +208,16 @@ function renderShell(){
 }
 function rebuildNav(){ const n=$('#nav'); if(n) n.innerHTML=navHtml(); }
 function setActive(k){ $$('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.k===k));
-  const n=NAV.find(x=>x.k===k); if(n&&$('#pageTitle'))$('#pageTitle').textContent=navLabel(n); }
+  const n=allNav().find(x=>x.k===k); if(n&&$('#pageTitle'))$('#pageTitle').textContent=navLabel(n); }
 
 function route(){
   let k=(location.hash.replace('#/','')||'dashboard');
   if(!visibleNav().some(n=>n.k===k)) k=visibleNav()[0].k;
   setActive(k); const v=$('#view'); v.innerHTML='<div class="col"><div class="skel" style="height:90px"></div><div class="skel" style="height:260px"></div></div>';
+  // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
+  if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente,cruscotti:vCruscotti}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -1757,16 +1766,15 @@ async function reportOpen(id){ try{ const r=await api('/ai/reports/'+id);
   }catch(e){ toast(e.message,'bad'); } }
 
 // ---------------- Cruscotti IoT (dashboard parametriche per scenario) ----------------
-async function vCruscotti(v){
-  let L=[]; try{ L=await api('/scenarios'); }catch(e){}
-  if(!L.length){ v.innerHTML=`<div class="page-h"><div><h1>Cruscotti IoT</h1><div class="mut">nessun ambiente attivo</div></div></div>
-    <div class="card pad"><div class="small mut">Nessun ambiente/caso d'uso attivo su questo tenant. Il superadmin li attiva da «Ambienti (casi d'uso)» nel pannello tenant.</div></div>`; return; }
-  v.innerHTML=`<div class="page-h"><div><h1>Cruscotti IoT</h1><div class="mut">${L.length} ambienti attivi</div></div></div>
-   <div class="row" id="scnTabs" style="gap:6px;flex-wrap:wrap;margin-bottom:14px">${L.map(s=>`<button class="btn ghost small" data-c="${s.code}" onclick="scnDashSel('${s.code}')">${esc(s.name)}</button>`).join('')}</div>
+// Dashboard di un singolo ambiente/caso d'uso (voce di menu dedicata sotto "IoT Dashboard").
+async function vScenarioOne(v, code){
+  const s=(SCENARIOS||[]).find(x=>x.code===code);
+  if(!s){ v.innerHTML=`<div class="page-h"><div><h1>Cruscotto</h1><div class="mut">ambiente non attivo</div></div></div>
+    <div class="card pad"><div class="small mut">Questo ambiente non è attivo su questo tenant.</div></div>`; return; }
+  v.innerHTML=`<div class="page-h"><div><h1>${esc(s.name)}</h1><div class="mut">${esc(s.sector||'')} · cruscotto IoT</div></div></div>
    <div id="dashBox"></div>`;
-  scnDashSel(L[0].code);
+  renderScenarioDash(code);
 }
-function scnDashSel(code){ $$('#scnTabs button').forEach(b=>b.classList.toggle('on',b.dataset.c===code)); renderScenarioDash(code); }
 function fmtNum(x){ return (Math.round(x*10)/10).toString(); }
 let _sparkId=0;
 function spark(series,color){ if(!series||series.length<2)return'';

@@ -1525,9 +1525,14 @@ pub struct ApplyScenario { pub code: String, pub with_demo: Option<bool> }
 /// Applica uno scenario a un tenant: abilita moduli + inserisce regole + (opz.) demo.
 pub async fn super_apply_scenario(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<ApplyScenario>) -> R {
     require_super(&st, &h).await?;
+    let (code, rules_added, devices_added, modules) = scenario_apply_inner(&st, tid, &b.code, b.with_demo.unwrap_or(false)).await?;
+    Ok(Json(json!({"ok":true,"code":code,"modules":modules,"rules_added":rules_added,"devices_added":devices_added})))
+}
+/// Logica pura di applicazione di uno scenario (riusata da apply singolo e bulk).
+/// Ritorna (code, rules_added, devices_added, modules).
+async fn scenario_apply_inner(st: &AppState, tid: Uuid, code: &str, with_demo: bool) -> Result<(String, i64, i64, Vec<&'static str>), (StatusCode, String)> {
     let cat = scenario_catalog();
-    let scn = cat.iter().find(|s| s.code==b.code).ok_or_else(|| err(StatusCode::BAD_REQUEST, "scenario sconosciuto"))?;
-    let with_demo = b.with_demo.unwrap_or(false);
+    let scn = cat.iter().find(|s| s.code==code).ok_or_else(|| err(StatusCode::BAD_REQUEST, "scenario sconosciuto"))?;
     // 1) moduli
     for m in &scn.modules {
         sqlx::query("INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES($1,$2,'attivo')
@@ -1572,13 +1577,18 @@ pub async fn super_apply_scenario(State(st): State<AppState>, h: HeaderMap, Path
     sqlx::query("INSERT INTO app.tenant_scenarios(tenant_id,scenario_code,with_demo,applied_by) VALUES($1,$2,$3,'superadmin')
         ON CONFLICT (tenant_id,scenario_code) DO UPDATE SET with_demo=EXCLUDED.with_demo, applied_by='superadmin', applied_at=now()")
         .bind(tid).bind(&scn.code).bind(with_demo).execute(&st.owner_pool).await.map_err(ise)?;
-    audit(&st, tid, "superadmin", "scenario_apply", json!({"code":scn.code,"with_demo":with_demo,"rules_added":rules_added,"devices_added":devices_added})).await;
-    Ok(Json(json!({"ok":true,"code":scn.code,"modules":scn.modules,"rules_added":rules_added,"devices_added":devices_added})))
+    audit(st, tid, "superadmin", "scenario_apply", json!({"code":scn.code,"with_demo":with_demo,"rules_added":rules_added,"devices_added":devices_added})).await;
+    Ok((scn.code.to_string(), rules_added, devices_added, scn.modules.clone()))
 }
 /// Rimuove uno scenario: regole del bundle + device demo (se non referenziati). I moduli
 /// restano abilitati (potrebbero servire ad altri scenari/uso del tenant).
 pub async fn super_remove_scenario(State(st): State<AppState>, h: HeaderMap, Path((tid,code)): Path<(Uuid,String)>) -> R {
     require_super(&st, &h).await?;
+    let (rules, devs) = scenario_remove_inner(&st, tid, &code).await?;
+    Ok(Json(json!({"ok":true,"rules_removed":rules,"devices_removed":devs,"note":"moduli lasciati abilitati"})))
+}
+/// Logica pura di rimozione di uno scenario (riusata da remove singolo e bulk). Ritorna (regole, device).
+async fn scenario_remove_inner(st: &AppState, tid: Uuid, code: &str) -> Result<(u64, u64), (StatusCode, String)> {
     let rules = sqlx::query("DELETE FROM app.sensor_rules WHERE tenant_id=$1 AND label LIKE $2")
         .bind(tid).bind(format!("scn:{}:%", code)).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
     // device demo solo se non referenziati da eventi (FK-safe)
@@ -1586,9 +1596,39 @@ pub async fn super_remove_scenario(State(st): State<AppState>, h: HeaderMap, Pat
         AND id NOT IN (SELECT device_id FROM app.events WHERE device_id IS NOT NULL)")
         .bind(tid).bind(format!("scn-{}-%", code)).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
     sqlx::query("DELETE FROM app.tenant_scenarios WHERE tenant_id=$1 AND scenario_code=$2")
-        .bind(tid).bind(&code).execute(&st.owner_pool).await.map_err(ise)?;
-    audit(&st, tid, "superadmin", "scenario_remove", json!({"code":code,"rules_removed":rules,"devices_removed":devs})).await;
-    Ok(Json(json!({"ok":true,"rules_removed":rules,"devices_removed":devs,"note":"moduli lasciati abilitati"})))
+        .bind(tid).bind(code).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(st, tid, "superadmin", "scenario_remove", json!({"code":code,"rules_removed":rules,"devices_removed":devs})).await;
+    Ok((rules, devs))
+}
+
+/// Bulk: attiva TUTTI gli ambienti del catalogo, o li rimuove tutti. Chiude il buco "non si
+/// riesce ad attivarli/disattivarli tutti". `action`: apply|remove; `with_demo` solo per apply.
+#[derive(Deserialize)] pub struct BulkScenarios { pub action: String, pub with_demo: Option<bool> }
+pub async fn super_bulk_scenarios(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<BulkScenarios>) -> R {
+    require_super(&st, &h).await?;
+    match b.action.as_str() {
+        "apply" => {
+            let with_demo = b.with_demo.unwrap_or(false);
+            let (mut n, mut rules, mut devs) = (0i64, 0i64, 0i64);
+            for s in scenario_catalog() {
+                let (_c, r, d, _m) = scenario_apply_inner(&st, tid, s.code, with_demo).await?;
+                n += 1; rules += r; devs += d;
+            }
+            Ok(Json(json!({"ok":true,"action":"apply","applied":n,"rules_added":rules,"devices_added":devs})))
+        }
+        "remove" => {
+            // rimuove solo quelli effettivamente applicati al tenant
+            let codes: Vec<String> = sqlx::query_scalar("SELECT scenario_code FROM app.tenant_scenarios WHERE tenant_id=$1")
+                .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+            let (mut n, mut rules, mut devs) = (0i64, 0u64, 0u64);
+            for code in &codes {
+                let (r, d) = scenario_remove_inner(&st, tid, code).await?;
+                n += 1; rules += r; devs += d;
+            }
+            Ok(Json(json!({"ok":true,"action":"remove","removed":n,"rules_removed":rules,"devices_removed":devs,"note":"moduli lasciati abilitati"})))
+        }
+        _ => Err(err(StatusCode::BAD_REQUEST, "action deve essere 'apply' o 'remove'")),
+    }
 }
 
 // Valori demo derivati da una regola: uno che la fa scattare, uno "normale" che non scatta.
