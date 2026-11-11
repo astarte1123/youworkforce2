@@ -360,7 +360,8 @@ const ETYPE_LAB={sos:'SOS / richiesta soccorso',man_down:'Uomo a terra (man down
   accensione_motore:'Accensione motore',spegnimento_motore:'Spegnimento motore',
   manutenzione_richiesta:'Manutenzione richiesta',manutenzione_richiesta_critico:'Manutenzione richiesta (critico)',
   cambio_conducente:'Cambio conducente',media_ricevuto:'Media ricevuto',attraversamento_geofence:'Attraversamento geofence',
-  esito_comando:'Esito comando',device_moving:'In movimento',device_offline:'Dispositivo offline',device_alarm:'Allarme dispositivo',traccar_event:'Evento Traccar'};
+  esito_comando:'Esito comando',device_moving:'In movimento',device_offline:'Dispositivo offline',device_alarm:'Allarme dispositivo',traccar_event:'Evento Traccar',
+  sensore_critico:'Sensore critico',allarme_sensore:'Allarme sensore (ThingsBoard)',telemetria:'Telemetria'};
 function etLab(e){ return ETYPE_LAB[e]||e; }
 function fmtD(s){ return s? new Date(s).toLocaleString('it-IT') : '—'; }
 function fmtResp(sec){ if(sec==null) return '—'; return sec>=60 ? Math.floor(sec/60)+'m '+(sec%60)+'s' : sec+'s'; }
@@ -1502,8 +1503,75 @@ async function renderTbHealth(){
       <span>Incidenti ultimo pull: <b>${s.alarm_count??'—'}</b></span>
       <span>Ultimo OK: <b>${s.last_ok_at?new Date(s.last_ok_at).toLocaleString('it-IT'):'—'}</b></span></div>
     ${s.last_error?`<div class="small" style="color:var(--bad);margin-top:6px">⚠ ${esc(s.last_error)}</div>`:''}
-    <div class="small mut" style="margin-top:6px">Pull e push convergono sullo stesso motore regole sensori e sulla stessa catena incidenti. Config e sincronizzazione dal pannello superadmin.</div></div>`;
+    <div class="small mut" style="margin-top:6px">Pull e push convergono sullo stesso motore regole sensori e sulla stessa catena incidenti. La connessione è gestita dal superadmin; l'operatività dal tenant admin.</div>
+    ${can(['tenant_admin'])?`<div class="row" style="gap:8px;margin-top:10px">
+      <button class="btn ghost small" onclick="tbSync(this)">🔄 Sincronizza ora</button>
+      <button class="btn ghost small" onclick="tbAdvanced(this)">🛠 ThingsBoard avanzato</button></div>
+      <div id="tbSyncOut" class="small" style="margin-top:6px"></div><div id="tbAdvOut"></div>`:''}</div>`;
 }
+async function tbSync(btn){ const out=$('#tbSyncOut'); if(btn){btn.disabled=true;btn.textContent='Sincronizzo…';}
+  try{ const r=await api('/thingsboard/sync',{method:'POST'});
+    if(out) out.innerHTML=`<span style="color:var(--ok,green)">✓ ${r.device_count} device · ${r.alarm_count} incidenti</span>`; toast('ThingsBoard sincronizzato','ok');
+  }catch(e){ if(out) out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; toast(e.message,'bad'); }
+  finally{ if(btn){btn.disabled=false;btn.textContent='🔄 Sincronizza ora';} }
+}
+const TB_SEV=['CRITICAL','MAJOR','MINOR','WARNING','INDETERMINATE'];
+const TB_SEV_LAB={CRITICAL:'Critico',MAJOR:'Maggiore',MINOR:'Minore',WARNING:'Avviso',INDETERMINATE:'Indeterminato'};
+async function tbAdvanced(btn){
+  const out=$('#tbAdvOut'); if(!out)return;
+  if(out.dataset.open){ out.innerHTML=''; out.dataset.open=''; return; } out.dataset.open='1';
+  out.innerHTML='<div class="small mut" style="margin-top:8px">Carico…</div>';
+  try{
+    const [pol,inv]=await Promise.all([api('/thingsboard/alarm-policy').catch(()=>({severity:{}})),api('/thingsboard/devices').catch(()=>({devices:[]}))]);
+    const ev=pol.severity||{};
+    const polRows=TB_SEV.map(k=>`<div class="row small" style="justify-content:space-between;gap:8px;padding:3px 0"><span>${TB_SEV_LAB[k]}</span>
+      <select id="tbp_${k}" class="small">
+        <option value="ignora" ${ev[k]==='ignora'?'selected':''}>ignora</option>
+        <option value="registra" ${ev[k]==='registra'?'selected':''}>registra</option>
+        <option value="critico" ${ev[k]==='critico'?'selected':''}>critico (allarme)</option></select></div>`).join('');
+    const devs=inv.devices||[];
+    const devRows=devs.map(d=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+      <div class="spread"><b class="small">${esc(d.name)}</b><span class="small mut">${esc(d.tb_type||'')}</span></div>
+      <div class="row" style="gap:5px;margin-top:5px;flex-wrap:wrap">
+        <button class="btn ghost small" onclick="tbAttrs('${d.id}','${esc(d.name)}')">Attributi</button>
+        <button class="btn ghost small" onclick="tbRpc('${d.id}','${esc(d.name)}')">Comando (RPC)</button>
+        <button class="btn ghost small" onclick="tbShared('${d.id}','${esc(d.name)}')">Config remota</button>
+        <button class="btn ghost small" onclick="tbHist('${d.id}','${esc(d.name)}')">Storico</button></div>
+      <div id="tbDevOut_${d.id}" class="small" style="margin-top:6px"></div></div>`).join('')||'<div class="small mut">Nessun device. Premi Sincronizza ora.</div>';
+    out.innerHTML=`<div class="card pad" style="margin-top:10px;background:var(--bg2)">
+      <details open><summary style="cursor:pointer;font-weight:600">Policy allarmi (per severità TB)</summary>
+        <div class="small mut" style="margin:6px 0">Gli allarmi nativi di ThingsBoard entrano come incidenti secondo questa policy. <b>critico</b> = allarme + escalation.</div>
+        ${polRows}<button class="btn small" style="margin-top:8px" onclick="tbPolicySave(this)">Salva policy</button></details>
+      <details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">Device ThingsBoard (${devs.length})</summary>
+        <div style="margin-top:8px">${devRows}</div></details>
+    </div>`;
+  }catch(e){ out.innerHTML='<div class="small" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
+}
+async function tbPolicySave(btn){ const severity={}; TB_SEV.forEach(k=>{ const el=$('#tbp_'+k); if(el) severity[k]=el.value; });
+  try{ await api('/thingsboard/alarm-policy',{method:'POST',body:JSON.stringify({severity})}); toast('Policy salvata','ok'); }catch(e){ toast(e.message,'bad'); } }
+async function tbAttrs(id,name){ const out=$('#tbDevOut_'+id); out.innerHTML='Carico…';
+  try{ const a=await api('/thingsboard/devices/'+id+'/attributes'); const arr=Array.isArray(a)?a:[];
+    out.innerHTML = arr.length? '<table class="table"><tbody>'+arr.slice(0,30).map(x=>`<tr><td class="mono small">${esc(x.key)}</td><td class="small">${esc(String(x.value))}</td></tr>`).join('')+'</tbody></table>' : '<span class="mut">Nessun attributo.</span>';
+  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function tbRpc(id,name){ const method=await askPrompt('Metodo RPC (es. setGpioStatus):'); if(!method)return;
+  const paramsRaw=await askPrompt('Parametri JSON (es. {"pin":1,"value":true}) — vuoto = {}:'); let params={};
+  if(paramsRaw){ try{ params=JSON.parse(paramsRaw); }catch(e){ toast('JSON non valido','bad'); return; } }
+  const out=$('#tbDevOut_'+id); out.innerHTML='Invio…';
+  try{ const r=await api('/thingsboard/devices/'+id+'/rpc',{method:'POST',body:JSON.stringify({method,params,oneway:true})});
+    out.innerHTML = r.ok? '<span style="color:var(--ok,green)">✓ comando inviato</span>' : `<span style="color:var(--warn,#b45309)">HTTP ${r.status} (device offline?)</span>`;
+  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function tbShared(id,name){ const raw=await askPrompt('Config remota (shared attributes) JSON, es. {"reportInterval":60}:'); if(!raw)return;
+  let attributes; try{ attributes=JSON.parse(raw); }catch(e){ toast('JSON non valido','bad'); return; }
+  const out=$('#tbDevOut_'+id); out.innerHTML='Invio…';
+  try{ await api('/thingsboard/devices/'+id+'/shared-attributes',{method:'POST',body:JSON.stringify({attributes})}); out.innerHTML='<span style="color:var(--ok,green)">✓ config inviata al device</span>'; toast('Config remota inviata','ok'); }
+  catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function tbHist(id,name){ const keys=await askPrompt('Chiavi telemetria (separate da virgola, es. temperature,humidity):'); if(!keys)return;
+  const to=Date.now(), from=to-7*864e5;
+  const out=$('#tbDevOut_'+id); out.innerHTML='Carico…';
+  try{ const d=await api('/thingsboard/devices/'+id+'/history?keys='+encodeURIComponent(keys)+'&from='+from+'&to='+to);
+    const ks=Object.keys(d||{});
+    out.innerHTML = ks.length? ks.map(k=>`<div class="small"><b>${esc(k)}</b>: ${(d[k]||[]).length} punti (ultimo: ${esc(String((d[k]||[])[0]?.value??'—'))})</div>`).join('') : '<span class="mut">Nessun dato nel periodo.</span>';
+  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
 const RULE_OPS=[['>=','≥'],['<=','≤'],['>','>'],['<','<'],['==','='],['is_true','è vero'],['is_false','è falso']];
 const RULE_ETYPES=['sensore_critico','batteria_critica','man_down','perdita_alimentazione','telemetria'];
 const RULE_ET_LAB={sensore_critico:'Sensore critico',batteria_critica:'Batteria critica',man_down:'Uomo a terra',perdita_alimentazione:'Perdita alimentazione',telemetria:'Telemetria (nessun allarme)'};

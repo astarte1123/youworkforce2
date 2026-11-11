@@ -1225,7 +1225,53 @@ fn tb_latest_payload(ts: &Value) -> Value {
     Value::Object(m)
 }
 
-/// Esegue un pull completo TB per il tenant: specchio device + telemetria -> regole.
+/// Policy per severità degli alarm nativi ThingsBoard. Default safety-first.
+/// Ritorna handling ∈ ignora|registra|critico per una severità TB.
+fn tb_sev_default(sev: &str) -> &'static str {
+    match sev {
+        "CRITICAL" | "MAJOR" => "critico",
+        "MINOR" | "WARNING" => "registra",
+        _ => "ignora", // INDETERMINATE
+    }
+}
+async fn tb_alarm_policy(st: &AppState, tid: Uuid) -> serde_json::Map<String,Value> {
+    let cur: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='thingsboard' AND tool_code='severity_gate'")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    cur.and_then(|v| v.get("tb_alarm_severity").and_then(|s| s.as_object().cloned())).unwrap_or_default()
+}
+/// Pull degli alarm nativi TB attivi -> incidenti, applicando la policy per severità.
+/// Dedup via idempotenza persist_ingest (idem = tb-alarm-{alarmId}).
+async fn tb_pull_alarms(st: &AppState, tid: Uuid, base: &str, hdr: &str) -> i64 {
+    let pol = tb_alarm_policy(st, tid).await;
+    let url = format!("{base}/api/v2/alarms?pageSize=200&page=0&sortProperty=createdTime&sortOrder=DESC&statusList=ACTIVE");
+    let resp = match st.http.get(&url).header("X-Authorization", hdr).send().await { Ok(r) => r, Err(_) => return 0 };
+    if !resp.status().is_success() { return 0; }
+    let v: Value = match resp.json().await { Ok(v) => v, Err(_) => return 0 };
+    let empty = vec![];
+    let data = v.get("data").and_then(|d| d.as_array()).unwrap_or(&empty);
+    let mut n = 0i64;
+    for a in data {
+        let sev = a.get("severity").and_then(|x| x.as_str()).unwrap_or("INDETERMINATE");
+        let handling = pol.get(sev).and_then(|x| x.as_str()).unwrap_or_else(|| tb_sev_default(sev));
+        if handling == "ignora" { continue; }
+        let atype = a.get("type").and_then(|x| x.as_str()).unwrap_or("alarm");
+        let dev_name = a.get("originatorName").and_then(|x| x.as_str()).unwrap_or("");
+        let alarm_id = a.get("id").and_then(|i| i.get("id")).and_then(|x| x.as_str()).unwrap_or("");
+        if alarm_id.is_empty() { continue; }
+        let etype = if handling == "critico" { "sensore_critico" } else { "allarme_sensore" };
+        let idem = format!("tb-alarm-{alarm_id}");
+        let payload = json!({"tb_alarm_type":atype,"tb_severity":sev,"device":dev_name,"source":"thingsboard_alarm"});
+        let r = persist_ingest(st, tid, Normalized{
+            source:"thingsboard".into(), source_event:idem.clone(), idem:idem.clone(),
+            etype:etype.into(), device_external_id:if dev_name.is_empty(){None}else{Some(dev_name.to_string())},
+            site_name:None, lat:None, lon:None, accuracy_m:None, correlation:idem, payload,
+            indoor:false, beacon_uid:None, zone:None }).await;
+        if r.is_ok() { n += 1; }
+    }
+    n
+}
+
+/// Esegue un pull completo TB per il tenant: specchio device + telemetria -> regole + alarm TB.
 /// Ritorna (device specchiati, incidenti alzati). Non critico: errori -> Err stringa.
 pub async fn tb_pull_once(st: &AppState, tid: Uuid) -> Result<(i64, i64), String> {
     let (base, user, pass) = tb_conn(st, tid).await.ok_or("connessione ThingsBoard non configurata")?;
@@ -1276,6 +1322,8 @@ pub async fn tb_pull_once(st: &AppState, tid: Uuid) -> Result<(i64, i64), String
             }
         }}
     }
+    // #1 alarm nativi TB -> incidenti (policy per severità)
+    alarms += tb_pull_alarms(st, tid, &base, &hdr).await;
     Ok((dev_count, alarms))
 }
 
@@ -6753,4 +6801,172 @@ pub async fn traccar_accumulators_set(State(st): State<AppState>, h: HeaderMap, 
     if !r.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("Traccar: HTTP {}", r.status().as_u16()))); }
     audit(&st, tid, &s.email, "traccar_accumulators", json!({"device":dev})).await;
     Ok(Json(json!({"ok":true})))
+}
+
+// ============================================================================
+// ThingsBoard parity: operatività lato tenant_admin (inventario, sync, alarm
+// policy, attributi, RPC, shared-attr, storico). Connessione resta superadmin.
+// ============================================================================
+
+/// Sessione TB del tenant: (base, header Bearer) o errore parlante.
+async fn tb_session_or_err(st: &AppState, tid: Uuid) -> Result<(String,String),(StatusCode,String)> {
+    let (base, user, pass) = tb_conn(st, tid).await
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione ThingsBoard non configurata (chiedi al superadmin)"))?;
+    let token = tb_login(&st.http, &base, &user, &pass).await
+        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "login ThingsBoard fallito"))?;
+    Ok((base, format!("Bearer {token}")))
+}
+/// Risolve il nostro device uuid -> tb_id (da devices.config).
+async fn tb_resolve_tbid(st: &AppState, tid: Uuid, dev: Uuid) -> Result<(String,String),(StatusCode,String)> {
+    let row = sqlx::query("SELECT external_id,config FROM app.devices WHERE id=$1 AND tenant_id=$2 AND source='thingsboard'")
+        .bind(dev).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "device ThingsBoard inesistente"))?;
+    let name: String = row.get("external_id");
+    let cfg: Value = row.try_get("config").unwrap_or(json!({}));
+    let tbid = cfg.get("tb_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if tbid.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "device non ancora sincronizzato (manca tb_id): esegui Sincronizza")); }
+    Ok((tbid, name))
+}
+
+// ---- Inventario device TB (tenant admin) ----
+pub async fn tb_devices_list(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "thingsboard").await?;
+    let rows = sqlx::query("SELECT id,external_id,label,config,updated_at FROM app.devices WHERE tenant_id=$1 AND source='thingsboard' ORDER BY external_id")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let devs: Vec<Value> = rows.iter().map(|r| {
+        let cfg: Value = r.try_get("config").unwrap_or(json!({}));
+        json!({"id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("external_id"),
+            "label":r.try_get::<Option<String>,_>("label").ok().flatten(),
+            "tb_id":cfg.get("tb_id").and_then(|v| v.as_str()),
+            "tb_type":cfg.get("type").and_then(|v| v.as_str()),
+            "updated_at":r.get::<chrono::DateTime<chrono::Utc>,_>("updated_at")})
+    }).collect();
+    let ps = sqlx::query("SELECT reachable,last_ok_at,device_count,alarm_count,last_error FROM app.thingsboard_poll_state WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let status = ps.map(|p| json!({"reachable":p.get::<bool,_>("reachable"),
+        "last_ok_at":p.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_ok_at").ok().flatten(),
+        "device_count":p.try_get::<Option<i64>,_>("device_count").ok().flatten(),
+        "alarm_count":p.try_get::<Option<i64>,_>("alarm_count").ok().flatten(),
+        "last_error":p.try_get::<Option<String>,_>("last_error").ok().flatten()})).unwrap_or(json!(null));
+    Ok(Json(json!({"devices":devs,"status":status})))
+}
+
+// ---- Sync manuale (tenant admin) ----
+pub async fn tb_sync_tenant(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "thingsboard").await?;
+    match tb_poll_now(&st, tid).await {
+        Ok((d,a)) => { audit(&st, tid, &s.email, "thingsboard_sync", json!({"devices":d,"alarms":a})).await;
+            Ok(Json(json!({"ok":true,"device_count":d,"alarm_count":a}))) }
+        Err(e) => Err(err(StatusCode::BAD_GATEWAY, &e)),
+    }
+}
+
+// ---- Alarm policy (severità -> ignora|registra|critico) ----
+const TB_SEVERITIES: &[&str] = &["CRITICAL","MAJOR","MINOR","WARNING","INDETERMINATE"];
+pub async fn tb_alarm_policy_get(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "thingsboard").await?;
+    let pol = tb_alarm_policy(&st, tid).await;
+    let mut out = serde_json::Map::new();
+    for &sev in TB_SEVERITIES {
+        let cur = pol.get(sev).and_then(|v| v.as_str()).unwrap_or_else(|| tb_sev_default(sev));
+        out.insert(sev.to_string(), json!(cur));
+    }
+    Ok(Json(json!({"severity":out})))
+}
+#[derive(Deserialize)] pub struct TbAlarmPolicyReq { pub severity: std::collections::HashMap<String,String> }
+pub async fn tb_alarm_policy_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<TbAlarmPolicyReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "thingsboard").await?;
+    for (k,v) in &b.severity {
+        if !TB_SEVERITIES.contains(&k.as_str()) { return Err(err(StatusCode::BAD_REQUEST, &format!("severità non valida: {k}"))); }
+        if !matches!(v.as_str(), "ignora"|"registra"|"critico") { return Err(err(StatusCode::BAD_REQUEST, &format!("handling non valido per {k}"))); }
+    }
+    let cur: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='thingsboard' AND tool_code='severity_gate'")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let mut cfg = cur.and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    let mut sevm = cfg.get("tb_alarm_severity").and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    for (k,v) in &b.severity { sevm.insert(k.clone(), json!(v)); }
+    cfg.insert("tb_alarm_severity".into(), Value::Object(sevm));
+    let cfg_v = Value::Object(cfg);
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'thingsboard','severity_gate',$2,$3) ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config=EXCLUDED.config,updated_by=EXCLUDED.updated_by,updated_at=now()")
+        .bind(tid).bind(&cfg_v).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "thingsboard_alarm_policy", json!({"n":b.severity.len()})).await;
+    Ok(Json(json!({"ok":true,"updated":b.severity.len()})))
+}
+
+// ---- Attributi del device (tutte le scope) ----
+pub async fn tb_device_attributes(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "thingsboard").await?;
+    let (base, hdr) = tb_session_or_err(&st, tid).await?;
+    let (tbid, _) = tb_resolve_tbid(&st, tid, dev).await?;
+    let r = st.http.get(format!("{base}/api/plugins/telemetry/DEVICE/{tbid}/values/attributes"))
+        .header("X-Authorization", &hdr).send().await.map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("ThingsBoard: {e}")))?;
+    let v: Value = r.json().await.unwrap_or_else(|_| json!([]));
+    Ok(Json(v))
+}
+
+// ---- Config remota: scrive shared attributes ----
+#[derive(Deserialize)] pub struct SharedAttrReq { pub attributes: Value }
+pub async fn tb_shared_attr_set(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>, Json(b): Json<SharedAttrReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "thingsboard").await?;
+    if !b.attributes.is_object() || b.attributes.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+        return Err(err(StatusCode::BAD_REQUEST, "attributes: oggetto non vuoto richiesto"));
+    }
+    let (base, hdr) = tb_session_or_err(&st, tid).await?;
+    let (tbid, _) = tb_resolve_tbid(&st, tid, dev).await?;
+    let r = st.http.post(format!("{base}/api/plugins/telemetry/DEVICE/{tbid}/attributes/SHARED_SCOPE"))
+        .header("X-Authorization", &hdr).json(&b.attributes).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("ThingsBoard: {e}")))?;
+    if !r.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("ThingsBoard: HTTP {}", r.status().as_u16()))); }
+    audit(&st, tid, &s.email, "thingsboard_shared_attr", json!({"device":dev})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---- RPC: comando al device (one-way / two-way) ----
+#[derive(Deserialize)] pub struct TbRpcReq { pub method: String, pub params: Option<Value>, pub oneway: Option<bool> }
+pub async fn tb_device_rpc(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>, Json(b): Json<TbRpcReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "thingsboard").await?;
+    if b.method.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "method richiesto")); }
+    let (base, hdr) = tb_session_or_err(&st, tid).await?;
+    let (tbid, _) = tb_resolve_tbid(&st, tid, dev).await?;
+    let way = if b.oneway.unwrap_or(true) { "oneway" } else { "twoway" };
+    let body = json!({"method":b.method,"params":b.params.clone().unwrap_or(json!({})),"timeout":5000});
+    let r = st.http.post(format!("{base}/api/plugins/rpc/{way}/{tbid}"))
+        .header("X-Authorization", &hdr).json(&body).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("ThingsBoard: {e}")))?;
+    let code = r.status().as_u16();
+    let txt = r.text().await.unwrap_or_default();
+    audit(&st, tid, &s.email, "thingsboard_rpc", json!({"device":dev,"method":b.method,"status":code})).await;
+    // 409 = device offline (comando non consegnato): lo riportiamo senza fallire la richiesta
+    Ok(Json(json!({"status":code,"ok":(200..300).contains(&code),"response":txt})))
+}
+
+// ---- Storico telemetria ----
+#[derive(Deserialize)] pub struct TbHistoryQuery { pub keys: String, pub from: i64, pub to: i64, pub interval: Option<i64>, pub agg: Option<String> }
+pub async fn tb_device_history(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>, axum::extract::Query(q): axum::extract::Query<TbHistoryQuery>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "thingsboard").await?;
+    let (base, hdr) = tb_session_or_err(&st, tid).await?;
+    let (tbid, _) = tb_resolve_tbid(&st, tid, dev).await?;
+    let keys = q.keys.replace(' ', "");
+    let mut url = format!("{base}/api/plugins/telemetry/DEVICE/{tbid}/values/timeseries?keys={keys}&startTs={}&endTs={}&limit=5000", q.from, q.to);
+    if let (Some(iv), Some(ag)) = (q.interval, q.agg.as_deref()) { url.push_str(&format!("&interval={iv}&agg={ag}")); }
+    let r = st.http.get(&url).header("X-Authorization", &hdr).send().await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("ThingsBoard: {e}")))?;
+    let v: Value = r.json().await.unwrap_or_else(|_| json!({}));
+    Ok(Json(v))
 }

@@ -33,6 +33,19 @@ async fn crypto_migrate(st: &AppState) -> anyhow::Result<()> {
 
 fn env(k: &str, d: &str) -> String { std::env::var(k).unwrap_or_else(|_| d.to_string()) }
 
+// ThingsBoard parity (tenant_admin): inventario, sync, alarm policy, attributi, RPC,
+// shared-attr, storico. Sub-router separato per contenere la profondità del tipo Router.
+fn tb_parity_routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/thingsboard/devices", get(api::tb_devices_list))
+        .route("/api/thingsboard/sync", post(api::tb_sync_tenant))
+        .route("/api/thingsboard/alarm-policy", get(api::tb_alarm_policy_get).post(api::tb_alarm_policy_set))
+        .route("/api/thingsboard/devices/:dev/attributes", get(api::tb_device_attributes))
+        .route("/api/thingsboard/devices/:dev/shared-attributes", post(api::tb_shared_attr_set))
+        .route("/api/thingsboard/devices/:dev/rpc", post(api::tb_device_rpc))
+        .route("/api/thingsboard/devices/:dev/history", get(api::tb_device_history))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter(
@@ -174,6 +187,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/teams/:tid/members/:uid", axum::routing::delete(api::remove_team_member))
         .route("/api/shift-plans", get(api::list_shift_plans).post(api::create_shift_plan))
         .route("/api/shift-plans/:id", post(api::shift_plan_action).delete(api::delete_shift_plan))
+        ;
+    // catena spezzata in più statement: una singola espressione .route()* troppo lunga
+    // fa esplodere lo stack di rustc in codegen (STATUS_STACK_BUFFER_OVERRUN su Windows).
+    let app = app
         .route("/api/oncall", get(api::list_oncall).post(api::create_oncall))
         .route("/api/oncall/:id", axum::routing::delete(api::delete_oncall))
         // GoAlert parity: impostazioni, recapiti+verifica, assenze, manutenzione, calendario
@@ -277,7 +294,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/ai/reports/:id", get(api::ai_report_get))
         .route("/api/incidents/:id/ai-summary", get(api::incident_ai_summary))
         .route("/api/sensor-rules/suggest", post(api::sensor_rules_suggest))
+        ;
+    let app = app
         .route("/api/thingsboard/status", get(api::thingsboard_status))
+        // ThingsBoard parity: sub-router separato (merge).
+        .merge(tb_parity_routes())
         .route("/api/scenarios", get(api::tenant_scenarios_list))
         .route("/api/scenarios/:code/dashboard", get(api::scenario_dashboard))
         .route("/api/scenarios/:code/ai-analysis", post(api::scenario_ai_analysis))
