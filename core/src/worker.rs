@@ -447,6 +447,21 @@ async fn drain_outbox(st: &AppState) -> anyhow::Result<()> {
             .bind(tid).bind(etype).fetch_optional(&st.owner_pool).await?.flatten()
             .unwrap_or_else(|| payload.get("integration_key").and_then(|v| v.as_str()).unwrap_or("").to_string());
 
+        // FASE 4 (cutover native): sopprime la notifica/chiusura GoAlert quando il nativo è
+        // autoritativo e ha un percorso di consegna reale. Per 'goalert_notify' scatena subito la
+        // consegna nativa (latenza ~drain, non il prossimo scan). GoAlert resta provisionato.
+        if (kind == "goalert_notify" || kind == "goalert_close") && crate::api::esc_suppress_goalert(st, tid).await {
+            sqlx::query("UPDATE app.outbox SET state='done' WHERE id=$1").bind(id).execute(&st.owner_pool).await?;
+            if let Some(iid) = incident_id {
+                let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'goalert_suppressed_native',$3)")
+                    .bind(tid).bind(iid).bind(json!({"outbox_kind":kind.clone()})).execute(&st.owner_pool).await;
+            }
+            if kind == "goalert_notify" {
+                let _ = crate::api::escalation_delivery_shadow_tenant(st, tid).await; // consegna nativa immediata (idempotente)
+            }
+            continue;
+        }
+
         // P1: chiusura alert (quando l'incidente è risolto da noi)
         if kind == "goalert_close" {
             let (ok, d) = goalert::close_notification(&st.http, &st.goalert_base, &key, summary, dedup).await;

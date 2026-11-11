@@ -6365,6 +6365,18 @@ pub async fn escalation_engine_get(State(st): State<AppState>, h: HeaderMap) -> 
     Ok(Json(json!({"engine":engine,
         "note":"goalert=GoAlert motore (nativo in shadow); native=nativo autoritativo (consegna live+ack). GoAlert resta rete di sicurezza."})))
 }
+/// FASE 4 (prep) — se il tenant è in cutover `native` E ha un percorso di consegna nativo reale,
+/// la notifica GoAlert va SOPPRESSA (niente doppio path). Guardia SOS: senza credenziali Twilio
+/// live (né override esplicito) NON si sopprime → GoAlert continua a pagare (rete di sicurezza).
+pub async fn esc_suppress_goalert(st: &AppState, tid: Uuid) -> bool {
+    let native = sqlx::query_scalar::<_, String>("SELECT escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().as_deref() == Some("native");
+    if !native { return false; }
+    let has_live = crate::delivery::TwilioCfg::from_env().is_some();
+    let force = std::env::var("YW_ESC_SUPPRESS_GOALERT").ok().as_deref() == Some("1");
+    has_live || force
+}
+
 #[derive(Deserialize)] pub struct EngineReq { pub engine: String }
 /// FASE 3 — cutover/rollback del motore (superadmin). native|goalert. Operazione sulla catena di
 /// sicurezza: solo superadmin. Rollback = rimettere 'goalert' (immediato, GoAlert è sempre acceso).
