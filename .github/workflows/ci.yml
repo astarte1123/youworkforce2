@@ -1,7 +1,9 @@
 name: ci
 on: [push, pull_request]
+
 jobs:
-  build-test:
+  # Gate obbligatorio: tutte le suite che richiedono solo core + Postgres (31 suite).
+  core:
     runs-on: ubuntu-latest
     services:
       db:
@@ -11,6 +13,12 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 3s
           --health-timeout 3s --health-retries 20
+    env:
+      YW_DB_OWNER: postgres://postgres:postgres@localhost:5432/youworkforce
+      YW_DB_RT: postgres://app_rt:app_rt_pw@localhost:5432/youworkforce
+      YW_SECRET_KEY: yw-ci-secret-key
+      TEST_CLOCK: "1"
+      YW_SEED_DEMO: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,10 +30,51 @@ jobs:
       - name: build console
         run: go build -o /tmp/console .
         working-directory: console
-      - name: run core + smoke
-        env:
-          YW_DB_OWNER: postgres://postgres:postgres@localhost:5432/youworkforce
-          YW_DB_RT: postgres://app_rt:app_rt_pw@localhost:5432/youworkforce
+      - name: start core
         run: |
-          ./core/target/release/yw-core & sleep 8
-          bash qa/smoke.sh
+          ./core/target/release/yw-core &
+          for i in $(seq 1 30); do curl -sf http://localhost:8080/health && break; sleep 1; done
+      - name: run core suites
+        run: MODE=core bash qa/run-all.sh
+
+  # Best-effort (non blocca): suite dei motori reali (GoAlert/Traccar/ThingsBoard).
+  # L'orchestrazione dei container è pesante; i fallimenti sono segnalati ma non bloccano.
+  engines:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      db:
+        image: postgres:18
+        env: { POSTGRES_PASSWORD: postgres, POSTGRES_DB: youworkforce }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+    env:
+      YW_DB_OWNER: postgres://postgres:postgres@localhost:5432/youworkforce
+      YW_DB_RT: postgres://app_rt:app_rt_pw@localhost:5432/youworkforce
+      YW_SECRET_KEY: yw-ci-secret-key
+      TEST_CLOCK: "1"
+      YW_SEED_DEMO: "1"
+      GOALERT_BASE: http://localhost:8082
+      TR: http://localhost:8083
+      TB: http://localhost:8084
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.25" }
+      - name: build core
+        run: cargo build --release
+        working-directory: core
+      - name: start engines (GoAlert / Traccar / ThingsBoard)
+        run: |
+          bash qa/run-goalert.sh || true
+          bash qa/run-traccar.sh || true
+          bash qa/run-thingsboard.sh || true
+      - name: start core (with GoAlert transport)
+        run: |
+          ./core/target/release/yw-core &
+          for i in $(seq 1 30); do curl -sf http://localhost:8080/health && break; sleep 1; done
+      - name: run engine suites (best-effort)
+        run: MODE=engines bash qa/run-all.sh

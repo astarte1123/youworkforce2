@@ -11,10 +11,14 @@ no(){ echo "FAIL  $1"; FAIL=$((FAIL+1)); }
 jv(){ python -c "import sys,json;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
 csrf(){ awk '$6=="yw_csrf"{print $7}' "$1" | tail -1; }
 
-# TB: assicura un alarm attivo CRITICAL su un device (per testare il pull)
+# TB: crea un alarm attivo CRITICAL con TIPO UNICO per run (TB dedup gli alarm per
+# (device,type): un tipo fisso darebbe lo stesso alarm id e il nostro event-dedup
+# salterebbe il pull su re-run). Tipo unico => alarm id nuovo => idem nuovo => incidente.
+ATYPE="QA-$$-$(date +%s)"
 TBTOK=$(curl -s -X POST "$TB/api/auth/login" -H 'content-type: application/json' -d "{\"username\":\"$TB_USER\",\"password\":\"$TB_PASS\"}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 DID1=$(curl -s -H "X-Authorization: Bearer $TBTOK" "$TB/api/tenant/devices?pageSize=1&page=0" | python -c "import sys,json;print(json.load(sys.stdin)['data'][0]['id']['id'])")
-curl -s -H "X-Authorization: Bearer $TBTOK" -X POST "$TB/api/alarm" -H 'content-type: application/json' -d "{\"originator\":{\"entityType\":\"DEVICE\",\"id\":\"$DID1\"},\"type\":\"QA High Temp\",\"severity\":\"CRITICAL\",\"status\":\"ACTIVE_UNACK\"}" >/dev/null
+curl -s -H "X-Authorization: Bearer $TBTOK" -X POST "$TB/api/alarm" -H 'content-type: application/json' -d "{\"originator\":{\"entityType\":\"DEVICE\",\"id\":\"$DID1\"},\"type\":\"$ATYPE\",\"severity\":\"CRITICAL\",\"status\":\"ACTIVE_UNACK\"}" >/dev/null
+sleep 1
 
 # superadmin: attiva modulo + connessione
 SJ=$(mktemp); curl -s -o /dev/null -c "$SJ" -X POST "$BASE/api/superadmin/login" -H 'content-type: application/json' -d '{"email":"admin@loneworker.eu","password":"admin"}'
