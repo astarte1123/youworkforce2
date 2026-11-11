@@ -95,6 +95,113 @@ pub async fn deliver_to_sink(http: &reqwest::Client, sink_url: &str, body: &Valu
     }
 }
 
+// --------------------------- Adapter LIVE (carrier reali) ---------------------------
+// Attivi solo col gate `YW_ESC_TWILIO_LIVE=1` (Twilio) / token presente (Slack). Default OFF:
+// in shadow non si tocca nessun carrier. Account Twilio NATIVO (env), separato dalla config
+// GoAlert per-tenant: un solo numero/credenziali per il motore nativo durante il pilota.
+
+/// Credenziali Twilio del motore nativo, da env. `None` se non configurate → live non disponibile.
+pub struct TwilioCfg { pub sid: String, pub auth: String, pub from: String }
+impl TwilioCfg {
+    pub fn from_env() -> Option<TwilioCfg> {
+        let sid = std::env::var("YW_ESC_TWILIO_SID").ok().filter(|s| !s.is_empty())?;
+        let auth = std::env::var("YW_ESC_TWILIO_AUTH").ok().filter(|s| !s.is_empty())?;
+        let from = std::env::var("YW_ESC_FROM").ok().filter(|s| !s.is_empty())?;
+        Some(TwilioCfg { sid, auth, from })
+    }
+    pub fn live_enabled() -> bool { std::env::var("YW_ESC_TWILIO_LIVE").ok().as_deref() == Some("1") }
+}
+
+/// Consegna REALE via Twilio REST. SMS → `Messages.json`; VOICE → `Calls.json` con TwiML inline
+/// (`<Gather action=gather_action>` per il DTMF di ack). Basic auth SID:AuthToken.
+pub async fn deliver_twilio_live(
+    http: &reqwest::Client, cfg: &TwilioCfg, channel: Channel, to: &str, text: &str, gather_action: &str,
+) -> SinkResult {
+    let (url, form): (String, Vec<(&str, String)>) = match channel {
+        Channel::Sms => (
+            format!("https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json", cfg.sid),
+            vec![("From", cfg.from.clone()), ("To", to.to_string()), ("Body", text.to_string())],
+        ),
+        Channel::Voice => {
+            let twiml = format!("<Response><Gather numDigits=\"1\" timeout=\"20\" action=\"{}\" method=\"POST\"><Say language=\"it-IT\">{}. Premi 1 per prendere in carico.</Say></Gather></Response>", xml_escape(gather_action), xml_escape(text));
+            (
+                format!("https://api.twilio.com/2010-04-01/Accounts/{}/Calls.json", cfg.sid),
+                vec![("From", cfg.from.clone()), ("To", to.to_string()), ("Twiml", twiml)],
+            )
+        }
+        _ => return SinkResult { state: "failed", provider_ref: None, detail: json!({"error":"canale non Twilio"}) },
+    };
+    match http.post(&url).basic_auth(&cfg.sid, Some(&cfg.auth)).form(&form).send().await {
+        Ok(resp) => {
+            let code = resp.status().as_u16();
+            let body: Value = resp.json().await.unwrap_or(json!({}));
+            let sid = body.get("sid").and_then(|x| x.as_str()).map(|s| s.to_string());
+            if (200..300).contains(&code) {
+                SinkResult { state: "live", provider_ref: sid, detail: json!({"http":code,"status":body.get("status")}) }
+            } else {
+                SinkResult { state: "failed", provider_ref: sid, detail: json!({"http":code,"twilio":body}) }
+            }
+        }
+        Err(e) => SinkResult { state: "failed", provider_ref: None, detail: json!({"error": e.to_string()}) },
+    }
+}
+
+/// Consegna REALE su Slack (`chat.postMessage`). Token da env `YW_ESC_SLACK_TOKEN`.
+pub async fn deliver_slack_live(http: &reqwest::Client, token: &str, channel: &str, text: &str) -> SinkResult {
+    match http.post("https://slack.com/api/chat.postMessage")
+        .bearer_auth(token).json(&json!({"channel":channel,"text":text})).send().await {
+        Ok(resp) => {
+            let body: Value = resp.json().await.unwrap_or(json!({}));
+            if body.get("ok").and_then(|x| x.as_bool()).unwrap_or(false) {
+                SinkResult { state: "live", provider_ref: body.get("ts").and_then(|x| x.as_str()).map(|s| s.to_string()), detail: json!({"slack":"ok"}) }
+            } else {
+                SinkResult { state: "failed", provider_ref: None, detail: json!({"slack_error": body.get("error")}) }
+            }
+        }
+        Err(e) => SinkResult { state: "failed", provider_ref: None, detail: json!({"error": e.to_string()}) },
+    }
+}
+
+/// Consegna email via relay HTTP (`YW_ESC_SMTP_RELAY_URL`: un webhook che inoltra a SMTP). Scelta
+/// deliberata per non introdurre una dipendenza SMTP pesante nel pilota; se il relay non è
+/// configurato l'email resta su sink/dry. Il corpo è lo stesso `request_body(Email,…)`.
+pub async fn deliver_email_relay(http: &reqwest::Client, relay_url: &str, body: &Value) -> SinkResult {
+    if relay_url.trim().is_empty() {
+        return SinkResult { state: "dry", provider_ref: None, detail: json!({"note":"nessun YW_ESC_SMTP_RELAY_URL: email non consegnata (dry)"}) };
+    }
+    match http.post(relay_url).json(body).send().await {
+        Ok(resp) => {
+            let code = resp.status().as_u16();
+            if (200..300).contains(&code) { SinkResult { state: "live", provider_ref: Some(format!("relay-{code}")), detail: json!({"http":code}) } }
+            else { SinkResult { state: "failed", provider_ref: None, detail: json!({"http":code}) } }
+        }
+        Err(e) => SinkResult { state: "failed", provider_ref: None, detail: json!({"error": e.to_string()}) },
+    }
+}
+
+// --------------------------- Verifica firma webhook Twilio ---------------------------
+
+/// Valida `X-Twilio-Signature`: HMAC-SHA1(AuthToken) su `url` + concat di (nome+valore) dei
+/// parametri POST ordinati per nome, poi base64. Replica l'algoritmo ufficiale Twilio.
+/// Confronto a tempo costante. Vedi https://www.twilio.com/docs/usage/security#validating-requests.
+pub fn verify_twilio_signature(auth_token: &str, url: &str, params: &[(String, String)], signature: &str) -> bool {
+    use hmac::{Hmac, Mac};
+    use base64::Engine;
+    let mut sorted: Vec<&(String, String)> = params.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut data = String::from(url);
+    for (k, v) in sorted { data.push_str(k); data.push_str(v); }
+    let Ok(mut mac) = Hmac::<sha1::Sha1>::new_from_slice(auth_token.as_bytes()) else { return false; };
+    mac.update(data.as_bytes());
+    let expected = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+    // confronto costante
+    let (a, b) = (expected.as_bytes(), signature.as_bytes());
+    if a.len() != b.len() { return false; }
+    let mut diff = 0u8;
+    for i in 0..a.len() { diff |= a[i] ^ b[i]; }
+    diff == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +252,20 @@ mod tests {
         assert_eq!(v.pointer("/twilio/resource").unwrap(), "Messages");
         assert_eq!(v.pointer("/twilio/Body").unwrap(), "ciao");
         assert_eq!(v["shadow"], true);
+    }
+    #[test]
+    fn twilio_signature_official_vector() {
+        // Vettore dalla doc Twilio (Security / Validating Requests).
+        let url = "https://mycompany.com/myapp.php?foo=1&bar=2";
+        let params: Vec<(String,String)> = vec![
+            ("CallSid","CA1234567890ABCDE"),("Caller","+14158675309"),("Digits","1234"),
+            ("From","+14158675309"),("To","+18005551212"),
+        ].into_iter().map(|(k,v)| (k.to_string(), v.to_string())).collect();
+        // atteso verificato con: openssl dgst -sha1 -hmac 12345 -binary | openssl base64
+        assert!(verify_twilio_signature("12345", url, &params, "RSOYDt4T1cUTdK1PDd93/VVr8B8="));
+        // firma errata -> rifiutata
+        assert!(!verify_twilio_signature("12345", url, &params, "wrongsignaturevalue=="));
+        // token errato -> rifiutata
+        assert!(!verify_twilio_signature("99999", url, &params, "RSOYDt4T1cUTdK1PDd93/VVr8B8="));
     }
 }

@@ -7423,7 +7423,7 @@ fn esc_status_from_incident(state: &str) -> crate::escalation::EscStatus {
 
 /// Timeline canali della ladder a livello tenant (SMS @0, VOICE dopo `voice_fallback_min`).
 /// Ritorna (policy per `tick`, canale di ogni step). repeat=0 in FASE 2 (nessuna ripetizione ancora).
-fn esc_delivery_policy(voice_on: bool, voice_min: i64) -> (crate::escalation::EscPolicy, Vec<crate::delivery::Channel>) {
+fn esc_delivery_policy(voice_on: bool, voice_min: i64, repeat: i64) -> (crate::escalation::EscPolicy, Vec<crate::delivery::Channel>) {
     use crate::escalation::{EscPolicy, EscStep};
     use crate::delivery::Channel;
     let mut steps = vec![]; let mut chans = vec![];
@@ -7434,7 +7434,7 @@ fn esc_delivery_policy(voice_on: bool, voice_min: i64) -> (crate::escalation::Es
     } else {
         steps.push(EscStep{ delay_s: 0, targets: vec![] }); chans.push(Channel::Sms);
     }
-    (EscPolicy{ steps, repeat: 0 }, chans)
+    (EscPolicy{ steps, repeat: repeat.max(0) as u32 }, chans)
 }
 
 /// Runner di consegna in ombra per un tenant: per ogni incidente APERTO instradato a un gruppo,
@@ -7446,11 +7446,18 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
     let now = chrono::Utc::now();
     let sink = std::env::var("YW_ESC_SINK_URL").unwrap_or_default();
     let from = std::env::var("YW_ESC_FROM").unwrap_or_else(|_| "+10000000000".into());
-    // config vocale del tenant
-    let vrow = sqlx::query("SELECT voice_fallback_on,voice_fallback_min FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
+    // adapter LIVE (gate): Twilio reale, Slack, relay email. Default OFF -> sink/dry.
+    let live_cfg = crate::delivery::TwilioCfg::from_env();
+    let live_on = crate::delivery::TwilioCfg::live_enabled() && live_cfg.is_some();
+    let slack_token = std::env::var("YW_ESC_SLACK_TOKEN").unwrap_or_default();
+    let relay = std::env::var("YW_ESC_SMTP_RELAY_URL").unwrap_or_default();
+    let public_base = std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_default();
+    // config vocale + repeat del tenant
+    let vrow = sqlx::query("SELECT voice_fallback_on,voice_fallback_min,esc_repeat FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
-    let (voice_on, voice_min) = vrow.map(|r| (r.get::<bool,_>("voice_fallback_on"), r.get::<i32,_>("voice_fallback_min") as i64)).unwrap_or((true,5));
-    let (policy, chans) = esc_delivery_policy(voice_on, voice_min);
+    let (voice_on, voice_min, repeat) = vrow.map(|r| (r.get::<bool,_>("voice_fallback_on"), r.get::<i32,_>("voice_fallback_min") as i64, r.get::<i32,_>("esc_repeat") as i64)).unwrap_or((true,5,0));
+    let (policy, chans) = esc_delivery_policy(voice_on, voice_min, repeat);
+    let last_step = policy.steps.len().saturating_sub(1) as i32;
 
     // incidenti aperti instradati a un gruppo nativo
     let incs = sqlx::query(
@@ -7485,32 +7492,46 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
             }
             EscAction::Wait => { /* delay non scaduto: niente */ }
             EscAction::FireStep(idx, _) => {
-                let channel = *chans.get(idx).unwrap_or(&crate::delivery::Channel::Sms);
+                use crate::delivery::Channel;
+                let channel = *chans.get(idx).unwrap_or(&Channel::Sms);
+                // repeat: tick ritorna FireStep(0) ripartendo dall'ultimo step -> nuovo giro.
+                let is_repeat_restart = idx == 0 && cur_step == last_step && cur_step >= 0;
+                let new_rc = if is_repeat_restart { rc + 1 } else { rc };
+                let attempt = new_rc; // il giro di repeat fa parte della chiave di idempotenza
                 let oncall = esc_native_oncall_contacts(st, tid, gid, &base, &cookie, now).await;
                 let short = iid.to_string(); let short = &short[..8];
                 let text = format!("Allarme {etype} (incidente {short})");
                 for (_u, phone, email) in &oncall {
                     let to = match channel {
-                        crate::delivery::Channel::Email => Some(email.clone()),
+                        Channel::Email => Some(email.clone()),
                         _ => phone.clone(),
                     };
                     let Some(to) = to.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else { continue };
-                    // IDEMPOTENZA: claim della rung. Se gia' presente -> skip (nessun doppio invio).
-                    let claimed = sqlx::query("INSERT INTO app.esc_delivery_log(tenant_id,incident_id,step,channel,to_value,state) VALUES($1,$2,$3,$4,$5,'queued') ON CONFLICT (tenant_id,incident_id,step,channel,to_value) DO NOTHING RETURNING id")
-                        .bind(tid).bind(iid).bind(idx as i32).bind(channel.as_str()).bind(&to).fetch_optional(&st.owner_pool).await.ok().flatten();
+                    // IDEMPOTENZA: claim della rung (incl. attempt). Se gia' presente -> skip.
+                    let claimed = sqlx::query("INSERT INTO app.esc_delivery_log(tenant_id,incident_id,step,channel,to_value,attempt,state) VALUES($1,$2,$3,$4,$5,$6,'queued') ON CONFLICT (tenant_id,incident_id,step,channel,to_value,attempt) DO NOTHING RETURNING id")
+                        .bind(tid).bind(iid).bind(idx as i32).bind(channel.as_str()).bind(&to).bind(attempt).fetch_optional(&st.owner_pool).await.ok().flatten();
                     let Some(logrow) = claimed else { continue };
                     let log_id: i64 = logrow.get("id");
                     let body = crate::delivery::request_body(channel, &from, &to, &text, &iid.to_string(), idx as i64);
-                    let res = crate::delivery::deliver_to_sink(&st.http, &sink, &body).await;
+                    // selezione adapter: LIVE se gate attivo, altrimenti sink/dry.
+                    let res = match channel {
+                        Channel::Sms | Channel::Voice if live_on => {
+                            let action = format!("{}/api/ingress/twilio/voice", public_base.trim_end_matches('/'));
+                            crate::delivery::deliver_twilio_live(&st.http, live_cfg.as_ref().unwrap(), channel, &to, &text, &action).await
+                        }
+                        Channel::Email if !relay.trim().is_empty() => crate::delivery::deliver_email_relay(&st.http, &relay, &body).await,
+                        Channel::Slack if !slack_token.trim().is_empty() => crate::delivery::deliver_slack_live(&st.http, &slack_token, &to, &text).await,
+                        _ => crate::delivery::deliver_to_sink(&st.http, &sink, &body).await,
+                    };
                     let _ = sqlx::query("UPDATE app.esc_delivery_log SET state=$2,provider_ref=$3,detail=$4 WHERE id=$1")
                         .bind(log_id).bind(res.state).bind(res.provider_ref).bind(res.detail).execute(&st.owner_pool).await;
                     delivered += 1;
                 }
-                // avanza/semina lo stato alla rung appena sparata
-                let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,repeat_count,status) VALUES($1,$2,$3,$4,$5,'unack') ON CONFLICT (tenant_id,incident_id) DO UPDATE SET step=$3,step_fired_at=$4,updated_at=now()")
-                    .bind(tid).bind(iid).bind(idx as i32).bind(now).bind(rc).execute(&st.owner_pool).await;
+                // avanza/semina lo stato alla rung appena sparata (repeat_count aggiornato)
+                let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,repeat_count,status) VALUES($1,$2,$3,$4,$5,'unack') ON CONFLICT (tenant_id,incident_id) DO UPDATE SET step=$3,step_fired_at=$4,repeat_count=$5,updated_at=now()")
+                    .bind(tid).bind(iid).bind(idx as i32).bind(now).bind(new_rc).execute(&st.owner_pool).await;
                 let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_shadow_delivery',$3)")
-                    .bind(tid).bind(iid).bind(json!({"step":idx,"channel":channel.as_str(),"recipients":oncall.len(),"sink":!sink.is_empty()})).execute(&st.owner_pool).await;
+                    .bind(tid).bind(iid).bind(json!({"step":idx,"channel":channel.as_str(),"attempt":attempt,"recipients":oncall.len(),"live":live_on})).execute(&st.owner_pool).await;
             }
         }
     }
@@ -7551,4 +7572,87 @@ pub async fn escalation_delivery_run(State(st): State<AppState>, h: HeaderMap) -
     let tid = s.tenant_id.unwrap();
     let (seen, delivered) = escalation_delivery_shadow_tenant(&st, tid).await;
     Ok(Json(json!({"ok":true,"incidents":seen,"deliveries":delivered})))
+}
+
+// --------------------------- Ack inbound Twilio (SMS + voce DTMF) ---------------------------
+
+/// Risposta TwiML vuota (ack ricevuto, niente da dire).
+fn twiml(body: &str) -> Response {
+    ([(header::CONTENT_TYPE, "text/xml")], body.to_string()).into_response()
+}
+
+/// Valida la firma Twilio dell'inbound. Se `YW_ESC_TWILIO_AUTH` è impostato la firma è
+/// OBBLIGATORIA (403 se assente/errata); in dev senza token si accetta e si logga.
+fn esc_verify_inbound(h: &HeaderMap, path: &str, params: &[(String,String)]) -> Result<(), Response> {
+    let auth = std::env::var("YW_ESC_TWILIO_AUTH").unwrap_or_default();
+    if auth.is_empty() { return Ok(()); } // dev/shadow senza carrier reale
+    let base = std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_default();
+    let url = format!("{}{}", base.trim_end_matches('/'), path);
+    let sig = h.get("x-twilio-signature").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if crate::delivery::verify_twilio_signature(&auth, &url, params, sig) { Ok(()) }
+    else { Err((StatusCode::FORBIDDEN, "firma Twilio non valida").into_response()) }
+}
+
+/// Mappa un numero mittente -> incidente aperto più recente a cui era stata consegnata una rung.
+async fn esc_incident_by_number(st: &AppState, number: &str) -> Option<(Uuid, Uuid, String)> {
+    let row = sqlx::query(
+        "SELECT d.tenant_id, d.incident_id, i.state
+           FROM app.esc_delivery_log d JOIN app.incidents i ON i.id=d.incident_id
+          WHERE d.to_value=$1 AND d.channel IN ('sms','voice') AND i.state <> 'chiuso'
+          ORDER BY d.at DESC LIMIT 1")
+        .bind(number).fetch_optional(&st.owner_pool).await.ok().flatten()?;
+    Some((row.get("tenant_id"), row.get("incident_id"), row.get("state")))
+}
+
+/// Registra l'ack: stato macchina + delivery_log(acked) + timeline. In SHADOW NON tocca
+/// `incidents.state` (GoAlert resta il motore). Col gate `YW_ESC_ACK_APPLY=1` (cutover) applica
+/// la transizione reale (preso_in_carico / chiuso).
+async fn esc_apply_ack(st: &AppState, tid: Uuid, iid: Uuid, action: &str, via: &str) {
+    let status = if action == "close" { "closed" } else { "ack" };
+    let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,status) VALUES($1,$2,0,now(),$3) ON CONFLICT (tenant_id,incident_id) DO UPDATE SET status=$3,updated_at=now()")
+        .bind(tid).bind(iid).bind(status).execute(&st.owner_pool).await;
+    let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_ack_inbound',$3)")
+        .bind(tid).bind(iid).bind(json!({"action":action,"via":via,"applied": std::env::var("YW_ESC_ACK_APPLY").ok().as_deref()==Some("1")})).execute(&st.owner_pool).await;
+    if std::env::var("YW_ESC_ACK_APPLY").ok().as_deref() == Some("1") {
+        if action == "close" {
+            let _ = sqlx::query("UPDATE app.incidents SET state='chiuso', closed_at=now() WHERE id=$1 AND tenant_id=$2 AND state<>'chiuso'").bind(iid).bind(tid).execute(&st.owner_pool).await;
+        } else {
+            let _ = sqlx::query("UPDATE app.incidents SET state='preso_in_carico' WHERE id=$1 AND tenant_id=$2 AND state='aperto'").bind(iid).bind(tid).execute(&st.owner_pool).await;
+        }
+    }
+}
+
+/// Inbound SMS: risposta testuale del reperibile. "OK/ACK/1/PRESO" -> presa in carico;
+/// "CHIUDI/CLOSE/RISOLTO" -> chiusura. Firma Twilio validata (se token configurato).
+pub async fn twilio_ingress_sms(State(st): State<AppState>, h: HeaderMap, axum::extract::Form(params): axum::extract::Form<Vec<(String,String)>>) -> Response {
+    if let Err(r) = esc_verify_inbound(&h, "/api/ingress/twilio/sms", &params) { return r; }
+    let get = |k: &str| params.iter().find(|(n,_)| n==k).map(|(_,v)| v.clone()).unwrap_or_default();
+    let from = get("From"); let body = get("Body").trim().to_uppercase();
+    let action = if ["CHIUDI","CLOSE","RISOLTO"].iter().any(|w| body.contains(w)) { "close" }
+                 else if ["OK","ACK","1","PRESO"].iter().any(|w| body.contains(w)) { "ack" }
+                 else { "" };
+    if !action.is_empty() {
+        if let Some((tid, iid, _)) = esc_incident_by_number(&st, &from).await {
+            esc_apply_ack(&st, tid, iid, action, "sms").await;
+        }
+    }
+    twiml("<Response></Response>")
+}
+
+/// Inbound VOCE: Twilio invia i `Digits` del Gather. "1" -> presa in carico. Se mancano i Digits
+/// (hit iniziale) ripropone il Gather. Firma Twilio validata (se token configurato).
+pub async fn twilio_ingress_voice(State(st): State<AppState>, h: HeaderMap, axum::extract::Form(params): axum::extract::Form<Vec<(String,String)>>) -> Response {
+    if let Err(r) = esc_verify_inbound(&h, "/api/ingress/twilio/voice", &params) { return r; }
+    let get = |k: &str| params.iter().find(|(n,_)| n==k).map(|(_,v)| v.clone()).unwrap_or_default();
+    let from = get("From"); let digits = get("Digits");
+    if digits.is_empty() {
+        return twiml("<Response><Gather numDigits=\"1\" timeout=\"20\"><Say language=\"it-IT\">Allarme. Premi 1 per prendere in carico.</Say></Gather></Response>");
+    }
+    if digits == "1" {
+        if let Some((tid, iid, _)) = esc_incident_by_number(&st, &from).await {
+            esc_apply_ack(&st, tid, iid, "ack", "voice").await;
+        }
+        return twiml("<Response><Say language=\"it-IT\">Preso in carico. Grazie.</Say></Response>");
+    }
+    twiml("<Response><Say language=\"it-IT\">Tasto non valido.</Say></Response>")
 }
