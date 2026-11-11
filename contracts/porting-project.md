@@ -155,8 +155,14 @@ modulo. Moduli dichiarano gli hook AI; assistant consuma un **registry** (non en
 attivo invece degli join hardcoded.
 
 ## 3. Roadmap di retrofit per fasi
+- **Fase 0/1a (manifest) — ✅ FATTO** (`core/src/modules.rs`): `Manifest{code,name,requires,provides,
+  description}` + `REGISTRY` (11 moduli) + `missing_deps`/`dependents_active`; esposto in
+  `super_list_modules` (requires/provides/description) e validazione **soft** (avvisi, non bloccano) in
+  `set_module` all'abilitazione/disabilitazione. 5 test unit verdi. Nessun cambio di comportamento
+  (gating esistente invariato). Restano: trait lifecycle (install/enable/disable/health) + middleware
+  module-scoped + estrazione servizi.
 - **Fase 0** — Scaffolding contratto (nessun cambio comportamento): `ModuleManifest` + trait lifecycle +
-  registry; route/guard attuali in parallelo. *M, rischio basso.*
+  registry; route/guard attuali in parallelo. *M, rischio basso.* (manifest fatto; trait/lifecycle da fare)
 - **Fase 1** — Estrazione servizi core (`TelemetryPipeline`/`RuleEngine`/`EscalationProvider`), refactor puro;
   bloccata dai QA esistenti. *L, rischio medio.*
 - **Fase 2** — Moduli di riferimento prima: `consuntivi`, `interventi`, `workforce` (S ciascuno). *M, basso.*

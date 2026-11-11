@@ -469,9 +469,16 @@ pub async fn super_list_modules(State(st): State<AppState>, h: HeaderMap, Path(t
         "SELECT m.code,m.name,m.kind,m.available,tm.state
          FROM app.modules_catalog m LEFT JOIN app.tenant_modules tm ON tm.module_code=m.code AND tm.tenant_id=$1
          ORDER BY m.kind,m.code").bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-    let out: Vec<Value> = rows.iter().map(|r| json!({
-        "code": r.get::<String,_>("code"), "name": r.get::<String,_>("name"), "kind": r.get::<String,_>("kind"),
-        "available": r.get::<bool,_>("available"), "state": r.try_get::<String,_>("state").ok().unwrap_or("non_abilitato".into()) })).collect();
+    let out: Vec<Value> = rows.iter().map(|r| {
+        let code: String = r.get("code");
+        let man = crate::modules::manifest(&code);
+        json!({
+        "code": code, "name": r.get::<String,_>("name"), "kind": r.get::<String,_>("kind"),
+        "available": r.get::<bool,_>("available"), "state": r.try_get::<String,_>("state").ok().unwrap_or("non_abilitato".into()),
+        // #3 manifest: dipendenze + descrizione (single source of truth in core::modules)
+        "requires": man.map(|m| m.requires).unwrap_or(&[]),
+        "provides": man.map(|m| m.provides).unwrap_or(&[]),
+        "description": man.map(|m| m.description) }) }).collect();
     Ok(Json(json!(out)))
 }
 
@@ -493,7 +500,19 @@ pub async fn set_module(State(st): State<AppState>, h: HeaderMap, Path(tid): Pat
         .bind(&b.state).bind(tid).bind(&b.module_code).execute(&st.owner_pool).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,'superadmin','set_module',$2)")
         .bind(tid).bind(json!({"module":b.module_code,"state":b.state})).execute(&st.owner_pool).await.map_err(ise)?;
-    Ok(Json(json!({"ok":true})))
+    // #3 manifest: avvisi soft sulle dipendenze (non bloccano).
+    let active: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>(
+        "SELECT module_code FROM app.tenant_modules WHERE tenant_id=$1 AND state='attivo'")
+        .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default().into_iter().collect();
+    let mut warning: Option<String> = None;
+    if b.state == "attivo" {
+        let miss = crate::modules::missing_deps(&b.module_code, &active);
+        if !miss.is_empty() { warning = Some(format!("dipendenze non attive: {}", miss.join(", "))); }
+    } else if b.state == "non_abilitato" {
+        let dep = crate::modules::dependents_active(&b.module_code, &active);
+        if !dep.is_empty() { warning = Some(format!("moduli attivi che dipendono da questo: {}", dep.join(", "))); }
+    }
+    Ok(Json(json!({"ok":true,"warning":warning})))
 }
 
 #[derive(Deserialize)]

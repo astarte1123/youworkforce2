@@ -1,5 +1,6 @@
 mod state; mod clock; mod auth; mod db; mod goalert; mod worker; mod api; mod crypto;
 #[allow(dead_code)] mod escalation; // #4 FASE 0: libreria pura (non ancora wirata; GoAlert resta il motore)
+mod modules; // #3 FASE 1: registry manifest moduli (dipendenze + metadata)
 
 use std::sync::Arc;
 use axum::{routing::{get, post}, Router, Json};

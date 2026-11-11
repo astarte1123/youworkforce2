@@ -28,3 +28,8 @@ futures = "0.3.31"
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 anyhow = "1.0.95"
 chacha20poly1305 = "0.10.1"
+
+# debuginfo ridotto: evita lo STATUS_STACK_BUFFER_OVERRUN di rustc in codegen su Windows
+# (crate binaria grande + debuginfo=2) e velocizza il build. Line-tables bastano per i panic.
+[profile.dev]
+debug = 1
