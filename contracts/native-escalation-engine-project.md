@@ -130,8 +130,13 @@ indice inventato → native vuoto = match, niente falsa divergenza. **3 nuovi un
 **match**, `match_rate 1.0`. Discriminatore: la formula pura avrebbe dato `149%3=2` (qa-c) ≠ GoAlert →
 il vecchio codice divergeva, il nuovo combacia. Artefatti di test ripuliti.
 
-**RESIDUO FASE 1:** Override (assenze) non ancora modellati lato nativo → seconda fonte di diff attesa
-quando un tenant usa override GoAlert. Obiettivo invariato: 0 divergenze su N giorni prima del cutover.
+**RESIDUO FASE 1 — CHIUSO.** Override (assenze) ora modellati lato nativo (`esc_goalert_overrides`,
+commit 8130b27). **Verifica LIVE su globex (2026-11-11):** override reale di rimozione (assenza admin
+per finestra) via `POST /api/oncall-overrides` → GoAlert on-call `{}`, native `{}`, **match, overrides=1**
+(2 giri stabili); rimosso l'override → entrambi `{admin}`, match. Pre-fix il native avrebbe mostrato
+`{admin}` contro GoAlert `{}` = divergenza. Nota minore: subito dopo `sync-goalert` GoAlert ha un transiente
+di warm-up (`onCallUsers` vuoto per 1 ciclo) → falso `match=f` sui gruppi fixed-user/'tutti'; il guard
+warm-up oggi copre solo le rotation, va esteso ai fixed-user.
 
 **Fase 2 — Consegna in ombra. ✅ PRIMA ITERAZIONE** (mig 0054 `esc_alert_state`+`esc_delivery_log`,
 commit 9bc7196). Il motore nativo ora DECIDE e CONSEGNA in ombra: per ogni incidente aperto
