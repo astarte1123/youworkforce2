@@ -151,9 +151,21 @@ volta anche tra riavvii (claim `INSERT … ON CONFLICT DO NOTHING RETURNING`). `
 macchina a stati per incidente; ack/chiusura incidente → `tick` Stop ferma l'escalation. Worker
 scan ~ogni 30s. API: `GET /api/escalation/delivery` (conteggi+ultime), `POST …/run`. Timeline
 `esc_shadow_delivery`. **Nessun carrier reale, GoAlert resta il motore.** 22/22 test verdi.
-**RESIDUO FASE 2:** (a) Twilio REST **live** (gate `YW_ESC_TWILIO_LIVE`) verso carrier vero via sink
-→ carrier; (b) **ack inbound** firmato (`/api/ingress/twilio/sms|voice` → ack/close); (c) SMTP+Slack
-adapter; (d) `repeat` della policy (ora 0); (e) verifica LIVE su globex con sink reale.
+**Fase 2 — Consegna. ✅ COMPLETATA** (mig 0055, commit 50b5cdf). Chiusi tutti i residui:
+(a) **Twilio REST live** `deliver_twilio_live` (Messages/Calls, TwiML+Gather `action`, Basic auth) dietro
+gate `YW_ESC_TWILIO_LIVE=1` + env `YW_ESC_TWILIO_SID/AUTH`+`YW_ESC_FROM`; default OFF → sink/dry.
+(b) **Ack inbound** `/api/ingress/twilio/sms|voice` (CSRF-exempt): firma `verify_twilio_signature`
+(HMAC-SHA1+base64, confronto costante, validata contro openssl col vettore ufficiale) OBBLIGATORIA se
+`YW_ESC_TWILIO_AUTH` set. SMS `OK/ACK/1/PRESO`→ack, `CHIUDI/CLOSE/RISOLTO`→close; voce DTMF `1`→ack.
+`esc_apply_ack` registra stato+timeline `esc_ack_inbound`; **in shadow NON muta `incidents.state`**
+(GoAlert resta il motore) — applica la transizione reale solo col gate `YW_ESC_ACK_APPLY=1` (cutover).
+(c) **Slack** `deliver_slack_live` (chat.postMessage) + **email** `deliver_email_relay` (webhook→SMTP,
+nessuna dipendenza SMTP pesante). (d) **repeat**: `tenant_oncall_cfg.esc_repeat`; la chiave di idempotenza
+ora include `attempt` (= giro di repeat) → ri-consegna solo nel nuovo giro. (e) **Verifica LIVE globex**
+(sink reale :9099): consegna SMS `state=sent provider_ref=sink-200`; 2° run `deliveries=0` (idempotenza);
+ack SMS "OK" → `esc_alert_state=ack`, timeline `applied=false`, incidente resta `aperto` (shadow safe).
+23/23 test verdi. Deps nuove: `hmac`, `sha1`, `base64`. RESIDUO minore: Slack per-gruppo non ancora
+cablato nella ladder per-incidente (adapter pronto); verifica live con Twilio carrier reale (serve account).
 
 **Fase 3 — Cutover per-tenant.** Flag `tenant.escalation_engine = native|goalert` (default
 goalert). Si accende `native` su globex, poi tenant pilota, con rollback immediato al flag.
