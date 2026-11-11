@@ -1850,6 +1850,7 @@ async function renderScenarioDash(code){
   const box=$('#dashBox'); box.innerHTML='<div class="skel" style="height:200px"></div>';
   if(DASHMAP){ try{DASHMAP.remove();}catch(e){} DASHMAP=null; }
   let d; try{ d=await api('/scenarios/'+code+'/dashboard'); }catch(e){ box.innerHTML=`<div class="card pad" style="color:var(--bad)">${esc(e.message)}</div>`; return; }
+  if(d.grouped && (d.silos||[]).length){ return renderGroupedDash(code,d); }
   const cards=(d.widgets||[]).map(dashWidget).join('')||'<div class="small mut">Nessun widget.</div>';
   const geo=(d.devices||[]).filter(x=>x.lat!=null&&x.lon!=null);
   const mapCard=geo.length?`<div class="card" style="padding:0;overflow:hidden;margin-top:14px"><div class="card-h"><h2 style="margin:0">Mappa device</h2></div><div id="dashMap" style="height:300px"></div></div>`:'';
@@ -1867,6 +1868,75 @@ async function renderScenarioDash(code){
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(DASHMAP);
     geo.forEach(x=>L.marker([x.lat,x.lon]).addTo(DASHMAP).bindPopup(esc(x.label||x.external_id)));
   }catch(e){} },80); }
+}
+// ---- Dashboard raggruppata per device (es. Smart Farming: silos) ----
+function gnum(mv){ if(!mv||mv.value==null)return null; const v=mv.value; return typeof v==='number'?v:(isNaN(parseFloat(v))?null:parseFloat(v)); }
+function siloMetricRow(lbl,mv){ if(!mv)return''; const v=gnum(mv); const bad=mv.tripped;
+  return `<div class="spread small" style="padding:3px 0"><span class="mut">${esc(lbl)}</span>
+    <span style="font-weight:700;color:${bad?'var(--bad)':'inherit'}">${v==null?'—':fmtNum(v)}${esc(mv.unit||'')}${bad?' ⚠':''}</span></div>`; }
+function siloCard(code,s){
+  const m=s.metrics||{};
+  const lvlM=m.crop_level, tempM=m.temperature;
+  const lvl=gnum(lvlM), temp=gnum(tempM);
+  const lvlPct=lvl==null?0:Math.max(0,Math.min(100,lvl));
+  const tcol=(tempM&&tempM.tripped)?'var(--bad)':'var(--ok)';
+  const tW={min:(tempM&&tempM.min)||0,max:(tempM&&tempM.max)||45,threshold:(tempM&&tempM.alarm)||null,unit:(tempM&&tempM.unit)||'°C',op:'>='};
+  const aer=s.aeration===true;
+  const border=s.alarm?'var(--bad)':'var(--line)';
+  const lvlBad=lvlM&&lvlM.tripped;
+  return `<div style="${DASH_CARD};border-color:${border}">
+    <div class="spread" style="margin-bottom:8px"><span style="font-weight:800">${esc(s.label||s.external_id)}</span>
+      <span class="chip ${s.alarm?'s-critico':'s-attivo'}">${s.alarm?'allarme':'ok'}</span></div>
+    <div style="display:flex;gap:14px;align-items:flex-end">
+      <div style="width:46px" title="Livello cereale">
+        <div style="height:118px;border:1px solid var(--line);border-radius:8px;position:relative;background:var(--surface2,#f4f5f7);overflow:hidden">
+          <div style="position:absolute;bottom:0;left:0;right:0;height:${lvlPct}%;background:linear-gradient(0deg,var(--brand),var(--brand2,var(--brand)))"></div></div>
+        <div class="small ${lvlBad?'':'mut'}" style="text-align:center;margin-top:4px;color:${lvlBad?'var(--bad)':''}">${lvl==null?'—':fmtNum(lvl)}%</div></div>
+      <div style="flex:1">${arcGauge(tW,temp,tcol)}</div>
+    </div>
+    <div style="margin-top:6px">${siloMetricRow('Umidità grano',m.moisture)}${siloMetricRow('Umidità aria',m.humidity)}${siloMetricRow('Temp. esterna',m.temp_out)}</div>
+    <button class="btn ${aer?'':'ghost'} small" style="width:100%;margin-top:8px" onclick="aerationToggle('${code}','${s.device_id}',${!aer})">
+      Aerazione: <b>${aer?'ON':'OFF'}</b></button></div>`;
+}
+function siloTrend(silos,label){
+  const S=(silos||[]).filter(s=>(s.primary_series||[]).length>1);
+  if(!S.length)return'';
+  const cols=['#e2001a','#2f7bd6','#19a974','#f39c12','#8e44ad','#ff6fa3'];
+  const all=[].concat(...S.map(s=>s.primary_series.map(p=>+p.v))).filter(x=>!isNaN(x));
+  const mn=Math.min(...all),mx=Math.max(...all),rg=(mx-mn)||1,W=600,H=140; let paths='',leg='';
+  S.forEach((s,i)=>{ const vs=s.primary_series.map(p=>+p.v).filter(x=>!isNaN(x)); if(vs.length<2)return;
+    const pts=vs.map((y,j)=>`${((j/(vs.length-1))*W).toFixed(1)},${(H-((y-mn)/rg)*H).toFixed(1)}`).join(' ');
+    const c=cols[i%cols.length]; paths+=`<polyline points="${pts}" fill="none" stroke="${c}" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
+    leg+=`<span class="small" style="margin-right:12px"><span style="display:inline-block;width:10px;height:10px;background:${c};border-radius:2px;margin-right:4px"></span>${esc(s.label||s.external_id)}</span>`; });
+  return `<div class="card pad" style="margin-top:14px"><div class="card-h" style="padding:0 0 8px"><h2>${esc(label||'Temperatura')} per ${esc('silo')} (24h)</h2></div>
+    <div>${leg}</div><svg viewBox="0 0 ${W} ${H}" width="100%" height="150" preserveAspectRatio="none" style="margin-top:6px">${paths}</svg>
+    <div class="small mut">Scala condivisa tra i silos.</div></div>`;
+}
+function renderGroupedDash(code,d){
+  const box=$('#dashBox');
+  const geo=(d.silos||[]).filter(x=>x.lat!=null&&x.lon!=null);
+  const mapCard=geo.length?`<div class="card" style="padding:0;overflow:hidden;margin-top:14px"><div class="card-h"><h2 style="margin:0">Mappa ${esc((d.group_label||'')+'s')}</h2></div><div id="dashMap" style="height:300px"></div></div>`:'';
+  const inc=(d.incidents||[]).length?`<div class="card pad" style="margin-top:14px"><div class="card-h" style="padding:0 0 8px"><h2>Allarmi recenti</h2></div>
+    <table class="table"><tbody>${d.incidents.map(i=>`<tr><td><b>${esc(i.etype)}</b></td><td>${chip(i.state)}</td><td class="small mut">${new Date(i.at).toLocaleString('it-IT')}</td></tr>`).join('')}</tbody></table></div>`:'';
+  box.innerHTML=`<div class="spread" style="margin-bottom:10px"><div class="small mut">${esc(d.sector)} · ${(d.silos||[]).length} ${esc((d.group_label||'gruppo').toLowerCase())}${(d.silos||[]).length===1?'':'s'}${d.device_count?'':' (attiva la demo dal superadmin)'}</div>
+      <button class="btn ghost small" onclick="scnAiAnalysis('${code}',this)">✦ Analisi AI</button></div>
+    ${d.narrative?`<div class="card pad" style="margin-bottom:12px"><div class="small mut">${esc(d.narrative)}</div></div>`:''}
+    <div id="scnAiOut"></div>
+    ${dashKpis(d.kpis)}
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">${d.silos.map(s=>siloCard(code,s)).join('')}</div>
+    ${siloTrend(d.silos,(d.silos[0]&&d.silos[0].metrics&&d.silos[0].metrics[d.primary_metric]&&d.silos[0].metrics[d.primary_metric].label)||'Temperatura')}${mapCard}${inc}`;
+  if(geo.length && typeof L!=='undefined'){ setTimeout(()=>{ try{
+    DASHMAP=L.map('dashMap',{zoomControl:true}).setView([geo[0].lat,geo[0].lon],12);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(DASHMAP);
+    geo.forEach(x=>{ const col=x.alarm?'#e2001a':'#19a974';
+      L.circleMarker([x.lat,x.lon],{radius:9,color:col,fillColor:col,fillOpacity:.8,weight:2}).addTo(DASHMAP)
+       .bindPopup(`<b>${esc(x.label||x.external_id)}</b><br>${x.alarm?'allarme':'ok'} · aerazione ${x.aeration?'ON':'OFF'}`); });
+  }catch(e){} },80); }
+}
+async function aerationToggle(code,devid,on){
+  try{ await api('/scenarios/'+code+'/aeration',{method:'POST',body:JSON.stringify({device_id:devid,on})});
+    toast('Aerazione '+(on?'attivata':'disattivata'),'ok'); renderScenarioDash(code);
+  }catch(e){ toast(e.message,'bad'); }
 }
 async function scnAiAnalysis(code,btn){
   const out=$('#scnAiOut'); if(!out)return; btn.disabled=true; out.innerHTML='<div class="small mut" style="margin-bottom:10px">Analisi AI in corso…</div>';

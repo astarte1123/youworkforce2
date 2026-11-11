@@ -322,6 +322,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(tb_parity_routes())
         .route("/api/scenarios", get(api::tenant_scenarios_list))
         .route("/api/scenarios/:code/dashboard", get(api::scenario_dashboard))
+        .route("/api/scenarios/:code/aeration", post(api::scenario_aeration_set))
         .route("/api/scenarios/:code/ai-analysis", post(api::scenario_ai_analysis))
         .route("/api/checkin/ai-anomaly", get(api::checkin_ai_anomaly))
         .route("/api/orders/:id/ai-assist", get(api::work_order_ai_assist))

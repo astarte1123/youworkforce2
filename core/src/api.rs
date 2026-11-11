@@ -1454,10 +1454,10 @@ fn scenario_catalog() -> Vec<Scenario> {
         modules:vec!["iot"],
         rules:vec![ r("temperature",">=",Some(8.0),crit), r("temperature","<=",Some(-25.0),crit), r("door_open","is_true",None,tele) ],
         devices:vec![ d("chiller-1","Frigo 1"), d("freezer-1","Freezer 1") ] },
-      Scenario{ code:"smart_farming", name:"Smart Farming", sector:"Agricoltura", desc:"Indicatori di produzione agricola e stato delle strutture.",
-        modules:vec!["iot"],
-        rules:vec![ r("soil_moisture","<=",Some(20.0),crit), r("temperature","<=",Some(2.0),crit), r("humidity",">=",Some(90.0),tele) ],
-        devices:vec![ d("field-1","Sonda campo 1") ] },
+      Scenario{ code:"smart_farming", name:"Smart Farming", sector:"Agricoltura", desc:"Stoccaggio cereali in silos: livello, temperatura, umidità grano, aerazione. Allarmi su surriscaldamento, grano umido (muffa) e scorta bassa.",
+        modules:vec!["iot","thingsboard"],
+        rules:vec![ r("temperature",">=",Some(30.0),crit), r("moisture",">=",Some(25.0),crit), r("humidity",">=",Some(80.0),crit), r("crop_level","<=",Some(15.0),tele) ],
+        devices:vec![ d("silo-a","Silo A"), d("silo-b","Silo B"), d("silo-c","Silo C") ] },
       Scenario{ code:"site_fleet_tracking", name:"Site Fleet Tracking", sector:"Mezzi", desc:"Escavatori, camion e mezzi in cantiere/miniera: posizione e carburante.",
         modules:vec!["traccar","loneworker","iot"],
         rules:vec![ r("fuel","<=",Some(10.0),crit), r("engine_temp",">=",Some(110.0),crit) ],
@@ -1752,7 +1752,7 @@ pub async fn super_scenario_demo(State(st): State<AppState>, h: HeaderMap, Path(
 // ---- Motore dashboard parametrico per scenario (widget derivati dalle regole) ----
 fn metric_unit(m: &str) -> &'static str {
     match m {
-        "temperature"|"engine_temp" => "°C", "humidity"|"soil_moisture"|"fill_level"|"power_factor" => "%",
+        "temperature"|"engine_temp"|"temp_out" => "°C", "humidity"|"soil_moisture"|"moisture"|"crop_level"|"fill_level"|"power_factor" => "%",
         "co2" => "ppm", "pm25" => "µg/m³", "power_kw"|"demand_kw" => "kW", "energy_kwh"|"consumption" => "kWh",
         "voltage" => "V", "pressure" => "bar", "flow" => "L/min", "level" => "%", "fuel" => "%",
         "current" => "A", "frequency" => "Hz", "energy_total" => "kWh",
@@ -1764,7 +1764,9 @@ fn metric_label(m: &str) -> String {
     let base = match m {
         "temperature" => "Temperatura", "humidity" => "Umidità", "co2" => "CO₂", "pm25" => "PM2.5",
         "power_kw" => "Potenza", "demand_kw" => "Domanda", "energy_kwh" => "Energia", "voltage" => "Tensione",
-        "soil_moisture" => "Umidità suolo", "fill_level" => "Riempimento", "level" => "Livello", "fuel" => "Carburante",
+        "soil_moisture" => "Umidità suolo", "moisture" => "Umidità grano", "crop_level" => "Livello cereale",
+        "aeration" => "Aerazione", "temp_out" => "Temp. esterna",
+        "fill_level" => "Riempimento", "level" => "Livello", "fuel" => "Carburante",
         "heart_rate" => "Battito", "gas" => "Gas", "chlorine" => "Cloro", "ph" => "pH", "pressure" => "Pressione",
         "flow" => "Flusso", "vibration" => "Vibrazione", "power_factor" => "Fattore di potenza", "consumption" => "Consumo",
         "current" => "Corrente", "frequency" => "Frequenza", "energy_total" => "Energia",
@@ -1888,11 +1890,11 @@ async fn scenario_dash_json(st: &AppState, tid: Uuid, scn: &Scenario) -> Result<
     let widgets = scenario_widgets_spec(scn, spec.as_ref());
     let narrative = spec.as_ref().and_then(|s| s.get("narrative")).and_then(|v| v.as_str()).map(|s| s.to_string());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let devs = sqlx::query("SELECT id,external_id,label,last_lat,last_lon FROM app.devices WHERE source='scenario' AND external_id LIKE $1 ORDER BY external_id")
+    let devs = sqlx::query("SELECT id,external_id,label,last_lat,last_lon,config FROM app.devices WHERE source='scenario' AND external_id LIKE $1 ORDER BY external_id")
         .bind(format!("scn-{}-%", scn.code)).fetch_all(&mut *tx).await.map_err(ise)?;
     let ids: Vec<Uuid> = devs.iter().map(|r| r.get::<Uuid,_>("id")).collect();
     let evs = if ids.is_empty() { Vec::new() } else {
-        sqlx::query("SELECT payload_ref,origin_ts FROM app.events WHERE device_id = ANY($1) AND payload_ref IS NOT NULL ORDER BY origin_ts DESC LIMIT 200")
+        sqlx::query("SELECT device_id,payload_ref,origin_ts FROM app.events WHERE device_id = ANY($1) AND payload_ref IS NOT NULL ORDER BY origin_ts DESC LIMIT 400")
             .bind(&ids).fetch_all(&mut *tx).await.map_err(ise)? };
     let incs = if ids.is_empty() { Vec::new() } else {
         sqlx::query("SELECT i.etype,i.state,i.opened_at FROM app.incidents i JOIN app.events e ON e.id=i.event_id
@@ -1905,6 +1907,10 @@ async fn scenario_dash_json(st: &AppState, tid: Uuid, scn: &Scenario) -> Result<
             .bind(&ids).fetch_one(&mut *tx).await.map_err(ise)? };
     tx.commit().await.ok();
     let payloads: Vec<(Value, Dt)> = evs.iter().map(|r| (r.try_get::<Value,_>("payload_ref").unwrap_or(json!({})), r.get::<Dt,_>("origin_ts"))).collect();
+    // storico per-device (per il raggruppamento a silos)
+    let mut by_dev: std::collections::HashMap<Uuid, Vec<(Value, Dt)>> = std::collections::HashMap::new();
+    for r in &evs { if let Ok(did) = r.try_get::<Uuid,_>("device_id") {
+        by_dev.entry(did).or_default().push((r.try_get::<Value,_>("payload_ref").unwrap_or(json!({})), r.get::<Dt,_>("origin_ts"))); } }
     let mut alarms_now = 0i64;
     let widgets_out: Vec<Value> = widgets.into_iter().map(|mut w| {
         let metric = w["metric"].as_str().unwrap_or("").to_string();
@@ -1928,9 +1934,50 @@ async fn scenario_dash_json(st: &AppState, tid: Uuid, scn: &Scenario) -> Result<
         "state":r.get::<String,_>("state"),"at":r.get::<Dt,_>("opened_at").to_rfc3339()})).collect();
     let devices: Vec<Value> = devs.iter().map(|r| json!({"external_id":r.get::<String,_>("external_id"),
         "label":r.try_get::<String,_>("label").ok(),"lat":r.try_get::<f64,_>("last_lat").ok(),"lon":r.try_get::<f64,_>("last_lon").ok()})).collect();
+    // --- Raggruppamento a "silos" (device): una scheda per device con tutte le metriche spec ---
+    let grouped = spec.as_ref().and_then(|s| s.get("grouped")).and_then(|v| v.as_str()) == Some("device");
+    let spec_metrics: Vec<(String, Value)> = spec.as_ref().and_then(|s| s.get("metrics")).and_then(|m| m.as_array())
+        .map(|a| a.iter().filter_map(|m| m.get("key").and_then(|k| k.as_str()).map(|k| (k.to_string(), m.clone()))).collect()).unwrap_or_default();
+    let primary = spec.as_ref().and_then(|s| s.get("primary_metric")).and_then(|v| v.as_str()).unwrap_or("temperature").to_string();
+    let group_label = spec.as_ref().and_then(|s| s.get("group_label")).and_then(|v| v.as_str()).unwrap_or("Gruppo").to_string();
+    let silos: Vec<Value> = if !grouped { vec![] } else { devs.iter().map(|dr| {
+        let did: Uuid = dr.get("id");
+        let cfg: Value = dr.try_get::<Value,_>("config").unwrap_or(json!({}));
+        let hist = by_dev.get(&did);
+        let mut metrics = serde_json::Map::new();
+        let mut silo_alarm = false;
+        for (k, mspec) in &spec_metrics {
+            let mut val: Option<Value> = None;
+            if let Some(h) = hist { for (p, _ts) in h { if let Some(v) = p.get(k) { val = Some(v.clone()); break; } } }
+            if k == "aeration" && val.is_none() { if let Some(a) = cfg.get("aeration") { val = Some(a.clone()); } }
+            let rule = scn.rules.iter().find(|rr| rr.metric==k.as_str() && CRITICAL.contains(&rr.etype));
+            let tripped = if let (Some(v), Some(ru)) = (val.as_ref().and_then(|x| x.as_f64()), rule) {
+                match ru.op { ">="=>ru.threshold.map(|t|v>=t).unwrap_or(false), ">"=>ru.threshold.map(|t|v>t).unwrap_or(false),
+                    "<="=>ru.threshold.map(|t|v<=t).unwrap_or(false), "<"=>ru.threshold.map(|t|v<t).unwrap_or(false), _=>false }
+            } else { false };
+            if tripped { silo_alarm = true; }
+            metrics.insert(k.clone(), json!({
+                "label": mspec.get("label").cloned().unwrap_or_else(|| json!(metric_label(k))),
+                "unit": mspec.get("unit").cloned().unwrap_or_else(|| json!(metric_unit(k))),
+                "widget": mspec.get("widget").cloned().unwrap_or_else(|| json!("gauge")),
+                "min": mspec.get("min").cloned().unwrap_or_else(|| json!(0)),
+                "max": mspec.get("max").cloned().unwrap_or_else(|| json!(100)),
+                "alarm": mspec.get("alarm").cloned(),
+                "value": val.unwrap_or(Value::Null), "tripped": tripped,
+            }));
+        }
+        let mut series: Vec<Value> = vec![];
+        if let Some(h) = hist { for (p, ts) in h.iter().rev() { if let Some(v) = p.get(&primary) { series.push(json!({"t":ts.to_rfc3339(),"v":v})); } } }
+        if series.len() > 30 { series = series.split_off(series.len()-30); }
+        let aer = metrics.get("aeration").and_then(|m| m.get("value")).and_then(|v| v.as_bool());
+        json!({ "device_id": did, "external_id": dr.get::<String,_>("external_id"), "label": dr.try_get::<String,_>("label").ok(),
+            "lat": dr.try_get::<f64,_>("last_lat").ok(), "lon": dr.try_get::<f64,_>("last_lon").ok(),
+            "metrics": metrics, "alarm": silo_alarm, "aeration": aer, "primary_series": series })
+    }).collect() };
     Ok(json!({
         "code":scn.code, "name":scn.name, "sector":scn.sector, "ai_focus":scenario_ai_focus(scn.code),
         "narrative": narrative, "generated": spec.is_some(),
+        "grouped": grouped, "group_label": group_label, "primary_metric": primary, "silos": silos,
         "device_count": devs.len(), "widgets": widgets_out, "incidents": incidents, "devices": devices,
         "kpis": {"device_count":devs.len(),"open_incidents":open_inc,"events_24h":ev24,"metrics_tracked":widgets_out.len(),"alarms_now":alarms_now}
     }))
@@ -1943,6 +1990,36 @@ pub async fn scenario_dashboard(State(st): State<AppState>, h: HeaderMap, Path(c
     let cat = scenario_catalog();
     let scn = scenario_applied(&st, tid, &code, &cat).await?;
     Ok(Json(scenario_dash_json(&st, tid, scn).await?))
+}
+
+#[derive(Deserialize)] pub struct AerationReq { pub device_id: Uuid, pub on: bool }
+/// Aziona l'aerazione di un silo (device dello scenario). Aggiorna lo stato nativo (devices.config),
+/// inietta un campione di telemetria (così il cruscotto riflette il cambio) e, se il device è
+/// mappato su ThingsBoard, inoltra il comando via RPC. operatore/tenant_admin.
+pub async fn scenario_aeration_set(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>, Json(b): Json<AerationReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let tid = s.tenant_id.unwrap();
+    let cat = scenario_catalog();
+    let _scn = scenario_applied(&st, tid, &code, &cat).await?;
+    // device deve appartenere a questo scenario
+    let dev = sqlx::query("SELECT external_id, config FROM app.devices WHERE id=$1 AND tenant_id=$2 AND source='scenario' AND external_id LIKE $3")
+        .bind(b.device_id).bind(tid).bind(format!("scn-{}-%", code)).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "device non appartiene allo scenario"))?;
+    let ext: String = dev.get("external_id");
+    let mut cfg: Value = dev.try_get::<Value,_>("config").unwrap_or(json!({}));
+    if let Value::Object(ref mut m) = cfg { m.insert("aeration".into(), json!(b.on)); }
+    sqlx::query("UPDATE app.devices SET config=$2, updated_at=now() WHERE id=$1").bind(b.device_id).bind(&cfg).execute(&st.owner_pool).await.map_err(ise)?;
+    // telemetria: il cruscotto mostra subito il nuovo stato (serie/widget aerazione)
+    let corr = format!("aeration-{}-{}", code, Uuid::new_v4());
+    let _ = persist_ingest(&st, tid, Normalized{
+        source:"scenario".into(), source_event:corr.clone(), idem:corr.clone(), etype:"telemetria".into(),
+        device_external_id:Some(ext), site_name:None, lat:None, lon:None, accuracy_m:None,
+        correlation:corr, payload:json!({"aeration": b.on}), indoor:false, beacon_uid:None, zone:None }).await;
+    // NB: i silos demo non sono mappati su ThingsBoard. Per un device reale mappato, il comando RPC
+    // va inoltrato via l'endpoint dedicato (tb_device_rpc). Qui l'azione è nativa (stato+telemetria).
+    audit(&st, tid, &s.email, "scenario_aeration", json!({"code":code,"device":b.device_id,"on":b.on})).await;
+    Ok(Json(json!({"ok":true,"on":b.on})))
 }
 
 #[derive(Deserialize)]

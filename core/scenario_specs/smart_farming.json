@@ -2,49 +2,19 @@
   "code": "smart_farming",
   "name": "Smart Farming",
   "source": "https://thingsboard.io/use-cases/smart-farming/",
-  "generated_by": "multi-agent scenario generator (catalogo -> spec, allineato alle regole sensori)",
-  "narrative": "Produzione agricola e strutture: umidità del suolo, temperatura (gelo), umidità aria. Allarme su suolo secco o gelo.",
+  "generated_by": "ridisegno silos (modello ThingsBoard): stoccaggio cereali con livello/temp/umidita/aerazione",
+  "narrative": "Stoccaggio cereali in silos (A/B/C): livello del cereale, temperatura e umidità del grano, confronto temperatura interno/esterno e stato aerazione. Allarmi su surriscaldamento (deterioramento), grano troppo umido (muffa) e scorta bassa. L'aerazione è azionabile dal cruscotto.",
   "map": true,
+  "grouped": "device",
+  "group_label": "Silo",
+  "primary_metric": "temperature",
   "metrics": [
-    {
-      "key": "soil_moisture",
-      "label": "Umidità suolo",
-      "unit": "%",
-      "min": 0,
-      "max": 100,
-      "normal": [
-        25,
-        45
-      ],
-      "widget": "gauge",
-      "alarm": 20
-    },
-    {
-      "key": "temperature",
-      "label": "Temperatura",
-      "unit": "°C",
-      "min": -10,
-      "max": 45,
-      "normal": [
-        8,
-        28
-      ],
-      "widget": "gauge",
-      "alarm": 2
-    },
-    {
-      "key": "humidity",
-      "label": "Umidità",
-      "unit": "%",
-      "min": 0,
-      "max": 100,
-      "normal": [
-        40,
-        70
-      ],
-      "widget": "gauge",
-      "alarm": 90
-    }
+    { "key": "crop_level", "label": "Livello cereale", "unit": "%", "min": 0, "max": 100, "normal": [40, 85], "widget": "level", "alarm": 15 },
+    { "key": "temperature", "label": "Temperatura grano", "unit": "°C", "min": 0, "max": 45, "normal": [12, 24], "widget": "gauge", "alarm": 30 },
+    { "key": "moisture", "label": "Umidità grano", "unit": "%", "min": 0, "max": 40, "normal": [10, 18], "widget": "gauge", "alarm": 25 },
+    { "key": "humidity", "label": "Umidità aria", "unit": "%", "min": 0, "max": 100, "normal": [45, 70], "widget": "gauge", "alarm": 80 },
+    { "key": "temp_out", "label": "Temp. esterna", "unit": "°C", "min": -5, "max": 40, "normal": [8, 26], "widget": "line" },
+    { "key": "aeration", "label": "Aerazione", "widget": "status" }
   ],
   "kpis": [
     "device_count",
