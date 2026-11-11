@@ -26,14 +26,78 @@ pub struct Rotation {
     pub members: Vec<Uuid>,
 }
 impl Rotation {
-    /// Membro attivo all'istante t (None se nessun membro o t < start).
+    fn period_secs(&self) -> i64 {
+        let unit = match self.kind { RotationType::Hourly => 3600, RotationType::Daily => 86400, RotationType::Weekly => 604800 };
+        unit * self.shift_len.max(1)
+    }
+
+    /// Membro attivo all'istante t secondo la formula PURA `shift_number(t) % N`.
+    ///
+    /// ATTENZIONE: questa NON è la semantica di GoAlert. GoAlert tratta l'indice come
+    /// *stato mutabile* seminato a 0 alla CREAZIONE della rotation e avanzato di 1 a ogni
+    /// handoff (vedi [`RotationState`]). Lo `start` definisce solo la griglia dei boundary,
+    /// non l'indice corrente. Resta qui solo come fallback deterministico senza stato e per
+    /// i test della griglia; per la parità GoAlert usare [`RotationState::advanced_to`].
     pub fn active_at(&self, t: DateTime<Utc>) -> Option<Uuid> {
         if self.members.is_empty() || t < self.start { return self.members.first().copied().filter(|_| !self.members.is_empty() && t >= self.start); }
-        let unit = match self.kind { RotationType::Hourly => 3600, RotationType::Daily => 86400, RotationType::Weekly => 604800 };
-        let period = unit * self.shift_len.max(1);
+        let period = self.period_secs();
         let elapsed = (t - self.start).num_seconds();
         let idx = ((elapsed / period) % self.members.len() as i64) as usize;
         self.members.get(idx).copied()
+    }
+
+    /// Prossimo handoff STRETTAMENTE dopo `t`, allineato alla griglia (`start + k*period`).
+    /// Replica `Rotation.EndTime` di GoAlert (UTC: clock == durata reale). Se `t` cade esatto
+    /// su un boundary, ritorna il successivo (EndTime è sempre > t).
+    pub fn end_time(&self, t: DateTime<Utc>) -> DateTime<Utc> {
+        let period = self.period_secs();
+        let diff = (t - self.start).num_seconds();
+        let mut rem = diff % period;
+        if rem < 0 { rem += period; }
+        t + Duration::seconds(period - rem)
+    }
+
+    /// Boundary più recente <= t (`Rotation.StartTime` di GoAlert).
+    pub fn start_time(&self, t: DateTime<Utc>) -> DateTime<Utc> {
+        let period = self.period_secs();
+        let diff = (t - self.start).num_seconds();
+        let mut rem = diff % period;
+        if rem < 0 { rem += period; }
+        t - Duration::seconds(rem)
+    }
+}
+
+/// Stato persistente di una rotation, come GoAlert (`rotation_state`): `position` e `shift_start`.
+/// Alla creazione: `position = 0`, `shift_start = now()` (semina). Poi avanza di 1 a ogni boundary.
+/// Questo rende l'indice indipendente da quanto `start` è nel passato (combacia con GoAlert).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RotationState { pub position: usize, pub shift_start: DateTime<Utc> }
+
+impl RotationState {
+    /// Semina alla creazione: posizione 0, turno corrente ancorato a `seeded_at`.
+    pub fn seed(seeded_at: DateTime<Utc>) -> Self { RotationState { position: 0, shift_start: seeded_at } }
+
+    /// Avanza lo stato fino all'istante `now`, replica `calcAdvance` di GoAlert:
+    /// per ogni boundary <= now, `position = (position+1) % count` e `shift_start = boundary`.
+    /// `count` = numero partecipanti (>0). Se `position >= count` (partecipante rimosso) resetta a 0.
+    pub fn advanced_to(&self, rot: &Rotation, now: DateTime<Utc>, count: usize) -> RotationState {
+        if count == 0 { return *self; }
+        let mut pos = if self.position >= count { 0 } else { self.position };
+        let mut ss = self.shift_start;
+        // tetto di sicurezza come GoAlert (panic a 10k): qui ci fermiamo e basta.
+        for _ in 0..10_000 {
+            let next = rot.end_time(ss);
+            if next > now { break; }
+            ss = next;
+            pos = (pos + 1) % count;
+        }
+        RotationState { position: pos, shift_start: ss }
+    }
+
+    /// Membro attivo dato lo stato (None se `members` vuoto).
+    pub fn active_member(&self, members: &[Uuid]) -> Option<Uuid> {
+        if members.is_empty() { return None; }
+        members.get(self.position % members.len()).copied()
     }
 }
 
@@ -71,13 +135,20 @@ pub struct Schedule {
     pub overrides: Vec<Override>,
 }
 impl Schedule {
-    /// Insieme on-call all'istante t (deterministico).
+    /// Insieme on-call all'istante t (deterministico), rotation via formula PURA.
     pub fn on_call_at(&self, t: DateTime<Utc>) -> Vec<Uuid> {
+        let rot_member = self.rotation.as_ref().and_then(|r| r.active_at(t));
+        self.on_call_at_rot(t, rot_member)
+    }
+
+    /// Come `on_call_at` ma col membro della rotation già risolto a monte (stato GoAlert-like,
+    /// vedi [`RotationState`]). Usato dallo shadow/engine per la parità con GoAlert.
+    pub fn on_call_at_rot(&self, t: DateTime<Utc>, rot_member: Option<Uuid>) -> Vec<Uuid> {
         // 1) copertura: se ci sono regole e nessuna copre t -> nessuno (prima degli override 'add')
         let covered = self.rules.is_empty() || self.rules.iter().any(|r| r.covers(t));
         let mut set: Vec<Uuid> = Vec::new();
         if covered {
-            if let Some(rot) = &self.rotation { if let Some(u) = rot.active_at(t) { set.push(u); } }
+            if self.rotation.is_some() { if let Some(u) = rot_member { set.push(u); } }
             for u in &self.fixed_users { if !set.contains(u) { set.push(*u); } }
         }
         // 2) override attivi: remove poi add (add vale anche fuori copertura)
@@ -157,6 +228,43 @@ mod tests {
         assert_eq!(r.active_at(ts("2024-01-09T00:00:00Z")), Some(u(2))); // settimana 1
         assert_eq!(r.active_at(ts("2024-01-16T00:00:00Z")), Some(u(3))); // settimana 2
         assert_eq!(r.active_at(ts("2024-01-23T00:00:00Z")), Some(u(1))); // wrap
+    }
+    #[test]
+    fn rotation_state_seed_at_creation_is_index0() {
+        // Semantica GoAlert: start lontano nel passato, ma rotation creata ORA -> indice 0.
+        // Riproduce il finding shadow: native idx1 (formula pura) vs GoAlert idx0 (stateful).
+        let r = Rotation{ kind:RotationType::Weekly, shift_len:1, start:ts("2024-01-01T00:00:00Z"), members:vec![u(1),u(2),u(3)] };
+        let created = ts("2026-11-11T10:00:00Z"); // mercoledì
+        let st = RotationState::seed(created);
+        // subito dopo la creazione: posizione 0 (NON la formula pura che darebbe != 0)
+        let now = ts("2026-11-11T12:00:00Z");
+        let adv = st.advanced_to(&r, now, 3);
+        assert_eq!(adv.position, 0);
+        assert_eq!(adv.active_member(&r.members), Some(u(1)));
+        // prossimo handoff = prossimo boundary griglia (lunedì 2026-11-16 00:00)
+        assert_eq!(r.end_time(now), ts("2026-11-16T00:00:00Z"));
+        // la formula pura invece darebbe un indice diverso da 0 (ecco la divergenza)
+        assert_ne!(r.active_at(now), Some(u(1)));
+    }
+    #[test]
+    fn rotation_state_advances_one_per_boundary() {
+        let r = Rotation{ kind:RotationType::Weekly, shift_len:1, start:ts("2024-01-01T00:00:00Z"), members:vec![u(1),u(2),u(3)] };
+        let created = ts("2026-11-11T10:00:00Z");
+        let st = RotationState::seed(created);
+        // dopo 1 boundary (2026-11-16) -> idx1
+        assert_eq!(st.advanced_to(&r, ts("2026-11-16T00:00:00Z"), 3).position, 1);
+        // dopo 3 boundary -> wrap a idx0
+        assert_eq!(st.advanced_to(&r, ts("2026-11-30T00:00:00Z"), 3).position, 0);
+        // shift_start si allinea all'ultimo boundary <= now
+        assert_eq!(st.advanced_to(&r, ts("2026-11-20T00:00:00Z"), 3).shift_start, ts("2026-11-16T00:00:00Z"));
+    }
+    #[test]
+    fn rotation_state_participant_removed_resets() {
+        let r = Rotation{ kind:RotationType::Daily, shift_len:1, start:ts("2024-01-01T00:00:00Z"), members:vec![u(1),u(2)] };
+        // posizione 2 non più valida con count=2 -> reset a 0 prima di avanzare
+        let st = RotationState{ position:2, shift_start:ts("2026-11-11T00:00:00Z") };
+        let adv = st.advanced_to(&r, ts("2026-11-11T12:00:00Z"), 2);
+        assert_eq!(adv.position, 0);
     }
     #[test]
     fn rotation_daily() {

@@ -1,0 +1,4 @@
+[env]
+# rustc va in STATUS_STACK_BUFFER_OVERRUN in codegen su questa crate grande (Windows):
+# stack worker ampio evita il crash. Vedi memory qa-ci / gap-closure.
+RUST_MIN_STACK = "268435456"

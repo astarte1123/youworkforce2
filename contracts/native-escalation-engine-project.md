@@ -108,13 +108,30 @@ GoAlert + diff).
 (`esc_build_schedule` dalla stessa config di `sync_goalert` → `escalation::Schedule::on_call_at`) e lo
 confrontano con l'on-call corrente di GoAlert (`service.onCallUsers.userName` = email), loggando match/diff.
 Report: `GET /api/escalation/shadow` (match-rate 7gg + ultime divergenze). **Nessuna consegna**, GoAlert
-resta il motore. Verificato su globex: gruppo mode 'tutti' → **match**; gruppo 'turni' weekly → **diff
-rilevato** (native idx1=sh2 vs GoAlert activeUserIndex=0=sh1, nextHandoff 2026-11-16).
-**DIVERGENZA NOTA DA RICONCILIARE (prossima iterazione shadow):** parità dell'indice nelle rotation
-*weekly* vs l'algoritmo GoAlert (allineamento handoff in TZ Europe/Rome). La riconciliazione richiede la
-logica rotation di GoAlert (non va forzata con un off-by-one cieco: romperebbe daily/hourly). Override
-(assenze) non ancora modellati lato nativo → seconda fonte di diff attesa. Obiettivo invariato: 0
-divergenze su N giorni prima del cutover.
+resta il motore.
+
+**DIVERGENZA WEEKLY — RISOLTA (mig 0053 `esc_rotation_state`).** La prima iterazione shadow (formula
+pura `shift_number(now) % N`) divergeva sui gruppi 'turni' weekly (native idx1 vs GoAlert
+activeUserIndex=0). **Root cause** (studiata la sorgente GoAlert: `schedule/rotation/rotation.go` +
+`engine/rotationmanager` `RotMgrStart`/`calcAdvance`): **l'indice GoAlert NON è funzione dello `start`**,
+è *stato mutabile* — alla CREAZIONE della rotation `RotMgrStart` semina `position=0`, `shift_start=now()`,
+poi `calcAdvance` fa `position=(position+1)%N` a ogni boundary. Lo `start` definisce solo la *griglia*
+dei handoff, non l'indice. Formula corretta: `index = (shift_number(now) − shift_number(creazione)) mod N`
+(non `shift_number(now) % N`): per una rotation creata nella settimana corrente → 0, come GoAlert.
+**Fix:** `escalation::RotationState{position,shift_start}` + `seed(creato)`/`advanced_to` (replica
+`calcAdvance`: +1 per boundary, reset su partecipante rimosso) e `Rotation::start_time/end_time` (replica
+`StartTime/EndTime`). Lo shadow carica/semina lo stato in `esc_rotation_state`: alla prima osservazione
+semina dal **ground-truth GoAlert** (indice del membro on-call corrente), poi avanza indipendente sulla
+stessa griglia. Robustezza: se GoAlert non ha ancora un on-call (warm-up engine post-sync) non semina un
+indice inventato → native vuoto = match, niente falsa divergenza. **3 nuovi unit test** (semina a creazione
+= idx0; avanza +1 per boundary con wrap; reset su rimozione) → `cargo test escalation::` 10/10.
+**Verificato live su globex** (goalert riabilitato temporaneamente, poi ripristinato): rotation weekly
+**multi-membro** (admin/qa-b/qa-c, start 2024-01-01) → GoAlert on-call = admin (idx0), native = admin →
+**match**, `match_rate 1.0`. Discriminatore: la formula pura avrebbe dato `149%3=2` (qa-c) ≠ GoAlert →
+il vecchio codice divergeva, il nuovo combacia. Artefatti di test ripuliti.
+
+**RESIDUO FASE 1:** Override (assenze) non ancora modellati lato nativo → seconda fonte di diff attesa
+quando un tenant usa override GoAlert. Obiettivo invariato: 0 divergenze su N giorni prima del cutover.
 
 **Fase 2 — Consegna in ombra.** Adapter Twilio/SMTP/Slack attivi ma verso **sink di prova**
 (receiver webhook come `goalert-delivery.sh`): verifichiamo consegna reale + ack inbound, ancora

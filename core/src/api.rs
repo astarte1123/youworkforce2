@@ -7209,6 +7209,40 @@ async fn esc_goalert_oncall_emails(st: &AppState, base: &str, cookie: &str, sid:
         .unwrap_or_default()
 }
 
+/// Risolve il membro on-call della rotation con STATO persistente (semantica GoAlert
+/// `rotation_state`): carica/semina lo stato, lo avanza fino a `now`, lo persiste, ritorna il membro.
+/// Semina alla prima osservazione dal ground-truth GoAlert (indice del membro on-call corrente).
+async fn esc_resolve_rot_member(
+    st: &AppState, tid: Uuid, gid: Uuid, rot: &crate::escalation::Rotation,
+    members: &[Uuid], email_of: &std::collections::HashMap<Uuid,String>, ga: &[String],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<Uuid> {
+    use crate::escalation::RotationState;
+    let row = sqlx::query("SELECT position,shift_start FROM app.esc_rotation_state WHERE tenant_id=$1 AND group_id=$2")
+        .bind(tid).bind(gid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let state = match row {
+        Some(r) => RotationState{ position: r.get::<i32,_>("position").max(0) as usize, shift_start: r.get("shift_start") },
+        None => {
+            // SEMINA dal ground-truth GoAlert: indice = posizione del membro on-call ora.
+            // Se GoAlert non ha ancora un on-call (warm-up engine post-sync, o transiente),
+            // NON seminare un indice inventato: ritorna None (native vuoto) così il confronto
+            // resta allineato a GoAlert vuoto (= match) invece di generare una falsa divergenza.
+            let idx = ga.first().and_then(|e| members.iter().position(|u| email_of.get(u).map(|x| x==e).unwrap_or(false)));
+            let Some(idx) = idx else { return None; };
+            let seeded = RotationState{ position: idx, shift_start: rot.start_time(now) };
+            let _ = sqlx::query("INSERT INTO app.esc_rotation_state(tenant_id,group_id,position,shift_start,seeded_from) VALUES($1,$2,$3,$4,'goalert') ON CONFLICT (tenant_id,group_id) DO NOTHING")
+                .bind(tid).bind(gid).bind(seeded.position as i32).bind(seeded.shift_start).execute(&st.owner_pool).await;
+            seeded
+        }
+    };
+    let adv = state.advanced_to(rot, now, members.len());
+    if adv != state {
+        let _ = sqlx::query("UPDATE app.esc_rotation_state SET position=$3,shift_start=$4,updated_at=now() WHERE tenant_id=$1 AND group_id=$2")
+            .bind(tid).bind(gid).bind(adv.position as i32).bind(adv.shift_start).execute(&st.owner_pool).await;
+    }
+    adv.active_member(members)
+}
+
 /// Runner shadow per un tenant: per ogni gruppo con servizio GoAlert, confronta on-call
 /// nativo vs GoAlert e logga. Best-effort, nessun effetto esterno oltre al log.
 pub async fn escalation_shadow_tenant(st: &AppState, tid: Uuid) -> (i64, i64) {
@@ -7227,19 +7261,23 @@ pub async fn escalation_shadow_tenant(st: &AppState, tid: Uuid) -> (i64, i64) {
         if mrows.is_empty() { continue; }
         let members: Vec<Uuid> = mrows.iter().map(|r| r.get::<Uuid,_>("id")).collect();
         let email_of: std::collections::HashMap<Uuid,String> = mrows.iter().map(|r| (r.get::<Uuid,_>("id"), r.get::<String,_>("email").to_lowercase())).collect();
-        // on-call nativo
-        let sched = esc_build_schedule(g, &members);
-        let mut native: Vec<String> = sched.on_call_at(now).iter().filter_map(|u| email_of.get(u).cloned()).collect();
-        native.sort(); native.dedup();
-        // on-call GoAlert
+        // on-call GoAlert (ground truth)
         let mut ga = esc_goalert_oncall_emails(st, &base, &cookie, &sid).await;
         ga.sort(); ga.dedup();
+        // on-call nativo
+        let sched = esc_build_schedule(g, &members);
+        let rot_member = match &sched.rotation {
+            Some(rot) => esc_resolve_rot_member(st, tid, gid, rot, &members, &email_of, &ga, now).await,
+            None => None,
+        };
+        let mut native: Vec<String> = sched.on_call_at_rot(now, rot_member).iter().filter_map(|u| email_of.get(u).cloned()).collect();
+        native.sort(); native.dedup();
         let is_match = native == ga;
         if is_match { matched += 1; }
         let _ = sqlx::query("INSERT INTO app.esc_shadow_log(tenant_id,group_id,native_oncall,goalert_oncall,match,detail) VALUES($1,$2,$3,$4,$5,$6)")
             .bind(tid).bind(gid).bind(&native).bind(&ga).bind(is_match)
             .bind(json!({"group":g.get::<String,_>("name"),"mode":g.get::<String,_>("oncall_mode"),
-                "note":"FASE 1 shadow: override non modellati lato nativo (possibile diff)"}))
+                "note":"FASE 1 shadow: rotation stateful (seed GoAlert + advance nativo); override non ancora modellati"}))
             .execute(&st.owner_pool).await;
         n += 1;
     }
