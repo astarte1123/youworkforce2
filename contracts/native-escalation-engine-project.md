@@ -165,11 +165,22 @@ ora include `attempt` (= giro di repeat) → ri-consegna solo nel nuovo giro. (e
 (sink reale :9099): consegna SMS `state=sent provider_ref=sink-200`; 2° run `deliveries=0` (idempotenza);
 ack SMS "OK" → `esc_alert_state=ack`, timeline `applied=false`, incidente resta `aperto` (shadow safe).
 23/23 test verdi. Deps nuove: `hmac`, `sha1`, `base64`. RESIDUO minore: Slack per-gruppo non ancora
-cablato nella ladder per-incidente (adapter pronto); verifica live con Twilio carrier reale (serve account).
+verifica live con Twilio carrier reale (serve account). **Slack in ladder CHIUSO** (commit a309ab5):
+al primo step il canale `slack_channel_id` del gruppo (se `slack_notify<>off`) entra tra i
+destinatari con la stessa idempotenza.
 
-**Fase 3 — Cutover per-tenant.** Flag `tenant.escalation_engine = native|goalert` (default
-goalert). Si accende `native` su globex, poi tenant pilota, con rollback immediato al flag.
-GoAlert resta provisionato come rete di sicurezza.
+**Fase 3 — Cutover per-tenant. ✅ FATTA** (mig 0056 `tenant_oncall_cfg.escalation_engine`, default
+`goalert`, CHECK `goalert|native`, commit a309ab5). Flag per-tenant: `native` = nativo autoritativo
+(adapter live se configurati + ack che applica la transizione sull'incidente); `goalert` = shadow
+(sink, nessun effetto sugli incidenti). **GoAlert NON soppresso** (resta rete di sicurezza attiva;
+spegnimento = FASE 4) — scelta per non perdere mai un SOS. `esc_apply_ack` applica se `native` (o gate
+globale `YW_ESC_ACK_APPLY`). Consegna: `esc_dispatch` (scelta adapter) + `esc_persist_delivery` (su
+FALLIMENTO rimuove il claim → ritenta al giro dopo, at-least-once). API: `GET /api/escalation/engine`
+(admin), `POST /api/superadmin/tenants/:id/escalation-engine` (superadmin, native|goalert; **rollback =
+goalert**, immediato). Verifica LIVE globex: delivery sms+slack=sent; ack in shadow `applied=false`
+(incidente aperto), dopo cutover `native` `applied=true` (incidente→preso_in_carico), rollback ok. 23/23.
+RESIDUO verso FASE 4: soppressione notify GoAlert per tenant native (oggi doppio path) + consegna nativa
+immediata (ora al prossimo scan ~30s) + hardening retry.
 
 **Fase 4 — Spegnimento GoAlert.** Quando tutti i tenant sono `native` e stabili: si rimuove il
 provisioning, `goalert.rs` e la dipendenza dal container. Si aggiorna il manuale.
