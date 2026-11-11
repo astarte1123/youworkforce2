@@ -1,4 +1,5 @@
 mod state; mod clock; mod auth; mod db; mod goalert; mod worker; mod api; mod crypto;
+#[allow(dead_code)] mod escalation; // #4 FASE 0: libreria pura (non ancora wirata; GoAlert resta il motore)
 
 use std::sync::Arc;
 use axum::{routing::{get, post}, Router, Json};

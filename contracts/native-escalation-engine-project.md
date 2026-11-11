@@ -95,8 +95,13 @@ solo con backend nostro.
 - Multi-istanza: lock ottimistico su `next_fire_at` (SKIP LOCKED) per non doppiare l'escalation.
 
 ## 8. Roadmap (GoAlert in parallelo fino a parità)
-**Fase 0 — Decisione pura, nessuna consegna.** On-call resolver + escalation state machine come
-libreria. Test a tabella (fusi/DST/override/turni). Nessun effetto esterno.
+**Fase 0 — Decisione pura, nessuna consegna. ✅ FATTO** (`core/src/escalation.rs`). On-call resolver
+(`Rotation::active_at`, `Schedule::on_call_at` con regole di copertura a fasce incl. wrap notturno,
+`Override` replace/remove/add anche fuori copertura) + escalation state machine (`tick` → FireStep/
+Wait/Exhausted/Stop con step/delay/repeat/ack). 7 test a tabella verdi (`cargo test escalation::`).
+Nessun effetto esterno, modulo non wirato (GoAlert resta il motore). Limite noto FASE 0: fasce in UTC
+(fuso/DST da applicare a monte / fase successiva). Prossimo: Fase 1 shadow (calcolo in parallelo a
+GoAlert + diff).
 
 **Fase 1 — Shadow mode.** Per ogni alert reale, il motore nativo calcola *chi/quando* in parallelo
 a GoAlert e **logga** la decisione (`esc_shadow_log`) senza consegnare. Confronto automatico
