@@ -133,9 +133,22 @@ il vecchio codice divergeva, il nuovo combacia. Artefatti di test ripuliti.
 **RESIDUO FASE 1:** Override (assenze) non ancora modellati lato nativo → seconda fonte di diff attesa
 quando un tenant usa override GoAlert. Obiettivo invariato: 0 divergenze su N giorni prima del cutover.
 
-**Fase 2 — Consegna in ombra.** Adapter Twilio/SMTP/Slack attivi ma verso **sink di prova**
-(receiver webhook come `goalert-delivery.sh`): verifichiamo consegna reale + ack inbound, ancora
-senza spegnere GoAlert.
+**Fase 2 — Consegna in ombra. ✅ PRIMA ITERAZIONE** (mig 0054 `esc_alert_state`+`esc_delivery_log`,
+commit 9bc7196). Il motore nativo ora DECIDE e CONSEGNA in ombra: per ogni incidente aperto
+instradato a un gruppo (`alarm_routing`), risolve l'on-call nativo (riusa resolver stateful +
+override di FASE 1), usa `escalation::tick` per scegliere la rung dovuta e la consegna al **sink di
+prova** (`YW_ESC_SINK_URL`; dry-run se assente). Modulo nuovo `core/src/delivery.rs` (parte pura
+testata, 7 test): `Channel/Rung`, `ladder_for` (SMS@0, VOICE@`voice_fallback_min` da
+`tenant_oncall_cfg`, email fallback), `request_body` modellato come Twilio REST `Messages`/`Calls`
+(TwiML `<Gather>` DTMF pronto per il cutover), `delivery_key`, `deliver_to_sink`. **Idempotenza**:
+UNIQUE `(tenant,incident,step,channel,to)` su `esc_delivery_log` → ogni rung consegnata una sola
+volta anche tra riavvii (claim `INSERT … ON CONFLICT DO NOTHING RETURNING`). `esc_alert_state` =
+macchina a stati per incidente; ack/chiusura incidente → `tick` Stop ferma l'escalation. Worker
+scan ~ogni 30s. API: `GET /api/escalation/delivery` (conteggi+ultime), `POST …/run`. Timeline
+`esc_shadow_delivery`. **Nessun carrier reale, GoAlert resta il motore.** 22/22 test verdi.
+**RESIDUO FASE 2:** (a) Twilio REST **live** (gate `YW_ESC_TWILIO_LIVE`) verso carrier vero via sink
+→ carrier; (b) **ack inbound** firmato (`/api/ingress/twilio/sms|voice` → ack/close); (c) SMTP+Slack
+adapter; (d) `repeat` della policy (ora 0); (e) verifica LIVE su globex con sink reale.
 
 **Fase 3 — Cutover per-tenant.** Flag `tenant.escalation_engine = native|goalert` (default
 goalert). Si accende `native` su globex, poi tenant pilota, con rollback immediato al flag.
