@@ -7373,3 +7373,182 @@ pub async fn escalation_shadow_run(State(st): State<AppState>, h: HeaderMap) -> 
     let (n, m) = escalation_shadow_tenant(&st, tid).await;
     Ok(Json(json!({"ok":true,"groups":n,"matches":m})))
 }
+
+// ============================================================================
+// #4 escalation nativo — FASE 2: CONSEGNA IN OMBRA (sink di prova, GoAlert resta il motore)
+// ============================================================================
+
+/// On-call nativo di un gruppo a `now`, risolto con la stessa catena dello shadow (rotation
+/// stateful + override), ma restituendo i recapiti (telefono/email) per costruire la ladder.
+/// Richiede una sessione GoAlert (ground-truth per semina rotation + override), coerente con la
+/// filosofia shadow: GoAlert è il motore in parallelo finché non si prova la parità.
+async fn esc_native_oncall_contacts(
+    st: &AppState, tid: Uuid, gid: Uuid, base: &str, cookie: &str, now: chrono::DateTime<chrono::Utc>,
+) -> Vec<(Uuid, Option<String>, String)> {
+    let Some(g) = sqlx::query("SELECT id,name,oncall_mode,oncall_type,oncall_shift,coverage_mode,cov_start,cov_end,cov_days,handoff_time,handoff_day,goalert_service_id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
+        .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten() else { return vec![]; };
+    let mrows = sqlx::query("SELECT u.id,u.email,u.phone FROM app.alarm_group_members m JOIN app.users u ON u.id=m.user_id WHERE m.group_id=$1 ORDER BY m.position")
+        .bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    if mrows.is_empty() { return vec![]; }
+    let members: Vec<Uuid> = mrows.iter().map(|r| r.get::<Uuid,_>("id")).collect();
+    let mut email_of: std::collections::HashMap<Uuid,String> = mrows.iter().map(|r| (r.get::<Uuid,_>("id"), r.get::<String,_>("email").to_lowercase())).collect();
+    let phone_of: std::collections::HashMap<Uuid,Option<String>> = mrows.iter().map(|r| (r.get::<Uuid,_>("id"), r.try_get::<String,_>("phone").ok())).collect();
+    let mut sched = esc_build_schedule(&g, &members);
+    if let Some(scid) = group_schedule_id(st, tid, gid).await {
+        sched.overrides = esc_goalert_overrides(st, base, cookie, &scid, &mut email_of).await;
+    }
+    let rot_member = match &sched.rotation {
+        Some(rot) => {
+            let sid: Option<String> = g.try_get("goalert_service_id").ok().flatten();
+            let mut ga = match sid { Some(ref s) => esc_goalert_oncall_emails(st, base, cookie, s).await, None => vec![] };
+            ga.sort(); ga.dedup();
+            esc_resolve_rot_member(st, tid, gid, rot, &members, &email_of, &ga, now).await
+        }
+        None => None,
+    };
+    let uids = sched.on_call_at_rot(now, rot_member);
+    // mappa uid -> (phone,email); i sostituti sintetici (override esterni) non hanno recapiti locali
+    uids.into_iter().filter_map(|u| {
+        let email = email_of.get(&u)?.clone();
+        let phone = phone_of.get(&u).cloned().flatten();
+        Some((u, phone, email))
+    }).collect()
+}
+
+/// EscStatus nativo dallo stato dell'incidente (presa in carico/chiusura = ferma l'escalation).
+fn esc_status_from_incident(state: &str) -> crate::escalation::EscStatus {
+    use crate::escalation::EscStatus as S;
+    match state { "chiuso" => S::Closed, "preso_in_carico" | "intervento" => S::Acked, _ => S::Unacked }
+}
+
+/// Timeline canali della ladder a livello tenant (SMS @0, VOICE dopo `voice_fallback_min`).
+/// Ritorna (policy per `tick`, canale di ogni step). repeat=0 in FASE 2 (nessuna ripetizione ancora).
+fn esc_delivery_policy(voice_on: bool, voice_min: i64) -> (crate::escalation::EscPolicy, Vec<crate::delivery::Channel>) {
+    use crate::escalation::{EscPolicy, EscStep};
+    use crate::delivery::Channel;
+    let mut steps = vec![]; let mut chans = vec![];
+    if voice_on {
+        // SMS, poi VOICE: lo step SMS "aspetta" voice_min prima di avanzare al VOICE.
+        steps.push(EscStep{ delay_s: voice_min.max(0)*60, targets: vec![] }); chans.push(Channel::Sms);
+        steps.push(EscStep{ delay_s: 0, targets: vec![] }); chans.push(Channel::Voice);
+    } else {
+        steps.push(EscStep{ delay_s: 0, targets: vec![] }); chans.push(Channel::Sms);
+    }
+    (EscPolicy{ steps, repeat: 0 }, chans)
+}
+
+/// Runner di consegna in ombra per un tenant: per ogni incidente APERTO instradato a un gruppo,
+/// calcola l'on-call nativo e consegna la rung dovuta al SINK DI PROVA (`YW_ESC_SINK_URL`), con
+/// idempotenza su `esc_delivery_log`. Nessun carrier reale. GoAlert resta il motore.
+pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64, i64) {
+    use crate::escalation::{self, AlertState, EscAction};
+    let Some((base, cookie, _)) = goalert_session(st, tid).await else { return (0,0); };
+    let now = chrono::Utc::now();
+    let sink = std::env::var("YW_ESC_SINK_URL").unwrap_or_default();
+    let from = std::env::var("YW_ESC_FROM").unwrap_or_else(|_| "+10000000000".into());
+    // config vocale del tenant
+    let vrow = sqlx::query("SELECT voice_fallback_on,voice_fallback_min FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let (voice_on, voice_min) = vrow.map(|r| (r.get::<bool,_>("voice_fallback_on"), r.get::<i32,_>("voice_fallback_min") as i64)).unwrap_or((true,5));
+    let (policy, chans) = esc_delivery_policy(voice_on, voice_min);
+
+    // incidenti aperti instradati a un gruppo nativo
+    let incs = sqlx::query(
+        "SELECT i.id, i.etype, i.state, i.opened_at, r.group_id
+           FROM app.incidents i JOIN app.alarm_routing r ON r.tenant_id=i.tenant_id AND r.etype=i.etype
+          WHERE i.tenant_id=$1 AND i.state <> 'chiuso'")
+        .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let (mut seen, mut delivered) = (0i64, 0i64);
+    for inc in &incs {
+        let iid: Uuid = inc.get("id");
+        let gid: Uuid = inc.get("group_id");
+        let etype: String = inc.get("etype");
+        let istate: String = inc.get("state");
+        seen += 1;
+
+        // stato macchina (seed step=-1 = usize::MAX lato Rust)
+        let strow = sqlx::query("SELECT step,step_fired_at,repeat_count FROM app.esc_alert_state WHERE tenant_id=$1 AND incident_id=$2")
+            .bind(tid).bind(iid).fetch_optional(&st.owner_pool).await.ok().flatten();
+        let (cur_step, fired_at, rc) = match &strow {
+            Some(r) => (r.get::<i32,_>("step"), r.get::<chrono::DateTime<chrono::Utc>,_>("step_fired_at"), r.get::<i32,_>("repeat_count")),
+            None => (-1, now, 0),
+        };
+        let rust_step = if cur_step < 0 { usize::MAX } else { cur_step as usize };
+        let state = AlertState{ step: rust_step, step_fired_at: fired_at, repeat_count: rc as u32, status: esc_status_from_incident(&istate) };
+        let action = escalation::tick(&policy, &state, now);
+
+        match action {
+            EscAction::Stop | EscAction::Exhausted => {
+                let new_status = if matches!(action, EscAction::Stop) { if istate=="chiuso" {"closed"} else {"ack"} } else { "exhausted" };
+                let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,repeat_count,status) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (tenant_id,incident_id) DO UPDATE SET status=$6,updated_at=now()")
+                    .bind(tid).bind(iid).bind(cur_step).bind(fired_at).bind(rc).bind(new_status).execute(&st.owner_pool).await;
+            }
+            EscAction::Wait => { /* delay non scaduto: niente */ }
+            EscAction::FireStep(idx, _) => {
+                let channel = *chans.get(idx).unwrap_or(&crate::delivery::Channel::Sms);
+                let oncall = esc_native_oncall_contacts(st, tid, gid, &base, &cookie, now).await;
+                let short = iid.to_string(); let short = &short[..8];
+                let text = format!("Allarme {etype} (incidente {short})");
+                for (_u, phone, email) in &oncall {
+                    let to = match channel {
+                        crate::delivery::Channel::Email => Some(email.clone()),
+                        _ => phone.clone(),
+                    };
+                    let Some(to) = to.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else { continue };
+                    // IDEMPOTENZA: claim della rung. Se gia' presente -> skip (nessun doppio invio).
+                    let claimed = sqlx::query("INSERT INTO app.esc_delivery_log(tenant_id,incident_id,step,channel,to_value,state) VALUES($1,$2,$3,$4,$5,'queued') ON CONFLICT (tenant_id,incident_id,step,channel,to_value) DO NOTHING RETURNING id")
+                        .bind(tid).bind(iid).bind(idx as i32).bind(channel.as_str()).bind(&to).fetch_optional(&st.owner_pool).await.ok().flatten();
+                    let Some(logrow) = claimed else { continue };
+                    let log_id: i64 = logrow.get("id");
+                    let body = crate::delivery::request_body(channel, &from, &to, &text, &iid.to_string(), idx as i64);
+                    let res = crate::delivery::deliver_to_sink(&st.http, &sink, &body).await;
+                    let _ = sqlx::query("UPDATE app.esc_delivery_log SET state=$2,provider_ref=$3,detail=$4 WHERE id=$1")
+                        .bind(log_id).bind(res.state).bind(res.provider_ref).bind(res.detail).execute(&st.owner_pool).await;
+                    delivered += 1;
+                }
+                // avanza/semina lo stato alla rung appena sparata
+                let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,repeat_count,status) VALUES($1,$2,$3,$4,$5,'unack') ON CONFLICT (tenant_id,incident_id) DO UPDATE SET step=$3,step_fired_at=$4,updated_at=now()")
+                    .bind(tid).bind(iid).bind(idx as i32).bind(now).bind(rc).execute(&st.owner_pool).await;
+                let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_shadow_delivery',$3)")
+                    .bind(tid).bind(iid).bind(json!({"step":idx,"channel":channel.as_str(),"recipients":oncall.len(),"sink":!sink.is_empty()})).execute(&st.owner_pool).await;
+            }
+        }
+    }
+    (seen, delivered)
+}
+
+/// Scansione consegna-shadow di tutti i tenant con GoAlert provisionato (dal worker, bassa freq.).
+pub async fn escalation_delivery_shadow_scan(st: &AppState) {
+    let tids: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT tenant_id FROM app.goalert_services")
+        .fetch_all(&st.owner_pool).await.unwrap_or_default();
+    for tid in tids { let _ = escalation_delivery_shadow_tenant(st, tid).await; }
+}
+
+/// Riepilogo consegne in ombra (admin): conteggi per stato + ultime consegne.
+pub async fn escalation_delivery_report(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let counts = sqlx::query("SELECT state, count(*) AS n FROM app.esc_delivery_log WHERE tenant_id=$1 AND at > now() - interval '7 days' GROUP BY state")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let by_state: Value = counts.iter().map(|r| (r.get::<String,_>("state"), json!(r.get::<i64,_>("n")))).collect::<serde_json::Map<_,_>>().into();
+    let recent = sqlx::query("SELECT at,incident_id,step,channel,to_value,state,provider_ref FROM app.esc_delivery_log WHERE tenant_id=$1 ORDER BY at DESC LIMIT 30")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = recent.iter().map(|r| json!({
+        "at": r.get::<chrono::DateTime<chrono::Utc>,_>("at"),
+        "incident_id": r.get::<Uuid,_>("incident_id"),
+        "step": r.get::<i32,_>("step"), "channel": r.get::<String,_>("channel"),
+        "to": r.get::<String,_>("to_value"), "state": r.get::<String,_>("state"),
+        "provider_ref": r.try_get::<String,_>("provider_ref").ok() })).collect();
+    let sink = std::env::var("YW_ESC_SINK_URL").unwrap_or_default();
+    Ok(Json(json!({"window_days":7,"by_state":by_state,"recent":out,
+        "sink_configured": !sink.is_empty(),
+        "note":"Consegna FASE 2 in OMBRA: sink di prova, nessun carrier reale. GoAlert resta il motore. 'dry' = nessun sink configurato."})))
+}
+
+/// Trigger manuale (admin) di un giro di consegna in ombra sul proprio tenant.
+pub async fn escalation_delivery_run(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let (seen, delivered) = escalation_delivery_shadow_tenant(&st, tid).await;
+    Ok(Json(json!({"ok":true,"incidents":seen,"deliveries":delivered})))
+}

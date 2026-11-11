@@ -1,5 +1,6 @@
 mod state; mod clock; mod auth; mod db; mod goalert; mod worker; mod api; mod crypto;
 #[allow(dead_code)] mod escalation; // #4 FASE 0: libreria pura (non ancora wirata; GoAlert resta il motore)
+mod delivery; // #4 FASE 2: adapter di consegna in ombra (sink di prova; GoAlert resta il motore)
 mod modules; // #3 FASE 1: registry manifest moduli (dipendenze + metadata)
 
 use std::sync::Arc;
@@ -52,6 +53,9 @@ fn tb_parity_routes() -> Router<AppState> {
         // #4 escalation nativo FASE 1 (shadow): report + trigger manuale (nessuna consegna)
         .route("/api/escalation/shadow", get(api::escalation_shadow_report))
         .route("/api/escalation/shadow/run", post(api::escalation_shadow_run))
+        // #4 escalation nativo FASE 2 (consegna in ombra verso sink di prova): report + trigger
+        .route("/api/escalation/delivery", get(api::escalation_delivery_report))
+        .route("/api/escalation/delivery/run", post(api::escalation_delivery_run))
 }
 
 #[tokio::main]

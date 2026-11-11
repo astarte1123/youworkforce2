@@ -32,6 +32,8 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     if n % 1800 == 0 { api::purge_retention(st).await; }
     // #4 escalation nativo FASE 1 (shadow): confronto nativo vs GoAlert ~ogni 5 min, nessuna consegna
     if n % 150 == 0 { api::escalation_shadow_scan(st).await; }
+    // #4 escalation nativo FASE 2 (consegna in ombra): ~ogni 30s, verso sink di prova, idempotente
+    if n % 15 == 7 { api::escalation_delivery_shadow_scan(st).await; }
     Ok(())
 }
 
