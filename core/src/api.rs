@@ -1587,17 +1587,37 @@ pub async fn super_remove_scenario(State(st): State<AppState>, h: HeaderMap, Pat
     let (rules, devs) = scenario_remove_inner(&st, tid, &code).await?;
     Ok(Json(json!({"ok":true,"rules_removed":rules,"devices_removed":devs,"note":"moduli lasciati abilitati"})))
 }
-/// Logica pura di rimozione di uno scenario (riusata da remove singolo e bulk). Ritorna (regole, device).
+/// Logica pura di rimozione di uno scenario (riusata da remove singolo e bulk). Rimozione COMPLETA
+/// dei dati demo generati dallo scenario: incidenti -> eventi -> device (in quest'ordine per i FK),
+/// più regole e riga di stato. I moduli restano abilitati. Ritorna (regole, device).
 async fn scenario_remove_inner(st: &AppState, tid: Uuid, code: &str) -> Result<(u64, u64), (StatusCode, String)> {
+    let dev_like = format!("scn-{}-%", code);
+    let corr_like = format!("scndemo-{}-%", code);
+    // 1) incidenti demo: da eventi dei device demo OPPURE con correlation della demo (timeline in cascade).
+    let _inc = sqlx::query("DELETE FROM app.incidents WHERE tenant_id=$1 AND (
+            correlation LIKE $2
+            OR event_id IN (SELECT e.id FROM app.events e JOIN app.devices d ON d.id=e.device_id
+                            WHERE d.tenant_id=$1 AND d.source='scenario' AND d.external_id LIKE $3))")
+        .bind(tid).bind(&corr_like).bind(&dev_like).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+    // 2) eventi demo: dei device demo OPPURE con correlation della demo.
+    let _ev = sqlx::query("DELETE FROM app.events WHERE tenant_id=$1 AND (
+            correlation LIKE $2
+            OR device_id IN (SELECT id FROM app.devices WHERE tenant_id=$1 AND source='scenario' AND external_id LIKE $3))")
+        .bind(tid).bind(&corr_like).bind(&dev_like).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+    // 3) device demo (ora senza eventi che li referenziano).
+    let devs = sqlx::query("DELETE FROM app.devices WHERE tenant_id=$1 AND source='scenario' AND external_id LIKE $2")
+        .bind(tid).bind(&dev_like).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+    // 4) sito demo, se rimasto vuoto.
+    let _ = sqlx::query("DELETE FROM app.sites s WHERE s.tenant_id=$1 AND s.name LIKE '% (demo)'
+            AND NOT EXISTS (SELECT 1 FROM app.devices d WHERE d.site_id=s.id)
+            AND NOT EXISTS (SELECT 1 FROM app.incidents i WHERE i.site_id=s.id)")
+        .bind(tid).execute(&st.owner_pool).await;
+    // 5) regole del bundle + riga di stato.
     let rules = sqlx::query("DELETE FROM app.sensor_rules WHERE tenant_id=$1 AND label LIKE $2")
         .bind(tid).bind(format!("scn:{}:%", code)).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
-    // device demo solo se non referenziati da eventi (FK-safe)
-    let devs = sqlx::query("DELETE FROM app.devices WHERE tenant_id=$1 AND source='scenario' AND external_id LIKE $2
-        AND id NOT IN (SELECT device_id FROM app.events WHERE device_id IS NOT NULL)")
-        .bind(tid).bind(format!("scn-{}-%", code)).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
     sqlx::query("DELETE FROM app.tenant_scenarios WHERE tenant_id=$1 AND scenario_code=$2")
         .bind(tid).bind(code).execute(&st.owner_pool).await.map_err(ise)?;
-    audit(st, tid, "superadmin", "scenario_remove", json!({"code":code,"rules_removed":rules,"devices_removed":devs})).await;
+    audit(st, tid, "superadmin", "scenario_remove", json!({"code":code,"rules_removed":rules,"devices_removed":devs,"incidents_removed":_inc,"events_removed":_ev})).await;
     Ok((rules, devs))
 }
 
