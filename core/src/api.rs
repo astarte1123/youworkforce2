@@ -3373,7 +3373,7 @@ pub async fn list_checkins(State(st): State<AppState>, h: HeaderMap) -> R {
     Ok(Json(json!(out)))
 }
 
-async fn audit(st: &AppState, tid: Uuid, actor: &str, action: &str, detail: Value) {
+pub(crate) async fn audit(st: &AppState, tid: Uuid, actor: &str, action: &str, detail: Value) {
     let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,$2,$3,$4)")
         .bind(tid).bind(actor).bind(action).bind(detail).execute(&st.owner_pool).await;
 }
@@ -3705,6 +3705,14 @@ pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
     let eid: Uuid = ev.get("id");
 
     let mut incident_id: Option<Uuid> = None;
+    // Fase C gating: un profilo di protezione attivo può disabilitare questo trigger per il
+    // lavoratore (risolto via assegnatario del device). Fail-open: senza profilo non sopprime.
+    let prof_suppressed = trigger_suppressed(st, tid, None, device_id, &n.etype).await;
+    if (CRITICAL.contains(&n.etype.as_str()) || n.etype.ends_with("_critico")) && prof_suppressed {
+        tx.commit().await.map_err(ise)?;
+        audit(st, tid, "system", "trigger_suppressed_by_profile", json!({"etype":n.etype,"device_id":device_id,"correlation":n.correlation})).await;
+        return Ok(Json(json!({"event_id":eid,"suppressed_by_profile":true,"etype":n.etype,"correlation":n.correlation})));
+    }
     if CRITICAL.contains(&n.etype.as_str()) || n.etype.ends_with("_critico") {
         // SOS priority/repeat follow the per-tenant escalation policy; other criticals = 2.
         let (pri, repeat) = if n.etype=="sos" { sos_escalation(st, tid).await } else { (2, 0) };
@@ -5073,6 +5081,12 @@ pub async fn worker_sos(State(st): State<AppState>, h: HeaderMap, Json(b): Json<
         .bind(tid).bind(format!("sos-{}-{}", s.user_id, now.timestamp_millis()))
         .bind(now).bind(lat).bind(lon).bind(accuracy).bind(dev_id).bind(&correlation).fetch_one(&mut *tx).await.map_err(ise)?;
     let eid: Uuid = ev.get("id");
+    // Fase C gating: un profilo attivo del lavoratore può disabilitare il trigger SOS (fail-open).
+    if trigger_suppressed(&st, tid, Some(s.user_id), None, "sos").await {
+        tx.commit().await.map_err(ise)?;
+        audit(&st, tid, &s.email, "trigger_suppressed_by_profile", json!({"etype":"sos","correlation":correlation})).await;
+        return Ok(Json(json!({"event_id":eid,"suppressed_by_profile":true,"etype":"sos","correlation":correlation})));
+    }
     let irow = sqlx::query(
         "INSERT INTO app.incidents(tenant_id,event_id,etype,correlation,priority) VALUES($1,$2,'sos',$3,$4) RETURNING id")
         .bind(tid).bind(eid).bind(&correlation).bind(pri).fetch_one(&mut *tx).await.map_err(ise)?;
@@ -5587,6 +5601,37 @@ pub async fn protection_profile_member_del(State(st): State<AppState>, h: Header
     if n == 0 { return Err(err(StatusCode::NOT_FOUND, "membro inesistente")); }
     audit(&st, tid, &s.email, "protection_profile_member_del", json!({"profile":id,"user":uid})).await;
     Ok(Json(json!({"ok":true})))
+}
+
+/// Fase C — gating dei trigger per-profilo. Ritorna true se un Profilo di protezione ATTIVO del
+/// lavoratore DISABILITA ESPLICITAMENTE il trigger per questo etype → l'incidente NON va aperto.
+/// Principio FAIL-OPEN (il single-path critico non si perde per errore): si sopprime SOLO quando
+/// esiste un profilo attivo per quel worker e la chiave trigger è esplicitamente `false`.
+/// Nessun profilo / etype non mappato / chiave assente o `true` → false (non sopprime).
+pub(crate) async fn trigger_suppressed(st: &AppState, tid: Uuid, worker: Option<Uuid>, device_id: Option<Uuid>, etype: &str) -> bool {
+    let key = match etype {
+        "sos" => "sos",
+        "man_down" => "man_down",
+        "immobilita" => "immobilita",
+        "mancato_checkin" => "mancato_checkin",
+        "attraversamento_geofence" => "geofence",
+        _ => return false, // etype non riconducibile a un trigger di profilo → mai soppresso
+    };
+    // lavoratore: esplicito, oppure assegnatario del device dell'evento
+    let wid = match worker {
+        Some(w) => Some(w),
+        None => match device_id {
+            Some(d) => sqlx::query_scalar::<_, Option<Uuid>>("SELECT assigned_user FROM app.devices WHERE id=$1 AND tenant_id=$2")
+                .bind(d).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten(),
+            None => None,
+        }
+    };
+    let Some(wid) = wid else { return false; };
+    let trg: Option<Value> = sqlx::query_scalar(
+        "SELECT p.triggers FROM app.protection_profile_members m JOIN app.protection_profiles p ON p.id=m.profile_id
+          WHERE m.tenant_id=$1 AND m.user_id=$2 AND p.enabled=true")
+        .bind(tid).bind(wid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    matches!(trg.as_ref().and_then(|t| t.get(key)).and_then(|v| v.as_bool()), Some(false))
 }
 
 /// SOS escalation policy (loneworker/sos_escalation): incident priority + repeat cadence.

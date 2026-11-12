@@ -135,8 +135,17 @@ di flusso di configurazione poi operatività:
   Verifica live globex: 13/13 CRUD (create/update/delete, 409 dup, move 1-worker-1-profilo, readback
   con group_name/triggers/device coperti) + 3/3 override routing (attivo→gruppo profilo,
   disattivo→globale, senza-gruppo→globale); loneworker-e2e 15/15 (nessuna regressione).
-  **RESIDUO:** gating dei trigger per-profilo non ancora applicato in creazione incidente (i `triggers`
-  sono informativi + pronti; non sopprimono il single-path critico — scelta prudente).
+  **Gating trigger per-profilo. ✅ FATTO.** Helper `trigger_suppressed(st,tid,worker,device_id,etype)`
+  (api.rs, pub(crate)) con mappa etype→chiave (sos/man_down/immobilita/mancato_checkin/attraversamento_geofence→geofence).
+  Principio **FAIL-OPEN**: sopprime SOLO se esiste un profilo **attivo** per quel worker (risolto via
+  `worker` esplicito o `device.assigned_user`) e la chiave trigger è **esplicitamente `false`**; nessun
+  profilo / etype non mappato / chiave assente o `true` → non sopprime (il single-path critico non si
+  perde per errore). Cablato nei 3 siti di apertura incidente: `persist_ingest` (sos/man_down/immobilita/
+  geofence da macchine), `worker_sos` (SOS app), `sweep_checkins` (mancato_checkin, worker.rs). Quando
+  sopprime: l'evento resta a trail, l'incidente NON si apre, audit `trigger_suppressed_by_profile`.
+  Verifica live globex: app-SOS sos=false→soppresso+audit / sos=true→incidente / profilo disattivo→
+  fail-open; persist_ingest (device traccar assegnato) sos=false→soppresso, man_down→passa (selettivo);
+  loneworker-e2e acme (senza profili) 15/15 (fail-open confermato). 7/7 gating e2e.
 
 ## 5. Piano operativo D+E (step verificabili)
 

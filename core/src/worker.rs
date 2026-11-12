@@ -508,8 +508,15 @@ async fn sweep_checkins(st: &AppState) -> anyhow::Result<()> {
 
     for r in rows {
         let tid: Uuid = r.get("tenant_id");
+        let uid: Option<Uuid> = r.try_get("user_id").ok();
         let site_id: Option<Uuid> = r.try_get("site_id").ok();
         let correlation = Uuid::new_v4().to_string();
+        // Fase C gating: un profilo attivo del lavoratore può disabilitare il trigger mancato_checkin
+        // (fail-open). Il check-in resta 'scaduto', ma non si apre l'incidente.
+        if crate::api::trigger_suppressed(st, tid, uid, None, "mancato_checkin").await {
+            crate::api::audit(st, tid, "system", "trigger_suppressed_by_profile", json!({"etype":"mancato_checkin","user_id":uid})).await;
+            continue;
+        }
         // mancato_checkin -> event + incident + outbox, system scope
         let ev = sqlx::query(
             "INSERT INTO app.events(tenant_id,source,source_event,idem_key,site_id,etype,origin_ts,received_ts,correlation)
