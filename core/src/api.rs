@@ -5432,6 +5432,163 @@ pub async fn safety_triggers_set(State(st): State<AppState>, h: HeaderMap, Json(
     Ok(Json(json!({"ok":true})))
 }
 
+// ---------------------------------------------------------------------------------------------
+// Fase C — Profili di protezione: il legante dei 5 stadi del perimetro Worker Safety.
+// Un profilo lega 1..n lavoratori a una policy di escalation (alarm_group), ai trigger abilitati
+// e ai parametri di check-in. I device coperti derivano da devices.assigned_user dei membri.
+// ---------------------------------------------------------------------------------------------
+
+/// Elenco profili con gruppo escalation, membri (email) e n. device coperti (via assigned_user).
+pub async fn protection_profiles_list(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
+    require_module(&st, tid, "loneworker").await?;
+    let rows = sqlx::query(
+        "SELECT p.id,p.name,p.descr,p.escalation_group_id,g.name AS group_name,p.triggers,p.checkin_minutes,p.enabled,p.updated_at
+           FROM app.protection_profiles p
+           LEFT JOIN app.alarm_groups g ON g.id=p.escalation_group_id
+          WHERE p.tenant_id=$1 ORDER BY p.name")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let mut out = Vec::new();
+    for r in &rows {
+        let pid: Uuid = r.get("id");
+        let members = sqlx::query(
+            "SELECT u.id,u.email,
+                    (SELECT count(*) FROM app.devices d WHERE d.tenant_id=$1 AND d.assigned_user=u.id) AS devices
+               FROM app.protection_profile_members m JOIN app.users u ON u.id=m.user_id
+              WHERE m.profile_id=$2 ORDER BY u.email")
+            .bind(tid).bind(pid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+        let mut device_total = 0i64;
+        let mem: Vec<Value> = members.iter().map(|m| {
+            let dc: i64 = m.get("devices"); device_total += dc;
+            json!({"id": m.get::<Uuid,_>("id"), "email": m.get::<String,_>("email"), "devices": dc})
+        }).collect();
+        let eg: Option<Uuid> = r.get("escalation_group_id");
+        out.push(json!({
+            "id": pid,
+            "name": r.get::<String,_>("name"),
+            "descr": r.get::<String,_>("descr"),
+            "escalation_group_id": eg,
+            "group_name": r.get::<Option<String>,_>("group_name"),
+            "triggers": r.get::<Value,_>("triggers"),
+            "checkin_minutes": r.get::<Option<i32>,_>("checkin_minutes"),
+            "enabled": r.get::<bool,_>("enabled"),
+            "members": mem,
+            "devices_covered": device_total,
+        }));
+    }
+    // gruppi selezionabili come policy
+    let groups = sqlx::query("SELECT id,name FROM app.alarm_groups WHERE tenant_id=$1 ORDER BY name")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let glist: Vec<Value> = groups.iter().map(|g| json!({"id":g.get::<Uuid,_>("id"),"name":g.get::<String,_>("name")})).collect();
+    Ok(Json(json!({"profiles": out, "groups": glist})))
+}
+
+#[derive(Deserialize)] pub struct ProfileReq {
+    pub name: String,
+    #[serde(default)] pub descr: String,
+    #[serde(default)] pub escalation_group_id: Option<Uuid>,
+    #[serde(default)] pub triggers: Option<Value>,
+    #[serde(default)] pub checkin_minutes: Option<i32>,
+    #[serde(default = "default_true")] pub enabled: bool,
+}
+fn default_true() -> bool { true }
+
+/// Valida che un gruppo (se indicato) appartenga al tenant.
+async fn group_belongs(st: &AppState, tid: Uuid, gid: Option<Uuid>) -> Result<(), (StatusCode,String)> {
+    if let Some(g) = gid {
+        let ok: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
+            .bind(g).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+        if ok.is_none() { return Err(err(StatusCode::BAD_REQUEST, "gruppo escalation inesistente")); }
+    }
+    Ok(())
+}
+
+pub async fn protection_profile_create(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ProfileReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
+    require_module(&st, tid, "loneworker").await?;
+    let name = b.name.trim();
+    if name.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome obbligatorio")); }
+    group_belongs(&st, tid, b.escalation_group_id).await?;
+    let triggers = b.triggers.clone().unwrap_or_else(|| json!({"sos":true,"man_down":true,"immobilita":true,"mancato_checkin":true,"geofence":false}));
+    let row = sqlx::query(
+        "INSERT INTO app.protection_profiles(tenant_id,name,descr,escalation_group_id,triggers,checkin_minutes,enabled)
+         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        .bind(tid).bind(name).bind(b.descr.trim()).bind(b.escalation_group_id).bind(&triggers)
+        .bind(b.checkin_minutes).bind(b.enabled)
+        .fetch_optional(&st.owner_pool).await
+        .map_err(|e| if e.to_string().contains("duplicate") { err(StatusCode::CONFLICT, "nome profilo già esistente") } else { ise(e) })?;
+    let id: Uuid = row.ok_or_else(|| err(StatusCode::CONFLICT, "nome profilo già esistente"))?.get("id");
+    audit(&st, tid, &s.email, "protection_profile_create", json!({"id":id,"name":name})).await;
+    Ok(Json(json!({"id":id})))
+}
+
+pub async fn protection_profile_update(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<ProfileReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
+    require_module(&st, tid, "loneworker").await?;
+    let name = b.name.trim();
+    if name.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome obbligatorio")); }
+    group_belongs(&st, tid, b.escalation_group_id).await?;
+    let triggers = b.triggers.clone().unwrap_or_else(|| json!({"sos":true,"man_down":true,"immobilita":true,"mancato_checkin":true,"geofence":false}));
+    let n = sqlx::query(
+        "UPDATE app.protection_profiles SET name=$3,descr=$4,escalation_group_id=$5,triggers=$6,checkin_minutes=$7,enabled=$8,updated_at=now()
+          WHERE id=$1 AND tenant_id=$2")
+        .bind(id).bind(tid).bind(name).bind(b.descr.trim()).bind(b.escalation_group_id).bind(&triggers)
+        .bind(b.checkin_minutes).bind(b.enabled)
+        .execute(&st.owner_pool).await
+        .map_err(|e| if e.to_string().contains("duplicate") { err(StatusCode::CONFLICT, "nome profilo già esistente") } else { ise(e) })?
+        .rows_affected();
+    if n == 0 { return Err(err(StatusCode::NOT_FOUND, "profilo inesistente")); }
+    audit(&st, tid, &s.email, "protection_profile_update", json!({"id":id,"name":name})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
+pub async fn protection_profile_delete(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
+    require_module(&st, tid, "loneworker").await?;
+    let n = sqlx::query("DELETE FROM app.protection_profiles WHERE id=$1 AND tenant_id=$2")
+        .bind(id).bind(tid).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+    if n == 0 { return Err(err(StatusCode::NOT_FOUND, "profilo inesistente")); }
+    audit(&st, tid, &s.email, "protection_profile_delete", json!({"id":id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
+#[derive(Deserialize)] pub struct ProfileMemberReq { pub user_id: Uuid }
+/// Aggiunge un lavoratore al profilo. Un worker è in al massimo un profilo: se già altrove, lo sposta.
+pub async fn protection_profile_member_add(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<ProfileMemberReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
+    require_module(&st, tid, "loneworker").await?;
+    // profilo e utente devono appartenere al tenant
+    let pok: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.protection_profiles WHERE id=$1 AND tenant_id=$2")
+        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    if pok.is_none() { return Err(err(StatusCode::NOT_FOUND, "profilo inesistente")); }
+    let uok: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.users WHERE id=$1 AND tenant_id=$2")
+        .bind(b.user_id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    if uok.is_none() { return Err(err(StatusCode::BAD_REQUEST, "utente inesistente")); }
+    // sposta: rimuove da altro profilo (UNIQUE tenant_id,user_id) poi inserisce
+    sqlx::query("DELETE FROM app.protection_profile_members WHERE tenant_id=$1 AND user_id=$2")
+        .bind(tid).bind(b.user_id).execute(&st.owner_pool).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.protection_profile_members(tenant_id,profile_id,user_id) VALUES($1,$2,$3)")
+        .bind(tid).bind(id).bind(b.user_id).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, &s.email, "protection_profile_member_add", json!({"profile":id,"user":b.user_id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
+pub async fn protection_profile_member_del(State(st): State<AppState>, h: HeaderMap, Path((id,uid)): Path<(Uuid,Uuid)>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
+    require_module(&st, tid, "loneworker").await?;
+    let n = sqlx::query("DELETE FROM app.protection_profile_members WHERE tenant_id=$1 AND profile_id=$2 AND user_id=$3")
+        .bind(tid).bind(id).bind(uid).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+    if n == 0 { return Err(err(StatusCode::NOT_FOUND, "membro inesistente")); }
+    audit(&st, tid, &s.email, "protection_profile_member_del", json!({"profile":id,"user":uid})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
 /// SOS escalation policy (loneworker/sos_escalation): incident priority + repeat cadence.
 /// priority "alta"->3, "media"->2. repeat_seconds carried to the GoAlert connector payload.
 async fn sos_escalation(st: &AppState, tid: Uuid) -> (i32, i64) {
@@ -7927,11 +8084,22 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
     let (policy, chans) = esc_delivery_policy(voice_on, voice_min, repeat);
     let last_step = policy.steps.len().saturating_sub(1) as i32;
 
-    // incidenti aperti instradati a un gruppo nativo
+    // incidenti aperti instradati a un gruppo nativo.
+    // Fase C: se il lavoratore dell'incidente (via assigned_user diretto o device assegnato) ha un
+    // Profilo di protezione ATTIVO con un gruppo escalation, quel gruppo HA LA PRECEDENZA sul routing
+    // globale per-etype. Fallback al routing globale quando non c'è profilo/gruppo (comportamento legacy).
     let incs = sqlx::query(
-        "SELECT i.id, i.etype, i.state, i.opened_at, r.group_id
-           FROM app.incidents i JOIN app.alarm_routing r ON r.tenant_id=i.tenant_id AND r.etype=i.etype
-          WHERE i.tenant_id=$1 AND i.state <> 'chiuso'")
+        "SELECT i.id, i.etype, i.state, i.opened_at,
+                COALESCE(pp.escalation_group_id, r.group_id) AS group_id
+           FROM app.incidents i
+           LEFT JOIN app.alarm_routing r ON r.tenant_id=i.tenant_id AND r.etype=i.etype
+           LEFT JOIN app.events ev ON ev.id=i.event_id
+           LEFT JOIN app.devices d ON d.id=ev.device_id
+           LEFT JOIN app.protection_profile_members m
+                  ON m.tenant_id=i.tenant_id AND m.user_id=COALESCE(i.assigned_user, d.assigned_user)
+           LEFT JOIN app.protection_profiles pp ON pp.id=m.profile_id AND pp.enabled=true
+          WHERE i.tenant_id=$1 AND i.state <> 'chiuso'
+            AND COALESCE(pp.escalation_group_id, r.group_id) IS NOT NULL")
         .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default();
     let (mut seen, mut delivered) = (0i64, 0i64);
     for inc in &incs {

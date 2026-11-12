@@ -33,6 +33,7 @@ const NAV = [
   {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar'], grp:'safety'},
   {k:'dispositivi',t:'Dispositivi & App', ico:'shield', roles:['tenant_admin'], mod:DEVICE_MODS, grp:'safety'},
   {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
+  {k:'profili',   t:'Profili di protezione', ico:'shield', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
   {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
   // --- Lavoro sul campo ---
   {k:'ordini',    t:'Ordini di lavoro', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
@@ -62,7 +63,7 @@ const I18N={ en:{
   "nav_dashboard":"Dashboard","nav_centrale":"Alarm center","nav_miei-allarmi":"My alarms",
   "nav_mappa":"Map","nav_piantine":"Floor plans","nav_cruscotti":"IoT dashboards","nav_report":"Reports",
   "nav_ordini":"Work orders","nav_consuntivi":"Timesheets","nav_turni":"Shifts","nav_agente":"AI agent",
-  "nav_dispositivi":"Devices & Apps","nav_trigger":"Safety triggers","nav_connettori":"Connectors","nav_gruppi":"Escalation & on-call",
+  "nav_dispositivi":"Devices & Apps","nav_trigger":"Safety triggers","nav_profili":"Protection profiles","nav_connettori":"Connectors","nav_gruppi":"Escalation & on-call",
   "nav_anagrafiche":"Users & sites","nav_ai":"AI · youworker.ai","nav_moduli":"Modules"
 }};
 let LANG='it';
@@ -221,7 +222,7 @@ function route(){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,trigger:vTrigger,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -2167,6 +2168,82 @@ async function safetyTriggersSave(btn){
   };
   try{ await api('/safety/triggers',{method:'POST',body:JSON.stringify(body)}); toast('Trigger aggiornati','ok'); if(m){m.textContent='Salvato';m.style.color='var(--ok)';} }
   catch(e){ toast(e.message,'bad'); if(m){m.textContent=e.message;m.style.color='var(--bad)';} }
+}
+
+// --- Fase C: Profili di protezione (worker + device + trigger + policy escalation in un record) ---
+const PROF_TRIGGERS=[['sos','SOS'],['man_down','Uomo a terra'],['immobilita','Immobilità'],['mancato_checkin','Check-in mancato'],['geofence','Fuori area']];
+async function vProfili(v){
+  const [D,users]=await Promise.all([api('/safety/profiles').catch(e=>({error:e.message})),api('/users').catch(()=>[])]);
+  if(D.error){ v.innerHTML=`<div class="page-h"><h1>Profili di protezione</h1></div><div class="card pad">${esc(D.error)}</div>`; return; }
+  v._users=users; v._groups=D.groups||[];
+  const groupOpts=(sel)=>`<option value="">— nessuno (routing globale) —</option>`+(D.groups||[]).map(g=>`<option value="${g.id}" ${g.id===sel?'selected':''}>${esc(g.name)}</option>`).join('');
+  const card=(p)=>{
+    const tg=p.triggers||{};
+    const trg=PROF_TRIGGERS.map(([k,lab])=>`<label class="tag" style="cursor:pointer;display:inline-flex;gap:4px;align-items:center">
+        <input type="checkbox" data-trg="${k}" ${tg[k]!==false&&tg[k]!==undefined?(tg[k]?'checked':''):(k==='geofence'?'':'checked')}> ${esc(lab)}</label>`).join(' ');
+    const mem=(p.members||[]).map(m=>`<div class="row small" style="justify-content:space-between;margin-top:4px">
+        <span>${esc(m.email)} <span class="mut">· ${m.devices} device</span></span>
+        <button class="btn-ico btn ghost" onclick="profRm('${p.id}','${m.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">nessun lavoratore assegnato</div>';
+    return `<div class="card pad" style="margin-bottom:12px" data-prof="${p.id}">
+      <div class="spread"><div class="row" style="gap:8px;align-items:center">
+        <input class="small" data-f="name" value="${esc(p.name)}" style="font-weight:600;min-width:160px">
+        <label class="small row" style="gap:4px;align-items:center"><input type="checkbox" data-f="enabled" ${p.enabled?'checked':''}> attivo</label></div>
+        <button class="btn-ico btn ghost" onclick="profDel('${p.id}')">${ICON.x}</button></div>
+      <input class="small" data-f="descr" value="${esc(p.descr||'')}" placeholder="descrizione" style="width:100%;margin-top:6px">
+      <div class="grid g2" style="margin-top:8px">
+        <label class="col small" style="gap:4px">Policy escalation (gruppo reperibili)
+          <select data-f="group" class="small">${groupOpts(p.escalation_group_id)}</select></label>
+        <label class="col small" style="gap:4px">Check-in atteso (minuti, vuoto=default tenant)
+          <input data-f="checkin" type="number" min="1" max="1440" value="${p.checkin_minutes||''}" class="small"></label>
+      </div>
+      <div class="small mut" style="margin:8px 0 4px">Trigger abilitati</div><div>${trg}</div>
+      <div style="border-top:1px solid var(--line);margin-top:10px;padding-top:8px">
+        <div class="spread"><b class="small">Lavoratori (${(p.members||[]).length}) · ${p.devices_covered} device coperti</b></div>
+        ${mem}
+        <div class="row" style="gap:6px;margin-top:8px"><select id="pSel_${p.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
+          <button class="btn ghost small" onclick="profAdd('${p.id}')">+ lavoratore</button></div></div>
+      <div class="row" style="margin-top:10px"><button class="btn" onclick="profSave('${p.id}',this)">Salva profilo</button>
+        <span class="prof-msg small" style="margin-left:10px"></span></div></div>`;
+  };
+  v.innerHTML=`<div class="page-h"><div><h1>Profili di protezione</h1>
+      <div class="mut">il punto unico di configurazione del perimetro: lavoratori + trigger + policy di escalation</div></div>
+    <button class="btn" onclick="profNew()">+ Nuovo profilo</button></div>
+    <div class="card pad" style="margin-bottom:12px;background:var(--brand-soft)"><div class="small">
+      Un <b>profilo di protezione</b> lega un gruppo di <b>lavoratori</b> a una <b>policy di escalation</b>, ai <b>trigger</b> attivi e al <b>check-in</b>.
+      I <b>device coperti</b> sono quelli assegnati ai lavoratori del profilo. Se è impostato un gruppo, gli incidenti di quei lavoratori
+      vengono instradati a <b>quel gruppo</b> con precedenza sul routing globale per-evento.</div></div>
+    ${(D.profiles||[]).map(card).join('')||'<div class="card pad mut">Nessun profilo. Creane uno per iniziare.</div>'}`;
+}
+async function profNew(){
+  const name=await askPrompt('Nome del nuovo profilo di protezione'); if(!name)return;
+  try{ await api('/safety/profiles',{method:'POST',body:JSON.stringify({name})}); toast('Profilo creato','ok'); route(); }
+  catch(e){ toast(e.message,'bad'); }
+}
+async function profSave(id,btn){
+  const box=document.querySelector(`[data-prof="${id}"]`); if(!box)return;
+  const m=box.querySelector('.prof-msg'); if(m){m.textContent='…';m.style.color='var(--mut)';}
+  const g=box.querySelector('[data-f="group"]').value;
+  const chk=box.querySelector('[data-f="checkin"]').value;
+  const triggers={}; box.querySelectorAll('[data-trg]').forEach(c=>triggers[c.dataset.trg]=c.checked);
+  const body={ name:box.querySelector('[data-f="name"]').value.trim(), descr:box.querySelector('[data-f="descr"]').value.trim(),
+    escalation_group_id:g||null, triggers, checkin_minutes:chk?parseInt(chk,10):null,
+    enabled:box.querySelector('[data-f="enabled"]').checked };
+  try{ await api('/safety/profiles/'+id,{method:'PUT',body:JSON.stringify(body)}); toast('Profilo salvato','ok'); if(m){m.textContent='Salvato';m.style.color='var(--ok)';} }
+  catch(e){ toast(e.message,'bad'); if(m){m.textContent=e.message;m.style.color='var(--bad)';} }
+}
+async function profDel(id){
+  if(!await askConfirm('Eliminare questo profilo di protezione?'))return;
+  try{ await api('/safety/profiles/'+id,{method:'DELETE'}); toast('Profilo eliminato','ok'); route(); }
+  catch(e){ toast(e.message,'bad'); }
+}
+async function profAdd(id){
+  const uid=$('#pSel_'+id).value; if(!uid)return;
+  try{ await api('/safety/profiles/'+id+'/members',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Lavoratore assegnato','ok'); route(); }
+  catch(e){ toast(e.message,'bad'); }
+}
+async function profRm(id,uid){
+  try{ await api('/safety/profiles/'+id+'/members/'+uid,{method:'DELETE'}); toast('Lavoratore rimosso','ok'); route(); }
+  catch(e){ toast(e.message,'bad'); }
 }
 
 async function vGruppi(v){

@@ -58,6 +58,11 @@ fn tb_parity_routes() -> Router<AppState> {
         .route("/api/escalation/delivery/run", post(api::escalation_delivery_run))
         // Worker Safety: trigger di sicurezza (vista+config aggregata) — tenant_admin
         .route("/api/safety/triggers", get(api::safety_triggers_get).post(api::safety_triggers_set))
+        // Fase C: profili di protezione (worker+device+trigger+policy escalation in un record)
+        .route("/api/safety/profiles", get(api::protection_profiles_list).post(api::protection_profile_create))
+        .route("/api/safety/profiles/:id", axum::routing::put(api::protection_profile_update).delete(api::protection_profile_delete))
+        .route("/api/safety/profiles/:id/members", post(api::protection_profile_member_add))
+        .route("/api/safety/profiles/:id/members/:uid", axum::routing::delete(api::protection_profile_member_del))
         // FASE 3 cutover: lettura motore (admin) + set/rollback (superadmin)
         .route("/api/escalation/engine", get(api::escalation_engine_get))
         .route("/api/superadmin/tenants/:id/escalation-engine", post(api::escalation_engine_set))

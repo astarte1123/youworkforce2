@@ -116,8 +116,27 @@ di flusso di configurazione poi operatività:
   external_id `pwa-<uid>` intestato all'utente → **bind sessione↔device**: il fix è SEMPRE attribuito al
   device dell'utente autenticato, mai a un id dal payload. `worker_sos` ora scrive `device_id` + `accuracy_m`.
   Verifica live globex: position→device pwa auto-creato e aggiornato; SOS→attribuito al device + accuratezza.
-- **C — Entità "Profilo di protezione":** record che lega `worker + device(i) + app + trigger abilitati +
-  policy escalation` → un unico punto di configurazione del perimetro; sostituisce la dispersione attuale.
+- **C — Entità "Profilo di protezione". ✅ FATTA** (mig 0059). Record che lega `1..n lavoratori + trigger
+  abilitati + policy escalation + check-in` → unico punto di config del perimetro; i **device coperti**
+  derivano da `devices.assigned_user` dei membri. Tabelle `app.protection_profiles`
+  (name, descr, `escalation_group_id`→alarm_groups, `triggers` jsonb, `checkin_minutes`, `enabled`) e
+  `app.protection_profile_members` (UNIQUE `(tenant_id,user_id)` → un worker in **al massimo un** profilo;
+  l'add lo **sposta** dal precedente). API tenant_admin/loneworker: `GET/POST /api/safety/profiles`,
+  `PUT/DELETE /api/safety/profiles/:id`, `POST /api/safety/profiles/:id/members`,
+  `DELETE /api/safety/profiles/:id/members/:uid`. UI app.html: voce nav "Profili di protezione" (gruppo
+  safety) + `vProfili` (editor per-profilo: nome/descr/enabled, select gruppo escalation, trigger
+  checkbox, check-in, membri add/remove, device coperti).
+  **Aggancio runtime (il valore del profilo):** nel runner escalation nativo
+  (`escalation_delivery_shadow_tenant`), per ogni incidente aperto il gruppo è
+  `COALESCE(profilo.escalation_group_id, alarm_routing.group_id)` risolto via
+  `incident → (assigned_user | event.device.assigned_user) → profile_member → profile(enabled)`. Quindi
+  un profilo attivo con gruppo **ha la precedenza** sul routing globale per-etype per i suoi lavoratori;
+  profilo disattivo o senza gruppo → **fallback** al routing globale (comportamento legacy invariato).
+  Verifica live globex: 13/13 CRUD (create/update/delete, 409 dup, move 1-worker-1-profilo, readback
+  con group_name/triggers/device coperti) + 3/3 override routing (attivo→gruppo profilo,
+  disattivo→globale, senza-gruppo→globale); loneworker-e2e 15/15 (nessuna regressione).
+  **RESIDUO:** gating dei trigger per-profilo non ancora applicato in creazione incidente (i `triggers`
+  sono informativi + pronti; non sopprimono il single-path critico — scelta prudente).
 
 ## 5. Piano operativo D+E (step verificabili)
 
