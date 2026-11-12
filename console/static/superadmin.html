@@ -1,6 +1,6 @@
 <!doctype html><html lang="it"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Superadmin · YouWorkforce</title><link rel="stylesheet" href="/app.css"></head><body>
+<title>Superadmin · YouWorkforce</title><link rel="icon" href="/youworkforce.webp" type="image/webp"><link rel="apple-touch-icon" href="/youworkforce.webp"><link rel="stylesheet" href="/app.css"></head><body>
 <div id="root"></div>
 <script src="/app.js"></script>
 <script>
@@ -52,7 +52,7 @@ async function shell(){
   </div>`;
   $('#c_go').onclick=create; ['c_cp','c_ca','c_ck','c_cs'].forEach(syncPair); load();
 }
-async function out(){ location.reload(); }
+async function out(){ try{ await api('/logout',{method:'POST'}); }catch(e){} location.reload(); }
 async function create(){
   const hx=id=>{ const v=document.getElementById(id+'t').value.trim(); return v||null; };
   try{
@@ -115,6 +115,11 @@ function tenantCard(t,mods){
         <button class="btn ghost cfgbtn" onclick="trConfig('${t.id}',this)">Config Traccar</button>
         <button class="btn ghost cfgbtn" onclick="tbConn('${t.id}',this)">Connessione ThingsBoard</button>
         <button class="btn ghost cfgbtn" onclick="aiConn('${t.id}',this)">Connessione AI</button></div>
+      <div class="row" style="gap:8px;align-items:center;margin-top:8px"><span class="small mut">Motore escalation:</span>
+        <select class="small" onchange="setEngine('${t.id}',this.value,this)">
+          <option value="native">nativo (strada nuova, default)</option>
+          <option value="goalert">GoAlert (rollback)</option></select>
+        <span id="eng_${t.id}" class="small mut"></span></div>
     </div>
     <div id="admin_${t.id}" style="margin-top:8px"></div>
     <div id="tools_${t.id}" style="margin-top:8px"></div>
@@ -513,6 +518,12 @@ async function gaProvision(tid,btn){
   try{ const r=await api('/superadmin/tenants/'+tid+'/goalert/provision',{method:'POST',body:JSON.stringify({})});
     toast('GoAlert provisionato: service '+(r.service_id||'').slice(0,8),'ok');
   }catch(e){ toast('GoAlert: '+e.message,'bad'); } finally{ btnOn(btn,false); } }
+async function setEngine(tid,engine,sel){
+  const out=document.getElementById('eng_'+tid);
+  try{ await api('/superadmin/tenants/'+tid+'/escalation-engine',{method:'POST',body:JSON.stringify({engine})});
+    if(out){ out.textContent = engine==='native'?'✓ nativo (GoAlert resta rete di sicurezza)':'✓ GoAlert (rollback)'; }
+    toast('Motore → '+engine,'ok');
+  }catch(e){ toast(e.message,'bad'); } }
 async function toggleTool(tid,mc,tc,cb){
   try{ await api('/superadmin/tenants/'+tid+'/tools',{method:'POST',body:JSON.stringify({module_code:mc,tool_code:tc,enabled:cb.checked})});
     toast(tc+' → '+(cb.checked?'disponibile':'nascosto'),'ok');

@@ -1,8 +1,10 @@
 # YouWorkforce — release candidate (DEMO)
 
 Piattaforma modulare multitenant per forza lavoro sul campo, sicurezza lavoratori isolati,
-IoT e consuntivi. Core **Rust** (Axum/SQLx), console **Go**, **PostgreSQL 18** con RLS,
-GoAlert come unico motore di escalation. LoneWorker è un modulo di prodotto.
+IoT e consuntivi. Core **Rust** (Axum/SQLx), console **Go**, **PostgreSQL 18** con RLS.
+**Motore di escalation nativo** (default, self-sufficient); GoAlert resta come rete di
+sicurezza / rollback. L'escalation è condivisa da tutti i moduli che generano allarmi
+(Sicurezza lavoratore, IoT, ThingsBoard, Traccar). Manuale: [`docs/escalation-manuale.md`](docs/escalation-manuale.md).
 
 > **Verdetto onesto di questa build: DEMO.** La catena critica (SOS → incidente → GoAlert →
 > presa in carico → chiusura) è riproducibile; isolamento multitenant applicato in database.

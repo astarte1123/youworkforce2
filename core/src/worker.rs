@@ -34,6 +34,10 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     if n % 150 == 0 { api::escalation_shadow_scan(st).await; }
     // #4 escalation nativo FASE 2 (consegna in ombra): ~ogni 30s, verso sink di prova, idempotente
     if n % 15 == 7 { api::escalation_delivery_shadow_scan(st).await; }
+    // F3 annunci Slack on-call (onchange/schedulati): ~ogni minuto, best-effort
+    if n % 30 == 11 { api::slack_announce_scan(st).await; }
+    // S1 heartbeat monitor nativo: ~ogni 30s controlla i monitor scaduti
+    if n % 15 == 3 { api::heartbeat_watchdog(st).await; }
     Ok(())
 }
 

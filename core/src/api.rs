@@ -13,7 +13,7 @@ fn err(c: StatusCode, m: &str) -> (StatusCode, String) { (c, m.to_string()) }
 
 const CRITICAL: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin", "sensore_critico",
     "manomissione_badge", "perdita_alimentazione", "jamming", "perdita_contatto", "traccar_conn_down",
-    "batteria_critica"];
+    "batteria_critica", "heartbeat_down", "email_alarm"];
 
 /// Traccar alarm -> normalized etype. Safety-first defaults for lone workers.
 /// `sos_as` lets a tenant route the SOS alarm to `sos` or `man_down`.
@@ -2820,15 +2820,18 @@ pub struct IngestCred { pub tenant_id: Uuid, pub source: String, pub device_id: 
 /// Rifiuta token revocati o scaduti; aggiorna last_used_at best-effort.
 pub async fn resolve_ingest_token(st: &AppState, token: &str) -> Option<IngestCred> {
     let hash = hash_token(token);
+    // SICUREZZA: match per hash (token nuovi). Il match in chiaro vale SOLO per i token legacy
+    // non ancora ruotati (token_hash IS NULL): per i token hashati la colonna `token` contiene un
+    // handle NON segreto mostrato in UI, che non deve mai autenticare.
     let row = sqlx::query(
         "SELECT tenant_id,source,device_id,expires_at,revoked_at FROM app.ingest_tokens \
-         WHERE token_hash=$1 OR token=$2 LIMIT 1")
+         WHERE token_hash=$1 OR (token=$2 AND token_hash IS NULL) LIMIT 1")
         .bind(&hash).bind(token).fetch_optional(&st.owner_pool).await.ok().flatten()?;
     let revoked: Option<chrono::DateTime<chrono::Utc>> = row.try_get("revoked_at").ok().flatten();
     if revoked.is_some() { return None; }
     let exp: Option<chrono::DateTime<chrono::Utc>> = row.try_get("expires_at").ok().flatten();
     if let Some(e) = exp { if e < st.clock.now() { return None; } }
-    let _ = sqlx::query("UPDATE app.ingest_tokens SET last_used_at=now() WHERE token_hash=$1 OR token=$2")
+    let _ = sqlx::query("UPDATE app.ingest_tokens SET last_used_at=now() WHERE token_hash=$1 OR (token=$2 AND token_hash IS NULL)")
         .bind(&hash).bind(token).execute(&st.owner_pool).await;
     Some(IngestCred { tenant_id: row.get("tenant_id"), source: row.get("source"), device_id: row.try_get("device_id").ok().flatten() })
 }
@@ -3194,9 +3197,9 @@ pub async fn delete_user(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
 pub async fn list_groups(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "loneworker").await?;
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let groups = sqlx::query("SELECT id,name,oncall_mode,oncall_type,oncall_shift,oncall_tz,coverage_mode,cov_start,cov_end,cov_days,handoff_time,handoff_day,slack_channel_id,slack_notify FROM app.alarm_groups ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
+    let groups = sqlx::query("SELECT id,name,oncall_mode,oncall_type,oncall_shift,oncall_tz,coverage_mode,cov_start,cov_end,cov_days,handoff_time,handoff_day,slack_channel_id,slack_notify,labels,playbook FROM app.alarm_groups ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
     let members = sqlx::query(
         "SELECT m.group_id,m.user_id,m.position,u.email,u.role FROM app.alarm_group_members m
          JOIN app.users u ON u.id=m.user_id ORDER BY m.position").fetch_all(&mut *tx).await.map_err(ise)?;
@@ -3217,7 +3220,9 @@ pub async fn list_groups(State(st): State<AppState>, h: HeaderMap) -> R {
             "handoff_time":g.try_get::<Option<String>,_>("handoff_time").ok().flatten(),
             "handoff_day":g.try_get::<Option<i32>,_>("handoff_day").ok().flatten(),
             "slack_channel_id":g.try_get::<Option<String>,_>("slack_channel_id").ok().flatten(),
-            "slack_notify":g.get::<String,_>("slack_notify")})
+            "slack_notify":g.get::<String,_>("slack_notify"),
+            "labels":g.try_get::<Value,_>("labels").unwrap_or_else(|_| json!({})),
+            "playbook":g.try_get::<String,_>("playbook").unwrap_or_default()})
     }).collect();
     let routes: Vec<Value> = routing.iter().map(|r| json!({"etype":r.get::<String,_>("etype"),"group_id":r.get::<Uuid,_>("group_id")})).collect();
     Ok(Json(json!({"groups":out,"routing":routes})))
@@ -3227,6 +3232,7 @@ pub struct GroupReq { pub name: String }
 pub async fn create_group(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GroupReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("INSERT INTO app.alarm_groups(tenant_id,name) VALUES($1,$2) RETURNING id")
@@ -3248,6 +3254,7 @@ fn valid_hhmm(s: &str) -> bool { parse_hhmm(s).is_some() }
 pub async fn set_group_oncall(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GroupOncallReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
     if !matches!(b.mode.as_str(), "tutti"|"turni") { return Err(err(StatusCode::BAD_REQUEST, "mode: 'tutti' o 'turni'")); }
     let ty = b.oncall_type.as_deref().unwrap_or("weekly");
     if !matches!(ty, "hourly"|"daily"|"weekly"|"monthly") { return Err(err(StatusCode::BAD_REQUEST, "tipo turno non valido")); }
@@ -3276,8 +3283,150 @@ pub async fn set_group_oncall(State(st): State<AppState>, h: HeaderMap, Path(id)
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
     Ok(Json(json!({"ok":true})))
 }
+// ---- F3: policy di escalation multi-step del gruppo (parità GoAlert) ----
+pub async fn group_policy_get(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let steps = sqlx::query("SELECT idx,delay_s,channel FROM app.esc_policy_steps WHERE group_id=$1 ORDER BY idx")
+        .bind(gid).fetch_all(&mut *tx).await.map_err(ise)?;
+    let rep = sqlx::query_scalar::<_,Option<i32>>("SELECT esc_repeat FROM app.alarm_groups WHERE id=$1")
+        .bind(gid).fetch_optional(&mut *tx).await.map_err(ise)?.flatten();
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = steps.iter().map(|r| json!({
+        "idx":r.get::<i32,_>("idx"),"delay_min":(r.get::<i32,_>("delay_s")/60),"channel":r.get::<String,_>("channel")})).collect();
+    Ok(Json(json!({"steps":out,"repeat":rep})))
+}
+#[derive(Deserialize)] pub struct PolicyStepReq { pub delay_min: Option<i64>, pub channel: String }
+#[derive(Deserialize)] pub struct PolicySetReq { pub steps: Vec<PolicyStepReq>, #[serde(default)] pub repeat: Option<i32> }
+/// Sostituisce (replace-all) gli step della policy del gruppo + il repeat. steps vuoto = torna alla
+/// ladder derivata (default). L'ordine dell'array è l'ordine degli step (reorder lato client).
+pub async fn group_policy_set(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<PolicySetReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    if b.steps.len() > 20 { return Err(err(StatusCode::BAD_REQUEST, "massimo 20 step")); }
+    for stp in &b.steps {
+        if !matches!(stp.channel.as_str(), "sms"|"voice"|"email"|"slack") { return Err(err(StatusCode::BAD_REQUEST, "canale non valido (sms|voice|email|slack)")); }
+        let dm = stp.delay_min.unwrap_or(0);
+        if !(0..=1440).contains(&dm) { return Err(err(StatusCode::BAD_REQUEST, "attesa step: 0..1440 minuti")); }
+    }
+    let repeat = b.repeat.map(|r| r.clamp(0, 10));
+    // il gruppo deve esistere nel tenant
+    let exists = sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
+        .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_some();
+    if !exists { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.esc_policy_steps WHERE group_id=$1").bind(gid).execute(&mut *tx).await.map_err(ise)?;
+    for (i, stp) in b.steps.iter().enumerate() {
+        sqlx::query("INSERT INTO app.esc_policy_steps(tenant_id,group_id,idx,delay_s,channel) VALUES($1,$2,$3,$4,$5)")
+            .bind(tid).bind(gid).bind(i as i32).bind((stp.delay_min.unwrap_or(0)*60) as i32).bind(&stp.channel)
+            .execute(&mut *tx).await.map_err(ise)?;
+    }
+    sqlx::query("UPDATE app.alarm_groups SET esc_repeat=$2 WHERE id=$1").bind(gid).bind(repeat).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, "youworkforce", "group_policy_set", json!({"group":gid,"steps":b.steps.len(),"repeat":repeat})).await;
+    Ok(Json(json!({"ok":true,"steps":b.steps.len()})))
+}
+
+// ---- F3: label/metadata sui gruppi (parità GoAlert labels) + ricerca ----
+#[derive(Deserialize)] pub struct LabelsReq { pub labels: std::collections::HashMap<String,String> }
+pub async fn group_labels_set(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<LabelsReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    if b.labels.len() > 30 { return Err(err(StatusCode::BAD_REQUEST, "massimo 30 label")); }
+    for (k,v) in &b.labels {
+        if k.trim().is_empty() || k.len() > 60 || v.len() > 200 { return Err(err(StatusCode::BAD_REQUEST, "label: chiave 1..60, valore <=200")); }
+    }
+    let lv = serde_json::to_value(&b.labels).unwrap_or_else(|_| json!({}));
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.alarm_groups SET labels=$2 WHERE id=$1").bind(gid).bind(&lv).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
+    audit(&st, tid, "youworkforce", "group_labels_set", json!({"group":gid,"labels":b.labels.len()})).await;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)] pub struct LabelSearchQuery { pub key: Option<String>, pub value: Option<String>, pub q: Option<String> }
+/// Ricerca gruppi per label (key, key+value) o testo nel nome. Parità GoAlert search.
+pub async fn group_search(State(st): State<AppState>, h: HeaderMap, axum::extract::Query(q): axum::extract::Query<LabelSearchQuery>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT id,name,labels FROM app.alarm_groups ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let key = q.key.as_deref().map(|s| s.to_lowercase());
+    let val = q.value.as_deref();
+    let txt = q.q.as_deref().map(|s| s.to_lowercase());
+    let out: Vec<Value> = rows.iter().filter_map(|r| {
+        let name: String = r.get("name");
+        let labels: Value = r.try_get("labels").unwrap_or_else(|_| json!({}));
+        if let Some(t) = &txt { if !name.to_lowercase().contains(t) { return None; } }
+        if let Some(k) = &key {
+            let found = labels.as_object().map(|o| o.iter().any(|(kk,vv)|
+                kk.to_lowercase()==*k && val.map(|v| vv.as_str()==Some(v)).unwrap_or(true))).unwrap_or(false);
+            if !found { return None; }
+        }
+        Some(json!({"id":r.get::<Uuid,_>("id"),"name":name,"labels":labels}))
+    }).collect();
+    Ok(Json(json!({"groups":out})))
+}
+
+// ---- F3/G4: note di passaggio turno (handoff) + playbook del gruppo ----
+pub async fn handoff_notes_list(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let rows = sqlx::query("SELECT id,author,body,created_at FROM app.esc_handoff_notes WHERE tenant_id=$1 AND group_id=$2 ORDER BY created_at DESC LIMIT 50")
+        .bind(tid).bind(gid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"author":r.get::<String,_>("author"),
+        "body":r.get::<String,_>("body"),"at":r.get::<chrono::DateTime<chrono::Utc>,_>("created_at")})).collect();
+    Ok(Json(json!({"notes":out})))
+}
+#[derive(Deserialize)] pub struct HandoffReq { pub body: String }
+pub async fn handoff_note_add(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<HandoffReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"reperibile"|"responsabile") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let body = b.body.trim();
+    if body.is_empty() || body.len() > 4000 { return Err(err(StatusCode::BAD_REQUEST, "nota 1..4000 caratteri")); }
+    let exists = sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2").bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_some();
+    if !exists { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.esc_handoff_notes(tenant_id,group_id,author,body) VALUES($1,$2,$3,$4) RETURNING id")
+        .bind(tid).bind(gid).bind(&s.email).bind(body).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true,"id":row.get::<Uuid,_>("id")})))
+}
+pub async fn handoff_note_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.esc_handoff_notes WHERE id=$1 AND tenant_id=$2").bind(id).bind(tid).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "nota inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)] pub struct PlaybookReq { pub playbook: String }
+pub async fn group_playbook_set(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<PlaybookReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    if b.playbook.len() > 8000 { return Err(err(StatusCode::BAD_REQUEST, "playbook troppo lungo (max 8000)")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.alarm_groups SET playbook=$2 WHERE id=$1").bind(gid).bind(b.playbook.trim()).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+
 pub async fn delete_group(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    require_any_module(&st, s.tenant_id.unwrap(), ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.alarm_groups WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
@@ -3289,6 +3438,7 @@ pub struct MemberReq { pub user_id: Uuid, pub position: Option<i32> }
 pub async fn add_group_member(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<MemberReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.alarm_group_members(tenant_id,group_id,user_id,position) VALUES($1,$2,$3,COALESCE($4,1))
         ON CONFLICT (group_id,user_id) DO UPDATE SET position=EXCLUDED.position")
@@ -3298,6 +3448,7 @@ pub async fn add_group_member(State(st): State<AppState>, h: HeaderMap, Path(gid
 }
 pub async fn remove_group_member(State(st): State<AppState>, h: HeaderMap, Path((gid,uid)): Path<(Uuid,Uuid)>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    require_any_module(&st, s.tenant_id.unwrap(), ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.alarm_group_members WHERE group_id=$1 AND user_id=$2").bind(gid).bind(uid).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
@@ -3308,6 +3459,7 @@ pub struct RouteReq { pub etype: String, pub group_id: Option<Uuid> }
 pub async fn set_routing(State(st): State<AppState>, h: HeaderMap, Json(b): Json<RouteReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     match b.group_id {
         Some(g) => { sqlx::query("INSERT INTO app.alarm_routing(tenant_id,etype,group_id) VALUES($1,$2,$3)
@@ -3714,6 +3866,19 @@ pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
         return Ok(Json(json!({"event_id":eid,"suppressed_by_profile":true,"etype":n.etype,"correlation":n.correlation})));
     }
     if CRITICAL.contains(&n.etype.as_str()) || n.etype.ends_with("_critico") {
+        // DEDUP esplicito (parità GoAlert): se esiste già un incidente APERTO con la stessa chiave
+        // di dedup (correlation), NON se ne apre un altro — l'evento resta a trail e si annota sulla
+        // timeline dell'incidente esistente. La correlation di default è casuale (nessun dedup
+        // involontario); il dedup scatta solo quando il chiamante fornisce una chiave stabile.
+        let existing: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM app.incidents WHERE tenant_id=$1 AND correlation=$2 AND state<>'chiuso' ORDER BY opened_at DESC LIMIT 1")
+            .bind(tid).bind(&n.correlation).fetch_optional(&mut *tx).await.map_err(ise)?;
+        if let Some(exid) = existing {
+            sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'dedup_suppressed',$3)")
+                .bind(tid).bind(exid).bind(json!({"etype":n.etype,"source":n.source,"event_id":eid})).execute(&mut *tx).await.map_err(ise)?;
+            tx.commit().await.map_err(ise)?;
+            return Ok(Json(json!({"event_id":eid,"incident_id":exid,"deduplicated":true,"correlation":n.correlation})));
+        }
         // SOS priority/repeat follow the per-tenant escalation policy; other criticals = 2.
         let (pri, repeat) = if n.etype=="sos" { sos_escalation(st, tid).await } else { (2, 0) };
         let irow = sqlx::query(
@@ -4912,7 +5077,7 @@ pub async fn ingest_thingsboard(
 // ----------------------------- incidents -----------------------------
 pub async fn list_incidents(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
-    require_module(&st, s.tenant_id.unwrap(), "loneworker").await?;
+    require_any_module(&st, s.tenant_id.unwrap(), ESCALATION_MODS).await?;
     let acl = allowed_sites(&st, &s).await;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = sqlx::query(
@@ -4964,6 +5129,7 @@ pub async fn ack_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): P
         .bind(tid).bind(iid).bind(json!({"by":s.email})).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"incident_ack","incident_id":iid})}).await;
+    esc_status_update_notify(&st, tid, iid, Some(s.user_id), &s.email, "ack").await;
     Ok(Json(json!({"ok":true})))
 }
 
@@ -4989,6 +5155,7 @@ pub async fn close_incident(State(st): State<AppState>, h: HeaderMap, Path(iid):
         .execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"incident_closed","incident_id":iid})}).await;
+    esc_status_update_notify(&st, tid, iid, Some(s.user_id), &s.email, "close").await;
     Ok(Json(json!({"ok":true})))
 }
 
@@ -5306,6 +5473,11 @@ async fn require_any_module(st: &AppState, tid: Uuid, codes: &[&str]) -> Result<
 }
 const DEVICE_MODS: &[&str] = &["loneworker","traccar","iot","thingsboard"];
 const CONNECTOR_MODS: &[&str] = &["traccar","thingsboard","goalert","iot"];
+/// Moduli che possono PRODURRE incidenti → l'escalation/centrale è condivisa fra tutti.
+/// La configurazione e la visibilità escalation (gruppi, routing, on-call, recapiti,
+/// override, maintenance, centrale allarmi) non devono sparire se "Sicurezza lavoratore"
+/// (loneworker) è spento ma resta attivo un altro modulo che genera allarmi.
+const ESCALATION_MODS: &[&str] = &["loneworker","traccar","iot","thingsboard"];
 
 // ================== Per-module tool configuration (schema-driven) ==================
 // Effective config for a tool = catalog default_config overlaid with the tenant's
@@ -6922,6 +7094,7 @@ mod async_stream {
 // ============================================================================
 
 /// Sessione GoAlert del tenant o errore parlante (provisioning mancante).
+#[allow(dead_code)]
 async fn ga_session_or_err(st: &AppState, tid: Uuid) -> Result<(String,String,Option<String>),(StatusCode,String)> {
     goalert_session(st, tid).await
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "GoAlert non provisionato (chiedi al superadmin: Provisiona GoAlert) o credenziali non valide"))
@@ -6931,7 +7104,7 @@ async fn ga_session_or_err(st: &AppState, tid: Uuid) -> Result<(String,String,Op
 pub async fn oncall_settings_get(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "loneworker").await?;
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
     let c = oncall_cfg(&st, tid).await;
     // gruppo di default (catch-all nativo) + motore corrente, per la UI Escalation
     let dg: Option<Uuid> = sqlx::query_scalar("SELECT default_group_id FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
@@ -6947,7 +7120,7 @@ pub struct OncallSettingsReq { pub voice_fallback_on: Option<bool>, pub voice_fa
 pub async fn oncall_settings_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OncallSettingsReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "loneworker").await?;
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
     let cur = oncall_cfg(&st, tid).await;
     let voice_on = b.voice_fallback_on.unwrap_or(cur.voice_on);
     let voice_min = b.voice_fallback_min.unwrap_or(cur.voice_min).clamp(1, 60);
@@ -7011,50 +7184,231 @@ pub async fn escalation_engine_set(State(st): State<AppState>, h: HeaderMap, Pat
 pub async fn oncall_contacts(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "loneworker").await?;
-    let (base, cookie, _) = ga_session_or_err(&st, tid).await?;
-    let rows = sqlx::query("SELECT DISTINCT u.id,u.email,u.goalert_user_id FROM app.users u JOIN app.alarm_group_members m ON m.user_id=u.id WHERE u.tenant_id=$1 AND u.goalert_user_id IS NOT NULL ORDER BY u.email")
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    // NATIVO: recapiti = telefono/email dell'utente + stato verifica (users.phone_verified_at).
+    // Nessuna dipendenza da GoAlert. Membri = utenti presenti in almeno un gruppo di escalation.
+    let rows = sqlx::query(
+        "SELECT DISTINCT u.id,u.email,u.phone,u.phone_verified_at,u.phone_opt_out_at
+           FROM app.users u JOIN app.alarm_group_members m ON m.user_id=u.id
+          WHERE u.tenant_id=$1 ORDER BY u.email")
         .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-    let mut out = Vec::new();
-    for r in &rows {
-        let email: String = r.get("email");
-        let guid: String = r.get("goalert_user_id");
-        let q = format!("{{user(id:\"{guid}\"){{contactMethods{{id name type value disabled pending lastTestVerifyAt}}}}}}");
-        let cms = goalert::graphql(&st.http, &base, &cookie, &q).await
-            .and_then(|v| v.pointer("/data/user/contactMethods").cloned())
-            .unwrap_or_else(|| json!([]));
-        out.push(json!({"user_id":r.get::<Uuid,_>("id"),"email":email,"contacts":cms}));
-    }
-    Ok(Json(json!({"members":out})))
+    let out: Vec<Value> = rows.iter().map(|r| {
+        let phone: Option<String> = r.try_get("phone").ok().flatten();
+        let verified: Option<chrono::DateTime<chrono::Utc>> = r.try_get("phone_verified_at").ok().flatten();
+        let opt_out: Option<chrono::DateTime<chrono::Utc>> = r.try_get("phone_opt_out_at").ok().flatten();
+        json!({"user_id":r.get::<Uuid,_>("id"),"email":r.get::<String,_>("email"),
+               "phone":phone,"verified":verified.is_some(),"verified_at":verified,"opted_out":opt_out.is_some()})
+    }).collect();
+    Ok(Json(json!({"members":out,"engine":"native"})))
 }
-#[derive(Deserialize)] pub struct CmId { pub contact_method_id: String }
+#[derive(Deserialize)] pub struct CmId { pub user_id: Uuid }
+/// Invia un codice OTP al telefono dell'utente e lo memorizza (scadenza 10 min). Nativo.
 pub async fn oncall_contact_verify(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CmId>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
-    let (base, cookie, _) = ga_session_or_err(&st, tid).await?;
-    let q = format!("mutation{{sendContactMethodVerification(input:{{contactMethodID:\"{}\"}})}}", esc_gql(&b.contact_method_id));
-    let v = goalert::graphql(&st.http, &base, &cookie, &q).await.ok_or_else(|| err(StatusCode::BAD_GATEWAY, "GoAlert non raggiungibile"))?;
-    if v.get("errors").is_some() { return Err(err(StatusCode::BAD_GATEWAY, &format!("GoAlert: {}", v.get("errors").unwrap()))); }
-    Ok(Json(json!({"ok":true,"note":"codice inviato al recapito"})))
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let phone: Option<String> = sqlx::query_scalar("SELECT phone FROM app.users WHERE id=$1 AND tenant_id=$2")
+        .bind(b.user_id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.flatten();
+    let phone = phone.filter(|p| !p.trim().is_empty()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "l'utente non ha un numero di telefono"))?;
+    let code: u32 = { use rand::Rng as _; rand::thread_rng().gen_range(100000..1000000) }; // 6 cifre
+    let exp = st.clock.now() + chrono::Duration::minutes(10);
+    sqlx::query("UPDATE app.users SET phone_verify_code=$1, phone_verify_expires=$2 WHERE id=$3 AND tenant_id=$4")
+        .bind(code.to_string()).bind(exp).bind(b.user_id).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
+    let text = format!("YouWorkforce: codice di verifica {code} (valido 10 minuti).");
+    let res = esc_send_sms_native(&st, &phone, &text).await;
+    audit(&st, tid, "youworkforce", "oncall_contact_verify", json!({"user":b.user_id,"delivery":res.state})).await;
+    Ok(Json(json!({"ok":true,"delivery":res.state,"note":"codice inviato via SMS al recapito"})))
 }
-#[derive(Deserialize)] pub struct CmVerify { pub contact_method_id: String, pub code: i32 }
+#[derive(Deserialize)] pub struct CmVerify { pub user_id: Uuid, pub code: String }
+/// Conferma l'OTP e marca il recapito come verificato. Nativo.
 pub async fn oncall_contact_code(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CmVerify>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
-    let (base, cookie, _) = ga_session_or_err(&st, tid).await?;
-    let q = format!("mutation{{verifyContactMethod(input:{{contactMethodID:\"{}\",code:{}}})}}", esc_gql(&b.contact_method_id), b.code);
-    let v = goalert::graphql(&st.http, &base, &cookie, &q).await.ok_or_else(|| err(StatusCode::BAD_GATEWAY, "GoAlert non raggiungibile"))?;
-    if v.get("errors").is_some() { return Err(err(StatusCode::BAD_REQUEST, &format!("codice non valido: {}", v.get("errors").unwrap()))); }
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let row = sqlx::query("SELECT phone_verify_code,phone_verify_expires FROM app.users WHERE id=$1 AND tenant_id=$2")
+        .bind(b.user_id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "utente inesistente"))?;
+    let saved: Option<String> = row.try_get("phone_verify_code").ok().flatten();
+    let exp: Option<chrono::DateTime<chrono::Utc>> = row.try_get("phone_verify_expires").ok().flatten();
+    let saved = saved.ok_or_else(|| err(StatusCode::BAD_REQUEST, "nessun codice in attesa: richiedi prima l'invio"))?;
+    if matches!(exp, Some(e) if st.clock.now() > e) { return Err(err(StatusCode::BAD_REQUEST, "codice scaduto: richiedi un nuovo invio")); }
+    if saved.trim() != b.code.trim() { return Err(err(StatusCode::BAD_REQUEST, "codice non valido")); }
+    sqlx::query("UPDATE app.users SET phone_verified_at=now(), phone_verify_code=NULL, phone_verify_expires=NULL WHERE id=$1 AND tenant_id=$2")
+        .bind(b.user_id).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, "youworkforce", "oncall_contact_code", json!({"user":b.user_id})).await;
     Ok(Json(json!({"ok":true,"note":"recapito verificato"})))
 }
+/// Invia un SMS di prova al recapito dell'utente. Nativo.
 pub async fn oncall_contact_test(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CmId>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
-    let (base, cookie, _) = ga_session_or_err(&st, tid).await?;
-    let q = format!("mutation{{testContactMethod(id:\"{}\")}}", esc_gql(&b.contact_method_id));
-    let v = goalert::graphql(&st.http, &base, &cookie, &q).await.ok_or_else(|| err(StatusCode::BAD_GATEWAY, "GoAlert non raggiungibile"))?;
-    if v.get("errors").is_some() { return Err(err(StatusCode::BAD_GATEWAY, &format!("GoAlert: {}", v.get("errors").unwrap()))); }
-    Ok(Json(json!({"ok":true,"note":"messaggio di prova inviato"})))
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let phone: Option<String> = sqlx::query_scalar("SELECT phone FROM app.users WHERE id=$1 AND tenant_id=$2")
+        .bind(b.user_id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.flatten();
+    let phone = phone.filter(|p| !p.trim().is_empty()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "l'utente non ha un numero di telefono"))?;
+    let res = esc_send_sms_native(&st, &phone, "YouWorkforce: messaggio di prova dei reperibili.").await;
+    Ok(Json(json!({"ok":true,"delivery":res.state,"note":"messaggio di prova inviato"})))
+}
+
+// ---- F3: multi-recapito + regole di notifica per-utente (ladder a 2 livelli, parità GoAlert) ----
+pub async fn user_cm_list(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let cms = sqlx::query("SELECT id,kind,value,label,verified_at,disabled_at FROM app.user_contact_methods WHERE tenant_id=$1 AND user_id=$2 ORDER BY created_at")
+        .bind(tid).bind(uid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let rules = sqlx::query("SELECT r.id,r.cm_id,r.delay_min,cm.kind,cm.value FROM app.user_notif_rules r JOIN app.user_contact_methods cm ON cm.id=r.cm_id WHERE r.tenant_id=$1 AND r.user_id=$2 ORDER BY r.delay_min")
+        .bind(tid).bind(uid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let cmj: Vec<Value> = cms.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"kind":r.get::<String,_>("kind"),
+        "value":r.get::<String,_>("value"),"label":r.get::<String,_>("label"),
+        "verified":r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("verified_at").ok().flatten().is_some(),
+        "disabled":r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("disabled_at").ok().flatten().is_some()})).collect();
+    let rj: Vec<Value> = rules.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"cm_id":r.get::<Uuid,_>("cm_id"),
+        "delay_min":r.get::<i32,_>("delay_min"),"kind":r.get::<String,_>("kind"),"value":r.get::<String,_>("value")})).collect();
+    // G3: preferenza status-update dell'utente (null=eredita) + default tenant per l'effettivo
+    let upref: Option<bool> = sqlx::query_scalar("SELECT status_updates_on FROM app.users WHERE id=$1 AND tenant_id=$2")
+        .bind(uid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
+    let tdef = oncall_cfg(&st, tid).await.status_on;
+    Ok(Json(json!({"methods":cmj,"rules":rj,"status_pref":upref,"status_effective":upref.unwrap_or(tdef)})))
+}
+#[derive(Deserialize)] pub struct CmAddReq { pub kind: String, pub value: String, #[serde(default)] pub label: String }
+pub async fn user_cm_add(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>, Json(b): Json<CmAddReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    if !matches!(b.kind.as_str(), "sms"|"voice"|"email") { return Err(err(StatusCode::BAD_REQUEST, "kind: sms|voice|email")); }
+    let val = b.value.trim();
+    if val.is_empty() || val.len() > 200 { return Err(err(StatusCode::BAD_REQUEST, "valore recapito non valido")); }
+    let ok = sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.users WHERE id=$1 AND tenant_id=$2").bind(uid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_some();
+    if !ok { return Err(err(StatusCode::NOT_FOUND, "utente inesistente")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.user_contact_methods(tenant_id,user_id,kind,value,label) VALUES($1,$2,$3,$4,$5) RETURNING id")
+        .bind(tid).bind(uid).bind(&b.kind).bind(val).bind(b.label.trim()).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true,"id":row.get::<Uuid,_>("id")})))
+}
+pub async fn user_cm_del(State(st): State<AppState>, h: HeaderMap, Path(cmid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.user_contact_methods WHERE id=$1 AND tenant_id=$2").bind(cmid).bind(tid).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "recapito inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)] pub struct RuleAddReq { pub cm_id: Uuid, pub delay_min: Option<i32> }
+pub async fn user_rule_add(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>, Json(b): Json<RuleAddReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let dm = b.delay_min.unwrap_or(0).clamp(0, 1440);
+    // il contact method deve appartenere all'utente nel tenant
+    let ok = sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.user_contact_methods WHERE id=$1 AND user_id=$2 AND tenant_id=$3")
+        .bind(b.cm_id).bind(uid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_some();
+    if !ok { return Err(err(StatusCode::BAD_REQUEST, "recapito non valido per l'utente")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.user_notif_rules(tenant_id,user_id,cm_id,delay_min) VALUES($1,$2,$3,$4) RETURNING id")
+        .bind(tid).bind(uid).bind(b.cm_id).bind(dm).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true,"id":row.get::<Uuid,_>("id")})))
+}
+pub async fn user_rule_del(State(st): State<AppState>, h: HeaderMap, Path(rid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.user_notif_rules WHERE id=$1 AND tenant_id=$2").bind(rid).bind(tid).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "regola inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+/// G1 — riabilita (admin) i recapiti di un utente in opt-out: toglie dal DNC telefono primario e
+/// contact method; i recapiti vanno poi ri-verificati (OTP). Compliance: azione tracciata.
+pub async fn user_reactivate(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    // raccogli i valori dell'utente (telefono + CM) e togli ciascuno dal DNC globale
+    let mut vals: Vec<String> = sqlx::query_scalar("SELECT value FROM app.user_contact_methods WHERE tenant_id=$1 AND user_id=$2")
+        .bind(tid).bind(uid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    if let Some(ph) = sqlx::query_scalar::<_,Option<String>>("SELECT phone FROM app.users WHERE id=$1 AND tenant_id=$2").bind(uid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.flatten() {
+        vals.push(ph);
+    }
+    for v in vals.iter().filter(|v| !v.trim().is_empty()) { esc_optout_clear(&st, v).await; }
+    audit(&st, tid, "youworkforce", "contact_reactivate", json!({"user":uid})).await;
+    Ok(Json(json!({"ok":true,"note":"recapiti riattivati: da ri-verificare"})))
+}
+
+// ---- G2: verifica OTP per singolo contact method (sms/voice/email) ----
+async fn cm_fetch(st: &AppState, tid: Uuid, cmid: Uuid) -> Option<(String,String)> {
+    sqlx::query("SELECT kind,value FROM app.user_contact_methods WHERE id=$1 AND tenant_id=$2")
+        .bind(cmid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten()
+        .map(|r| (r.get::<String,_>("kind"), r.get::<String,_>("value")))
+}
+/// Invia un testo (es. OTP) sul canale del recapito, riusando gli adapter: sms/voice via Twilio o
+/// sink, email via relay o sink. Nessuna dipendenza da GoAlert.
+async fn esc_send_code_native(st: &AppState, kind: &str, value: &str, text: &str) -> crate::delivery::SinkResult {
+    let from = std::env::var("YW_ESC_FROM").unwrap_or_else(|_| "+10000000000".into());
+    let sink = std::env::var("YW_ESC_SINK_URL").unwrap_or_default();
+    let relay = std::env::var("YW_ESC_SMTP_RELAY_URL").unwrap_or_default();
+    let slack_token = std::env::var("YW_ESC_SLACK_TOKEN").unwrap_or_default();
+    let public_base = std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_default();
+    let live_cfg = crate::delivery::TwilioCfg::from_env();
+    let ch = esc_channel_from_kind(kind);
+    let body = crate::delivery::request_body(ch, &from, value, text, "verify", 0);
+    esc_dispatch(st, ch, value, text, &body, live_cfg.is_some(), live_cfg.as_ref(), &slack_token, &relay, &sink, &public_base).await
+}
+pub async fn user_cm_verify(State(st): State<AppState>, h: HeaderMap, Path(cmid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let (kind, value) = cm_fetch(&st, tid, cmid).await.ok_or_else(|| err(StatusCode::NOT_FOUND, "recapito inesistente"))?;
+    if esc_is_opted_out(&st, &value).await { return Err(err(StatusCode::BAD_REQUEST, "recapito in opt-out: riabilitalo prima")); }
+    let code: u32 = { use rand::Rng as _; rand::thread_rng().gen_range(100000..1000000) };
+    let exp = st.clock.now() + chrono::Duration::minutes(10);
+    sqlx::query("UPDATE app.user_contact_methods SET verify_code=$1, verify_expires=$2 WHERE id=$3 AND tenant_id=$4")
+        .bind(code.to_string()).bind(exp).bind(cmid).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
+    let res = esc_send_code_native(&st, &kind, &value, &format!("YouWorkforce: codice di verifica {code} (10 min).")).await;
+    Ok(Json(json!({"ok":true,"delivery":res.state,"note":"codice inviato al recapito"})))
+}
+#[derive(Deserialize)] pub struct CmCodeReq { pub code: String }
+pub async fn user_cm_code(State(st): State<AppState>, h: HeaderMap, Path(cmid): Path<Uuid>, Json(b): Json<CmCodeReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let row = sqlx::query("SELECT verify_code,verify_expires FROM app.user_contact_methods WHERE id=$1 AND tenant_id=$2")
+        .bind(cmid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "recapito inesistente"))?;
+    let saved: Option<String> = row.try_get("verify_code").ok().flatten();
+    let exp: Option<chrono::DateTime<chrono::Utc>> = row.try_get("verify_expires").ok().flatten();
+    let saved = saved.ok_or_else(|| err(StatusCode::BAD_REQUEST, "nessun codice in attesa"))?;
+    if matches!(exp, Some(e) if st.clock.now() > e) { return Err(err(StatusCode::BAD_REQUEST, "codice scaduto")); }
+    if saved.trim() != b.code.trim() { return Err(err(StatusCode::BAD_REQUEST, "codice non valido")); }
+    sqlx::query("UPDATE app.user_contact_methods SET verified_at=now(), verify_code=NULL, verify_expires=NULL WHERE id=$1 AND tenant_id=$2")
+        .bind(cmid).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"ok":true,"note":"recapito verificato"})))
+}
+pub async fn user_cm_test(State(st): State<AppState>, h: HeaderMap, Path(cmid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let (kind, value) = cm_fetch(&st, tid, cmid).await.ok_or_else(|| err(StatusCode::NOT_FOUND, "recapito inesistente"))?;
+    let res = esc_send_code_native(&st, &kind, &value, "YouWorkforce: messaggio di prova.").await;
+    Ok(Json(json!({"ok":true,"delivery":res.state})))
+}
+// ---- G3: preferenza status-update per-utente (override del default tenant; null = eredita) ----
+#[derive(Deserialize)] pub struct StatusPrefReq { pub on: Option<bool> }
+pub async fn user_status_pref_set(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>, Json(b): Json<StatusPrefReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.users SET status_updates_on=$2 WHERE id=$1 AND tenant_id=$3")
+        .bind(uid).bind(b.on).bind(tid).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "utente inesistente")); }
+    Ok(Json(json!({"ok":true,"status_updates_on":b.on})))
 }
 
 // ---- Assenze / sostituzioni (override sulla schedule del gruppo) ----
@@ -7070,43 +7424,120 @@ async fn ga_user_id(st: &AppState, tid: Uuid, uid: Uuid) -> Option<String> {
 pub async fn oncall_overrides_list(State(st): State<AppState>, h: HeaderMap, axum::extract::Query(q): axum::extract::Query<OverrideQuery>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "loneworker").await?;
-    let Some(scid) = group_schedule_id(&st, tid, q.group_id).await else {
-        return Ok(Json(json!({"overrides":[],"note":"nessuna pianificazione: premi Sincronizza con GoAlert"}))); };
-    let (base, cookie, _) = ga_session_or_err(&st, tid).await?;
-    let gq = format!("{{userOverrides(input:{{scheduleID:\"{scid}\"}}){{nodes{{id start end addUser{{id name}} removeUser{{id name}}}}}}}}");
-    let v = goalert::graphql(&st.http, &base, &cookie, &gq).await
-        .and_then(|v| v.pointer("/data/userOverrides/nodes").cloned()).unwrap_or_else(|| json!([]));
-    Ok(Json(json!({"overrides":v})))
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    // Sorgente NATIVA (app.esc_overrides); nomi utente risolti localmente. GoAlert non richiesto.
+    let rows = sqlx::query(
+        "SELECT o.id,o.start_at,o.end_at,o.add_user,o.remove_user,
+                au.email AS add_email, ru.email AS rem_email
+           FROM app.esc_overrides o
+           LEFT JOIN app.users au ON au.id=o.add_user
+           LEFT JOIN app.users ru ON ru.id=o.remove_user
+          WHERE o.tenant_id=$1 AND o.group_id=$2 ORDER BY o.start_at DESC")
+        .bind(tid).bind(q.group_id).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id": r.get::<Uuid,_>("id"),
+        "start": r.get::<chrono::DateTime<chrono::Utc>,_>("start_at"),
+        "end": r.get::<chrono::DateTime<chrono::Utc>,_>("end_at"),
+        "add_user": r.try_get::<Option<Uuid>,_>("add_user").ok().flatten(),
+        "add_email": r.try_get::<Option<String>,_>("add_email").ok().flatten(),
+        "remove_user": r.try_get::<Option<Uuid>,_>("remove_user").ok().flatten(),
+        "remove_email": r.try_get::<Option<String>,_>("rem_email").ok().flatten(),
+    })).collect();
+    Ok(Json(json!({"overrides":out})))
 }
 #[derive(Deserialize)]
 pub struct OverrideReq { pub group_id: Uuid, pub start: String, pub end: String, pub add_user_id: Option<Uuid>, pub remove_user_id: Option<Uuid> }
 pub async fn oncall_override_add(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OverrideReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "loneworker").await?;
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
     if b.add_user_id.is_none() && b.remove_user_id.is_none() {
         return Err(err(StatusCode::BAD_REQUEST, "indica un sostituto (aggiungi) e/o la persona assente (rimuovi)"));
     }
-    let Some(scid) = group_schedule_id(&st, tid, b.group_id).await else {
-        return Err(err(StatusCode::BAD_REQUEST, "nessuna pianificazione per il gruppo: premi Sincronizza con GoAlert")); };
-    let (base, cookie, _) = ga_session_or_err(&st, tid).await?;
-    let mut fields = vec![format!("scheduleID:\"{scid}\""), format!("start:\"{}\"", esc_gql(&b.start)), format!("end:\"{}\"", esc_gql(&b.end))];
-    if let Some(u) = b.add_user_id { let g = ga_user_id(&st, tid, u).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "sostituto non sincronizzato in GoAlert"))?; fields.push(format!("addUserID:\"{g}\"")); }
-    if let Some(u) = b.remove_user_id { let g = ga_user_id(&st, tid, u).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "persona non sincronizzata in GoAlert"))?; fields.push(format!("removeUserID:\"{g}\"")); }
-    let gq = format!("mutation{{createUserOverride(input:{{{}}}){{id}}}}", fields.join(","));
-    let v = goalert::graphql(&st.http, &base, &cookie, &gq).await.ok_or_else(|| err(StatusCode::BAD_GATEWAY, "GoAlert non raggiungibile"))?;
-    if v.get("errors").is_some() { return Err(err(StatusCode::BAD_REQUEST, &format!("GoAlert: {}", v.get("errors").unwrap()))); }
-    audit(&st, tid, "youworkforce", "oncall_override_add", json!({"group":b.group_id})).await;
-    Ok(Json(json!({"ok":true})))
+    let start = chrono::DateTime::parse_from_rfc3339(&b.start).map_err(|_| err(StatusCode::BAD_REQUEST, "start: formato RFC3339"))?.with_timezone(&chrono::Utc);
+    let end = chrono::DateTime::parse_from_rfc3339(&b.end).map_err(|_| err(StatusCode::BAD_REQUEST, "end: formato RFC3339"))?.with_timezone(&chrono::Utc);
+    if end <= start { return Err(err(StatusCode::BAD_REQUEST, "end deve essere dopo start")); }
+    // utenti validati nel tenant (se indicati)
+    for u in [b.add_user_id, b.remove_user_id].into_iter().flatten() {
+        let ok = sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.users WHERE id=$1 AND tenant_id=$2")
+            .bind(u).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_some();
+        if !ok { return Err(err(StatusCode::BAD_REQUEST, "utente non appartiene al tenant")); }
+    }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.esc_overrides(tenant_id,group_id,start_at,end_at,add_user,remove_user) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
+        .bind(tid).bind(b.group_id).bind(start).bind(end).bind(b.add_user_id).bind(b.remove_user_id)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let oid: Uuid = row.get("id");
+    // GoAlert best-effort (rollback/rete di sicurezza): mirror se provisionato, senza bloccare.
+    if let (Some(scid), Some((base,cookie,_))) = (group_schedule_id(&st, tid, b.group_id).await, goalert_session(&st, tid).await) {
+        let mut fields = vec![format!("scheduleID:\"{scid}\""), format!("start:\"{}\"", esc_gql(&b.start)), format!("end:\"{}\"", esc_gql(&b.end))];
+        if let Some(u) = b.add_user_id { if let Some(g) = ga_user_id(&st, tid, u).await { fields.push(format!("addUserID:\"{g}\"")); } }
+        if let Some(u) = b.remove_user_id { if let Some(g) = ga_user_id(&st, tid, u).await { fields.push(format!("removeUserID:\"{g}\"")); } }
+        let gq = format!("mutation{{createUserOverride(input:{{{}}}){{id}}}}", fields.join(","));
+        let _ = goalert::graphql(&st.http, &base, &cookie, &gq).await;
+    }
+    audit(&st, tid, "youworkforce", "oncall_override_add", json!({"group":b.group_id,"id":oid})).await;
+    Ok(Json(json!({"ok":true,"id":oid})))
 }
-#[derive(Deserialize)] pub struct OverrideDel { pub id: String }
+#[derive(Deserialize)] pub struct OverrideDel { pub id: Uuid }
 pub async fn oncall_override_del(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OverrideDel>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
-    let (base, cookie, _) = ga_session_or_err(&st, tid).await?;
-    let gq = format!("mutation{{deleteAll(input:[{{type:userOverride,id:\"{}\"}}])}}", esc_gql(&b.id));
-    let _ = goalert::graphql(&st.http, &base, &cookie, &gq).await;
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.esc_overrides WHERE id=$1 AND tenant_id=$2").bind(b.id).bind(tid).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "override inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---- F3: Temporary schedule (sostituzione a tempo, parità GoAlert) ----
+pub async fn temp_schedule_list(State(st): State<AppState>, h: HeaderMap, axum::extract::Query(q): axum::extract::Query<OverrideQuery>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let rows = sqlx::query("SELECT id,start_at,end_at,blocks FROM app.esc_temp_schedules WHERE tenant_id=$1 AND group_id=$2 AND end_at>now() ORDER BY start_at")
+        .bind(tid).bind(q.group_id).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"start":r.get::<chrono::DateTime<chrono::Utc>,_>("start_at"),
+        "end":r.get::<chrono::DateTime<chrono::Utc>,_>("end_at"),"blocks":r.try_get::<Value,_>("blocks").unwrap_or_else(|_| json!([]))})).collect();
+    Ok(Json(json!({"schedules":out})))
+}
+#[derive(Deserialize)] pub struct TempBlock { pub user_id: Uuid, pub hours: f64 }
+#[derive(Deserialize)] pub struct TempSchedReq { pub group_id: Uuid, pub start: String, pub end: String, pub blocks: Vec<TempBlock> }
+pub async fn temp_schedule_add(State(st): State<AppState>, h: HeaderMap, Json(b): Json<TempSchedReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let start = chrono::DateTime::parse_from_rfc3339(&b.start).map_err(|_| err(StatusCode::BAD_REQUEST, "start: RFC3339"))?.with_timezone(&chrono::Utc);
+    let end = chrono::DateTime::parse_from_rfc3339(&b.end).map_err(|_| err(StatusCode::BAD_REQUEST, "end: RFC3339"))?.with_timezone(&chrono::Utc);
+    if end <= start { return Err(err(StatusCode::BAD_REQUEST, "end deve essere dopo start")); }
+    if b.blocks.is_empty() || b.blocks.len() > 100 { return Err(err(StatusCode::BAD_REQUEST, "1..100 blocchi")); }
+    for blk in &b.blocks {
+        if blk.hours <= 0.0 || blk.hours > 24.0*366.0 { return Err(err(StatusCode::BAD_REQUEST, "ore blocco non valide")); }
+        let ok = sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.users WHERE id=$1 AND tenant_id=$2").bind(blk.user_id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_some();
+        if !ok { return Err(err(StatusCode::BAD_REQUEST, "utente blocco non nel tenant")); }
+    }
+    let exists = sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2").bind(b.group_id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_some();
+    if !exists { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
+    let blocks = serde_json::to_value(b.blocks.iter().map(|x| json!({"user_id":x.user_id,"hours":x.hours})).collect::<Vec<_>>()).unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.esc_temp_schedules(tenant_id,group_id,start_at,end_at,blocks) VALUES($1,$2,$3,$4,$5) RETURNING id")
+        .bind(tid).bind(b.group_id).bind(start).bind(end).bind(&blocks).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let id: Uuid = row.get("id");
+    audit(&st, tid, "youworkforce", "temp_schedule_add", json!({"group":b.group_id,"id":id,"blocks":b.blocks.len()})).await;
+    Ok(Json(json!({"ok":true,"id":id})))
+}
+pub async fn temp_schedule_del(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OverrideDel>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.esc_temp_schedules WHERE id=$1 AND tenant_id=$2").bind(b.id).bind(tid).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "pianificazione inesistente")); }
     Ok(Json(json!({"ok":true})))
 }
 
@@ -7115,21 +7546,36 @@ pub async fn oncall_override_del(State(st): State<AppState>, h: HeaderMap, Json(
 pub async fn oncall_maintenance(State(st): State<AppState>, h: HeaderMap, Json(b): Json<MaintReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "loneworker").await?;
-    let (base, cookie, prov_sid) = ga_session_or_err(&st, tid).await?;
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
     let hours = b.hours.unwrap_or(0).clamp(0, 24);
     let exp = if hours > 0 { st.clock.now() + chrono::Duration::hours(hours) } else { st.clock.now() - chrono::Duration::minutes(1) };
     let exp_s = exp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let mut sids: Vec<String> = sqlx::query_scalar("SELECT goalert_service_id FROM app.alarm_groups WHERE tenant_id=$1 AND goalert_service_id IS NOT NULL")
-        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-    if let Some(p) = prov_sid { if !sids.contains(&p) { sids.push(p); } }
+    // Sorgente di verità NATIVA: il runner nativo (escalation_delivery_shadow_tenant) sospende
+    // le consegne finché now() < maintenance_until. Indipendente da GoAlert.
+    let until_db: Option<chrono::DateTime<chrono::Utc>> = if hours > 0 { Some(exp) } else { None };
+    sqlx::query("INSERT INTO app.tenant_oncall_cfg(tenant_id,maintenance_until) VALUES($1,$2)
+        ON CONFLICT (tenant_id) DO UPDATE SET maintenance_until=EXCLUDED.maintenance_until,updated_at=now()")
+        .bind(tid).bind(until_db).execute(&st.owner_pool).await.map_err(ise)?;
+    // GoAlert best-effort (rete di sicurezza): se provisionato, allinea i service; altrimenti ignora.
     let mut n = 0;
-    for sid in &sids {
-        let gq = format!("mutation{{updateService(input:{{id:\"{}\",maintenanceExpiresAt:\"{}\"}})}}", esc_gql(sid), exp_s);
-        if goalert::graphql(&st.http, &base, &cookie, &gq).await.map(|v| v.get("errors").is_none()).unwrap_or(false) { n += 1; }
+    if let Some((base, cookie, prov_sid)) = goalert_session(&st, tid).await {
+        let mut sids: Vec<String> = sqlx::query_scalar("SELECT goalert_service_id FROM app.alarm_groups WHERE tenant_id=$1 AND goalert_service_id IS NOT NULL")
+            .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+        if let Some(p) = prov_sid { if !sids.contains(&p) { sids.push(p); } }
+        for sid in &sids {
+            let gq = format!("mutation{{updateService(input:{{id:\"{}\",maintenanceExpiresAt:\"{}\"}})}}", esc_gql(sid), exp_s);
+            if goalert::graphql(&st.http, &base, &cookie, &gq).await.map(|v| v.get("errors").is_none()).unwrap_or(false) { n += 1; }
+        }
     }
-    audit(&st, tid, "youworkforce", "oncall_maintenance", json!({"hours":hours,"services":n})).await;
+    audit(&st, tid, "youworkforce", "oncall_maintenance", json!({"hours":hours,"goalert_services":n,"native":true})).await;
     Ok(Json(json!({"ok":true,"services":n,"until":if hours>0 {Some(exp_s)} else {None},"active":hours>0})))
+}
+/// Maintenance nativo attivo adesso? (now < maintenance_until). Usato dal runner nativo.
+pub async fn maintenance_active(st: &AppState, tid: Uuid) -> bool {
+    let until: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT maintenance_until FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
+    matches!(until, Some(u) if st.clock.now() < u)
 }
 
 // ---- Calendario reperibilita' (iCal), nativo YouWorkforce ----
@@ -7170,6 +7616,17 @@ pub async fn oncall_calendar_ics(State(st): State<AppState>, axum::extract::Quer
         ics.push_str(&format!("DTEND:{}\r\n", fmt(edt)));
         ics.push_str("SUMMARY:Reperibilita\r\n");
         if let Some(n) = note { if !n.is_empty() { ics.push_str(&format!("DESCRIPTION:{}\r\n", n.replace('\n'," ").replace(',', "\\,"))); } }
+        ics.push_str("END:VEVENT\r\n");
+    }
+    // F3 — turni CALCOLATI dalla rotazione nativa (prossimi 30 giorni), non solo i turni manuali.
+    let now = chrono::Utc::now();
+    for (gi, (gname, s, e)) in esc_user_rotation_shifts(&st, tid, uid, now, 30).await.iter().enumerate() {
+        ics.push_str("BEGIN:VEVENT\r\n");
+        ics.push_str(&format!("UID:rot-{uid}-{gi}-{}@youworkforce\r\n", fmt(*s)));
+        ics.push_str(&format!("DTSTAMP:{}\r\n", fmt(now)));
+        ics.push_str(&format!("DTSTART:{}\r\n", fmt(*s)));
+        ics.push_str(&format!("DTEND:{}\r\n", fmt(*e)));
+        ics.push_str(&format!("SUMMARY:Reperibilita {}\r\n", gname.replace('\n'," ").replace(',', "\\,")));
         ics.push_str("END:VEVENT\r\n");
     }
     ics.push_str("END:VCALENDAR\r\n");
@@ -7809,13 +8266,13 @@ pub async fn purge_retention(st: &AppState) {
 // GoAlert resta il motore in produzione. Obiettivo: 0 divergenze prima del cutover.
 // ============================================================================
 
-/// RotationType nativo dal tipo on-call del gruppo (monthly -> weekly x4, approssimazione).
+/// RotationType nativo dal tipo on-call del gruppo. Monthly ora è calendar-aware (nessuna approssimazione).
 fn esc_rot_kind(oc_type: &str) -> (crate::escalation::RotationType, i64) {
     use crate::escalation::RotationType as RT;
     match oc_type {
         "hourly" => (RT::Hourly, 1),
         "daily"  => (RT::Daily, 1),
-        "monthly"=> (RT::Weekly, 4),
+        "monthly"=> (RT::Monthly, 1),
         _        => (RT::Weekly, 1),
     }
 }
@@ -7917,26 +8374,37 @@ async fn esc_goalert_overrides(
 async fn esc_resolve_rot_member(
     st: &AppState, tid: Uuid, gid: Uuid, rot: &crate::escalation::Rotation,
     members: &[Uuid], email_of: &std::collections::HashMap<Uuid,String>, ga: &[String],
-    now: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>, allow_native_seed: bool, read_transient: bool,
 ) -> Option<Uuid> {
     use crate::escalation::RotationState;
     let row = sqlx::query("SELECT position,shift_start FROM app.esc_rotation_state WHERE tenant_id=$1 AND group_id=$2")
         .bind(tid).bind(gid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let mut transient = false; // calcolato ma NON persistito (letture: on-call-now, slack, status, bundle)
     let state = match row {
         Some(r) => RotationState{ position: r.get::<i32,_>("position").max(0) as usize, shift_start: r.get("shift_start") },
         None => {
-            // SEMINA dal ground-truth GoAlert: indice = posizione del membro on-call ora.
-            // Se GoAlert non ha ancora un on-call (warm-up engine post-sync, o transiente),
-            // NON seminare un indice inventato: ritorna None (native vuoto) così il confronto
-            // resta allineato a GoAlert vuoto (= match) invece di generare una falsa divergenza.
-            let idx = ga.first().and_then(|e| members.iter().position(|u| email_of.get(u).map(|x| x==e).unwrap_or(false)));
-            let Some(idx) = idx else { return None; };
+            // SEMINA: preferisci il ground-truth GoAlert (indice del membro on-call ora) per restare
+            // allineati finché GoAlert è il motore. Senza GoAlert:
+            //  - in CONSEGNA (allow_native_seed=true) semina nativamente alla posizione 0 e PERSISTE;
+            //  - in LETTURA (read_transient=true) calcola la posizione 0 ma NON persiste (una GET non
+            //    deve mutare lo stato né pre-emptare la semina GoAlert fatta dalla consegna);
+            //  - in SHADOW (entrambi false) ritorna None per non generare false divergenze.
+            let ga_idx = ga.first().and_then(|e| members.iter().position(|u| email_of.get(u).map(|x| x==e).unwrap_or(false)));
+            let (idx, src) = match ga_idx {
+                Some(i) => (i, "goalert"),
+                None if allow_native_seed => (0usize, "native"),
+                None if read_transient => { transient = true; (0usize, "native") },
+                None => return None,
+            };
             let seeded = RotationState{ position: idx, shift_start: rot.start_time(now) };
-            let _ = sqlx::query("INSERT INTO app.esc_rotation_state(tenant_id,group_id,position,shift_start,seeded_from) VALUES($1,$2,$3,$4,'goalert') ON CONFLICT (tenant_id,group_id) DO NOTHING")
-                .bind(tid).bind(gid).bind(seeded.position as i32).bind(seeded.shift_start).execute(&st.owner_pool).await;
+            if !transient {
+                let _ = sqlx::query("INSERT INTO app.esc_rotation_state(tenant_id,group_id,position,shift_start,seeded_from) VALUES($1,$2,$3,$4,$5) ON CONFLICT (tenant_id,group_id) DO NOTHING")
+                    .bind(tid).bind(gid).bind(seeded.position as i32).bind(seeded.shift_start).bind(src).execute(&st.owner_pool).await;
+            }
             seeded
         }
     };
+    if transient { return state.advanced_to(rot, now, members.len()).active_member(members); }
     let adv = state.advanced_to(rot, now, members.len());
     if adv != state {
         let _ = sqlx::query("UPDATE app.esc_rotation_state SET position=$3,shift_start=$4,updated_at=now() WHERE tenant_id=$1 AND group_id=$2")
@@ -7972,7 +8440,7 @@ pub async fn escalation_shadow_tenant(st: &AppState, tid: Uuid) -> (i64, i64) {
             sched.overrides = esc_goalert_overrides(st, &base, &cookie, &scid, &mut email_of).await;
         }
         let rot_member = match &sched.rotation {
-            Some(rot) => esc_resolve_rot_member(st, tid, gid, rot, &members, &email_of, &ga, now).await,
+            Some(rot) => esc_resolve_rot_member(st, tid, gid, rot, &members, &email_of, &ga, now, false, false).await,
             None => None,
         };
         let mut native: Vec<String> = sched.on_call_at_rot(now, rot_member).iter().filter_map(|u| email_of.get(u).cloned()).collect();
@@ -8033,8 +8501,15 @@ pub async fn escalation_shadow_run(State(st): State<AppState>, h: HeaderMap) -> 
 /// stateful + override), ma restituendo i recapiti (telefono/email) per costruire la ladder.
 /// Richiede una sessione GoAlert (ground-truth per semina rotation + override), coerente con la
 /// filosofia shadow: GoAlert è il motore in parallelo finché non si prova la parità.
+/// On-call nativo di un gruppo a `now`, con i recapiti per la ladder. SELF-SUFFICIENT:
+/// gli override/assenze sono quelli NATIVI (app.esc_overrides); la rotation è seminata
+/// nativamente (posizione 0 deterministica) quando non c'è una sessione GoAlert.
+/// `ga` è opzionale: se presente (base,cookie) GoAlert viene usato SOLO come ground-truth per la
+/// semina iniziale della rotation (compat shadow), ma non è più richiesto per funzionare.
+/// `seed=true` SOLO nella consegna (persiste la semina rotation). Le letture (on-call-now, slack,
+/// status-update, bundle) passano `seed=false`: calcolano l'on-call senza MAI mutare lo stato.
 async fn esc_native_oncall_contacts(
-    st: &AppState, tid: Uuid, gid: Uuid, base: &str, cookie: &str, now: chrono::DateTime<chrono::Utc>,
+    st: &AppState, tid: Uuid, gid: Uuid, ga: Option<(&str, &str)>, now: chrono::DateTime<chrono::Utc>, seed: bool,
 ) -> Vec<(Uuid, Option<String>, String)> {
     let Some(g) = sqlx::query("SELECT id,name,oncall_mode,oncall_type,oncall_shift,coverage_mode,cov_start,cov_end,cov_days,handoff_time,handoff_day,goalert_service_id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
         .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten() else { return vec![]; };
@@ -8042,28 +8517,142 @@ async fn esc_native_oncall_contacts(
         .bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
     if mrows.is_empty() { return vec![]; }
     let members: Vec<Uuid> = mrows.iter().map(|r| r.get::<Uuid,_>("id")).collect();
-    let mut email_of: std::collections::HashMap<Uuid,String> = mrows.iter().map(|r| (r.get::<Uuid,_>("id"), r.get::<String,_>("email").to_lowercase())).collect();
+    let email_of: std::collections::HashMap<Uuid,String> = mrows.iter().map(|r| (r.get::<Uuid,_>("id"), r.get::<String,_>("email").to_lowercase())).collect();
     let phone_of: std::collections::HashMap<Uuid,Option<String>> = mrows.iter().map(|r| (r.get::<Uuid,_>("id"), r.try_get::<String,_>("phone").ok())).collect();
-    let mut sched = esc_build_schedule(&g, &members);
-    if let Some(scid) = group_schedule_id(st, tid, gid).await {
-        sched.overrides = esc_goalert_overrides(st, base, cookie, &scid, &mut email_of).await;
+    // TEMPORARY SCHEDULE: se attiva, SOSTITUISCE tutto (solo il blocco corrente è on-call).
+    if let Some(tu) = esc_temp_schedule_oncall(st, tid, gid, now).await {
+        let (email, phone) = match email_of.get(&tu) {
+            Some(em) => (Some(em.clone()), phone_of.get(&tu).cloned().flatten()),
+            None => { // utente non membro del gruppo: recapiti dal profilo utente
+                let row = sqlx::query("SELECT email,phone FROM app.users WHERE id=$1 AND tenant_id=$2")
+                    .bind(tu).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
+                match row { Some(r) => (r.try_get::<String,_>("email").ok(), r.try_get::<String,_>("phone").ok()), None => (None, None) }
+            }
+        };
+        return match email { Some(em) => vec![(tu, phone, em)], None => vec![] };
     }
+    let mut sched = esc_build_schedule(&g, &members);
+    // override/assenze NATIVE (indipendenti da GoAlert)
+    sched.overrides = esc_native_overrides(st, tid, gid, &email_of).await;
     let rot_member = match &sched.rotation {
         Some(rot) => {
-            let sid: Option<String> = g.try_get("goalert_service_id").ok().flatten();
-            let mut ga = match sid { Some(ref s) => esc_goalert_oncall_emails(st, base, cookie, s).await, None => vec![] };
-            ga.sort(); ga.dedup();
-            esc_resolve_rot_member(st, tid, gid, rot, &members, &email_of, &ga, now).await
+            // ground-truth GoAlert solo per semina (se disponibile); altrimenti seed nativo.
+            let mut gae = match (ga, g.try_get::<Option<String>,_>("goalert_service_id").ok().flatten()) {
+                (Some((base, cookie)), Some(sid)) => esc_goalert_oncall_emails(st, base, cookie, &sid).await,
+                _ => vec![],
+            };
+            gae.sort(); gae.dedup();
+            // consegna (seed): semina+persiste; lettura (!seed): calcolo transiente senza persistere.
+            esc_resolve_rot_member(st, tid, gid, rot, &members, &email_of, &gae, now, seed, !seed).await
         }
         None => None,
     };
     let uids = sched.on_call_at_rot(now, rot_member);
-    // mappa uid -> (phone,email); i sostituti sintetici (override esterni) non hanno recapiti locali
     uids.into_iter().filter_map(|u| {
         let email = email_of.get(&u)?.clone();
         let phone = phone_of.get(&u).cloned().flatten();
         Some((u, phone, email))
     }).collect()
+}
+
+/// Override/assenze native di un gruppo (app.esc_overrides). I membri "remove/add" sono utenti
+/// locali risolti per uuid; l'email serve al resolver per la proiezione on-call.
+async fn esc_native_overrides(
+    st: &AppState, tid: Uuid, gid: Uuid, email_of: &std::collections::HashMap<Uuid,String>,
+) -> Vec<crate::escalation::Override> {
+    let rows = sqlx::query("SELECT start_at,end_at,add_user,remove_user FROM app.esc_overrides WHERE tenant_id=$1 AND group_id=$2")
+        .bind(tid).bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let _ = email_of; // i membri sono già locali (uuid); nessuna sintesi necessaria
+    rows.iter().filter_map(|r| {
+        let start: chrono::DateTime<chrono::Utc> = r.get("start_at");
+        let end: chrono::DateTime<chrono::Utc> = r.get("end_at");
+        let add: Option<Uuid> = r.try_get("add_user").ok().flatten();
+        let remove: Option<Uuid> = r.try_get("remove_user").ok().flatten();
+        if add.is_none() && remove.is_none() { return None; }
+        Some(crate::escalation::Override { start, end, add, remove })
+    }).collect()
+}
+
+/// Temporary schedule attivo (parità GoAlert): se un gruppo ha una pianificazione temporanea che
+/// copre `now`, essa SOSTITUISCE le assegnazioni: on-call = l'utente del blocco corrente (blocchi
+/// sequenziali {user_id, hours} a partire da start_at). None se nessuna temp schedule attiva.
+async fn esc_temp_schedule_oncall(
+    st: &AppState, tid: Uuid, gid: Uuid, now: chrono::DateTime<chrono::Utc>,
+) -> Option<Uuid> {
+    let row = sqlx::query("SELECT start_at,blocks FROM app.esc_temp_schedules WHERE tenant_id=$1 AND group_id=$2 AND start_at<=$3 AND end_at>$3 ORDER BY start_at DESC LIMIT 1")
+        .bind(tid).bind(gid).bind(now).fetch_optional(&st.owner_pool).await.ok().flatten()?;
+    let start: chrono::DateTime<chrono::Utc> = row.get("start_at");
+    let blocks: Value = row.try_get("blocks").unwrap_or_else(|_| json!([]));
+    let arr = blocks.as_array()?;
+    let mut cursor = start;
+    for b in arr {
+        let hours = b.get("hours").and_then(|v| v.as_f64()).unwrap_or(0.0).max(0.0);
+        let bend = cursor + chrono::Duration::milliseconds((hours * 3_600_000.0) as i64);
+        if now >= cursor && now < bend {
+            return b.get("user_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok());
+        }
+        cursor = bend;
+    }
+    None
+}
+
+/// Turni di rotazione CALCOLATI di un utente (parità GoAlert calendar): per ogni gruppo 'turni'
+/// di cui è membro, cammina i boundary della rotation su `days` giorni e ritorna i segmenti in cui
+/// l'utente è on-call. Usa lo stato persistente (esc_rotation_state) se presente, altrimenti semina
+/// nativamente alla posizione 0. Indipendente da GoAlert.
+async fn esc_user_rotation_shifts(
+    st: &AppState, tid: Uuid, uid: Uuid, now: chrono::DateTime<chrono::Utc>, days: i64,
+) -> Vec<(String, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> {
+    use crate::escalation::RotationState;
+    let mut out = vec![];
+    let groups = sqlx::query("SELECT g.id,g.name,g.oncall_mode,g.oncall_type,g.oncall_shift,g.coverage_mode,g.cov_start,g.cov_end,g.cov_days,g.handoff_time,g.handoff_day,g.goalert_service_id
+         FROM app.alarm_groups g JOIN app.alarm_group_members m ON m.group_id=g.id
+        WHERE g.tenant_id=$1 AND m.user_id=$2 AND g.oncall_mode='turni'")
+        .bind(tid).bind(uid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let horizon = now + chrono::Duration::days(days);
+    for g in &groups {
+        let gid: Uuid = g.get("id");
+        let name: String = g.get("name");
+        let mrows = sqlx::query("SELECT user_id FROM app.alarm_group_members WHERE group_id=$1 ORDER BY position")
+            .bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+        let members: Vec<Uuid> = mrows.iter().map(|r| r.get::<Uuid,_>("user_id")).collect();
+        if members.is_empty() { continue; }
+        let sched = esc_build_schedule(g, &members);
+        let Some(rot) = sched.rotation.as_ref() else { continue };
+        let count = members.len();
+        // stato base: persistito o seminato nativo
+        let base = sqlx::query("SELECT position,shift_start FROM app.esc_rotation_state WHERE tenant_id=$1 AND group_id=$2")
+            .bind(tid).bind(gid).fetch_optional(&st.owner_pool).await.ok().flatten()
+            .map(|r| RotationState{ position: r.get::<i32,_>("position").max(0) as usize, shift_start: r.get("shift_start") })
+            .unwrap_or_else(|| RotationState{ position: 0, shift_start: rot.start_time(now) });
+        let mut stt = base.advanced_to(rot, now, count);
+        let mut seg_start = stt.shift_start;
+        for _ in 0..400 {
+            let seg_end = rot.end_time(seg_start);
+            if stt.active_member(&members) == Some(uid) && seg_end > now {
+                out.push((name.clone(), seg_start.max(now), seg_end));
+            }
+            if seg_end > horizon { break; }
+            seg_start = seg_end;
+            stt = RotationState{ position: (stt.position + 1) % count, shift_start: seg_end };
+        }
+    }
+    out
+}
+
+/// Invio SMS nativo one-shot (verifica/test recapiti), riusando gli adapter di delivery:
+/// Twilio LIVE se configurato, altrimenti sink/dry (dev). Nessuna dipendenza da GoAlert.
+async fn esc_send_sms_native(st: &AppState, to: &str, text: &str) -> crate::delivery::SinkResult {
+    use crate::delivery::Channel;
+    let from = std::env::var("YW_ESC_FROM").unwrap_or_else(|_| "+10000000000".into());
+    let sink = std::env::var("YW_ESC_SINK_URL").unwrap_or_default();
+    let relay = std::env::var("YW_ESC_SMTP_RELAY_URL").unwrap_or_default();
+    let slack_token = std::env::var("YW_ESC_SLACK_TOKEN").unwrap_or_default();
+    let public_base = std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_default();
+    let live_cfg = crate::delivery::TwilioCfg::from_env();
+    let live_on = live_cfg.is_some();
+    let body = crate::delivery::request_body(Channel::Sms, &from, to, text, "verify", 0);
+    esc_dispatch(st, Channel::Sms, to, text, &body, live_on, live_cfg.as_ref(), &slack_token, &relay, &sink, &public_base).await
 }
 
 /// EscStatus nativo dallo stato dell'incidente (presa in carico/chiusura = ferma l'escalation).
@@ -8086,6 +8675,94 @@ fn esc_delivery_policy(voice_on: bool, voice_min: i64, repeat: i64) -> (crate::e
         steps.push(EscStep{ delay_s: 0, targets: vec![] }); chans.push(Channel::Sms);
     }
     (EscPolicy{ steps, repeat: repeat.max(0) as u32 }, chans)
+}
+
+fn esc_channel_from_str(s: &str) -> crate::delivery::Channel {
+    use crate::delivery::Channel;
+    match s { "voice"=>Channel::Voice, "email"=>Channel::Email, "slack"=>Channel::Slack, _=>Channel::Sms }
+}
+
+/// Policy di consegna di un GRUPPO. Parità GoAlert: se il gruppo ha step personalizzati
+/// (app.esc_policy_steps) usa quelli (sequenza arbitraria canale+attesa + repeat); altrimenti
+/// torna alla ladder derivata dalle impostazioni vocali del tenant (retro-compatibile).
+async fn esc_group_policy(
+    st: &AppState, tid: Uuid, gid: Uuid, voice_on: bool, voice_min: i64, repeat_tenant: i64,
+) -> (crate::escalation::EscPolicy, Vec<crate::delivery::Channel>) {
+    use crate::escalation::{EscPolicy, EscStep};
+    let rows = sqlx::query("SELECT delay_s,channel FROM app.esc_policy_steps WHERE tenant_id=$1 AND group_id=$2 ORDER BY idx")
+        .bind(tid).bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    if rows.is_empty() {
+        return esc_delivery_policy(voice_on, voice_min, repeat_tenant);
+    }
+    // repeat del gruppo (override) se presente, altrimenti quello del tenant.
+    let grp_repeat: Option<i32> = sqlx::query_scalar("SELECT esc_repeat FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
+        .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
+    let repeat = grp_repeat.map(|r| r as i64).unwrap_or(repeat_tenant).max(0) as u32;
+    let mut steps = vec![]; let mut chans = vec![];
+    for r in &rows {
+        let d: i32 = r.get("delay_s");
+        let ch: String = r.get("channel");
+        steps.push(EscStep{ delay_s: d.max(0) as i64, targets: vec![] });
+        chans.push(esc_channel_from_str(&ch));
+    }
+    (EscPolicy{ steps, repeat }, chans)
+}
+
+fn esc_channel_from_kind(k: &str) -> crate::delivery::Channel {
+    use crate::delivery::Channel;
+    match k { "voice"=>Channel::Voice, "email"=>Channel::Email, _=>Channel::Sms }
+}
+
+/// Parametri di trasporto della consegna, raggruppati per non esplodere le firme.
+struct EscTransport<'a> {
+    from: &'a str, sink: &'a str, relay: &'a str, slack_token: &'a str, public_base: &'a str,
+    live_on: bool, live_cfg: Option<&'a crate::delivery::TwilioCfg>,
+}
+
+/// Consegna le rung DOVUTE di uno step per gli on-call. Parità GoAlert a 2 livelli:
+/// - se l'utente ha REGOLE DI NOTIFICA (user_notif_rules) la ladder è la sua (contact method + ritardo
+///   rispetto all'accensione dello step): le regole con ritardo già trascorso vengono consegnate;
+/// - altrimenti fallback al canale dello step sul recapito di base (telefono/email).
+/// Idempotente su esc_delivery_log; ri-chiamabile a ogni giro (anche in Wait) per far scattare i ritardi.
+#[allow(clippy::too_many_arguments)]
+async fn esc_deliver_step_rungs(
+    st: &AppState, tid: Uuid, iid: Uuid, step_idx: i32, step_fired_at: chrono::DateTime<chrono::Utc>,
+    attempt: i32, default_channel: crate::delivery::Channel,
+    oncall: &[(Uuid, Option<String>, String)], now: chrono::DateTime<chrono::Utc>, text: &str, tr: &EscTransport<'_>,
+) -> i64 {
+    use crate::delivery::Channel;
+    let mut delivered = 0i64;
+    for (uid, phone, email) in oncall {
+        let rules = sqlx::query("SELECT cm.kind,cm.value,r.delay_min FROM app.user_notif_rules r JOIN app.user_contact_methods cm ON cm.id=r.cm_id WHERE r.tenant_id=$1 AND r.user_id=$2 AND cm.disabled_at IS NULL ORDER BY r.delay_min")
+            .bind(tid).bind(uid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+        // rung = (canale, destinatario, ritardo_min)
+        let rungs: Vec<(Channel, String, i64)> = if rules.is_empty() {
+            match default_channel {
+                Channel::Email => vec![(Channel::Email, email.clone(), 0)],
+                _ => phone.clone().map(|p| vec![(default_channel, p, 0)]).unwrap_or_default(),
+            }
+        } else {
+            rules.iter().filter_map(|r| {
+                let kind: String = r.get("kind"); let val: String = r.get("value"); let dm: i32 = r.get("delay_min");
+                let v = val.trim().to_string(); if v.is_empty() { return None; }
+                Some((esc_channel_from_kind(&kind), v, dm as i64))
+            }).collect()
+        };
+        for (chn, to, dm) in rungs {
+            if to.trim().is_empty() { continue; }
+            if esc_is_opted_out(st, &to).await { continue; } // G1: recapito in opt-out (DNC) -> salta
+            if step_fired_at + chrono::Duration::minutes(dm) > now { continue; } // non ancora dovuto
+            let claimed = sqlx::query("INSERT INTO app.esc_delivery_log(tenant_id,incident_id,step,channel,to_value,attempt,state) VALUES($1,$2,$3,$4,$5,$6,'queued') ON CONFLICT (tenant_id,incident_id,step,channel,to_value,attempt) DO NOTHING RETURNING id")
+                .bind(tid).bind(iid).bind(step_idx).bind(chn.as_str()).bind(&to).bind(attempt).fetch_optional(&st.owner_pool).await.ok().flatten();
+            let Some(logrow) = claimed else { continue };
+            let log_id: i64 = logrow.get("id");
+            let body = crate::delivery::request_body(chn, tr.from, &to, text, &iid.to_string(), step_idx as i64);
+            let res = esc_dispatch(st, chn, &to, text, &body, tr.live_on, tr.live_cfg, tr.slack_token, tr.relay, tr.sink, tr.public_base).await;
+            esc_persist_delivery(st, tid, iid, log_id, chn.as_str(), &res).await;
+            delivered += 1;
+        }
+    }
+    delivered
 }
 
 /// Sceglie l'adapter per un canale e consegna. LIVE (Twilio/Slack/relay) se abilitato, altrimenti
@@ -8127,7 +8804,39 @@ async fn esc_persist_delivery(st: &AppState, tid: Uuid, iid: Uuid, log_id: i64, 
 /// (l'ack applica la transizione). Idempotenza su `esc_delivery_log`; i fallimenti si ritentano.
 pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64, i64) {
     use crate::escalation::{self, AlertState, EscAction};
-    let Some((base, cookie, _)) = goalert_session(st, tid).await else { return (0,0); };
+    // MAINTENANCE nativo: finestra attiva -> sospendi le consegne (gli incidenti continuano a
+    // essere creati; la ladder riparte a fine finestra). Indipendente da GoAlert.
+    if maintenance_active(st, tid).await {
+        // segna gli incidenti aperti come "in bundle": a fine finestra verrà inviato UN riepilogo.
+        let _ = sqlx::query("UPDATE app.incidents SET bundled_at=now() WHERE tenant_id=$1 AND state<>'chiuso' AND bundled_at IS NULL")
+            .bind(tid).execute(&st.owner_pool).await;
+        return (0,0);
+    }
+    // USCITA manutenzione: se ci sono incidenti accumulati, invia UN solo riepilogo (parità GoAlert
+    // alert bundling) agli on-call del gruppo di default, poi riprende l'escalation normale.
+    let bundled: i64 = sqlx::query_scalar("SELECT count(*) FROM app.incidents WHERE tenant_id=$1 AND state<>'chiuso' AND bundled_at IS NOT NULL")
+        .bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
+    if bundled > 0 {
+        let dg: Option<Uuid> = sqlx::query_scalar("SELECT default_group_id FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
+            .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
+        if let Some(dg) = dg {
+            let now0 = chrono::Utc::now();
+            let oncall = esc_native_oncall_contacts(st, tid, dg, None, now0, false).await;
+            let text = format!("YouWorkforce: {bundled} allarmi durante la manutenzione. Escalation ripresa.");
+            for (_u, phone, _email) in &oncall {
+                if let Some(p) = phone.clone().filter(|p| !p.trim().is_empty()) {
+                    if esc_is_opted_out(st, &p).await { continue; } // G1: salta opt-out
+                    let _ = esc_send_sms_native(st, &p, &text).await;
+                }
+            }
+        }
+        let _ = sqlx::query("UPDATE app.incidents SET bundled_at=NULL WHERE tenant_id=$1 AND bundled_at IS NOT NULL")
+            .bind(tid).execute(&st.owner_pool).await;
+    }
+    // GoAlert OPZIONALE: se provisionato serve solo come ground-truth per la semina rotation e
+    // (storicamente) gli override; il motore nativo funziona anche senza (strada nuova).
+    let ga_sess = goalert_session(st, tid).await;
+    let ga_opt: Option<(&str,&str)> = ga_sess.as_ref().map(|(b,c,_)| (b.as_str(), c.as_str()));
     let now = chrono::Utc::now();
     let sink = std::env::var("YW_ESC_SINK_URL").unwrap_or_default();
     let from = std::env::var("YW_ESC_FROM").unwrap_or_else(|_| "+10000000000".into());
@@ -8144,8 +8853,8 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
     let native = engine == "native"; // nativo autoritativo per questo tenant (default di prodotto)
     // in cutover usa gli adapter live se configurati; in shadow solo col gate globale.
     let live_on = live_cfg.is_some() && (native || crate::delivery::TwilioCfg::live_enabled());
-    let (policy, chans) = esc_delivery_policy(voice_on, voice_min, repeat);
-    let last_step = policy.steps.len().saturating_sub(1) as i32;
+    // La policy di consegna è PER-GRUPPO (F3): ogni gruppo può avere step personalizzati.
+    // Costruita dentro il loop in base al gruppo instradato dell'incidente.
 
     // incidenti aperti instradati a un gruppo nativo.
     // Fase C: se il lavoratore dell'incidente (via assigned_user diretto o device assegnato) ha un
@@ -8156,7 +8865,7 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
     // critico resti senza destinatari sulla strada nuova (nativo), anche senza regola di routing.
     let incs = sqlx::query(
         "SELECT i.id, i.etype, i.state, i.opened_at,
-                COALESCE(pp.escalation_group_id, r.group_id, oc.default_group_id) AS group_id
+                COALESCE(i.forced_group_id, pp.escalation_group_id, r.group_id, oc.default_group_id) AS group_id
            FROM app.incidents i
            LEFT JOIN app.alarm_routing r ON r.tenant_id=i.tenant_id AND r.etype=i.etype
            LEFT JOIN app.events ev ON ev.id=i.event_id
@@ -8166,8 +8875,9 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
            LEFT JOIN app.protection_profiles pp ON pp.id=m.profile_id AND pp.enabled=true
            LEFT JOIN app.tenant_oncall_cfg oc ON oc.tenant_id=i.tenant_id
           WHERE i.tenant_id=$1 AND i.state <> 'chiuso'
-            AND COALESCE(pp.escalation_group_id, r.group_id, oc.default_group_id) IS NOT NULL")
+            AND COALESCE(i.forced_group_id, pp.escalation_group_id, r.group_id, oc.default_group_id) IS NOT NULL")
         .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let tr = EscTransport{ from:&from, sink:&sink, relay:&relay, slack_token:&slack_token, public_base:&public_base, live_on, live_cfg: live_cfg.as_ref() };
     let (mut seen, mut delivered) = (0i64, 0i64);
     for inc in &incs {
         let iid: Uuid = inc.get("id");
@@ -8175,6 +8885,10 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
         let etype: String = inc.get("etype");
         let istate: String = inc.get("state");
         seen += 1;
+
+        // policy di consegna del GRUPPO instradato (step personalizzati o ladder derivata)
+        let (policy, chans) = esc_group_policy(st, tid, gid, voice_on, voice_min, repeat).await;
+        let last_step = policy.steps.len().saturating_sub(1) as i32;
 
         // stato macchina (seed step=-1 = usize::MAX lato Rust)
         let strow = sqlx::query("SELECT step,step_fired_at,repeat_count FROM app.esc_alert_state WHERE tenant_id=$1 AND incident_id=$2")
@@ -8193,7 +8907,18 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
                 let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,repeat_count,status) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (tenant_id,incident_id) DO UPDATE SET status=$6,updated_at=now()")
                     .bind(tid).bind(iid).bind(cur_step).bind(fired_at).bind(rc).bind(new_status).execute(&st.owner_pool).await;
             }
-            EscAction::Wait => { /* delay non scaduto: niente */ }
+            EscAction::Wait => {
+                // delay dello step non scaduto: NON si avanza, ma si consegnano le rung DOVUTE dello
+                // step corrente (fa scattare i ritardi delle regole di notifica per-utente).
+                use crate::delivery::Channel;
+                if cur_step >= 0 && !matches!(state.status, crate::escalation::EscStatus::Acked | crate::escalation::EscStatus::Closed) {
+                    let channel = *chans.get(cur_step as usize).unwrap_or(&Channel::Sms);
+                    let oncall = esc_native_oncall_contacts(st, tid, gid, ga_opt, now, true).await;
+                    let sstr = iid.to_string(); let short = &sstr[..8];
+                    let text = format!("Allarme {etype} (incidente {short})");
+                    delivered += esc_deliver_step_rungs(st, tid, iid, cur_step, fired_at, rc, channel, &oncall, now, &text, &tr).await;
+                }
+            }
             EscAction::FireStep(idx, _) => {
                 use crate::delivery::Channel;
                 let channel = *chans.get(idx).unwrap_or(&Channel::Sms);
@@ -8201,48 +8926,91 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
                 let is_repeat_restart = idx == 0 && cur_step == last_step && cur_step >= 0;
                 let new_rc = if is_repeat_restart { rc + 1 } else { rc };
                 let attempt = new_rc; // il giro di repeat fa parte della chiave di idempotenza
-                let oncall = esc_native_oncall_contacts(st, tid, gid, &base, &cookie, now).await;
-                let short = iid.to_string(); let short = &short[..8];
+                let oncall = esc_native_oncall_contacts(st, tid, gid, ga_opt, now, true).await;
+                let sstr = iid.to_string(); let short = &sstr[..8];
                 let text = format!("Allarme {etype} (incidente {short})");
-                // destinatari: recapiti on-call + (opz.) canale Slack del gruppo, una volta per step.
-                let mut targets: Vec<(Channel, String)> = oncall.iter().filter_map(|(_u, phone, email)| {
-                    match channel { Channel::Email => email.clone().into(), _ => phone.clone() }
-                        .map(|s: String| s.trim().to_string()).filter(|s| !s.is_empty()).map(|to| (channel, to))
-                }).collect();
+                // rung per-utente (regole di notifica o fallback al canale dello step), ritardi inclusi.
+                delivered += esc_deliver_step_rungs(st, tid, iid, idx as i32, now, attempt, channel, &oncall, now, &text, &tr).await;
                 // Slack per-gruppo: sul PRIMO step (idx 0) se configurato e notifiche attive.
                 if idx == 0 {
                     if let Some(sr) = sqlx::query("SELECT slack_channel_id,slack_notify FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
                         .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten() {
                         let ch: Option<String> = sr.try_get("slack_channel_id").ok().flatten();
                         let notify: String = sr.try_get("slack_notify").unwrap_or_else(|_| "off".into());
-                        if notify != "off" { if let Some(ch) = ch.filter(|s| !s.trim().is_empty()) { targets.push((Channel::Slack, ch)); } }
+                        if notify != "off" { if let Some(ch) = ch.filter(|s| !s.trim().is_empty()) {
+                            let claimed = sqlx::query("INSERT INTO app.esc_delivery_log(tenant_id,incident_id,step,channel,to_value,attempt,state) VALUES($1,$2,$3,'slack',$4,$5,'queued') ON CONFLICT (tenant_id,incident_id,step,channel,to_value,attempt) DO NOTHING RETURNING id")
+                                .bind(tid).bind(iid).bind(idx as i32).bind(&ch).bind(attempt).fetch_optional(&st.owner_pool).await.ok().flatten();
+                            if let Some(logrow) = claimed {
+                                let log_id: i64 = logrow.get("id");
+                                let body = crate::delivery::request_body(Channel::Slack, &from, &ch, &text, &iid.to_string(), idx as i64);
+                                let res = esc_dispatch(st, Channel::Slack, &ch, &text, &body, live_on, live_cfg.as_ref(), &slack_token, &relay, &sink, &public_base).await;
+                                esc_persist_delivery(st, tid, iid, log_id, "slack", &res).await;
+                                delivered += 1;
+                            }
+                        } }
                     }
-                }
-                for (chn, to) in &targets {
-                    // IDEMPOTENZA: claim della rung (incl. attempt). Se gia' presente -> skip.
-                    let claimed = sqlx::query("INSERT INTO app.esc_delivery_log(tenant_id,incident_id,step,channel,to_value,attempt,state) VALUES($1,$2,$3,$4,$5,$6,'queued') ON CONFLICT (tenant_id,incident_id,step,channel,to_value,attempt) DO NOTHING RETURNING id")
-                        .bind(tid).bind(iid).bind(idx as i32).bind(chn.as_str()).bind(to).bind(attempt).fetch_optional(&st.owner_pool).await.ok().flatten();
-                    let Some(logrow) = claimed else { continue };
-                    let log_id: i64 = logrow.get("id");
-                    let body = crate::delivery::request_body(*chn, &from, to, &text, &iid.to_string(), idx as i64);
-                    let res = esc_dispatch(st, *chn, to, &text, &body, live_on, live_cfg.as_ref(), &slack_token, &relay, &sink, &public_base).await;
-                    esc_persist_delivery(st, tid, iid, log_id, chn.as_str(), &res).await;
-                    delivered += 1;
                 }
                 // avanza/semina lo stato alla rung appena sparata (repeat_count aggiornato)
                 let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,repeat_count,status) VALUES($1,$2,$3,$4,$5,'unack') ON CONFLICT (tenant_id,incident_id) DO UPDATE SET step=$3,step_fired_at=$4,repeat_count=$5,updated_at=now()")
                     .bind(tid).bind(iid).bind(idx as i32).bind(now).bind(new_rc).execute(&st.owner_pool).await;
                 let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_shadow_delivery',$3)")
-                    .bind(tid).bind(iid).bind(json!({"step":idx,"channel":channel.as_str(),"attempt":attempt,"targets":targets.len(),"live":live_on,"engine":engine})).execute(&st.owner_pool).await;
+                    .bind(tid).bind(iid).bind(json!({"step":idx,"channel":channel.as_str(),"attempt":attempt,"live":live_on,"engine":engine})).execute(&st.owner_pool).await;
             }
         }
     }
     (seen, delivered)
 }
 
-/// Scansione consegna-shadow di tutti i tenant con GoAlert provisionato (dal worker, bassa freq.).
+/// F3 — Annunci Slack dell'on-call (parità GoAlert "On-Call Notifications"): per ogni gruppo con
+/// `slack_notify` != off e un canale Slack, posta chi è reperibile. `onchange` = a ogni handoff
+/// (cambia lo shift_start della rotation); `HH:MM` = una volta al giorno dopo quell'ora.
+/// Best-effort: senza token Slack live non fa nulla.
+pub async fn slack_announce_scan(st: &AppState) {
+    let token = std::env::var("YW_ESC_SLACK_TOKEN").unwrap_or_default();
+    if token.trim().is_empty() { return; }
+    let now = chrono::Utc::now();
+    let groups = sqlx::query("SELECT id,tenant_id,name,slack_channel_id,slack_notify,slack_last_announce,oncall_mode FROM app.alarm_groups WHERE slack_notify<>'off' AND slack_channel_id IS NOT NULL")
+        .fetch_all(&st.owner_pool).await.unwrap_or_default();
+    for g in &groups {
+        let gid: Uuid = g.get("id");
+        let tid: Uuid = g.get("tenant_id");
+        let name: String = g.get("name");
+        let Some(ch) = g.try_get::<Option<String>,_>("slack_channel_id").ok().flatten().filter(|s| !s.trim().is_empty()) else { continue };
+        let notify: String = g.try_get("slack_notify").unwrap_or_else(|_| "off".into());
+        let last: Option<chrono::DateTime<chrono::Utc>> = g.try_get("slack_last_announce").ok().flatten();
+        let mode: String = g.try_get("oncall_mode").unwrap_or_else(|_| "tutti".into());
+        let should = if notify == "onchange" {
+            if mode != "turni" { false } else {
+                // handoff: lo shift_start corrente della rotation è più recente dell'ultimo annuncio
+                let ss: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar("SELECT shift_start FROM app.esc_rotation_state WHERE tenant_id=$1 AND group_id=$2")
+                    .bind(tid).bind(gid).fetch_optional(&st.owner_pool).await.ok().flatten();
+                match (ss, last) { (Some(s), Some(l)) => s > l, (Some(_), None) => true, _ => false }
+            }
+        } else if let Some((hh, mm)) = parse_hhmm(&notify) {
+            // NB: orario interpretato in UTC (come tutto il motore nativo FASE 0: anche coverage e
+            // handoff sono in UTC). Il fuso del gruppo (oncall_tz) verrà applicato quando il motore
+            // introdurrà il supporto fusi/DST end-to-end.
+            let target = now.date_naive().and_hms_opt(hh, mm, 0).map(|d| chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(d, chrono::Utc));
+            match target { Some(t) => now >= t && last.map(|l| l < t).unwrap_or(true), None => false }
+        } else { false };
+        if !should { continue; }
+        let oncall = esc_native_oncall_contacts(st, tid, gid, None, now, false).await;
+        let who = if oncall.is_empty() { "nessuno".to_string() }
+            else { oncall.iter().map(|(_,_,em)| em.clone()).collect::<Vec<_>>().join(", ") };
+        let text = format!("On-call «{name}»: {who}");
+        let _ = crate::delivery::deliver_slack_live(&st.http, &token, &ch, &text).await;
+        let _ = sqlx::query("UPDATE app.alarm_groups SET slack_last_announce=$2 WHERE id=$1").bind(gid).bind(now).execute(&st.owner_pool).await;
+    }
+}
+
+/// Scansione consegna del motore nativo (dal worker). SELF-SUFFICIENT: copre OGNI tenant che ha
+/// incidenti aperti (qualunque modulo li produca: safety/IoT/TB/Traccar), più i tenant con GoAlert
+/// provisionato (per la semina/compat). Non dipende più dalla sola tabella goalert_services.
 pub async fn escalation_delivery_shadow_scan(st: &AppState) {
-    let tids: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT tenant_id FROM app.goalert_services")
+    let tids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT tenant_id FROM app.incidents WHERE state <> 'chiuso'
+         UNION
+         SELECT tenant_id FROM app.goalert_services")
         .fetch_all(&st.owner_pool).await.unwrap_or_default();
     for tid in tids { let _ = escalation_delivery_shadow_tenant(st, tid).await; }
 }
@@ -8326,15 +9094,331 @@ async fn esc_apply_ack(st: &AppState, tid: Uuid, iid: Uuid, action: &str, via: &
         } else {
             let _ = sqlx::query("UPDATE app.incidents SET state='preso_in_carico' WHERE id=$1 AND tenant_id=$2 AND state='aperto'").bind(iid).bind(tid).execute(&st.owner_pool).await;
         }
+        // G3 status-update: avvisa gli altri on-call (attore = chi ha risposto dal carrier, ignoto qui)
+        esc_status_update_notify(st, tid, iid, None, &format!("recapito ({via})"), action).await;
+    }
+}
+
+// ============================================================================
+// Parità Services GoAlert — S1 heartbeat monitor, S2 email ingress, S3 bulk, S4 on-call-now (nativi)
+// ============================================================================
+
+/// Crea un incidente critico INSTRADATO senza device (heartbeat/email/watchdog): usa la catena
+/// persist_ingest, poi fissa il gruppo se richiesto (forced_group_id, override del routing).
+async fn raise_routed_incident(st: &AppState, tid: Uuid, etype: &str, source: &str, correlation: &str, payload: Value, group_id: Option<Uuid>) -> Option<Uuid> {
+    let res = persist_ingest(st, tid, Normalized{
+        source: source.into(), source_event: correlation.into(), idem: correlation.into(),
+        etype: etype.into(), device_external_id: None, site_name: None,
+        lat: None, lon: None, accuracy_m: None, correlation: correlation.into(),
+        payload, indoor: false, beacon_uid: None, zone: None,
+    }).await.ok()?;
+    let iid = res.0.get("incident_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok());
+    if let (Some(iid), Some(g)) = (iid, group_id) {
+        let _ = sqlx::query("UPDATE app.incidents SET forced_group_id=$2 WHERE id=$1 AND tenant_id=$3").bind(iid).bind(g).bind(tid).execute(&st.owner_pool).await;
+    }
+    iid
+}
+
+// ---- S1: Heartbeat monitor nativo ----
+/// Ping pubblico del monitor (un sistema esterno lo chiama periodicamente). Aggiorna last_ping;
+/// se il monitor era 'down', chiude l'incidente (recovery). Nessuna autenticazione di sessione.
+pub async fn ingest_heartbeat(State(st): State<AppState>, Path(token): Path<String>) -> Response {
+    use axum::response::IntoResponse;
+    let row = sqlx::query("SELECT id,tenant_id,state,incident_id FROM app.heartbeat_monitors WHERE token=$1")
+        .bind(&token).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let Some(row) = row else { return (StatusCode::NOT_FOUND, "monitor inesistente").into_response(); };
+    let id: Uuid = row.get("id"); let tid: Uuid = row.get("tenant_id");
+    let state: String = row.get("state");
+    let inc: Option<Uuid> = row.try_get("incident_id").ok().flatten();
+    let _ = sqlx::query("UPDATE app.heartbeat_monitors SET last_ping_at=now(), state='ok', incident_id=NULL WHERE id=$1").bind(id).execute(&st.owner_pool).await;
+    if state == "down" { if let Some(iid) = inc {
+        let _ = sqlx::query("UPDATE app.incidents SET state='chiuso', closed_at=now(), outcome='heartbeat ripristinato' WHERE id=$1 AND tenant_id=$2 AND state<>'chiuso'").bind(iid).bind(tid).execute(&st.owner_pool).await;
+        let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'transition',$3)").bind(tid).bind(iid).bind(json!({"to":"chiuso","outcome":"heartbeat ripristinato"})).execute(&st.owner_pool).await;
+    }}
+    (StatusCode::OK, "ok").into_response()
+}
+/// Watchdog heartbeat (dal worker): per ogni monitor scaduto e ancora 'ok' apre un incidente
+/// 'heartbeat_down' instradato (al suo gruppo o al routing/default). Idempotente sullo stato.
+pub async fn heartbeat_watchdog(st: &AppState) {
+    let rows = sqlx::query("SELECT id,tenant_id,name,timeout_s,group_id,last_ping_at FROM app.heartbeat_monitors WHERE state='ok'")
+        .fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let now = chrono::Utc::now();
+    for r in &rows {
+        let last: Option<chrono::DateTime<chrono::Utc>> = r.try_get("last_ping_at").ok().flatten();
+        let Some(last) = last else { continue }; // mai pingato: in attesa del primo ping
+        let timeout: i32 = r.get("timeout_s");
+        if (now - last).num_seconds() < timeout as i64 { continue; }
+        let id: Uuid = r.get("id"); let tid: Uuid = r.get("tenant_id");
+        let name: String = r.get("name"); let g: Option<Uuid> = r.try_get("group_id").ok().flatten();
+        let corr = format!("heartbeat-{}-{}", id, now.timestamp_millis());
+        if let Some(iid) = raise_routed_incident(st, tid, "heartbeat_down", "heartbeat", &corr,
+            json!({"monitor":name,"timeout_s":timeout,"last_ping_at":last}), g).await {
+            let _ = sqlx::query("UPDATE app.heartbeat_monitors SET state='down', incident_id=$2 WHERE id=$1").bind(id).bind(iid).execute(&st.owner_pool).await;
+        }
+    }
+}
+pub async fn heartbeat_list(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let base = std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_default();
+    let rows = sqlx::query("SELECT id,name,token,timeout_s,group_id,last_ping_at,state FROM app.heartbeat_monitors WHERE tenant_id=$1 ORDER BY created_at")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| {
+        let tok: String = r.get("token");
+        json!({"id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),
+            "timeout_s":r.get::<i32,_>("timeout_s"),"group_id":r.try_get::<Option<Uuid>,_>("group_id").ok().flatten(),
+            "last_ping_at":r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_ping_at").ok().flatten(),
+            "state":r.get::<String,_>("state"),
+            "url":format!("{}/api/ingress/heartbeat/{}", base.trim_end_matches('/'), tok)})
+    }).collect();
+    Ok(Json(json!({"monitors":out})))
+}
+#[derive(Deserialize)] pub struct HbReq { pub name: String, pub timeout_min: Option<i32>, #[serde(default)] pub group_id: Option<Uuid> }
+pub async fn heartbeat_create(State(st): State<AppState>, h: HeaderMap, Json(b): Json<HbReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let timeout_s = b.timeout_min.unwrap_or(15).clamp(1, 1440) * 60;
+    group_belongs(&st, tid, b.group_id).await?;
+    let token = format!("hb-{}", auth::new_token());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.heartbeat_monitors(tenant_id,name,token,timeout_s,group_id) VALUES($1,$2,$3,$4,$5) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(&token).bind(timeout_s).bind(b.group_id).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "heartbeat_create", json!({"name":b.name,"timeout_s":timeout_s})).await;
+    Ok(Json(json!({"ok":true,"id":row.get::<Uuid,_>("id")})))
+}
+pub async fn heartbeat_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.heartbeat_monitors WHERE id=$1 AND tenant_id=$2").bind(id).bind(tid).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "monitor inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---- S2: Email ingress ----
+/// Webhook del provider di posta (Mailgun/SES/…): un'email ricevuta a <token>[+dedup]@dominio diventa
+/// un incidente 'email_alarm' instradato. Tenant risolto dal token (local-part), MAI dal corpo.
+#[derive(Deserialize)] pub struct EmailIn { pub to: String, #[serde(default)] pub from: String, #[serde(default)] pub subject: String, #[serde(default)] pub body: String }
+pub async fn ingest_email(State(st): State<AppState>, Json(b): Json<EmailIn>) -> Response {
+    use axum::response::IntoResponse;
+    // local-part dell'indirizzo "to": token[+dedup]@dominio
+    let local = b.to.split('@').next().unwrap_or("").trim().to_lowercase();
+    let (token, dedup) = match local.split_once('+') { Some((t,d)) => (t.to_string(), Some(d.to_string())), None => (local, None) };
+    let row = sqlx::query("SELECT tenant_id,group_id FROM app.email_inboxes WHERE token=$1")
+        .bind(&token).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let Some(row) = row else { return (StatusCode::NOT_FOUND, "inbox inesistente").into_response(); };
+    let tid: Uuid = row.get("tenant_id"); let g: Option<Uuid> = row.try_get("group_id").ok().flatten();
+    let subject = if b.subject.trim().is_empty() { "(senza oggetto)".to_string() } else { b.subject.trim().to_string() };
+    // dedup (parità GoAlert email): chiave custom (+key) oppure firma STABILE dell'oggetto, così email
+    // ripetute con lo stesso subject confluiscono sullo stesso incidente aperto (niente flood).
+    let corr = match dedup {
+        Some(d) => format!("email-{}-{}", token, d),
+        None => format!("email-{}-{}", token, &hash_token(&subject.to_lowercase())[..16]),
+    };
+    let payload = json!({"from":b.from,"subject":subject,"body": b.body.chars().take(2000).collect::<String>()});
+    let _ = raise_routed_incident(&st, tid, "email_alarm", "email", &corr, payload, g).await;
+    (StatusCode::OK, "ok").into_response()
+}
+pub async fn email_inbox_list(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let domain = std::env::var("YW_EMAIL_DOMAIN").unwrap_or_else(|_| "alerts.youworkforce.local".into());
+    let rows = sqlx::query("SELECT id,token,group_id FROM app.email_inboxes WHERE tenant_id=$1 ORDER BY created_at")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| {
+        let tok: String = r.get("token");
+        json!({"id":r.get::<Uuid,_>("id"),"group_id":r.try_get::<Option<Uuid>,_>("group_id").ok().flatten(),
+            "address":format!("{}@{}", tok, domain)})
+    }).collect();
+    Ok(Json(json!({"inboxes":out})))
+}
+#[derive(Deserialize)] pub struct InboxReq { #[serde(default)] pub group_id: Option<Uuid> }
+pub async fn email_inbox_create(State(st): State<AppState>, h: HeaderMap, Json(b): Json<InboxReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    group_belongs(&st, tid, b.group_id).await?;
+    let token = format!("in-{}", &auth::new_token()[..12]);
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.email_inboxes(tenant_id,token,group_id) VALUES($1,$2,$3) RETURNING id")
+        .bind(tid).bind(&token).bind(b.group_id).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true,"id":row.get::<Uuid,_>("id")})))
+}
+pub async fn email_inbox_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.email_inboxes WHERE id=$1 AND tenant_id=$2").bind(id).bind(tid).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "inbox inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---- S3: bulk acknowledge / close ----
+pub async fn incidents_ack_all(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let tid = s.tenant_id.unwrap();
+    let acl: Option<Vec<Uuid>> = allowed_sites(&st, &s).await.map(|h| h.into_iter().collect());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // solo gli incidenti 'aperto' visibili all'ACL dell'operatore. Gli incidenti senza sede NON sono
+    // visibili a un operatore ristretto (coerente con guard_incident_site): quindi esclusi dal bulk.
+    let rows = match &acl {
+        Some(sites) => sqlx::query("UPDATE app.incidents SET state='preso_in_carico',version=version+1 WHERE state='aperto' AND site_id = ANY($1) RETURNING id")
+            .bind(sites).fetch_all(&mut *tx).await.map_err(ise)?,
+        None => sqlx::query("UPDATE app.incidents SET state='preso_in_carico',version=version+1 WHERE state='aperto' RETURNING id")
+            .fetch_all(&mut *tx).await.map_err(ise)?,
+    };
+    // trail per-incidente come l'ack singolo (il bulk NON invia lo status-update per non intasare)
+    for r in &rows {
+        let iid: Uuid = r.get("id");
+        sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'human_ack',$3)")
+            .bind(tid).bind(iid).bind(json!({"by":s.email,"bulk":true})).execute(&mut *tx).await.map_err(ise)?;
+    }
+    tx.commit().await.map_err(ise)?;
+    let n = rows.len();
+    audit(&st, tid, &s.email, "incidents_ack_all", json!({"count":n})).await;
+    Ok(Json(json!({"ok":true,"acknowledged":n})))
+}
+pub async fn incidents_close_all(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CloseReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let tid = s.tenant_id.unwrap();
+    let acl: Option<Vec<Uuid>> = allowed_sites(&st, &s).await.map(|h| h.into_iter().collect());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // Incidenti senza sede esclusi per operatore ristretto (coerente con guard_incident_site).
+    let rows = match &acl {
+        Some(sites) => sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$1,closed_at=now(),version=version+1 WHERE state<>'chiuso' AND site_id = ANY($2) RETURNING id,correlation,etype")
+            .bind(&b.outcome).bind(sites).fetch_all(&mut *tx).await.map_err(ise)?,
+        None => sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$1,closed_at=now(),version=version+1 WHERE state<>'chiuso' RETURNING id,correlation,etype")
+            .bind(&b.outcome).fetch_all(&mut *tx).await.map_err(ise)?,
+    };
+    for r in &rows {
+        let iid: Uuid = r.get("id"); let correlation: String = r.get("correlation"); let etype: String = r.get("etype");
+        // trail per-incidente come la chiusura singola
+        sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'transition',$3)")
+            .bind(tid).bind(iid).bind(json!({"to":"chiuso","outcome":b.outcome,"by":s.email,"bulk":true})).execute(&mut *tx).await.map_err(ise)?;
+        sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_close',$2)")
+            .bind(tid).bind(json!({"incident_id":iid,"summary":format!("close {}",correlation),"dedup":correlation,"etype":etype}))
+            .execute(&mut *tx).await.map_err(ise)?;
+    }
+    tx.commit().await.map_err(ise)?;
+    let n = rows.len();
+    audit(&st, tid, &s.email, "incidents_close_all", json!({"count":n})).await;
+    Ok(Json(json!({"ok":true,"closed":n})))
+}
+
+// ---- S4: on-call-now NATIVO (chi è reperibile ora, per gruppo) ----
+pub async fn oncall_now_native(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let now = chrono::Utc::now();
+    let groups = sqlx::query("SELECT id,name FROM app.alarm_groups WHERE tenant_id=$1 ORDER BY name")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let mut out = Vec::new();
+    let mut flat: Vec<String> = Vec::new();
+    for g in &groups {
+        let gid: Uuid = g.get("id"); let name: String = g.get("name");
+        let oncall = esc_native_oncall_contacts(&st, tid, gid, None, now, false).await;
+        let emails: Vec<String> = oncall.iter().map(|(_,_,e)| e.clone()).collect();
+        for e in &emails { if !flat.contains(e) { flat.push(e.clone()); } }
+        out.push(json!({"group":name,"oncall":emails}));
+    }
+    Ok(Json(json!({"available":true,"engine":"native","groups":out,"oncall":flat.iter().map(|e| json!({"user":e})).collect::<Vec<_>>()})))
+}
+
+/// G1 — Do-Not-Call: registra l'opt-out GLOBALE di un recapito (STOP) e ne disabilita le occorrenze
+/// (contact method aggiuntivi + telefono primario) in ogni tenant. Persiste oltre lo stato del modulo.
+async fn esc_optout_mark(st: &AppState, value: &str, kind: &str, reason: &str) {
+    let v = value.trim();
+    if v.is_empty() { return; }
+    let _ = sqlx::query("INSERT INTO app.contact_optout(value,kind,reason) VALUES($1,$2,$3) ON CONFLICT (value) DO UPDATE SET at=now(), kind=EXCLUDED.kind, reason=EXCLUDED.reason")
+        .bind(v).bind(kind).bind(reason).execute(&st.owner_pool).await;
+    // tenant toccati (per audit)
+    let tids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT tenant_id FROM app.user_contact_methods WHERE value=$1
+         UNION SELECT tenant_id FROM app.users WHERE phone=$1")
+        .bind(v).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let _ = sqlx::query("UPDATE app.user_contact_methods SET disabled_at=now() WHERE value=$1 AND disabled_at IS NULL").bind(v).execute(&st.owner_pool).await;
+    let _ = sqlx::query("UPDATE app.users SET phone_opt_out_at=now() WHERE phone=$1 AND phone_opt_out_at IS NULL").bind(v).execute(&st.owner_pool).await;
+    for tid in tids { audit(st, tid, "carrier", "contact_optout", json!({"value":v,"kind":kind,"reason":reason})).await; }
+}
+/// G1 — riattivazione (START): toglie dal DNC e segna i recapiti come DA RI-VERIFICARE.
+async fn esc_optout_clear(st: &AppState, value: &str) {
+    let v = value.trim(); if v.is_empty() { return; }
+    let _ = sqlx::query("DELETE FROM app.contact_optout WHERE value=$1").bind(v).execute(&st.owner_pool).await;
+    let _ = sqlx::query("UPDATE app.user_contact_methods SET disabled_at=NULL, verified_at=NULL WHERE value=$1").bind(v).execute(&st.owner_pool).await;
+    let _ = sqlx::query("UPDATE app.users SET phone_opt_out_at=NULL WHERE phone=$1").bind(v).execute(&st.owner_pool).await;
+}
+/// G1 — un recapito è in opt-out (DNC)? Il runner salta questi destinatari.
+async fn esc_is_opted_out(st: &AppState, value: &str) -> bool {
+    sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM app.contact_optout WHERE value=$1)")
+        .bind(value.trim()).fetch_one(&st.owner_pool).await.unwrap_or(false)
+}
+
+/// G3 — Status update NATIVO: quando un incidente cambia stato (ack/chiusura), avvisa gli ALTRI
+/// reperibili on-call che hanno lo status-update attivo (override utente -> default tenant),
+/// rispettando opt-out. Risolve il gruppo come il runner (profilo > routing > default). Best-effort.
+async fn esc_status_update_notify(st: &AppState, tid: Uuid, iid: Uuid, actor: Option<Uuid>, actor_label: &str, action: &str) {
+    // default tenant
+    let tdef = oncall_cfg(st, tid).await.status_on;
+    // gruppo instradato dell'incidente
+    let gid: Option<Uuid> = sqlx::query_scalar(
+        "SELECT COALESCE(i.forced_group_id, pp.escalation_group_id, r.group_id, oc.default_group_id)
+           FROM app.incidents i
+           LEFT JOIN app.alarm_routing r ON r.tenant_id=i.tenant_id AND r.etype=i.etype
+           LEFT JOIN app.events ev ON ev.id=i.event_id
+           LEFT JOIN app.devices d ON d.id=ev.device_id
+           LEFT JOIN app.protection_profile_members m ON m.tenant_id=i.tenant_id AND m.user_id=COALESCE(i.assigned_user,d.assigned_user)
+           LEFT JOIN app.protection_profiles pp ON pp.id=m.profile_id AND pp.enabled=true
+           LEFT JOIN app.tenant_oncall_cfg oc ON oc.tenant_id=i.tenant_id
+          WHERE i.id=$1 AND i.tenant_id=$2")
+        .bind(iid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
+    let Some(gid) = gid else { return; };
+    let oncall = esc_native_oncall_contacts(st, tid, gid, None, chrono::Utc::now(), false).await;
+    let short = iid.to_string(); let short = &short[..8];
+    let verb = if action=="close" { "chiuso" } else { "preso in carico" };
+    let text = format!("YouWorkforce: incidente {short} {verb} da {actor_label}.");
+    for (u, phone, _email) in &oncall {
+        if actor == Some(*u) { continue; } // non avvisare chi ha fatto l'azione
+        // preferenza per-utente -> default tenant
+        let uon: Option<bool> = sqlx::query_scalar("SELECT status_updates_on FROM app.users WHERE id=$1 AND tenant_id=$2")
+            .bind(u).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
+        if !uon.unwrap_or(tdef) { continue; }
+        if let Some(p) = phone.clone().filter(|p| !p.trim().is_empty()) {
+            if esc_is_opted_out(st, &p).await { continue; }
+            let _ = esc_send_sms_native(st, &p, &text).await;
+        }
     }
 }
 
 /// Inbound SMS: risposta testuale del reperibile. "OK/ACK/1/PRESO" -> presa in carico;
-/// "CHIUDI/CLOSE/RISOLTO" -> chiusura. Firma Twilio validata (se token configurato).
+/// "CHIUDI/CLOSE/RISOLTO" -> chiusura. "STOP" -> opt-out (DNC); "START" -> riattiva.
+/// Firma Twilio validata (se token configurato).
 pub async fn twilio_ingress_sms(State(st): State<AppState>, h: HeaderMap, axum::extract::Form(params): axum::extract::Form<Vec<(String,String)>>) -> Response {
     if let Err(r) = esc_verify_inbound(&h, "/api/ingress/twilio/sms", &params) { return r; }
     let get = |k: &str| params.iter().find(|(n,_)| n==k).map(|(_,v)| v.clone()).unwrap_or_default();
     let from = get("From"); let body = get("Body").trim().to_uppercase();
+    // Opt-out / opt-in (compliance): precedenza su tutto.
+    let first = body.split_whitespace().next().unwrap_or("");
+    if ["STOP","STOPALL","UNSUBSCRIBE","CANCEL","END","QUIT"].contains(&first) {
+        esc_optout_mark(&st, &from, "sms", "carrier_stop").await;
+        return twiml("<Response><Message>Disattivato. Rispondi START per riattivare.</Message></Response>");
+    }
+    if ["START","UNSTOP","YES"].contains(&first) {
+        esc_optout_clear(&st, &from).await;
+        return twiml("<Response><Message>Riattivato. Verifica il recapito in YouWorkforce.</Message></Response>");
+    }
     let action = if ["CHIUDI","CLOSE","RISOLTO"].iter().any(|w| body.contains(w)) { "close" }
                  else if ["OK","ACK","1","PRESO"].iter().any(|w| body.contains(w)) { "ack" }
                  else { "" };
@@ -8353,13 +9437,18 @@ pub async fn twilio_ingress_voice(State(st): State<AppState>, h: HeaderMap, axum
     let get = |k: &str| params.iter().find(|(n,_)| n==k).map(|(_,v)| v.clone()).unwrap_or_default();
     let from = get("From"); let digits = get("Digits");
     if digits.is_empty() {
-        return twiml("<Response><Gather numDigits=\"1\" timeout=\"20\"><Say language=\"it-IT\">Allarme. Premi 1 per prendere in carico.</Say></Gather></Response>");
+        return twiml("<Response><Gather numDigits=\"1\" timeout=\"20\"><Say language=\"it-IT\">Allarme. Premi 1 per prendere in carico, oppure 9 per non ricevere piu' chiamate.</Say></Gather></Response>");
     }
     if digits == "1" {
         if let Some((tid, iid, _)) = esc_incident_by_number(&st, &from).await {
             esc_apply_ack(&st, tid, iid, "ack", "voice").await;
         }
         return twiml("<Response><Say language=\"it-IT\">Preso in carico. Grazie.</Say></Response>");
+    }
+    if digits == "9" {
+        // opt-out voce (mappatura YW: tasto 9; l'ack resta 1). Disattiva il recapito e il DNC.
+        esc_optout_mark(&st, &from, "voice", "carrier_stop").await;
+        return twiml("<Response><Say language=\"it-IT\">Recapito disattivato. Riattivalo da YouWorkforce.</Say></Response>");
     }
     twiml("<Response><Say language=\"it-IT\">Tasto non valido.</Say></Response>")
 }

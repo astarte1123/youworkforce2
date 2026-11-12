@@ -1,6 +1,8 @@
 <!doctype html><html lang="it"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Console · YouWorkforce</title>
+<link rel="icon" href="/youworkforce.webp" type="image/webp">
+<link rel="apple-touch-icon" href="/youworkforce.webp">
 <link rel="stylesheet" href="/app.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" referrerpolicy="no-referrer">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css" referrerpolicy="no-referrer">
@@ -26,15 +28,15 @@ const DEVICE_MODS=['loneworker','traccar','iot','thingsboard'];
 const NAV = [
   {k:'dashboard', t:'Dashboard', ico:'home', roles:null, grp:'op'},
   // --- Sicurezza Lavoratore (perimetro man-down/SOS): operatività allarmi + config del perimetro ---
-  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker'], grp:'safety'},
-  {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker'], grp:'safety'},
+  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
+  {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
   {k:'mappa',     t:'Mappa', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'safety'},
   {k:'piantine',  t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor', grp:'safety'},
   {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar'], grp:'safety'},
   {k:'dispositivi',t:'Dispositivi & App', ico:'shield', roles:['tenant_admin'], mod:DEVICE_MODS, grp:'safety'},
   {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
   {k:'profili',   t:'Profili di protezione', ico:'shield', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
-  {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
+  {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
   // --- Lavoro sul campo ---
   {k:'ordini',    t:'Ordini di lavoro', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
   {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], mod:['consuntivi'], grp:'work'},
@@ -281,10 +283,14 @@ function bindRows(v){
 
 // ---------------- Centrale ----------------
 async function vCentrale(v){
-  const [I,CK,OC]=await Promise.all([api('/incidents').catch(()=>[]), api('/checkins/list').catch(()=>[]), api('/oncall-now').catch(()=>({available:false}))]);
+  const [I,CK,OC]=await Promise.all([api('/incidents').catch(()=>[]), api('/checkins/list').catch(()=>[]), api('/oncall-now-native').catch(()=>({available:false}))]);
   const scaduti=CK.filter(c=>c.state==='scaduto').length;
-  const onc = OC.available ? `<span class="chip s-attivo" title="reperibili GoAlert">📞 on-call: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
-  v.innerHTML=`<div class="page-h"><div><h1>Centrale allarmi</h1><div class="mut">${I.length} incidenti · ${CK.length} check-in (${scaduti} scaduti) · live</div></div><div>${onc}</div></div>
+  const onc = OC.available ? `<span class="chip s-attivo" title="reperibili ora (motore nativo)">📞 on-call: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
+  const canBulk = ['operatore','tenant_admin'].includes(ME.role);
+  const open = I.filter(i=>i.state!=='chiuso').length;
+  const bulk = (canBulk && open>0) ? `<button class="btn ghost small" onclick="incAckAll(this)">Prendi in carico tutti</button>
+    <button class="btn ghost small" onclick="incCloseAll(this)">Chiudi tutti</button>` : '';
+  v.innerHTML=`<div class="page-h"><div><h1>Centrale allarmi</h1><div class="mut">${I.length} incidenti · ${CK.length} check-in (${scaduti} scaduti) · live</div></div><div class="row" style="gap:8px;align-items:center">${bulk}${onc}</div></div>
   <div class="card"><table class="table"><thead><tr><th>Tipo</th><th>Sede</th><th>Assegnato</th><th>Stato</th><th>Priorità</th><th>Correlazione</th></tr></thead>
   <tbody>${I.map(i=>`<tr class="clk" data-inc="${i.id}">
     <td><b>${esc(i.etype)}</b></td><td>${esc(i.site||'—')}</td><td class="small">${esc(i.assignee||'—')}</td><td>${chip(i.state)}</td>
@@ -300,13 +306,17 @@ async function vCentrale(v){
       ||`<tr><td colspan="4" class="empty">nessun check-in attivo</td></tr>`}</tbody></table></div>`;
   bindRows(v);
 }
+async function incAckAll(btn){ if(!await askConfirm('Prendere in carico TUTTI gli allarmi aperti?'))return;
+  try{ const r=await api('/incidents/ack-all',{method:'POST'}); toast(r.acknowledged+' presi in carico','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
+async function incCloseAll(btn){ const o=await askPrompt('Esito di chiusura per TUTTI gli allarmi?'); if(!o)return;
+  try{ const r=await api('/incidents/close-all',{method:'POST',body:JSON.stringify({outcome:o})}); toast(r.closed+' chiusi','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
 async function aiCheckinAnomaly(btn){ const box=$('#aiCkOut'); if(!box)return; btn.disabled=true; box.innerHTML='<div class="small mut" style="padding:0 16px 8px">youworker.ai analizza i check-in…</div>';
   try{ const r=await api('/checkin/ai-anomaly'); box.innerHTML=`<div class="card pad" style="margin:0 16px 10px;background:var(--brand-soft)"><div class="small mut">✦ youworker.ai (${r.count} mancati check-in / 14gg)</div><div style="white-space:pre-wrap;margin-top:4px">${esc(r.analysis)}</div></div>`; }
   catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad);padding:0 16px 8px">${esc(e.message)}</div>`; } finally{ btn.disabled=false; } }
 // Vista reperibile/responsabile: gli incidenti aperti che devono prendere in carico.
 // Il reperibile riceve l'escalation (SMS/voce) e qui vede e gestisce l'allarme.
 async function vMieiAllarmi(v){
-  const [I,OC]=await Promise.all([api('/incidents').catch(()=>[]), api('/oncall-now').catch(()=>({available:false}))]);
+  const [I,OC]=await Promise.all([api('/incidents').catch(()=>[]), api('/oncall-now-native').catch(()=>({available:false}))]);
   const aperti=I.filter(i=>i.state!=='chiuso');
   const onc = OC.available ? `<span class="chip s-attivo" title="reperibili di turno">📞 di turno: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
   v.innerHTML=`<div class="page-h"><div><h1>I miei allarmi</h1><div class="mut">${aperti.length} aperti · prendi in carico e chiudi</div></div><div>${onc}</div></div>
@@ -2322,7 +2332,24 @@ async function vGruppi(v){
                   <option value="08:00" ${g.slack_notify==='08:00'?'selected':''}>ogni giorno 08:00</option></select></label>
             </div>
           </details>
-          <div class="small faint" style="margin-top:3px">${g.oncall_mode==='turni'?'Il reperibile di turno viene avvisato per primo (rotazione in GoAlert).':'Tutti i membri vengono avvisati insieme.'} Applica con <b>Sincronizza con GoAlert</b>.</div>
+          <details style="margin-top:6px" ontoggle="if(this.open)grpPolicyLoad('${g.id}')"><summary class="small mut" style="cursor:pointer">⛓ Policy escalation (step multipli, nativo)</summary>
+            <div id="pol_${g.id}" class="small mut" style="margin-top:8px">apri per caricare…</div>
+          </details>
+          <details style="margin-top:6px"><summary class="small mut" style="cursor:pointer">🏷 Label (ricerca)</summary>
+            <div class="col small" style="gap:6px;margin-top:8px">
+              <textarea id="lbl_${g.id}" class="small" style="width:100%;height:50px;font-family:monospace" placeholder="env=prod&#10;team=ops">${Object.entries(g.labels||{}).map(([k,v])=>esc(k)+'='+esc(v)).join('\n')}</textarea>
+              <div><button class="btn ghost small" onclick="grpLabelsSave('${g.id}')">Salva label</button></div>
+            </div>
+          </details>
+          <details style="margin-top:6px" ontoggle="if(this.open)grpHandoffLoad('${g.id}')"><summary class="small mut" style="cursor:pointer">📋 Playbook & note di passaggio</summary>
+            <div class="col small" style="gap:6px;margin-top:8px">
+              <div class="mut">Playbook (cosa fare quando scatta un allarme di questo gruppo):</div>
+              <textarea id="pb_${g.id}" class="small" style="width:100%;height:60px">${esc(g.playbook||'')}</textarea>
+              <div><button class="btn ghost small" onclick="grpPlaybookSave('${g.id}')">Salva playbook</button></div>
+              <div id="ho_${g.id}" class="mut">apri per caricare le note…</div>
+            </div>
+          </details>
+          <div class="small faint" style="margin-top:3px">${g.oncall_mode==='turni'?'Il reperibile di turno viene avvisato per primo.':'Tutti i membri vengono avvisati insieme.'} Rotazione/copertura: motore nativo (self-sufficient).</div>
         </div>
       </div>`).join('')||'<div class="small mut">Nessun gruppo. Creane uno.</div>'}
     </div>
@@ -2371,8 +2398,104 @@ async function vGruppi(v){
         <button class="btn ghost small" onclick="ocAbsences(this)">Gestisci</button></div>
       <div id="ocAbsOut" style="margin-top:8px"></div>
     </div>
+    <div style="margin-top:14px">
+      <h3 style="margin:0 0 8px">Pianificazione temporanea (sostituzione a tempo)</h3>
+      <div class="row small" style="gap:6px;align-items:center">Gruppo
+        <select id="ocTsGrp" class="small">${G.groups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')||'<option value="">—</option>'}</select>
+        <button class="btn ghost small" onclick="ocTempScheds(this)">Gestisci</button></div>
+      <div id="ocTsOut" style="margin-top:8px"></div>
+    </div>
+    <div style="margin-top:14px">
+      <h3 style="margin:0 0 8px">Diagnostica motore escalation</h3>
+      <div class="row small" style="gap:6px;align-items:center;flex-wrap:wrap">
+        <span class="chip">motore: ${esc(window._OCS&&window._OCS.engine||'native')}</span>
+        <button class="btn ghost small" onclick="escDelivReport(this)">Report consegne</button>
+        <button class="btn ghost small" onclick="escShadowReport(this)">Report parità (shadow)</button></div>
+      <div id="escDiagOut" class="small" style="margin-top:8px"></div>
+    </div>
+    <div style="margin-top:14px">
+      <h3 style="margin:0 0 8px">Heartbeat monitor</h3>
+      <div class="small mut" style="margin-bottom:6px">Un sistema esterno chiama periodicamente l'URL; se smette oltre il timeout, si apre un allarme.</div>
+      <button class="btn ghost small" onclick="hbLoad(this)">Gestisci monitor</button>
+      <div id="hbOut" style="margin-top:8px"></div>
+    </div>
+    <div style="margin-top:14px">
+      <h3 style="margin:0 0 8px">Ingress email → allarme</h3>
+      <div class="small mut" style="margin-bottom:6px">Un'email inviata all'indirizzo generato diventa un allarme instradato.</div>
+      <button class="btn ghost small" onclick="inbLoad(this)">Gestisci indirizzi</button>
+      <div id="inbOut" style="margin-top:8px"></div>
+    </div>
   </details>`;
 }
+function grpOpts(sel){ return (window._groupsCache||[]).map(g=>`<option value="${g.id}" ${sel===g.id?'selected':''}>${esc(g.name)}</option>`).join(''); }
+async function hbLoad(btn){ const out=$('#hbOut'); out.innerHTML='<span class="mut">Carico…</span>';
+  try{ const r=await api('/heartbeat-monitors');
+    const list=(r.monitors||[]).map(m=>`<div class="col small" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+      <div class="row" style="justify-content:space-between;align-items:center"><b>${esc(m.name)}</b>
+        <span>${m.state==='down'?'<span style="color:var(--bad)">⛔ down</span>':'<span style="color:var(--ok,green)">✓ ok</span>'} · timeout ${Math.round(m.timeout_s/60)}m
+        <button class="btn-ico btn ghost" onclick="hbDel('${m.id}')">${ICON.x}</button></div>
+      <code style="word-break:break-all">${esc(m.url)}</code> <button class="btn ghost small" onclick="navigator.clipboard.writeText('${m.url}');toast('Copiato','ok')">copia</button></div>`).join('')||'<div class="mut small">nessun monitor</div>';
+    out.innerHTML=`${list}<div class="row small" style="gap:6px;align-items:center;margin-top:6px">
+      <input id="hbName" placeholder="nome" style="width:120px"> timeout <input id="hbTo" type="number" min="1" value="15" style="width:56px"> min
+      gruppo <select id="hbGrp" class="small"><option value="">(routing/default)</option>${grpOpts()}</select>
+      <button class="btn small" onclick="hbAdd()">Crea</button></div>`;
+  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function hbAdd(){ const name=$('#hbName').value.trim(); if(!name){toast('nome richiesto','bad');return;}
+  const body={name, timeout_min:+$('#hbTo').value||15, group_id:$('#hbGrp').value||null};
+  try{ await api('/heartbeat-monitors',{method:'POST',body:JSON.stringify(body)}); toast('Creato','ok'); hbLoad(); }catch(e){ toast(e.message,'bad'); } }
+async function hbDel(id){ if(!await askConfirm('Eliminare il monitor?'))return; try{ await api('/heartbeat-monitors/'+id,{method:'DELETE'}); hbLoad(); }catch(e){ toast(e.message,'bad'); } }
+async function inbLoad(btn){ const out=$('#inbOut'); out.innerHTML='<span class="mut">Carico…</span>';
+  try{ const r=await api('/email-inboxes');
+    const list=(r.inboxes||[]).map(x=>`<div class="row small" style="justify-content:space-between;align-items:center;border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:4px">
+      <code style="word-break:break-all">${esc(x.address)}</code>
+      <span><button class="btn ghost small" onclick="navigator.clipboard.writeText('${x.address}');toast('Copiato','ok')">copia</button>
+      <button class="btn-ico btn ghost" onclick="inbDel('${x.id}')">${ICON.x}</button></span></div>`).join('')||'<div class="mut small">nessun indirizzo</div>';
+    out.innerHTML=`${list}<div class="row small" style="gap:6px;align-items:center;margin-top:6px">
+      gruppo <select id="inbGrp" class="small"><option value="">(routing/default)</option>${grpOpts()}</select>
+      <button class="btn small" onclick="inbAdd()">Genera indirizzo</button></div>`;
+  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function inbAdd(){ try{ await api('/email-inboxes',{method:'POST',body:JSON.stringify({group_id:$('#inbGrp').value||null})}); toast('Indirizzo generato','ok'); inbLoad(); }catch(e){ toast(e.message,'bad'); } }
+async function inbDel(id){ if(!await askConfirm('Eliminare l\'indirizzo?'))return; try{ await api('/email-inboxes/'+id,{method:'DELETE'}); inbLoad(); }catch(e){ toast(e.message,'bad'); } }
+async function ocTempScheds(btn){
+  const gid=$('#ocTsGrp').value; if(!gid){ toast('nessun gruppo','bad'); return; }
+  const out=$('#ocTsOut'); out.innerHTML='<div class="small mut">Carico…</div>';
+  const umap=(window._users||[]).reduce((a,u)=>(a[u.id]=u.email,a),{});
+  try{ const r=await api('/oncall-temp-schedules?group_id='+gid);
+    const list=(r.schedules||[]).map(s=>{
+      const blocks=(s.blocks||[]).map(b=>`${esc(umap[b.user_id]||b.user_id.slice(0,8))}:${b.hours}h`).join(' → ');
+      return `<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:4px">
+        <span>${new Date(s.start).toLocaleString('it-IT')}→${new Date(s.end).toLocaleString('it-IT')} · ${blocks}</span>
+        <button class="btn ghost small" onclick="ocTsDel('${s.id}','${gid}')">${ICON.x}</button></div>`; }).join('')||'<div class="small mut">Nessuna pianificazione temporanea.</div>';
+    const uopts=(window._users||[]).map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('');
+    out.innerHTML=`${list}
+      <div class="col small" style="gap:4px;margin-top:8px;border-top:1px solid var(--line);padding-top:8px">
+        <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">dal <input id="tsS" type="datetime-local"> al <input id="tsE" type="datetime-local"></div>
+        <div id="tsBlocks"><div class="row tsblk" style="gap:4px;align-items:center;margin-top:3px"><select class="small tsu">${uopts}</select> per <input type="number" class="tsh" min="1" value="12" style="width:56px"> ore</div></div>
+        <div class="row" style="gap:6px"><button class="btn ghost small" onclick="ocTsAddBlock()">+ blocco</button>
+          <button class="btn small" onclick="ocTsSave('${gid}')">Crea pianificazione</button></div>
+        <div class="small faint">Mentre è attiva, SOLO l'utente del blocco corrente riceve gli allarmi del gruppo.</div></div>`;
+  }catch(e){ out.innerHTML='<span class="small" style="color:var(--bad)">'+esc(e.message)+'</span>'; }
+}
+function ocTsAddBlock(){ const uopts=(window._users||[]).map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('');
+  const d=document.createElement('div'); d.className='row tsblk'; d.style.cssText='gap:4px;align-items:center;margin-top:3px';
+  d.innerHTML=`<select class="small tsu">${uopts}</select> per <input type="number" class="tsh" min="1" value="12" style="width:56px"> ore`;
+  $('#tsBlocks').appendChild(d); }
+async function ocTsSave(gid){
+  const s=$('#tsS').value, e=$('#tsE').value; if(!s||!e){ toast('indica inizio e fine','bad'); return; }
+  const blocks=[...document.querySelectorAll('#tsBlocks .tsblk')].map(b=>({user_id:b.querySelector('.tsu').value, hours:+b.querySelector('.tsh').value||1}));
+  try{ await api('/oncall-temp-schedules',{method:'POST',body:JSON.stringify({group_id:gid,start:new Date(s).toISOString(),end:new Date(e).toISOString(),blocks})});
+    toast('Pianificazione creata','ok'); ocTempScheds(); }catch(err){ toast(err.message,'bad'); } }
+async function ocTsDel(id,gid){ try{ await api('/oncall-temp-schedules/delete',{method:'POST',body:JSON.stringify({id})}); toast('Rimossa','ok'); ocTempScheds(); }catch(e){ toast(e.message,'bad'); } }
+async function escDelivReport(btn){ const out=$('#escDiagOut'); out.innerHTML='<span class="mut">Carico…</span>';
+  try{ const r=await api('/escalation/delivery'); const bs=r.by_state||{};
+    out.innerHTML=`<b>Consegne (7gg):</b> ${Object.keys(bs).length?Object.entries(bs).map(([k,v])=>`${esc(k)}=${v}`).join(' · '):'nessuna'} · sink ${r.sink_configured?'configurato':'dry'}
+      ${(r.recent||[]).length?'<div style="margin-top:6px">'+r.recent.slice(0,8).map(x=>`<div class="mut">${esc(x.channel||'')} → ${esc(x.state||'')} ${esc(x.to_value||'')}</div>`).join('')+'</div>':''}`; }
+  catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function escShadowReport(btn){ const out=$('#escDiagOut'); out.innerHTML='<span class="mut">Carico…</span>';
+  try{ const r=await api('/escalation/shadow');
+    out.innerHTML=`<b>Parità nativo vs GoAlert (7gg):</b> ${r.samples||0} campioni, match ${((r.match_rate||1)*100).toFixed(0)}%
+      ${(r.recent_diffs||[]).length?'<div style="margin-top:6px">divergenze recenti:'+r.recent_diffs.slice(0,6).map(d=>`<div class="mut">nativo=[${(d.native||[]).join(',')}] goalert=[${(d.goalert||[]).join(',')}]</div>`).join('')+'</div>':'<div class="mut" style="margin-top:4px">nessuna divergenza</div>'}`; }
+  catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
 async function ocSettingsSave(btn){
   const body={voice_fallback_on:$('#ocVoice').checked, voice_fallback_min:+($('#ocVoiceMin').value||5), status_updates_on:$('#ocStatus').checked};
   try{ await api('/oncall-settings',{method:'POST',body:JSON.stringify(body)}); toast('Salvato — Sincronizza con GoAlert','ok'); }
@@ -2394,19 +2517,68 @@ async function ocCalendar(btn){
 async function ocContacts(btn){
   const out=$('#ocContactsOut'); out.innerHTML='<div class="small mut">Carico…</div>';
   try{ const r=await api('/oncall-contacts');
+    // Recapiti NATIVI: telefono dell'utente + stato verifica (OTP via SMS). Nessun GoAlert.
     out.innerHTML = (r.members||[]).map(m=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
-      <b class="small">${esc(m.email)}</b>${(m.contacts||[]).length?('<div style="margin-top:4px">'+m.contacts.map(c=>`<div class="row small" style="gap:6px;align-items:center;flex-wrap:wrap">
-        <span class="tag">${esc(c.type)}</span> <span>${esc(c.value||'')}</span>
-        ${c.pending?'<span style="color:var(--warn,#b45309)">⏳ da verificare</span>':'<span style="color:var(--ok,green)">✓ verificato</span>'}
-        <button class="btn ghost small" onclick="ocCmVerify('${c.id}')">invia codice</button>
-        <button class="btn ghost small" onclick="ocCmCode('${c.id}')">inserisci codice</button>
-        <button class="btn ghost small" onclick="ocCmTest('${c.id}')">prova</button></div>`).join('')+'</div>'):'<div class="small mut">nessun recapito (fai Sincronizza con GoAlert)</div>'}
-    </div>`).join('')||'<div class="small mut">Nessun reperibile sincronizzato. Aggiungi membri ai gruppi e premi Sincronizza con GoAlert.</div>'; }
+      <b class="small">${esc(m.email)}</b>
+      <div class="row small" style="gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px">
+        <span class="tag">tel</span> <span>${m.phone?esc(m.phone):'<i class="mut">nessun numero</i>'}</span>
+        ${m.opted_out?'<span style="color:var(--bad)">⛔ opt-out (STOP)</span>':(m.verified?'<span style="color:var(--ok,green)">✓ verificato</span>':'<span style="color:var(--warn,#b45309)">⏳ da verificare</span>')}
+        ${m.opted_out?`<button class="btn ghost small" onclick="ocReactivate('${m.user_id}')">riabilita</button>`
+          :(m.phone?`<button class="btn ghost small" onclick="ocCmVerify('${m.user_id}')">invia codice</button>
+        <button class="btn ghost small" onclick="ocCmCode('${m.user_id}')">inserisci codice</button>
+        <button class="btn ghost small" onclick="ocCmTest('${m.user_id}')">prova</button>`:'<span class="small mut">imposta il telefono nella scheda utente</span>')}
+      </div>
+      <details style="margin-top:6px" ontoggle="if(this.open)ocUserRules('${m.user_id}')"><summary class="small mut" style="cursor:pointer">⚙ Recapiti aggiuntivi e regole di notifica</summary>
+        <div id="ur_${m.user_id}" class="small mut" style="margin-top:6px">apri per caricare…</div></details>
+    </div>`).join('')||'<div class="small mut">Nessun reperibile. Aggiungi membri ai gruppi di escalation.</div>'; }
   catch(e){ out.innerHTML='<span class="small" style="color:var(--bad)">'+esc(e.message)+'</span>'; }
 }
-async function ocCmVerify(id){ try{ await api('/oncall-contacts/verify',{method:'POST',body:JSON.stringify({contact_method_id:id})}); toast('Codice inviato','ok'); }catch(e){ toast(e.message,'bad'); } }
-async function ocCmCode(id){ const c=await askPrompt('Codice ricevuto?'); if(!c)return; try{ await api('/oncall-contacts/code',{method:'POST',body:JSON.stringify({contact_method_id:id,code:+c})}); toast('Recapito verificato','ok'); ocContacts(); }catch(e){ toast(e.message,'bad'); } }
-async function ocCmTest(id){ try{ await api('/oncall-contacts/test',{method:'POST',body:JSON.stringify({contact_method_id:id})}); toast('Messaggio di prova inviato','ok'); }catch(e){ toast(e.message,'bad'); } }
+async function ocCmVerify(uid){ try{ const r=await api('/oncall-contacts/verify',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Codice inviato ('+(r.delivery||'')+')','ok'); }catch(e){ toast(e.message,'bad'); } }
+async function ocCmCode(uid){ const c=await askPrompt('Codice ricevuto?'); if(!c)return; try{ await api('/oncall-contacts/code',{method:'POST',body:JSON.stringify({user_id:uid,code:String(c).trim()})}); toast('Recapito verificato','ok'); ocContacts(); }catch(e){ toast(e.message,'bad'); } }
+async function ocCmTest(uid){ try{ await api('/oncall-contacts/test',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Messaggio di prova inviato','ok'); }catch(e){ toast(e.message,'bad'); } }
+async function ocReactivate(uid){ if(!await askConfirm('Riabilitare i recapiti (toglie opt-out)? Andranno ri-verificati.'))return;
+  try{ await api('/oncall-contacts/'+uid+'/reactivate',{method:'POST'}); toast('Riabilitato','ok'); ocContacts(); }catch(e){ toast(e.message,'bad'); } }
+const UR_KINDS=[['sms','SMS'],['voice','Voce'],['email','Email']];
+async function ocUserRules(uid){
+  const out=$('#ur_'+uid); out.innerHTML='<span class="mut">Carico…</span>';
+  try{ const r=await api('/oncall-contacts/'+uid+'/methods');
+    const cms=(r.methods||[]).map(c=>`<div class="row small" style="gap:6px;align-items:center;margin-bottom:3px">
+      <span class="tag">${esc(c.kind)}</span> <span>${esc(c.value)}</span>${c.label?` <span class="mut">(${esc(c.label)})</span>`:''}
+      ${c.disabled?'<span style="color:var(--bad)">⛔</span>':(c.verified?'<span style="color:var(--ok,green)">✓</span>':`<button class="btn ghost small" onclick="ocCmV('${uid}','${c.id}')">verifica</button>`)}
+      <button class="btn ghost small" onclick="ocCmT('${uid}','${c.id}')">prova</button>
+      <button class="btn-ico btn ghost" onclick="ocCmDel('${uid}','${c.id}')">${ICON.x}</button></div>`).join('')||'<div class="mut">nessun recapito aggiuntivo</div>';
+    const su=(r.status_pref===null||r.status_pref===undefined)?'inherit':(r.status_pref?'on':'off');
+    const rules=(r.rules||[]).map(x=>`<div class="row small" style="gap:6px;align-items:center;margin-bottom:3px">
+      <span class="tag">${esc(x.kind)}</span> <span>${esc(x.value)}</span> dopo <b>${x.delay_min}</b> min
+      <button class="btn-ico btn ghost" onclick="ocRuleDel('${uid}','${x.id}')">${ICON.x}</button></div>`).join('')||'<div class="mut">nessuna regola (usa il recapito di base)</div>';
+    const cmOpts=(r.methods||[]).map(c=>`<option value="${c.id}">${esc(c.kind)} ${esc(c.value)}</option>`).join('');
+    out.innerHTML=`<div style="margin-bottom:6px"><b>Recapiti</b>${cms}
+        <div class="row small" style="gap:4px;align-items:center;margin-top:4px">
+          <select id="urk_${uid}" class="small">${UR_KINDS.map(k=>`<option value="${k[0]}">${k[1]}</option>`).join('')}</select>
+          <input id="urv_${uid}" placeholder="numero o email" style="width:150px">
+          <button class="btn ghost small" onclick="ocCmAdd('${uid}')">+ recapito</button></div></div>
+      <div><b>Regole di notifica (ladder)</b>${rules}
+        ${cmOpts?`<div class="row small" style="gap:4px;align-items:center;margin-top:4px">
+          <select id="urr_${uid}" class="small">${cmOpts}</select>
+          dopo <input id="urd_${uid}" type="number" min="0" max="1440" value="0" style="width:56px"> min
+          <button class="btn ghost small" onclick="ocRuleAdd('${uid}')">+ regola</button></div>`:'<div class="mut small">aggiungi prima un recapito</div>'}</div>
+      <div class="row small" style="gap:6px;align-items:center;margin-top:6px"><b>Aggiornamenti allarme</b>
+        <select id="urs_${uid}" class="small" onchange="ocStatusPref('${uid}',this.value)">
+          <option value="inherit" ${su==='inherit'?'selected':''}>eredita tenant</option>
+          <option value="on" ${su==='on'?'selected':''}>attivo</option>
+          <option value="off" ${su==='off'?'selected':''}>disattivo</option></select>
+        <span class="mut">effettivo: ${r.status_effective?'on':'off'}</span></div>`;
+  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function ocCmV(uid,id){ try{ const r=await api('/oncall-contacts/methods/'+id+'/verify',{method:'POST'}); toast('Codice inviato ('+(r.delivery||'')+')','ok');
+  const c=await askPrompt('Codice ricevuto?'); if(!c)return; await api('/oncall-contacts/methods/'+id+'/code',{method:'POST',body:JSON.stringify({code:String(c).trim()})}); toast('Verificato','ok'); ocUserRules(uid); }catch(e){ toast(e.message,'bad'); } }
+async function ocCmT(uid,id){ try{ const r=await api('/oncall-contacts/methods/'+id+'/test',{method:'POST'}); toast('Prova inviata ('+(r.delivery||'')+')','ok'); }catch(e){ toast(e.message,'bad'); } }
+async function ocStatusPref(uid,v){ const on=v==='inherit'?null:(v==='on'); try{ await api('/oncall-contacts/'+uid+'/status-pref',{method:'POST',body:JSON.stringify({on})}); toast('Preferenza salvata','ok'); ocUserRules(uid); }catch(e){ toast(e.message,'bad'); } }
+async function ocCmAdd(uid){ const kind=$('#urk_'+uid).value, value=$('#urv_'+uid).value.trim(); if(!value){toast('indica il recapito','bad');return;}
+  try{ await api('/oncall-contacts/'+uid+'/methods',{method:'POST',body:JSON.stringify({kind,value})}); ocUserRules(uid); }catch(e){toast(e.message,'bad');} }
+async function ocCmDel(uid,id){ try{ await api('/oncall-contacts/methods/'+id,{method:'DELETE'}); ocUserRules(uid); }catch(e){toast(e.message,'bad');} }
+async function ocRuleAdd(uid){ const cm_id=$('#urr_'+uid).value, delay_min=+$('#urd_'+uid).value||0;
+  try{ await api('/oncall-contacts/'+uid+'/rules',{method:'POST',body:JSON.stringify({cm_id,delay_min})}); ocUserRules(uid); }catch(e){toast(e.message,'bad');} }
+async function ocRuleDel(uid,id){ try{ await api('/oncall-contacts/rules/'+id,{method:'DELETE'}); ocUserRules(uid); }catch(e){toast(e.message,'bad');} }
 async function ocAbsences(btn){
   const gid=$('#ocAbsGrp').value; if(!gid){ toast('nessun gruppo','bad'); return; }
   const out=$('#ocAbsOut'); out.innerHTML='<div class="small mut">Carico…</div>';
@@ -2414,7 +2586,7 @@ async function ocAbsences(btn){
   const members=(grp?grp.members:[]);
   try{ const r=await api('/oncall-overrides?group_id='+gid);
     const list=(r.overrides||[]).map(o=>`<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:4px">
-      <span>${o.removeUser?('➖ '+esc(o.removeUser.name)):''}${o.addUser?(' ➕ '+esc(o.addUser.name)):''} · ${new Date(o.start).toLocaleDateString('it-IT')}→${new Date(o.end).toLocaleDateString('it-IT')}</span>
+      <span>${o.remove_email?('➖ '+esc(o.remove_email)):''}${o.add_email?(' ➕ '+esc(o.add_email)):''} · ${new Date(o.start).toLocaleDateString('it-IT')}→${new Date(o.end).toLocaleDateString('it-IT')}</span>
       <button class="btn ghost small" onclick="ocAbsDel('${o.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessuna assenza.</div>';
     out.innerHTML=`${r.note?`<div class="small mut">${esc(r.note)}</div>`:list}
       <div class="row small" style="gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap">
@@ -2462,6 +2634,59 @@ async function grpAdd(gid){ const uid=$('#mSel_'+gid).value; if(!uid)return;
   try{await api('/groups/'+gid+'/members',{method:'POST',body:JSON.stringify({user_id:uid,position:1})}); toast('Membro aggiunto','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function grpRm(gid,uid){ try{await api('/groups/'+gid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function routeSet(etype,gid){ try{await api('/routing',{method:'POST',body:JSON.stringify({etype,group_id:gid||null})}); toast('Routing aggiornato','ok');}catch(e){toast(e.message,'bad');} }
+
+// ---------------- Policy escalation multi-step (nativo) ----------------
+window._pol={}; // gid -> {steps:[{delay_min,channel}], repeat}
+const POL_CH=[['sms','SMS'],['voice','Voce'],['email','Email'],['slack','Slack']];
+async function grpPolicyLoad(gid){
+  try{ const r=await api('/groups/'+gid+'/policy');
+    window._pol[gid]={steps:(r.steps||[]).map(s=>({delay_min:s.delay_min,channel:s.channel})), repeat:r.repeat||0};
+    grpPolicyRender(gid);
+  }catch(e){ $('#pol_'+gid).innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; }
+}
+function grpPolicyRender(gid){
+  const p=window._pol[gid]||{steps:[],repeat:0};
+  const rows=p.steps.map((s,i)=>`<div class="row small" style="gap:6px;align-items:center;margin-bottom:4px">
+    <b>#${i+1}</b>
+    <select class="small" onchange="window._pol['${gid}'].steps[${i}].channel=this.value">${POL_CH.map(c=>`<option value="${c[0]}" ${s.channel===c[0]?'selected':''}>${c[1]}</option>`).join('')}</select>
+    attesa <input type="number" min="0" max="1440" value="${s.delay_min}" style="width:60px" onchange="window._pol['${gid}'].steps[${i}].delay_min=+this.value"> min
+    <button class="btn-ico btn ghost" title="su" onclick="grpPolMove('${gid}',${i},-1)">↑</button>
+    <button class="btn-ico btn ghost" title="giù" onclick="grpPolMove('${gid}',${i},1)">↓</button>
+    <button class="btn-ico btn ghost" onclick="grpPolRm('${gid}',${i})">${ICON.x}</button></div>`).join('')
+    ||'<div class="small mut">Nessuno step personalizzato → usa la ladder derivata (SMS→Voce).</div>';
+  $('#pol_'+gid).innerHTML=`${rows}
+    <div class="row small" style="gap:6px;align-items:center;margin-top:6px">
+      <button class="btn ghost small" onclick="grpPolAdd('${gid}')">+ step</button>
+      ripeti <input type="number" min="0" max="10" value="${p.repeat||0}" style="width:50px" onchange="window._pol['${gid}'].repeat=+this.value"> volte
+      <button class="btn small" onclick="grpPolSave('${gid}')">Salva policy</button></div>
+    <div class="small faint" style="margin-top:3px">Lo step aspetta i minuti indicati prima di passare al successivo. Dopo l'ultimo, ripete da capo N volte finché non c'è presa in carico.</div>`;
+}
+function grpPolAdd(gid){ (window._pol[gid]=window._pol[gid]||{steps:[],repeat:0}).steps.push({delay_min:5,channel:'sms'}); grpPolicyRender(gid); }
+function grpPolRm(gid,i){ window._pol[gid].steps.splice(i,1); grpPolicyRender(gid); }
+function grpPolMove(gid,i,d){ const a=window._pol[gid].steps; const j=i+d; if(j<0||j>=a.length)return; [a[i],a[j]]=[a[j],a[i]]; grpPolicyRender(gid); }
+async function grpPolSave(gid){ const p=window._pol[gid]||{steps:[],repeat:0};
+  try{ await api('/groups/'+gid+'/policy',{method:'POST',body:JSON.stringify({steps:p.steps,repeat:+p.repeat||0})}); toast('Policy salvata','ok'); }
+  catch(e){ toast(e.message,'bad'); } }
+async function grpLabelsSave(gid){
+  const txt=$('#lbl_'+gid).value||''; const labels={};
+  txt.split('\n').map(l=>l.trim()).filter(Boolean).forEach(l=>{ const i=l.indexOf('='); if(i>0) labels[l.slice(0,i).trim()]=l.slice(i+1).trim(); });
+  try{ await api('/groups/'+gid+'/labels',{method:'POST',body:JSON.stringify({labels})}); toast('Label salvate','ok'); }
+  catch(e){ toast(e.message,'bad'); } }
+async function grpPlaybookSave(gid){ try{ await api('/groups/'+gid+'/playbook',{method:'POST',body:JSON.stringify({playbook:$('#pb_'+gid).value||''})}); toast('Playbook salvato','ok'); }catch(e){ toast(e.message,'bad'); } }
+async function grpHandoffLoad(gid){
+  const out=$('#ho_'+gid); out.innerHTML='<span class="mut">Carico…</span>';
+  try{ const r=await api('/groups/'+gid+'/handoff-notes');
+    const list=(r.notes||[]).map(n=>`<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:6px;padding:4px 6px;margin-bottom:3px">
+      <span><b>${esc(n.author)}</b> · ${new Date(n.at).toLocaleString('it-IT')}<br>${esc(n.body)}</span>
+      <button class="btn-ico btn ghost" onclick="grpHandoffDel('${gid}','${n.id}')">${ICON.x}</button></div>`).join('')||'<div class="mut">nessuna nota</div>';
+    out.innerHTML=`<b>Note di passaggio turno</b>${list}
+      <div class="row small" style="gap:4px;align-items:center;margin-top:4px">
+        <input id="hob_${gid}" placeholder="nota per il turno entrante" style="flex:1">
+        <button class="btn ghost small" onclick="grpHandoffAdd('${gid}')">+ nota</button></div>`;
+  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function grpHandoffAdd(gid){ const body=$('#hob_'+gid).value.trim(); if(!body){toast('scrivi la nota','bad');return;}
+  try{ await api('/groups/'+gid+'/handoff-notes',{method:'POST',body:JSON.stringify({body})}); grpHandoffLoad(gid); }catch(e){ toast(e.message,'bad'); } }
+async function grpHandoffDel(gid,id){ try{ await api('/handoff-notes/'+id,{method:'DELETE'}); grpHandoffLoad(gid); }catch(e){ toast(e.message,'bad'); } }
 
 // ---------------- Anagrafiche: utenti e sedi ----------------
 async function vAnagrafiche(v){

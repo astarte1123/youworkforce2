@@ -15,7 +15,24 @@ use uuid::Uuid;
 // ----------------------------- On-call resolver -----------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum RotationType { Hourly, Daily, Weekly }
+pub enum RotationType { Hourly, Daily, Weekly, Monthly }
+
+/// Somma `months` mesi a `dt` preservando ora:min:sec e clampando il giorno all'ultimo valido.
+fn add_months(dt: DateTime<Utc>, months: i64) -> DateTime<Utc> {
+    use chrono::TimeZone;
+    let m0 = dt.year() as i64 * 12 + (dt.month() as i64 - 1) + months;
+    let y = m0.div_euclid(12) as i32;
+    let mo = (m0.rem_euclid(12) + 1) as u32;
+    // ultimo giorno del mese target
+    let last = {
+        let (ny, nm) = if mo == 12 { (y + 1, 1) } else { (y, mo + 1) };
+        let first_next = Utc.with_ymd_and_hms(ny, nm, 1, 0, 0, 0).unwrap();
+        (first_next - Duration::days(1)).day()
+    };
+    let day = dt.day().min(last);
+    Utc.with_ymd_and_hms(y, mo, day, dt.hour(), dt.minute(), dt.second()).single()
+        .unwrap_or(dt)
+}
 
 /// Rotazione: a turno un membro per volta. `shift_len` in unità del tipo (es. Weekly+1 = 1 settimana).
 #[derive(Clone, Debug)]
@@ -27,8 +44,19 @@ pub struct Rotation {
 }
 impl Rotation {
     fn period_secs(&self) -> i64 {
-        let unit = match self.kind { RotationType::Hourly => 3600, RotationType::Daily => 86400, RotationType::Weekly => 604800 };
+        // Per Monthly è solo un fallback approssimato (usato dalla formula PURA active_at);
+        // i boundary reali usano il calendario in end_time/start_time.
+        let unit = match self.kind { RotationType::Hourly => 3600, RotationType::Daily => 86400, RotationType::Weekly => 604800, RotationType::Monthly => 2_592_000 };
         unit * self.shift_len.max(1)
+    }
+    /// Numero di passi-mese (k) tale che `start + k*shift_len mesi` è il boundary <= t più recente.
+    fn monthly_k(&self, t: DateTime<Utc>) -> i64 {
+        let step = self.shift_len.max(1);
+        let approx = ((t.year() as i64 * 12 + t.month() as i64) - (self.start.year() as i64 * 12 + self.start.month() as i64)) / step;
+        let mut k = approx.max(0);
+        while k > 0 && add_months(self.start, k * step) > t { k -= 1; }
+        while add_months(self.start, (k + 1) * step) <= t { k += 1; }
+        k
     }
 
     /// Membro attivo all'istante t secondo la formula PURA `shift_number(t) % N`.
@@ -50,6 +78,9 @@ impl Rotation {
     /// Replica `Rotation.EndTime` di GoAlert (UTC: clock == durata reale). Se `t` cade esatto
     /// su un boundary, ritorna il successivo (EndTime è sempre > t).
     pub fn end_time(&self, t: DateTime<Utc>) -> DateTime<Utc> {
+        if self.kind == RotationType::Monthly {
+            return add_months(self.start, (self.monthly_k(t) + 1) * self.shift_len.max(1));
+        }
         let period = self.period_secs();
         let diff = (t - self.start).num_seconds();
         let mut rem = diff % period;
@@ -59,6 +90,9 @@ impl Rotation {
 
     /// Boundary più recente <= t (`Rotation.StartTime` di GoAlert).
     pub fn start_time(&self, t: DateTime<Utc>) -> DateTime<Utc> {
+        if self.kind == RotationType::Monthly {
+            return add_months(self.start, self.monthly_k(t) * self.shift_len.max(1));
+        }
         let period = self.period_secs();
         let diff = (t - self.start).num_seconds();
         let mut rem = diff % period;
@@ -272,6 +306,30 @@ mod tests {
         assert_eq!(r.active_at(ts("2024-01-01T10:00:00Z")), Some(u(1)));
         assert_eq!(r.active_at(ts("2024-01-02T10:00:00Z")), Some(u(2)));
         assert_eq!(r.active_at(ts("2024-01-03T10:00:00Z")), Some(u(1)));
+    }
+    #[test]
+    fn rotation_monthly_boundaries_calendar_aware() {
+        // handoff mensile ancorato al giorno 1 ore 09:00; shift_len=1 mese.
+        let r = Rotation{ kind:RotationType::Monthly, shift_len:1, start:ts("2026-01-01T09:00:00Z"), members:vec![u(1),u(2),u(3)] };
+        // a metà gennaio: boundary corrente = 1 gen, prossimo = 1 feb (mesi di lunghezza diversa)
+        assert_eq!(r.start_time(ts("2026-01-15T00:00:00Z")), ts("2026-01-01T09:00:00Z"));
+        assert_eq!(r.end_time(ts("2026-01-15T00:00:00Z")), ts("2026-02-01T09:00:00Z"));
+        // a metà febbraio: prossimo boundary = 1 mar (febbraio 28gg != 30)
+        assert_eq!(r.end_time(ts("2026-02-15T00:00:00Z")), ts("2026-03-01T09:00:00Z"));
+        // stato stateful: dopo 2 boundary (1 feb, 1 mar) -> idx2
+        let stt = RotationState::seed(ts("2026-01-01T09:00:00Z"));
+        assert_eq!(stt.advanced_to(&r, ts("2026-03-10T00:00:00Z"), 3).position, 2);
+    }
+    #[test]
+    fn rotation_monthly_clamps_short_month() {
+        // start il 31: boundary a febbraio clampato al 28 (ultimo giorno), senza overflow.
+        let r = Rotation{ kind:RotationType::Monthly, shift_len:1, start:ts("2026-01-31T00:00:00Z"), members:vec![u(1),u(2)] };
+        // a metà febbraio: boundary corrente = 31 gen, prossimo = 28 feb
+        assert_eq!(r.start_time(ts("2026-02-10T00:00:00Z")), ts("2026-01-31T00:00:00Z"));
+        assert_eq!(r.end_time(ts("2026-02-10T00:00:00Z")), ts("2026-02-28T00:00:00Z"));
+        // a metà marzo: boundary corrente = 28 feb, prossimo = 31 mar (ritorna al 31)
+        assert_eq!(r.start_time(ts("2026-03-10T00:00:00Z")), ts("2026-02-28T00:00:00Z"));
+        assert_eq!(r.end_time(ts("2026-03-10T00:00:00Z")), ts("2026-03-31T00:00:00Z"));
     }
     #[test]
     fn schedule_daytime_window() {
