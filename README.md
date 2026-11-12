@@ -14,7 +14,8 @@ sicurezza / rollback. L'escalation è condivisa da tutti i moduli che generano a
 ## Cosa è implementato
 - **Multitenancy + isolamento** end-to-end: RLS su Postgres 18, ruolo runtime `NOBYPASSRLS`, contesto tenant legato alla transazione. Tenant da host (browser) o da credenziale (macchina), mai dal payload.
 - **Piano di controllo** (superadmin): crea tenant, nomina admin, abilita/disabilita moduli **senza deploy** (switch in UI); disattivazione bloccata se toglie un percorso essenziale.
-- **Catena SOS**: ingress evento normalizzato idempotente → incidente (`aperto→preso_in_carico→intervento→chiuso`) → outbox transazionale → worker → GoAlert (SIMULATO) → timeline con correlazione. Anche SOS da PWA (sessione).
+- **Catena SOS**: ingress evento normalizzato idempotente → incidente (`aperto→preso_in_carico→intervento→chiuso`) → **motore di escalation nativo** (consegna multicanale + ack/chiusura) → timeline con correlazione. Anche SOS da PWA (sessione). GoAlert resta rete di sicurezza/rollback.
+- **Escalation / Reperibilità — parità GoAlert completa (nativa, self-sufficient)**: policy multi-step con **target per-step** (on-call/altro gruppo/persona/Slack), **rotazioni** (orario/giorn./settim./**mensile**) con **fuso orario e DST**, **Set Active**, **schedule** con **assegnazioni multiple** e finestre + **vista Turni calcolati**, **override** (replace/remove/add) e **temporary schedule** (con "allow gaps"), **recapiti multipli + regole di notifica per-utente** + verifica OTP + **opt-out/Do-Not-Call** (STOP), **maintenance** con bundling, **heartbeat monitor**, **ingress email**, **bulk ack/close**, **on-call-now**, annunci **Slack**, **iCal** per-utente e per-gruppo, **label/ricerca**, playbook e note di passaggio. Disaccoppiata dal modulo (serve anche IoT/ThingsBoard/Traccar). Manuale completo: [`docs/escalation-manuale.md`](docs/escalation-manuale.md). Prove: `qa/escalation-*-e2e.sh` (schedules, rotations/set-active, policy+targets, services, profile, decouple, rest, minors) + unit `escalation::tests`.
 - **Check-in** con timer durevole nel core (orologio controllabile per i test), che scade senza nuovi dati badge → `mancato_checkin`. In PWA con countdown live.
 - **Ordini di lavoro** (Prompt 9): bozza→assegnato→in_corso→completato→annullato, con concorrenza ottimistica (versione), RBAC e isolamento.
 - **Consuntivi** (Prompt 9): bozza→in_revisione→da_correggere→approvato; righe ore + spese, calcolo deterministico in centesimi, doppia approvazione bloccata, **export CSV**.
@@ -27,9 +28,16 @@ sicurezza / rollback. L'escalation è condivisa da tutti i moduli che generano a
 - **Forza lavoro e turni (Fase 2)**: **squadre** (team + membri), **turni pianificati** (pianificatore crea, lavoratore conferma, annullo/elimina) distinti dai turni reali timbrati, **reperibilità** (on-call) per utente. RLS per tenant, RBAC pianificatore/admin. Prova: `qa/workforce-e2e.sh` (14/14). Turni pianificati visibili e confermabili anche dalla PWA lavoratore.
 - **UI**: design system completo (chiaro/scuro, responsive), console SPA (dashboard, centrale live con assegna/note/check-in, ordini, consuntivi, **turni**, **dispositivi**, **gruppi allarme**, **utenti e sedi/squadre**, moduli con **config strumenti**) con drawer e toast; PWA lavoratore mobile-first con turni pianificati.
 
+## Documentazione
+- [`docs/escalation-manuale.md`](docs/escalation-manuale.md) — Reperibilità e notifiche (motore nativo, parità GoAlert)
+- [`docs/traccar-manuale.md`](docs/traccar-manuale.md) — Traccar (badge/GPS)
+- [`docs/thingsboard-manuale.md`](docs/thingsboard-manuale.md) — ThingsBoard (IoT)
+- `contracts/` — contratti di progetto (fasi, decisioni, stato)
+
 ## Non implementato (backlog, dichiarato)
 Prompt 10 (parità/migrazione legacy). RAG "chiedi ai documenti" e STT lato server.
-OpenDuty reale. SMS/voce (Twilio) e firmware badge hardware: da cablare per sito.
+OpenDuty reale. SMS/voce (Twilio) e firmware badge hardware: da cablare per sito
+(il motore nativo è pronto: configurare `YW_ESC_TWILIO_*` / relay SMTP / Slack token).
 
 ## Avvio — Docker Compose (profilo base)
 ```bash
