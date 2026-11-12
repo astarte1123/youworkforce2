@@ -322,3 +322,21 @@ Parità con la pagina Rotations di GoAlert.
 
 **Verifica:** `qa/escalation-setactive-e2e.sh` 4/4 + 2 unit test tz/DST (escalation unit 14/14).
 Regression totale 79 e2e + 14 unit. YouWorkforce supera inoltre GoAlert con la rotazione **mensile**.
+
+## 14. Schedules: assegnazioni multiple + vista Shifts (G-A+G-B, FATTO 2026-11-12)
+
+Migrazione `0067_schedule_assignments.sql`. Chiude gli ultimi gap della pagina Schedules.
+
+- **G-A — Assegnazioni multiple con regole per-assegnazione:** oltre alla rotazione/copertura base del
+  gruppo si aggiungono N assegnazioni (`esc_assignments` + `esc_assignment_members`), ciascuna con i
+  propri membri e una finestra (giorni + orario, ora locale). On-call del gruppo = base UNIONE le
+  assegnazioni la cui finestra copre l'istante. CRUD `/api/groups/:id/assignments`; UI dedicata.
+- **G-B — Vista Shifts (calendario finale):** `GET /api/groups/:id/shifts?days=` elenca i turni
+  calcolati (rotazione + copertura + override + assegnazioni + temporary schedule) su una finestra,
+  campionando il resolver senza mutare lo stato; UI "Turni calcolati (30 giorni)".
+
+**Verifica:** `qa/escalation-schedules-e2e.sh` 5/5. Regression 73 e2e + 14 unit (tz/DST inclusi).
+
+**Parità GoAlert completa su tutte le pagine docs** (overview, alerting, escalation policies, schedules,
+rotations, profile, services, recommended-practices, calendar-subscriptions). Residui minori: assegnazioni
+di tipo rotazione a sé stante; "Allow gaps" sul temporary schedule; abbonamenti iCal per-schedule.

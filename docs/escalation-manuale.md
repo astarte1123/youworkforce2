@@ -64,6 +64,15 @@ per-tipo → gruppo di default**.
   persona la rende **subito** reperibile di turno, senza aspettare il prossimo handoff (es. un collega
   dà il cambio in anticipo o rientra da un imprevisto).
 
+### 2.2b Assegnazioni aggiuntive e Turni calcolati (sulla scheda gruppo)
+- **Assegnazioni aggiuntive (coperture)**: oltre alla rotazione/copertura base del gruppo, puoi
+  aggiungere N **assegnazioni**, ognuna con i propri membri e una **finestra** (giorni + orario, ora
+  locale). Quando la finestra è attiva, quei membri si **aggiungono** all'on-call. Esempio: rotazione
+  base nei feriali + assegnazione "Weekend" (sab/dom) + persona fissa di notte. Vuoto = 24h.
+- **Turni calcolati (30 giorni)**: mostra il **calendario finale** del gruppo — chi è reperibile e
+  quando nei prossimi 30 giorni, applicando rotazione, copertura, override, assegnazioni e
+  pianificazioni temporanee.
+
 ### 2.3 Copertura · handoff · Slack (menu ⚙ sul gruppo)
 - **Copertura**: *24/7* oppure *solo fasce orarie* (es. 20:00–08:00) nei giorni scelti. Fuori fascia
   gli allarmi vengono registrati ma non inoltrati a questo gruppo.

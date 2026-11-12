@@ -3465,6 +3465,74 @@ pub async fn rotation_set_active(State(st): State<AppState>, h: HeaderMap, Path(
     Ok(Json(json!({"ok":true,"position":idx})))
 }
 
+// ---- G-A: assegnazioni multiple del gruppo (coperture aggiuntive con finestra per-assegnazione) ----
+pub async fn assignments_list(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let rows = sqlx::query("SELECT id,label,cov_days,cov_start,cov_end FROM app.esc_assignments WHERE tenant_id=$1 AND group_id=$2 ORDER BY created_at")
+        .bind(tid).bind(gid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let mut out = Vec::new();
+    for a in &rows {
+        let aid: Uuid = a.get("id");
+        let mem = sqlx::query("SELECT u.id,u.email FROM app.esc_assignment_members am JOIN app.users u ON u.id=am.user_id WHERE am.assignment_id=$1 ORDER BY am.position")
+            .bind(aid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+        let mj: Vec<Value> = mem.iter().map(|m| json!({"user_id":m.get::<Uuid,_>("id"),"email":m.get::<String,_>("email")})).collect();
+        out.push(json!({"id":aid,"label":a.get::<String,_>("label"),"cov_days":a.get::<String,_>("cov_days"),
+            "cov_start":a.try_get::<Option<String>,_>("cov_start").ok().flatten(),
+            "cov_end":a.try_get::<Option<String>,_>("cov_end").ok().flatten(),"members":mj}));
+    }
+    Ok(Json(json!({"assignments":out})))
+}
+#[derive(Deserialize)] pub struct AssignmentReq { #[serde(default)] pub label: String, #[serde(default)] pub cov_days: Option<String>, #[serde(default)] pub cov_start: Option<String>, #[serde(default)] pub cov_end: Option<String> }
+pub async fn assignment_create(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<AssignmentReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2").bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
+    let days = b.cov_days.as_deref().filter(|d| d.len()==7 && d.chars().all(|c| c=='0'||c=='1')).unwrap_or("1111111");
+    for t in [b.cov_start.as_deref(), b.cov_end.as_deref()].into_iter().flatten() { if !t.is_empty() && parse_hhmm(t).is_none() { return Err(err(StatusCode::BAD_REQUEST, "orario: HH:MM")); } }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.esc_assignments(tenant_id,group_id,label,cov_days,cov_start,cov_end) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
+        .bind(tid).bind(gid).bind(b.label.trim()).bind(days)
+        .bind(b.cov_start.as_deref().map(|x| x.trim()).filter(|x| !x.is_empty()))
+        .bind(b.cov_end.as_deref().map(|x| x.trim()).filter(|x| !x.is_empty()))
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true,"id":row.get::<Uuid,_>("id")})))
+}
+pub async fn assignment_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.esc_assignments WHERE id=$1 AND tenant_id=$2").bind(id).bind(tid).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "assegnazione inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn assignment_member_add(State(st): State<AppState>, h: HeaderMap, Path(aid): Path<Uuid>, Json(b): Json<MemberReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.esc_assignments WHERE id=$1 AND tenant_id=$2").bind(aid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND, "assegnazione inesistente")); }
+    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.users WHERE id=$1 AND tenant_id=$2").bind(b.user_id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_none() { return Err(err(StatusCode::BAD_REQUEST, "utente non nel tenant")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.esc_assignment_members(tenant_id,assignment_id,user_id,position) VALUES($1,$2,$3,COALESCE($4,1)) ON CONFLICT (assignment_id,user_id) DO UPDATE SET position=EXCLUDED.position")
+        .bind(tid).bind(aid).bind(b.user_id).bind(b.position).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn assignment_member_del(State(st): State<AppState>, h: HeaderMap, Path((aid,uid)): Path<(Uuid,Uuid)>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.esc_assignment_members WHERE assignment_id=$1 AND user_id=$2 AND tenant_id=$3").bind(aid).bind(uid).bind(tid).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+
 pub async fn delete_group(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     require_any_module(&st, s.tenant_id.unwrap(), ESCALATION_MODS).await?;
@@ -8562,11 +8630,12 @@ pub async fn escalation_shadow_run(State(st): State<AppState>, h: HeaderMap) -> 
 async fn esc_native_oncall_contacts(
     st: &AppState, tid: Uuid, gid: Uuid, ga: Option<(&str, &str)>, now: chrono::DateTime<chrono::Utc>, seed: bool,
 ) -> Vec<(Uuid, Option<String>, String)> {
-    let Some(g) = sqlx::query("SELECT id,name,oncall_mode,oncall_type,oncall_shift,coverage_mode,cov_start,cov_end,cov_days,handoff_time,handoff_day,goalert_service_id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
+    let Some(g) = sqlx::query("SELECT id,name,oncall_mode,oncall_type,oncall_shift,oncall_tz,coverage_mode,cov_start,cov_end,cov_days,handoff_time,handoff_day,goalert_service_id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
         .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten() else { return vec![]; };
+    let gtz: chrono_tz::Tz = g.try_get::<String,_>("oncall_tz").ok().and_then(|s| s.parse().ok()).unwrap_or(chrono_tz::UTC);
     let mrows = sqlx::query("SELECT u.id,u.email,u.phone FROM app.alarm_group_members m JOIN app.users u ON u.id=m.user_id WHERE m.group_id=$1 ORDER BY m.position")
         .bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
-    if mrows.is_empty() { return vec![]; }
+    // NB: il gruppo può non avere membri base ma avere assegnazioni (coperture aggiuntive).
     let members: Vec<Uuid> = mrows.iter().map(|r| r.get::<Uuid,_>("id")).collect();
     let email_of: std::collections::HashMap<Uuid,String> = mrows.iter().map(|r| (r.get::<Uuid,_>("id"), r.get::<String,_>("email").to_lowercase())).collect();
     let phone_of: std::collections::HashMap<Uuid,Option<String>> = mrows.iter().map(|r| (r.get::<Uuid,_>("id"), r.try_get::<String,_>("phone").ok())).collect();
@@ -8598,12 +8667,124 @@ async fn esc_native_oncall_contacts(
         }
         None => None,
     };
-    let uids = sched.on_call_at_rot(now, rot_member);
+    let mut uids = sched.on_call_at_rot(now, rot_member);
+    // G-A: unione con le assegnazioni multiple (coperture aggiuntive attive adesso).
+    for u in esc_assignments_oncall(st, tid, gid, now, gtz).await { if !uids.contains(&u) { uids.push(u); } }
+    if uids.is_empty() { return vec![]; }
+    // recapiti per TUTTI gli on-call (membri base + membri delle assegnazioni, anche fuori gruppo).
+    let crows = sqlx::query("SELECT id,email,phone FROM app.users WHERE id = ANY($1) AND tenant_id=$2")
+        .bind(&uids).bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let cmap: std::collections::HashMap<Uuid,(Option<String>,String)> = crows.iter().map(|r|
+        (r.get::<Uuid,_>("id"), (r.try_get::<String,_>("phone").ok(), r.get::<String,_>("email")))).collect();
     uids.into_iter().filter_map(|u| {
-        let email = email_of.get(&u)?.clone();
-        let phone = phone_of.get(&u).cloned().flatten();
+        let (phone, email) = cmap.get(&u)?.clone();
         Some((u, phone, email))
     }).collect()
+}
+
+/// G-B — "Shifts": turni calcolati del gruppo (final schedule) su una finestra. Campiona il resolver
+/// (rotation stateful PURA + override + copertura + temporary schedule) a passo fisso e fonde i
+/// segmenti con lo stesso on-call. Nessuna mutazione di stato (letture pure).
+async fn esc_group_shifts(st: &AppState, tid: Uuid, gid: Uuid, now: chrono::DateTime<chrono::Utc>, days: i64)
+    -> Vec<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>, Vec<String>)> {
+    use crate::escalation::RotationState;
+    let Some(g) = sqlx::query("SELECT id,name,oncall_mode,oncall_type,oncall_shift,oncall_tz,coverage_mode,cov_start,cov_end,cov_days,handoff_time,handoff_day,goalert_service_id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
+        .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten() else { return vec![]; };
+    let mrows = sqlx::query("SELECT u.id,u.email FROM app.alarm_group_members m JOIN app.users u ON u.id=m.user_id WHERE m.group_id=$1 ORDER BY m.position")
+        .bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let members: Vec<Uuid> = mrows.iter().map(|r| r.get::<Uuid,_>("id")).collect();
+    let email_of: std::collections::HashMap<Uuid,String> = mrows.iter().map(|r| (r.get::<Uuid,_>("id"), r.get::<String,_>("email").to_lowercase())).collect();
+    let gtz: chrono_tz::Tz = g.try_get::<String,_>("oncall_tz").ok().and_then(|s| s.parse().ok()).unwrap_or(chrono_tz::UTC);
+    // email dei membri delle assegnazioni (possono non essere membri del gruppo)
+    let ass_email: std::collections::HashMap<Uuid,String> = sqlx::query(
+        "SELECT DISTINCT u.id,u.email FROM app.esc_assignment_members am
+           JOIN app.esc_assignments a ON a.id=am.assignment_id
+           JOIN app.users u ON u.id=am.user_id
+          WHERE a.tenant_id=$1 AND a.group_id=$2")
+        .bind(tid).bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default()
+        .iter().map(|r| (r.get::<Uuid,_>("id"), r.get::<String,_>("email").to_lowercase())).collect();
+    let mut sched = esc_build_schedule(&g, &members);
+    sched.overrides = esc_native_overrides(st, tid, gid, &email_of).await;
+    // stato base della rotation: persistito se c'è, altrimenti seed pos0 (puro, nessuna scrittura)
+    let base_state: Option<RotationState> = match &sched.rotation {
+        Some(rot) => Some(
+            sqlx::query("SELECT position,shift_start FROM app.esc_rotation_state WHERE tenant_id=$1 AND group_id=$2")
+                .bind(tid).bind(gid).fetch_optional(&st.owner_pool).await.ok().flatten()
+                .map(|r| RotationState{ position: r.get::<i32,_>("position").max(0) as usize, shift_start: r.get("shift_start") })
+                .unwrap_or(RotationState{ position:0, shift_start: rot.start_time(now) })),
+        None => None,
+    };
+    let horizon = now + chrono::Duration::days(days.clamp(1, 60));
+    let step = chrono::Duration::minutes(30);
+    let mut out: Vec<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>, Vec<String>)> = vec![];
+    let mut seg_start = now;
+    let mut prev: Option<Vec<String>> = None;
+    let mut t = now;
+    let mut iters = 0;
+    while t <= horizon && iters < 5000 {
+        iters += 1;
+        let rot_member = match (&sched.rotation, base_state) {
+            (Some(rot), Some(bs)) if !members.is_empty() => bs.advanced_to(rot, t, members.len()).active_member(&members),
+            _ => None,
+        };
+        // temp schedule ha precedenza (sostituisce)
+        let temp = esc_temp_schedule_oncall(st, tid, gid, t).await;
+        let mut emails: Vec<String> = if let Some(tu) = temp {
+            email_of.get(&tu).cloned().into_iter().collect()
+        } else {
+            let mut uids = sched.on_call_at_rot(t, rot_member);
+            for u in esc_assignments_oncall(st, tid, gid, t, gtz).await { if !uids.contains(&u) { uids.push(u); } }
+            uids.iter().filter_map(|u| email_of.get(u).cloned()
+                .or_else(|| ass_email.get(u).cloned())).collect()
+        };
+        emails.sort(); emails.dedup();
+        if prev.as_ref() != Some(&emails) {
+            if let Some(p) = prev.take() { out.push((seg_start, t, p)); }
+            seg_start = t; prev = Some(emails);
+        }
+        t += step;
+    }
+    if let Some(p) = prev.take() { out.push((seg_start, horizon, p)); }
+    out
+}
+pub async fn group_shifts(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let days: i64 = q.get("days").and_then(|d| d.parse().ok()).unwrap_or(30);
+    let now = chrono::Utc::now();
+    let segs = esc_group_shifts(&st, tid, gid, now, days).await;
+    let out: Vec<Value> = segs.iter().filter(|(_,_,e)| !e.is_empty()).map(|(s0,e0,em)| json!({
+        "start":s0,"end":e0,"oncall":em})).collect();
+    Ok(Json(json!({"shifts":out,"days":days})))
+}
+
+/// G-A — on-call aggiuntivo dalle ASSEGNAZIONI del gruppo: ogni assegnazione aggiunge i suoi membri
+/// quando la sua finestra (giorni + orario, ora locale `tz`) copre `t`. Ritorna gli uuid in unione.
+async fn esc_assignments_oncall(st: &AppState, tid: Uuid, gid: Uuid, t: chrono::DateTime<chrono::Utc>, tz: chrono_tz::Tz) -> Vec<Uuid> {
+    let rows = sqlx::query("SELECT id,cov_days,cov_start,cov_end FROM app.esc_assignments WHERE tenant_id=$1 AND group_id=$2")
+        .bind(tid).bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let mut out: Vec<Uuid> = vec![];
+    for a in &rows {
+        let aid: Uuid = a.get("id");
+        let cd: String = a.try_get("cov_days").unwrap_or_else(|_| "1111111".into());
+        let cs: Option<String> = a.try_get("cov_start").ok().flatten();
+        let ce: Option<String> = a.try_get("cov_end").ok().flatten();
+        let mut mask: u8 = 0;
+        for (i,c) in cd.chars().take(7).enumerate() { if c=='1' { mask |= 1 << i; } }
+        // nessuna finestra oraria -> giornata intera (00:00-24:00); riusa la stessa covers() testata.
+        let (sm, em) = match (cs.as_deref().and_then(parse_hhmm), ce.as_deref().and_then(parse_hhmm)) {
+            (Some((h1,m1)),Some((h2,m2))) => (h1*60+m1, h2*60+m2),
+            _ => (0u32, 1440u32),
+        };
+        let covers = crate::escalation::ScheduleRule{ start_min:sm, end_min:em, weekday_mask:mask, tz }.covers(t);
+        if covers {
+            let mem: Vec<Uuid> = sqlx::query_scalar("SELECT user_id FROM app.esc_assignment_members WHERE assignment_id=$1 ORDER BY position")
+                .bind(aid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+            for u in mem { if !out.contains(&u) { out.push(u); } }
+        }
+    }
+    out
 }
 
 /// Override/assenze native di un gruppo (app.esc_overrides). I membri "remove/add" sono utenti

@@ -2349,7 +2349,13 @@ async function vGruppi(v){
               <div id="ho_${g.id}" class="mut">apri per caricare le note…</div>
             </div>
           </details>
-          <div class="small faint" style="margin-top:3px">${g.oncall_mode==='turni'?'Il reperibile di turno viene avvisato per primo.':'Tutti i membri vengono avvisati insieme.'} Rotazione/copertura: motore nativo (self-sufficient).</div>
+          <details style="margin-top:6px" ontoggle="if(this.open)grpAssignLoad('${g.id}')"><summary class="small mut" style="cursor:pointer">👥 Assegnazioni aggiuntive (coperture)</summary>
+            <div id="asg_${g.id}" class="small mut" style="margin-top:8px">apri per caricare…</div>
+          </details>
+          <details style="margin-top:6px" ontoggle="if(this.open)grpShiftsLoad('${g.id}')"><summary class="small mut" style="cursor:pointer">📅 Turni calcolati (30 giorni)</summary>
+            <div id="shf_${g.id}" class="small mut" style="margin-top:8px">apri per caricare…</div>
+          </details>
+          <div class="small faint" style="margin-top:3px">${g.oncall_mode==='turni'?'Il reperibile di turno viene avvisato per primo.':'Tutti i membri vengono avvisati insieme.'} Rotazione/copertura/assegnazioni: motore nativo (self-sufficient).</div>
         </div>
       </div>`).join('')||'<div class="small mut">Nessun gruppo. Creane uno.</div>'}
     </div>
@@ -2634,6 +2640,39 @@ async function grpAdd(gid){ const uid=$('#mSel_'+gid).value; if(!uid)return;
   try{await api('/groups/'+gid+'/members',{method:'POST',body:JSON.stringify({user_id:uid,position:1})}); toast('Membro aggiunto','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function grpRm(gid,uid){ try{await api('/groups/'+gid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function grpSetActive(gid,uid){ try{await api('/groups/'+gid+'/rotation/set-active',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Reperibile attivato ora','ok');}catch(e){toast(e.message,'bad');} }
+async function grpShiftsLoad(gid){ const out=$('#shf_'+gid); out.innerHTML='<span class="mut">Calcolo…</span>';
+  try{ const r=await api('/groups/'+gid+'/shifts?days=30');
+    out.innerHTML=(r.shifts||[]).map(s=>`<div class="row small" style="gap:6px;border-bottom:1px solid var(--line);padding:3px 0">
+      <span style="min-width:200px">${new Date(s.start).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})} → ${new Date(s.end).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+      <span>${(s.oncall||[]).map(esc).join(', ')}</span></div>`).join('')||'<div class="mut">nessun turno con reperibili nei prossimi 30 giorni</div>';
+  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function grpAssignLoad(gid){ const out=$('#asg_'+gid); out.innerHTML='<span class="mut">Carico…</span>';
+  const uopts=(window._users||[]).map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('');
+  try{ const r=await api('/groups/'+gid+'/assignments');
+    const list=(r.assignments||[]).map(a=>{
+      const cov=(a.cov_start&&a.cov_end)?`${a.cov_start}-${a.cov_end}`:'24h';
+      const days=['L','M','M','G','V','S','D'].map((d,i)=>(a.cov_days||'1111111')[i]==='1'?d:'·').join('');
+      const mem=(a.members||[]).map(m=>`<span class="tag">${esc(m.email)} <a onclick="asgMemRm('${gid}','${a.id}','${m.user_id}')" style="cursor:pointer">✕</a></span>`).join(' ');
+      return `<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+        <div class="row" style="justify-content:space-between"><b>${esc(a.label||'(senza nome)')}</b>
+          <span class="mut">${days} ${cov} <button class="btn-ico btn ghost" onclick="asgDel('${gid}','${a.id}')">${ICON.x}</button></span></div>
+        <div style="margin-top:4px">${mem||'<span class="mut">nessun membro</span>'}</div>
+        <div class="row small" style="gap:4px;margin-top:4px"><select id="asgm_${a.id}" class="small">${uopts}</select>
+          <button class="btn ghost small" onclick="asgMemAdd('${gid}','${a.id}')">+ membro</button></div></div>`;
+    }).join('')||'<div class="mut">Nessuna assegnazione. Aggiungi coperture (es. weekend, notte).</div>';
+    out.innerHTML=`${list}<div class="col small" style="gap:4px;border-top:1px solid var(--line);padding-top:8px;margin-top:4px">
+      <div class="row" style="gap:4px;align-items:center;flex-wrap:wrap"><input id="asgL_${gid}" placeholder="nome (es. Weekend)" style="width:130px">
+        giorni ${['L','M','M','G','V','S','D'].map((d,i)=>`<label class="small" style="display:inline-flex;flex-direction:column;align-items:center"><span>${d}</span><input type="checkbox" id="asgd_${gid}_${i}" checked></label>`).join('')}
+        dalle <input id="asgS_${gid}" type="time"> alle <input id="asgE_${gid}" type="time">
+        <button class="btn small" onclick="asgAdd('${gid}')">+ assegnazione</button></div>
+      <div class="small faint">Ogni assegnazione aggiunge i suoi membri all'on-call quando la sua finestra (giorni+orario, ora locale) è attiva. Vuoto = 24h.</div></div>`;
+  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function asgAdd(gid){ let days=''; for(let i=0;i<7;i++){ days+=($('#asgd_'+gid+'_'+i)?.checked)?'1':'0'; }
+  const body={label:$('#asgL_'+gid).value||'', cov_days:days, cov_start:$('#asgS_'+gid).value||null, cov_end:$('#asgE_'+gid).value||null};
+  try{ await api('/groups/'+gid+'/assignments',{method:'POST',body:JSON.stringify(body)}); grpAssignLoad(gid); }catch(e){ toast(e.message,'bad'); } }
+async function asgDel(gid,aid){ if(!await askConfirm('Eliminare l\'assegnazione?'))return; try{ await api('/assignments/'+aid,{method:'DELETE'}); grpAssignLoad(gid); }catch(e){ toast(e.message,'bad'); } }
+async function asgMemAdd(gid,aid){ const uid=$('#asgm_'+aid).value; if(!uid)return; try{ await api('/assignments/'+aid+'/members',{method:'POST',body:JSON.stringify({user_id:uid,position:1})}); grpAssignLoad(gid); }catch(e){ toast(e.message,'bad'); } }
+async function asgMemRm(gid,aid,uid){ try{ await api('/assignments/'+aid+'/members/'+uid,{method:'DELETE'}); grpAssignLoad(gid); }catch(e){ toast(e.message,'bad'); } }
 async function routeSet(etype,gid){ try{await api('/routing',{method:'POST',body:JSON.stringify({etype,group_id:gid||null})}); toast('Routing aggiornato','ok');}catch(e){toast(e.message,'bad');} }
 
 // ---------------- Policy escalation multi-step (nativo) ----------------
