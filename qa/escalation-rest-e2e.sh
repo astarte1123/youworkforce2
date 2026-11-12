@@ -58,7 +58,7 @@ U2=$(sql "SELECT u.id FROM app.users u JOIN app.tenants t ON t.id=u.tenant_id WH
 if [ -z "$U2" ]; then U2=$(sql "WITH t AS (SELECT id FROM app.tenants WHERE slug='$SLUG') INSERT INTO app.users(tenant_id,email,pass_hash,role,phone) SELECT id,'temp-$RANDOM@globex.loneworker.eu','x','operatore','+390009998888' FROM t RETURNING id"); else sql "UPDATE app.users SET phone='+390009998888' WHERE id='$U2'" >/dev/null; fi
 NOWISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ENDISO=$(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || python -c "import datetime;print((datetime.datetime.utcnow()+datetime.timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
-TSID=$(api -H 'content-type: application/json' -X POST "$BASE/api/oncall-temp-schedules" -d "{\"group_id\":\"$GID\",\"start\":\"$NOWISO\",\"end\":\"$ENDISO\",\"blocks\":[{\"user_id\":\"$U2\",\"hours\":12}]}" | python -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+TSID=$(api -H 'content-type: application/json' -X POST "$BASE/api/oncall-temp-schedules" -d "{\"group_id\":\"$GID\",\"start\":\"$NOWISO\",\"end\":\"$ENDISO\",\"blocks\":[{\"user_id\":\"$U2\",\"hours\":12}],\"allow_gaps\":true}" | python -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
 [ -n "$TSID" ] && ok "temporary schedule creata" || no "temp schedule non creata" "-"
 clean; mkinc "rest-temp-$RANDOM"; run
 TCH=$(sql "SELECT to_value FROM app.esc_delivery_log el JOIN app.tenants t ON t.id=el.tenant_id WHERE t.slug='$SLUG' ORDER BY el.id DESC LIMIT 1")

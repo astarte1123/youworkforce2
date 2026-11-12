@@ -2477,9 +2477,10 @@ async function ocTempScheds(btn){
       <div class="col small" style="gap:4px;margin-top:8px;border-top:1px solid var(--line);padding-top:8px">
         <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">dal <input id="tsS" type="datetime-local"> al <input id="tsE" type="datetime-local"></div>
         <div id="tsBlocks"><div class="row tsblk" style="gap:4px;align-items:center;margin-top:3px"><select class="small tsu">${uopts}</select> per <input type="number" class="tsh" min="1" value="12" style="width:56px"> ore</div></div>
-        <div class="row" style="gap:6px"><button class="btn ghost small" onclick="ocTsAddBlock()">+ blocco</button>
+        <div class="row" style="gap:6px;align-items:center"><button class="btn ghost small" onclick="ocTsAddBlock()">+ blocco</button>
+          <label class="small" style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" id="tsGaps"> consenti buchi</label>
           <button class="btn small" onclick="ocTsSave('${gid}')">Crea pianificazione</button></div>
-        <div class="small faint">Mentre è attiva, SOLO l'utente del blocco corrente riceve gli allarmi del gruppo.</div></div>`;
+        <div class="small faint">Mentre è attiva, SOLO l'utente del blocco corrente riceve gli allarmi del gruppo. Se i blocchi non coprono tutta la finestra serve "consenti buchi".</div></div>`;
   }catch(e){ out.innerHTML='<span class="small" style="color:var(--bad)">'+esc(e.message)+'</span>'; }
 }
 function ocTsAddBlock(){ const uopts=(window._users||[]).map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('');
@@ -2489,7 +2490,8 @@ function ocTsAddBlock(){ const uopts=(window._users||[]).map(u=>`<option value="
 async function ocTsSave(gid){
   const s=$('#tsS').value, e=$('#tsE').value; if(!s||!e){ toast('indica inizio e fine','bad'); return; }
   const blocks=[...document.querySelectorAll('#tsBlocks .tsblk')].map(b=>({user_id:b.querySelector('.tsu').value, hours:+b.querySelector('.tsh').value||1}));
-  try{ await api('/oncall-temp-schedules',{method:'POST',body:JSON.stringify({group_id:gid,start:new Date(s).toISOString(),end:new Date(e).toISOString(),blocks})});
+  const allow_gaps=$('#tsGaps')?.checked||false;
+  try{ await api('/oncall-temp-schedules',{method:'POST',body:JSON.stringify({group_id:gid,start:new Date(s).toISOString(),end:new Date(e).toISOString(),blocks,allow_gaps})});
     toast('Pianificazione creata','ok'); ocTempScheds(); }catch(err){ toast(err.message,'bad'); } }
 async function ocTsDel(id,gid){ try{ await api('/oncall-temp-schedules/delete',{method:'POST',body:JSON.stringify({id})}); toast('Rimossa','ok'); ocTempScheds(); }catch(e){ toast(e.message,'bad'); } }
 async function escDelivReport(btn){ const out=$('#escDiagOut'); out.innerHTML='<span class="mut">Carico…</span>';
@@ -2662,14 +2664,20 @@ async function grpAssignLoad(gid){ const out=$('#asg_'+gid); out.innerHTML='<spa
     }).join('')||'<div class="mut">Nessuna assegnazione. Aggiungi coperture (es. weekend, notte).</div>';
     out.innerHTML=`${list}<div class="col small" style="gap:4px;border-top:1px solid var(--line);padding-top:8px;margin-top:4px">
       <div class="row" style="gap:4px;align-items:center;flex-wrap:wrap"><input id="asgL_${gid}" placeholder="nome (es. Weekend)" style="width:130px">
+        <select id="asgMode_${gid}" class="small"><option value="tutti">tutti insieme</option><option value="turni">a turni</option></select>
+        <select id="asgType_${gid}" class="small"><option value="hourly">orario</option><option value="daily">giorn.</option><option value="weekly" selected>settim.</option><option value="monthly">mensile</option></select>
         giorni ${['L','M','M','G','V','S','D'].map((d,i)=>`<label class="small" style="display:inline-flex;flex-direction:column;align-items:center"><span>${d}</span><input type="checkbox" id="asgd_${gid}_${i}" checked></label>`).join('')}
         dalle <input id="asgS_${gid}" type="time"> alle <input id="asgE_${gid}" type="time">
         <button class="btn small" onclick="asgAdd('${gid}')">+ assegnazione</button></div>
-      <div class="small faint">Ogni assegnazione aggiunge i suoi membri all'on-call quando la sua finestra (giorni+orario, ora locale) è attiva. Vuoto = 24h.</div></div>`;
+      <div class="small faint">Ogni assegnazione aggiunge i suoi membri all'on-call quando la sua finestra (giorni+orario, ora locale) è attiva. "a turni" = ruota i membri dell'assegnazione. Vuoto = 24h.</div>
+      <div class="row" style="gap:6px;margin-top:4px"><button class="btn ghost small" onclick="grpCalendar('${gid}')">📅 URL iCal del gruppo</button><span id="gcal_${gid}" class="small" style="word-break:break-all"></span></div></div>`;
   }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
 async function asgAdd(gid){ let days=''; for(let i=0;i<7;i++){ days+=($('#asgd_'+gid+'_'+i)?.checked)?'1':'0'; }
-  const body={label:$('#asgL_'+gid).value||'', cov_days:days, cov_start:$('#asgS_'+gid).value||null, cov_end:$('#asgE_'+gid).value||null};
+  const body={label:$('#asgL_'+gid).value||'', cov_days:days, cov_start:$('#asgS_'+gid).value||null, cov_end:$('#asgE_'+gid).value||null,
+    mode:$('#asgMode_'+gid).value, oncall_type:$('#asgType_'+gid).value};
   try{ await api('/groups/'+gid+'/assignments',{method:'POST',body:JSON.stringify(body)}); grpAssignLoad(gid); }catch(e){ toast(e.message,'bad'); } }
+async function grpCalendar(gid){ try{ const r=await api('/groups/'+gid+'/calendar/url'); const full=location.origin+r.url;
+  $('#gcal_'+gid).innerHTML=`<code>${esc(full)}</code> <button class="btn ghost small" onclick="navigator.clipboard.writeText('${full}');toast('Copiato','ok')">copia</button>`; }catch(e){ toast(e.message,'bad'); } }
 async function asgDel(gid,aid){ if(!await askConfirm('Eliminare l\'assegnazione?'))return; try{ await api('/assignments/'+aid,{method:'DELETE'}); grpAssignLoad(gid); }catch(e){ toast(e.message,'bad'); } }
 async function asgMemAdd(gid,aid){ const uid=$('#asgm_'+aid).value; if(!uid)return; try{ await api('/assignments/'+aid+'/members',{method:'POST',body:JSON.stringify({user_id:uid,position:1})}); grpAssignLoad(gid); }catch(e){ toast(e.message,'bad'); } }
 async function asgMemRm(gid,aid,uid){ try{ await api('/assignments/'+aid+'/members/'+uid,{method:'DELETE'}); grpAssignLoad(gid); }catch(e){ toast(e.message,'bad'); } }

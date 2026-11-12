@@ -340,3 +340,20 @@ Migrazione `0067_schedule_assignments.sql`. Chiude gli ultimi gap della pagina S
 **Parità GoAlert completa su tutte le pagine docs** (overview, alerting, escalation policies, schedules,
 rotations, profile, services, recommended-practices, calendar-subscriptions). Residui minori: assegnazioni
 di tipo rotazione a sé stante; "Allow gaps" sul temporary schedule; abbonamenti iCal per-schedule.
+
+## 15. Schedules: residui minori (FATTO 2026-11-12)
+
+Migrazione `0068_schedule_minors.sql`.
+
+- **Assegnazioni a turni:** un'assegnazione (sezione 14) può essere "tutti insieme" o "a turni"
+  (ruota i suoi membri, formula pura native-only).
+- **Allow gaps (temporary schedule):** se i blocchi non coprono tutta la finestra, la creazione è
+  rifiutata salvo spuntare "consenti buchi".
+- **iCal per-gruppo:** `GET /api/groups/:id/calendar/url` + `GET /api/group-calendar.ics?token=`
+  servono i turni calcolati del gruppo come abbonamento calendario (oltre al feed per-utente).
+
+**Verifica:** `qa/escalation-schedule-minors-e2e.sh` 6/6.
+
+Con questo la parità GoAlert è completa anche sui dettagli minori. **Nota operativa:** sotto carico
+concorrente pesante il core è morto senza log (stack-overflow dev Windows noto); non è una regressione
+(tutti i test ripassano dopo riavvio). Da indagare se ricorre in produzione.

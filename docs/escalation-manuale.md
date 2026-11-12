@@ -69,6 +69,8 @@ per-tipo → gruppo di default**.
   aggiungere N **assegnazioni**, ognuna con i propri membri e una **finestra** (giorni + orario, ora
   locale). Quando la finestra è attiva, quei membri si **aggiungono** all'on-call. Esempio: rotazione
   base nei feriali + assegnazione "Weekend" (sab/dom) + persona fissa di notte. Vuoto = 24h.
+  Un'assegnazione può essere **"tutti insieme"** o **"a turni"** (ruota i suoi membri).
+  Ogni gruppo ha anche un **URL iCal** proprio (abbonamento calendario dei turni del gruppo).
 - **Turni calcolati (30 giorni)**: mostra il **calendario finale** del gruppo — chi è reperibile e
   quando nei prossimi 30 giorni, applicando rotazione, copertura, override, assegnazioni e
   pianificazioni temporanee.

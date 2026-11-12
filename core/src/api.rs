@@ -3480,23 +3480,36 @@ pub async fn assignments_list(State(st): State<AppState>, h: HeaderMap, Path(gid
         let mj: Vec<Value> = mem.iter().map(|m| json!({"user_id":m.get::<Uuid,_>("id"),"email":m.get::<String,_>("email")})).collect();
         out.push(json!({"id":aid,"label":a.get::<String,_>("label"),"cov_days":a.get::<String,_>("cov_days"),
             "cov_start":a.try_get::<Option<String>,_>("cov_start").ok().flatten(),
-            "cov_end":a.try_get::<Option<String>,_>("cov_end").ok().flatten(),"members":mj}));
+            "cov_end":a.try_get::<Option<String>,_>("cov_end").ok().flatten(),
+            "mode":a.try_get::<String,_>("mode").unwrap_or_else(|_|"tutti".into()),
+            "oncall_type":a.try_get::<String,_>("oncall_type").unwrap_or_else(|_|"weekly".into()),
+            "oncall_shift":a.try_get::<i32,_>("oncall_shift").unwrap_or(1),
+            "members":mj}));
     }
     Ok(Json(json!({"assignments":out})))
 }
-#[derive(Deserialize)] pub struct AssignmentReq { #[serde(default)] pub label: String, #[serde(default)] pub cov_days: Option<String>, #[serde(default)] pub cov_start: Option<String>, #[serde(default)] pub cov_end: Option<String> }
+#[derive(Deserialize)] pub struct AssignmentReq { #[serde(default)] pub label: String, #[serde(default)] pub cov_days: Option<String>, #[serde(default)] pub cov_start: Option<String>, #[serde(default)] pub cov_end: Option<String>,
+    #[serde(default)] pub mode: Option<String>, #[serde(default)] pub oncall_type: Option<String>, #[serde(default)] pub oncall_shift: Option<i32>,
+    #[serde(default)] pub handoff_time: Option<String>, #[serde(default)] pub handoff_day: Option<i32> }
 pub async fn assignment_create(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<AssignmentReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2").bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
     let days = b.cov_days.as_deref().filter(|d| d.len()==7 && d.chars().all(|c| c=='0'||c=='1')).unwrap_or("1111111");
-    for t in [b.cov_start.as_deref(), b.cov_end.as_deref()].into_iter().flatten() { if !t.is_empty() && parse_hhmm(t).is_none() { return Err(err(StatusCode::BAD_REQUEST, "orario: HH:MM")); } }
+    for t in [b.cov_start.as_deref(), b.cov_end.as_deref(), b.handoff_time.as_deref()].into_iter().flatten() { if !t.is_empty() && parse_hhmm(t).is_none() { return Err(err(StatusCode::BAD_REQUEST, "orario: HH:MM")); } }
+    let mode = b.mode.as_deref().unwrap_or("tutti");
+    if !matches!(mode, "tutti"|"turni") { return Err(err(StatusCode::BAD_REQUEST, "mode: tutti|turni")); }
+    let oc_type = b.oncall_type.as_deref().unwrap_or("weekly");
+    if !matches!(oc_type, "hourly"|"daily"|"weekly"|"monthly") { return Err(err(StatusCode::BAD_REQUEST, "tipo turno non valido")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let row = sqlx::query("INSERT INTO app.esc_assignments(tenant_id,group_id,label,cov_days,cov_start,cov_end) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
+    let row = sqlx::query("INSERT INTO app.esc_assignments(tenant_id,group_id,label,cov_days,cov_start,cov_end,mode,oncall_type,oncall_shift,handoff_time,handoff_day) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id")
         .bind(tid).bind(gid).bind(b.label.trim()).bind(days)
         .bind(b.cov_start.as_deref().map(|x| x.trim()).filter(|x| !x.is_empty()))
         .bind(b.cov_end.as_deref().map(|x| x.trim()).filter(|x| !x.is_empty()))
+        .bind(mode).bind(oc_type).bind(b.oncall_shift.unwrap_or(1).clamp(1,999))
+        .bind(b.handoff_time.as_deref().map(|x| x.trim()).filter(|x| !x.is_empty()))
+        .bind(b.handoff_day.map(|d| d.clamp(0,6)))
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true,"id":row.get::<Uuid,_>("id")})))
@@ -7614,7 +7627,7 @@ pub async fn temp_schedule_list(State(st): State<AppState>, h: HeaderMap, axum::
     Ok(Json(json!({"schedules":out})))
 }
 #[derive(Deserialize)] pub struct TempBlock { pub user_id: Uuid, pub hours: f64 }
-#[derive(Deserialize)] pub struct TempSchedReq { pub group_id: Uuid, pub start: String, pub end: String, pub blocks: Vec<TempBlock> }
+#[derive(Deserialize)] pub struct TempSchedReq { pub group_id: Uuid, pub start: String, pub end: String, pub blocks: Vec<TempBlock>, #[serde(default)] pub allow_gaps: bool }
 pub async fn temp_schedule_add(State(st): State<AppState>, h: HeaderMap, Json(b): Json<TempSchedReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
@@ -7623,17 +7636,24 @@ pub async fn temp_schedule_add(State(st): State<AppState>, h: HeaderMap, Json(b)
     let end = chrono::DateTime::parse_from_rfc3339(&b.end).map_err(|_| err(StatusCode::BAD_REQUEST, "end: RFC3339"))?.with_timezone(&chrono::Utc);
     if end <= start { return Err(err(StatusCode::BAD_REQUEST, "end deve essere dopo start")); }
     if b.blocks.is_empty() || b.blocks.len() > 100 { return Err(err(StatusCode::BAD_REQUEST, "1..100 blocchi")); }
+    let mut total_h = 0.0f64;
     for blk in &b.blocks {
         if blk.hours <= 0.0 || blk.hours > 24.0*366.0 { return Err(err(StatusCode::BAD_REQUEST, "ore blocco non valide")); }
+        total_h += blk.hours;
         let ok = sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.users WHERE id=$1 AND tenant_id=$2").bind(blk.user_id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_some();
         if !ok { return Err(err(StatusCode::BAD_REQUEST, "utente blocco non nel tenant")); }
+    }
+    // Allow gaps (parità GoAlert): se i blocchi non coprono tutta la finestra e non è consentito, rifiuta.
+    let window_h = (end - start).num_seconds() as f64 / 3600.0;
+    if !b.allow_gaps && total_h + 0.001 < window_h {
+        return Err(err(StatusCode::BAD_REQUEST, "buco di copertura: i blocchi non coprono tutta la finestra (spunta 'consenti buchi')"));
     }
     let exists = sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2").bind(b.group_id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_some();
     if !exists { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
     let blocks = serde_json::to_value(b.blocks.iter().map(|x| json!({"user_id":x.user_id,"hours":x.hours})).collect::<Vec<_>>()).unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let row = sqlx::query("INSERT INTO app.esc_temp_schedules(tenant_id,group_id,start_at,end_at,blocks) VALUES($1,$2,$3,$4,$5) RETURNING id")
-        .bind(tid).bind(b.group_id).bind(start).bind(end).bind(&blocks).fetch_one(&mut *tx).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.esc_temp_schedules(tenant_id,group_id,start_at,end_at,blocks,allow_gaps) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
+        .bind(tid).bind(b.group_id).bind(start).bind(end).bind(&blocks).bind(b.allow_gaps).fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let id: Uuid = row.get("id");
     audit(&st, tid, "youworkforce", "temp_schedule_add", json!({"group":b.group_id,"id":id,"blocks":b.blocks.len()})).await;
@@ -7702,7 +7722,46 @@ pub async fn oncall_calendar_url(State(st): State<AppState>, h: HeaderMap) -> R 
     }};
     Ok(Json(json!({"url":format!("/api/oncall-calendar.ics?token={token}"),"token":token})))
 }
+/// Abbonamento iCal PER-GRUPPO (parità GoAlert: una subscription per schedule). Genera/riusa un token.
+pub async fn group_calendar_url(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2").bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
+    let tok: Option<String> = sqlx::query_scalar("SELECT token FROM app.esc_group_ical_tokens WHERE tenant_id=$1 AND group_id=$2")
+        .bind(tid).bind(gid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let token = match tok { Some(t) => t, None => {
+        let t = auth::new_token();
+        sqlx::query("INSERT INTO app.esc_group_ical_tokens(token,tenant_id,group_id) VALUES($1,$2,$3)")
+            .bind(&t).bind(tid).bind(gid).execute(&st.owner_pool).await.map_err(ise)?;
+        t
+    }};
+    Ok(Json(json!({"url":format!("/api/group-calendar.ics?token={token}"),"token":token})))
+}
 #[derive(Deserialize)] pub struct IcalQuery { pub token: String }
+pub async fn group_calendar_ics(State(st): State<AppState>, axum::extract::Query(q): axum::extract::Query<IcalQuery>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let row = sqlx::query("SELECT tenant_id,group_id FROM app.esc_group_ical_tokens WHERE token=$1")
+        .bind(&q.token).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let Some(row) = row else { return (StatusCode::NOT_FOUND, "token non valido").into_response(); };
+    let tid: Uuid = row.get("tenant_id"); let gid: Uuid = row.get("group_id");
+    let name: String = sqlx::query_scalar("SELECT name FROM app.alarm_groups WHERE id=$1").bind(gid).fetch_optional(&st.owner_pool).await.ok().flatten().unwrap_or_else(|| "Gruppo".into());
+    let now = chrono::Utc::now();
+    let segs = esc_group_shifts(&st, tid, gid, now, 30).await;
+    let fmt = |t: chrono::DateTime<chrono::Utc>| t.format("%Y%m%dT%H%M%SZ").to_string();
+    let mut ics = format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//YouWorkforce//Reperibilita//IT\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:Reperibilita {}\r\n", name.replace('\n'," "));
+    for (i,(s0,e0,em)) in segs.iter().filter(|(_,_,e)| !e.is_empty()).enumerate() {
+        ics.push_str("BEGIN:VEVENT\r\n");
+        ics.push_str(&format!("UID:grp-{gid}-{i}-{}@youworkforce\r\n", fmt(*s0)));
+        ics.push_str(&format!("DTSTAMP:{}\r\n", fmt(now)));
+        ics.push_str(&format!("DTSTART:{}\r\n", fmt(*s0)));
+        ics.push_str(&format!("DTEND:{}\r\n", fmt(*e0)));
+        ics.push_str(&format!("SUMMARY:On-call: {}\r\n", em.join(", ").replace(',', "\\,")));
+        ics.push_str("END:VEVENT\r\n");
+    }
+    ics.push_str("END:VCALENDAR\r\n");
+    ([(axum::http::header::CONTENT_TYPE, "text/calendar; charset=utf-8")], ics).into_response()
+}
 pub async fn oncall_calendar_ics(State(st): State<AppState>, axum::extract::Query(q): axum::extract::Query<IcalQuery>) -> axum::response::Response {
     use axum::response::IntoResponse;
     let row = sqlx::query("SELECT tenant_id,user_id FROM app.oncall_ical_tokens WHERE token=$1")
@@ -8762,7 +8821,7 @@ pub async fn group_shifts(State(st): State<AppState>, h: HeaderMap, Path(gid): P
 /// G-A — on-call aggiuntivo dalle ASSEGNAZIONI del gruppo: ogni assegnazione aggiunge i suoi membri
 /// quando la sua finestra (giorni + orario, ora locale `tz`) copre `t`. Ritorna gli uuid in unione.
 async fn esc_assignments_oncall(st: &AppState, tid: Uuid, gid: Uuid, t: chrono::DateTime<chrono::Utc>, tz: chrono_tz::Tz) -> Vec<Uuid> {
-    let rows = sqlx::query("SELECT id,cov_days,cov_start,cov_end FROM app.esc_assignments WHERE tenant_id=$1 AND group_id=$2")
+    let rows = sqlx::query("SELECT id,cov_days,cov_start,cov_end,mode,oncall_type,oncall_shift,handoff_time,handoff_day FROM app.esc_assignments WHERE tenant_id=$1 AND group_id=$2")
         .bind(tid).bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
     let mut out: Vec<Uuid> = vec![];
     for a in &rows {
@@ -8772,15 +8831,29 @@ async fn esc_assignments_oncall(st: &AppState, tid: Uuid, gid: Uuid, t: chrono::
         let ce: Option<String> = a.try_get("cov_end").ok().flatten();
         let mut mask: u8 = 0;
         for (i,c) in cd.chars().take(7).enumerate() { if c=='1' { mask |= 1 << i; } }
-        // nessuna finestra oraria -> giornata intera (00:00-24:00); riusa la stessa covers() testata.
         let (sm, em) = match (cs.as_deref().and_then(parse_hhmm), ce.as_deref().and_then(parse_hhmm)) {
             (Some((h1,m1)),Some((h2,m2))) => (h1*60+m1, h2*60+m2),
             _ => (0u32, 1440u32),
         };
-        let covers = crate::escalation::ScheduleRule{ start_min:sm, end_min:em, weekday_mask:mask, tz }.covers(t);
-        if covers {
-            let mem: Vec<Uuid> = sqlx::query_scalar("SELECT user_id FROM app.esc_assignment_members WHERE assignment_id=$1 ORDER BY position")
-                .bind(aid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+        if !(crate::escalation::ScheduleRule{ start_min:sm, end_min:em, weekday_mask:mask, tz }).covers(t) { continue; }
+        let mem: Vec<Uuid> = sqlx::query_scalar("SELECT user_id FROM app.esc_assignment_members WHERE assignment_id=$1 ORDER BY position")
+            .bind(aid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+        let mode: String = a.try_get("mode").unwrap_or_else(|_| "tutti".into());
+        if mode == "turni" && !mem.is_empty() {
+            // rotazione dell'assegnazione (nativa): membro corrente via formula pura (deterministica,
+            // ancorata all'handoff locale). Niente stato separato: è una feature native-only.
+            use chrono::TimeZone as _;
+            let oc_type: String = a.try_get("oncall_type").unwrap_or_else(|_| "weekly".into());
+            let oc_shift: i32 = a.try_get("oncall_shift").unwrap_or(1);
+            let (kind, mul) = esc_rot_kind(&oc_type);
+            let ht: Option<String> = a.try_get("handoff_time").ok().flatten();
+            let hd: Option<i32> = a.try_get("handoff_day").ok().flatten();
+            let naive = chrono::NaiveDateTime::parse_from_str(&rotation_start(ht.as_deref(), hd), "%Y-%m-%dT%H:%M:%SZ")
+                .unwrap_or_else(|_| chrono::NaiveDate::from_ymd_opt(2024,1,1).unwrap().and_hms_opt(0,0,0).unwrap());
+            let start = match tz.from_local_datetime(&naive) { chrono::LocalResult::Single(d)=>d.with_timezone(&chrono::Utc), chrono::LocalResult::Ambiguous(d,_)=>d.with_timezone(&chrono::Utc), chrono::LocalResult::None=>chrono::Utc.from_utc_datetime(&naive) };
+            let rot = crate::escalation::Rotation{ kind, shift_len:(oc_shift as i64).max(1)*mul, start, members: mem.clone(), tz };
+            if let Some(u) = rot.active_at(t) { if !out.contains(&u) { out.push(u); } }
+        } else {
             for u in mem { if !out.contains(&u) { out.push(u); } }
         }
     }

@@ -262,6 +262,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/oncall-maintenance", post(api::oncall_maintenance))
         .route("/api/oncall-calendar/url", get(api::oncall_calendar_url))
         .route("/api/oncall-calendar.ics", get(api::oncall_calendar_ics))
+        .route("/api/groups/:id/calendar/url", get(api::group_calendar_url))
+        .route("/api/group-calendar.ics", get(api::group_calendar_ics))
         .route("/api/ingest-tokens", get(api::list_ingest_tokens).post(api::create_ingest_token))
         .route("/api/ingest-tokens/:token", axum::routing::delete(api::delete_ingest_token))
         .route("/api/ingest-tokens/:token/revoke", post(api::revoke_ingest_token))
