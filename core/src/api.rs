@@ -6933,10 +6933,17 @@ pub async fn oncall_settings_get(State(st): State<AppState>, h: HeaderMap) -> R 
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "loneworker").await?;
     let c = oncall_cfg(&st, tid).await;
-    Ok(Json(json!({"voice_fallback_on":c.voice_on,"voice_fallback_min":c.voice_min,"status_updates_on":c.status_on})))
+    // gruppo di default (catch-all nativo) + motore corrente, per la UI Escalation
+    let dg: Option<Uuid> = sqlx::query_scalar("SELECT default_group_id FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
+    let engine: String = sqlx::query_scalar("SELECT escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().unwrap_or_else(|| "native".into());
+    Ok(Json(json!({"voice_fallback_on":c.voice_on,"voice_fallback_min":c.voice_min,"status_updates_on":c.status_on,
+        "default_group_id":dg,"engine":engine})))
 }
 #[derive(Deserialize)]
-pub struct OncallSettingsReq { pub voice_fallback_on: Option<bool>, pub voice_fallback_min: Option<i32>, pub status_updates_on: Option<bool> }
+pub struct OncallSettingsReq { pub voice_fallback_on: Option<bool>, pub voice_fallback_min: Option<i32>, pub status_updates_on: Option<bool>,
+    #[serde(default)] pub default_group_id: Option<Uuid>, #[serde(default)] pub clear_default_group: bool }
 pub async fn oncall_settings_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OncallSettingsReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
@@ -6945,11 +6952,22 @@ pub async fn oncall_settings_set(State(st): State<AppState>, h: HeaderMap, Json(
     let voice_on = b.voice_fallback_on.unwrap_or(cur.voice_on);
     let voice_min = b.voice_fallback_min.unwrap_or(cur.voice_min).clamp(1, 60);
     let status_on = b.status_updates_on.unwrap_or(cur.status_on);
+    // default group: validato nel tenant; clear_default_group lo azzera
+    if let Some(g) = b.default_group_id {
+        let ok = sqlx::query_scalar::<_, Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
+            .bind(g).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_some();
+        if !ok { return Err(err(StatusCode::BAD_REQUEST, "gruppo di default inesistente")); }
+    }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.tenant_oncall_cfg(tenant_id,voice_fallback_on,voice_fallback_min,status_updates_on) VALUES($1,$2,$3,$4) ON CONFLICT (tenant_id) DO UPDATE SET voice_fallback_on=EXCLUDED.voice_fallback_on,voice_fallback_min=EXCLUDED.voice_fallback_min,status_updates_on=EXCLUDED.status_updates_on,updated_at=now()")
         .bind(tid).bind(voice_on).bind(voice_min).bind(status_on).execute(&mut *tx).await.map_err(ise)?;
+    if b.clear_default_group {
+        sqlx::query("UPDATE app.tenant_oncall_cfg SET default_group_id=NULL, updated_at=now() WHERE tenant_id=$1").bind(tid).execute(&mut *tx).await.map_err(ise)?;
+    } else if let Some(g) = b.default_group_id {
+        sqlx::query("UPDATE app.tenant_oncall_cfg SET default_group_id=$2, updated_at=now() WHERE tenant_id=$1").bind(tid).bind(g).execute(&mut *tx).await.map_err(ise)?;
+    }
     tx.commit().await.map_err(ise)?;
-    Ok(Json(json!({"ok":true,"voice_fallback_on":voice_on,"voice_fallback_min":voice_min,"status_updates_on":status_on,"note":"applica con Sincronizza con GoAlert"})))
+    Ok(Json(json!({"ok":true,"voice_fallback_on":voice_on,"voice_fallback_min":voice_min,"status_updates_on":status_on})))
 }
 
 /// FASE 3 — motore di escalation del tenant (lettura, admin). 'goalert' = shadow; 'native' = cutover.
@@ -8133,9 +8151,12 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
     // Fase C: se il lavoratore dell'incidente (via assigned_user diretto o device assegnato) ha un
     // Profilo di protezione ATTIVO con un gruppo escalation, quel gruppo HA LA PRECEDENZA sul routing
     // globale per-etype. Fallback al routing globale quando non c'è profilo/gruppo (comportamento legacy).
+    // Precedenza del gruppo: profilo di protezione del lavoratore > routing per-etype >
+    // gruppo di DEFAULT del tenant (catch-all, mig 0060). Il default garantisce che nessun incidente
+    // critico resti senza destinatari sulla strada nuova (nativo), anche senza regola di routing.
     let incs = sqlx::query(
         "SELECT i.id, i.etype, i.state, i.opened_at,
-                COALESCE(pp.escalation_group_id, r.group_id) AS group_id
+                COALESCE(pp.escalation_group_id, r.group_id, oc.default_group_id) AS group_id
            FROM app.incidents i
            LEFT JOIN app.alarm_routing r ON r.tenant_id=i.tenant_id AND r.etype=i.etype
            LEFT JOIN app.events ev ON ev.id=i.event_id
@@ -8143,8 +8164,9 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
            LEFT JOIN app.protection_profile_members m
                   ON m.tenant_id=i.tenant_id AND m.user_id=COALESCE(i.assigned_user, d.assigned_user)
            LEFT JOIN app.protection_profiles pp ON pp.id=m.profile_id AND pp.enabled=true
+           LEFT JOIN app.tenant_oncall_cfg oc ON oc.tenant_id=i.tenant_id
           WHERE i.tenant_id=$1 AND i.state <> 'chiuso'
-            AND COALESCE(pp.escalation_group_id, r.group_id) IS NOT NULL")
+            AND COALESCE(pp.escalation_group_id, r.group_id, oc.default_group_id) IS NOT NULL")
         .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default();
     let (mut seen, mut delivered) = (0i64, 0i64);
     for inc in &incs {

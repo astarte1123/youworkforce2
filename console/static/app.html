@@ -2246,6 +2246,13 @@ async function profRm(id,uid){
   catch(e){ toast(e.message,'bad'); }
 }
 
+async function defaultGroupSave(btn){
+  const m=document.querySelector('.defgrp-msg'); if(m){m.textContent='…';m.style.color='var(--mut)';}
+  const g=$('#defGrp').value;
+  const body = g ? {default_group_id:g} : {clear_default_group:true};
+  try{ await api('/oncall-settings',{method:'POST',body:JSON.stringify(body)}); toast('Gruppo di default salvato','ok'); if(m){m.textContent='Salvato';m.style.color='var(--ok)';} }
+  catch(e){ toast(e.message,'bad'); if(m){m.textContent=e.message;m.style.color='var(--bad)';} }
+}
 async function vGruppi(v){
   const [G,users,ocs]=await Promise.all([api('/groups').catch(()=>({groups:[],routing:[]})),api('/users').catch(()=>[]),
     api('/oncall-settings').catch(()=>({voice_fallback_on:true,voice_fallback_min:5,status_updates_on:true}))]);
@@ -2262,6 +2269,16 @@ async function vGruppi(v){
     il <b>motore nativo</b> (default) risolve on-call e consegna le notifiche (SMS/voce/e-mail/Slack) con ripetizione da <i>Escalation SOS</i>.
     <span class="mut">GoAlert resta disponibile come rete di sicurezza: usa <b>Sincronizza con GoAlert</b> solo per il rollback di un tenant.</span></div>
     <div id="gaSyncOut" class="small" style="margin-top:6px"></div></div>
+  <div class="card pad" style="margin-bottom:12px">
+    <div class="spread"><h2 style="margin-bottom:4px">Gruppo di default (catch-all)</h2>
+      <span class="tag ${ocs.engine==='native'?'':'mut'}">motore: ${esc(ocs.engine||'native')}</span></div>
+    <div class="small mut" style="margin-bottom:8px">Destinatari di un incidente critico che non ha né un <b>profilo di protezione</b> né una <b>regola di routing</b> per il suo tipo. Garantisce che nessun allarme resti senza reperibili.</div>
+    <div class="row" style="gap:8px;align-items:center">
+      <select id="defGrp" class="grow small">
+        <option value="">— nessuno (solo profilo/routing) —</option>
+        ${G.groups.map(g=>`<option value="${g.id}" ${g.id===ocs.default_group_id?'selected':''}>${esc(g.name)}</option>`).join('')}</select>
+      <button class="btn" onclick="defaultGroupSave(this)">Salva default</button>
+      <span class="defgrp-msg small"></span></div></div>
   <div class="grid g2">
     <div class="card pad"><h2 style="margin-bottom:10px">Gruppi</h2>
       ${G.groups.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px">
