@@ -58,6 +58,11 @@ per-tipo → gruppo di default**.
 - **A turni (rotazione)**: a turno una persona per volta. Tipo **orario / giornaliero / settimanale
   / mensile** e durata del turno. La rotazione mensile rispetta il calendario (giorni reali del
   mese, nessuna approssimazione).
+- **Fuso orario**: handoff, fasce di copertura e annunci Slack orari sono calcolati nell'**ora locale**
+  del gruppo (campo fuso), con i cambi d'ora (DST) gestiti correttamente.
+- **Attiva ora** (*Set Active*): su un gruppo a turni, il pulsante **"attiva ora"** accanto a una
+  persona la rende **subito** reperibile di turno, senza aspettare il prossimo handoff (es. un collega
+  dà il cambio in anticipo o rientra da un imprevisto).
 
 ### 2.3 Copertura · handoff · Slack (menu ⚙ sul gruppo)
 - **Copertura**: *24/7* oppure *solo fasce orarie* (es. 20:00–08:00) nei giorni scelti. Fuori fascia

@@ -2297,7 +2297,7 @@ async function vGruppi(v){
         <div class="row" style="gap:6px"><select id="mSel_${g.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
           <button class="btn ghost small" onclick="grpAdd('${g.id}')">+ membro</button></div>
         ${g.members.map(m=>`<div class="row small" style="justify-content:space-between;margin-top:4px"><span>${esc(m.email)}</span>
-          <button class="btn-ico btn ghost" onclick="grpRm('${g.id}','${m.user_id}')">${ICON.x}</button></div>`).join('')}
+          <span>${g.oncall_mode==='turni'?`<button class="btn ghost small" title="imposta subito reperibile" onclick="grpSetActive('${g.id}','${m.user_id}')">attiva ora</button> `:''}<button class="btn-ico btn ghost" onclick="grpRm('${g.id}','${m.user_id}')">${ICON.x}</button></span></div>`).join('')}
         <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
           <div class="row small" style="gap:6px;align-items:center;flex-wrap:wrap">
             <span class="mut">Reperibilità:</span>
@@ -2633,6 +2633,7 @@ async function grpDel(id){ if(!await askConfirm('Eliminare il gruppo?'))return;
 async function grpAdd(gid){ const uid=$('#mSel_'+gid).value; if(!uid)return;
   try{await api('/groups/'+gid+'/members',{method:'POST',body:JSON.stringify({user_id:uid,position:1})}); toast('Membro aggiunto','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function grpRm(gid,uid){ try{await api('/groups/'+gid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function grpSetActive(gid,uid){ try{await api('/groups/'+gid+'/rotation/set-active',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Reperibile attivato ora','ok');}catch(e){toast(e.message,'bad');} }
 async function routeSet(etype,gid){ try{await api('/routing',{method:'POST',body:JSON.stringify({etype,group_id:gid||null})}); toast('Routing aggiornato','ok');}catch(e){toast(e.message,'bad');} }
 
 // ---------------- Policy escalation multi-step (nativo) ----------------

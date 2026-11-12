@@ -308,3 +308,17 @@ uno step di policy ora notifica un **destinatario** scelto, non solo un canale.
 bulk ack/close ACL coerente con guard_incident_site + trail timeline; dedup email su firma stabile
 dell'oggetto; resolver rotation non muta lo stato nelle letture; slack HH:MM in UTC documentato (limite
 FASE 0); timeline per-incidente sui bulk.
+
+## 13. Rotations: Set Active + Timezone nativo (R1+R2, FATTO 2026-11-12)
+
+Parità con la pagina Rotations di GoAlert.
+
+- **R1 — Set Active:** `POST /api/groups/:id/rotation/set-active {user_id}` rende subito reperibile il
+  membro scelto (imposta `esc_rotation_state`, `seeded_from='manual'`), senza aspettare l'handoff.
+  UI: bottone "attiva ora" per membro nei gruppi a turni.
+- **R2 — Timezone nativo:** dipendenza `chrono-tz`; i boundary di rotation (daily/weekly/monthly), le
+  fasce di copertura e gli annunci Slack orari sono calcolati nell'**ora locale** del gruppo
+  (`oncall_tz`), con DST gestito. Hourly resta assoluto. Il motore nativo non è più UTC-only.
+
+**Verifica:** `qa/escalation-setactive-e2e.sh` 4/4 + 2 unit test tz/DST (escalation unit 14/14).
+Regression totale 79 e2e + 14 unit. YouWorkforce supera inoltre GoAlert con la rotazione **mensile**.

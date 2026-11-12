@@ -211,6 +211,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/groups/:id/members", post(api::add_group_member))
         .route("/api/groups/:id/oncall", post(api::set_group_oncall))
         .route("/api/groups/:id/policy", get(api::group_policy_get).post(api::group_policy_set))
+        .route("/api/groups/:id/rotation/set-active", post(api::rotation_set_active))
         .route("/api/groups/:id/labels", post(api::group_labels_set))
         .route("/api/groups/:id/playbook", post(api::group_playbook_set))
         .route("/api/groups/:id/handoff-notes", get(api::handoff_notes_list).post(api::handoff_note_add))

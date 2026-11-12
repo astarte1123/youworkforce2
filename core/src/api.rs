@@ -3445,6 +3445,26 @@ pub async fn group_playbook_set(State(st): State<AppState>, h: HeaderMap, Path(g
     Ok(Json(json!({"ok":true})))
 }
 
+// ---- R1: Set Active (parità Rotations GoAlert) — imposta SUBITO il reperibile di turno ----
+#[derive(Deserialize)] pub struct SetActiveReq { pub user_id: Uuid }
+pub async fn rotation_set_active(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<SetActiveReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    // indice del membro nell'ordine della rotation (ORDER BY position)
+    let members: Vec<Uuid> = sqlx::query_scalar("SELECT user_id FROM app.alarm_group_members WHERE group_id=$1 ORDER BY position")
+        .bind(gid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let Some(idx) = members.iter().position(|u| *u == b.user_id) else {
+        return Err(err(StatusCode::BAD_REQUEST, "l'utente non è membro del gruppo"));
+    };
+    let now = st.clock.now();
+    sqlx::query("INSERT INTO app.esc_rotation_state(tenant_id,group_id,position,shift_start,seeded_from) VALUES($1,$2,$3,$4,'manual')
+        ON CONFLICT (tenant_id,group_id) DO UPDATE SET position=EXCLUDED.position, shift_start=EXCLUDED.shift_start, seeded_from='manual', updated_at=now()")
+        .bind(tid).bind(gid).bind(idx as i32).bind(now).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, &s.email, "rotation_set_active", json!({"group":gid,"user":b.user_id,"position":idx})).await;
+    Ok(Json(json!({"ok":true,"position":idx})))
+}
+
 pub async fn delete_group(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     require_any_module(&st, s.tenant_id.unwrap(), ESCALATION_MODS).await?;
@@ -8303,15 +8323,25 @@ fn esc_rot_kind(oc_type: &str) -> (crate::escalation::RotationType, i64) {
 fn esc_build_schedule(g: &sqlx::postgres::PgRow, members: &[Uuid]) -> crate::escalation::Schedule {
     let mode: String = g.try_get("oncall_mode").unwrap_or_else(|_| "tutti".into());
     let coverage: String = g.try_get("coverage_mode").unwrap_or_else(|_| "24_7".into());
+    // fuso del gruppo (oncall_tz); i boundary rotation e le fasce di copertura sono in ora locale.
+    let tz: chrono_tz::Tz = g.try_get::<String,_>("oncall_tz").ok()
+        .and_then(|s| s.parse().ok()).unwrap_or(chrono_tz::UTC);
     let rotation = if mode == "turni" {
         let oc_type: String = g.try_get("oncall_type").unwrap_or_else(|_| "weekly".into());
         let oc_shift: i32 = g.try_get("oncall_shift").unwrap_or(1);
         let (kind, mul) = esc_rot_kind(&oc_type);
         let ht: Option<String> = g.try_get("handoff_time").ok().flatten();
         let hd: Option<i32> = g.try_get("handoff_day").ok().flatten();
-        let start = chrono::DateTime::parse_from_rfc3339(&rotation_start(ht.as_deref(), hd)).map(|d| d.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|_| chrono::DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z").unwrap().with_timezone(&chrono::Utc));
-        Some(crate::escalation::Rotation{ kind, shift_len: (oc_shift as i64).max(1) * mul, start, members: members.to_vec() })
+        // ancora handoff come ora LOCALE nel fuso del gruppo, poi convertita in UTC.
+        use chrono::TimeZone as _;
+        let naive = chrono::NaiveDateTime::parse_from_str(&rotation_start(ht.as_deref(), hd), "%Y-%m-%dT%H:%M:%SZ")
+            .unwrap_or_else(|_| chrono::NaiveDate::from_ymd_opt(2024,1,1).unwrap().and_hms_opt(0,0,0).unwrap());
+        let start = match tz.from_local_datetime(&naive) {
+            chrono::LocalResult::Single(d) => d.with_timezone(&chrono::Utc),
+            chrono::LocalResult::Ambiguous(a, _) => a.with_timezone(&chrono::Utc),
+            chrono::LocalResult::None => { use chrono::TimeZone; chrono::Utc.from_utc_datetime(&naive) },
+        };
+        Some(crate::escalation::Rotation{ kind, shift_len: (oc_shift as i64).max(1) * mul, start, members: members.to_vec(), tz })
     } else { None };
     let fixed_users = if mode == "turni" { vec![] } else { members.to_vec() };
     let mut rules = vec![];
@@ -8323,7 +8353,7 @@ fn esc_build_schedule(g: &sqlx::postgres::PgRow, members: &[Uuid]) -> crate::esc
         if let (Some(a), Some(b)) = (cs.as_deref().and_then(mins), ce.as_deref().and_then(mins)) {
             let mut mask: u8 = 0;
             for (i,c) in cd.chars().take(7).enumerate() { if c=='1' { mask |= 1 << i; } }
-            rules.push(crate::escalation::ScheduleRule{ start_min: a, end_min: b, weekday_mask: mask });
+            rules.push(crate::escalation::ScheduleRule{ start_min: a, end_min: b, weekday_mask: mask, tz });
         }
     }
     crate::escalation::Schedule{ rotation, fixed_users, rules, overrides: vec![] }
@@ -9042,7 +9072,7 @@ pub async fn slack_announce_scan(st: &AppState) {
     let token = std::env::var("YW_ESC_SLACK_TOKEN").unwrap_or_default();
     if token.trim().is_empty() { return; }
     let now = chrono::Utc::now();
-    let groups = sqlx::query("SELECT id,tenant_id,name,slack_channel_id,slack_notify,slack_last_announce,oncall_mode FROM app.alarm_groups WHERE slack_notify<>'off' AND slack_channel_id IS NOT NULL")
+    let groups = sqlx::query("SELECT id,tenant_id,name,slack_channel_id,slack_notify,slack_last_announce,oncall_mode,oncall_tz FROM app.alarm_groups WHERE slack_notify<>'off' AND slack_channel_id IS NOT NULL")
         .fetch_all(&st.owner_pool).await.unwrap_or_default();
     for g in &groups {
         let gid: Uuid = g.get("id");
@@ -9060,10 +9090,13 @@ pub async fn slack_announce_scan(st: &AppState) {
                 match (ss, last) { (Some(s), Some(l)) => s > l, (Some(_), None) => true, _ => false }
             }
         } else if let Some((hh, mm)) = parse_hhmm(&notify) {
-            // NB: orario interpretato in UTC (come tutto il motore nativo FASE 0: anche coverage e
-            // handoff sono in UTC). Il fuso del gruppo (oncall_tz) verrà applicato quando il motore
-            // introdurrà il supporto fusi/DST end-to-end.
-            let target = now.date_naive().and_hms_opt(hh, mm, 0).map(|d| chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(d, chrono::Utc));
+            // orario di annuncio nell'ora LOCALE del gruppo (oncall_tz), DST gestito.
+            use chrono::TimeZone as _;
+            let tz: chrono_tz::Tz = g.try_get::<String,_>("oncall_tz").ok().and_then(|s| s.parse().ok()).unwrap_or(chrono_tz::UTC);
+            let lt = now.with_timezone(&tz);
+            let target = lt.date_naive().and_hms_opt(hh, mm, 0)
+                .and_then(|d| match tz.from_local_datetime(&d) { chrono::LocalResult::Single(x)=>Some(x), chrono::LocalResult::Ambiguous(x,_)=>Some(x), _=>None })
+                .map(|d| d.with_timezone(&chrono::Utc));
             match target { Some(t) => now >= t && last.map(|l| l < t).unwrap_or(true), None => false }
         } else { false };
         if !should { continue; }
