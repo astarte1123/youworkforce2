@@ -290,3 +290,21 @@ testa alla risoluzione del gruppo). Tutto gated `ESCALATION_MODS`.
 
 Con questo la parità GoAlert è completa su tutte le pagine docs lette (overview, alerting, escalation
 policies, schedules, rotations, profile, services, recommended-practices).
+
+## 12. Target per-step (parità Escalation Policies) + code review (FATTO 2026-11-12)
+
+Migrazione `0066_policy_step_targets.sql`. Chiude l'ultimo gap della pagina Escalation Policies:
+uno step di policy ora notifica un **destinatario** scelto, non solo un canale.
+
+- `esc_policy_steps` += `target_kind` (oncall|group|user|slack) + `target_group_id`/`target_user_id`/
+  `target_slack`. Lo step può puntare a: on-call del gruppo (default), un altro gruppo, una persona,
+  o un canale Slack → **escalation gerarchica** (reperibile → responsabili → manager).
+- Runner: `EscStepTarget` + `esc_step_recipients()` risolvono i destinatari per step; ogni persona si
+  espande comunque nelle sue regole di notifica. CRUD `/api/groups/:id/policy` con target per-step;
+  editor UI aggiornato.
+- Verifica: `qa/escalation-policy-targets-e2e.sh` 6/6. Regression totale 79 + unit 12.
+
+**Code review pre-commit (6 fix):** sicurezza token di ingest (l'handle pubblico non autentica più);
+bulk ack/close ACL coerente con guard_incident_site + trail timeline; dedup email su firma stabile
+dell'oggetto; resolver rotation non muta lo stato nelle letture; slack HH:MM in UTC documentato (limite
+FASE 0); timeline per-incidente sui bulk.

@@ -2638,34 +2638,49 @@ async function routeSet(etype,gid){ try{await api('/routing',{method:'POST',body
 // ---------------- Policy escalation multi-step (nativo) ----------------
 window._pol={}; // gid -> {steps:[{delay_min,channel}], repeat}
 const POL_CH=[['sms','SMS'],['voice','Voce'],['email','Email'],['slack','Slack']];
+const POL_TGT=[['oncall','on-call del gruppo'],['group','altro gruppo'],['user','persona'],['slack','canale Slack']];
 async function grpPolicyLoad(gid){
   try{ const r=await api('/groups/'+gid+'/policy');
-    window._pol[gid]={steps:(r.steps||[]).map(s=>({delay_min:s.delay_min,channel:s.channel})), repeat:r.repeat||0};
+    window._pol[gid]={steps:(r.steps||[]).map(s=>({delay_min:s.delay_min,channel:s.channel,target_kind:s.target_kind||'oncall',target_group_id:s.target_group_id||'',target_user_id:s.target_user_id||'',target_slack:s.target_slack||''})), repeat:r.repeat||0};
     grpPolicyRender(gid);
   }catch(e){ $('#pol_'+gid).innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; }
 }
+function polTargetPicker(gid,i,s){
+  const P=`window._pol['${gid}'].steps[${i}]`;
+  const kinds=`<select class="small" onchange="${P}.target_kind=this.value;grpPolicyRender('${gid}')">${POL_TGT.map(t=>`<option value="${t[0]}" ${s.target_kind===t[0]?'selected':''}>${t[1]}</option>`).join('')}</select>`;
+  let extra='';
+  if(s.target_kind==='group') extra=`<select class="small" onchange="${P}.target_group_id=this.value"><option value="">—</option>${(window._groupsCache||[]).map(g=>`<option value="${g.id}" ${s.target_group_id===g.id?'selected':''}>${esc(g.name)}</option>`).join('')}</select>`;
+  else if(s.target_kind==='user') extra=`<select class="small" onchange="${P}.target_user_id=this.value"><option value="">—</option>${(window._users||[]).map(u=>`<option value="${u.id}" ${s.target_user_id===u.id?'selected':''}>${esc(u.email)}</option>`).join('')}</select>`;
+  else if(s.target_kind==='slack') extra=`<input class="small" placeholder="ID canale Slack" value="${esc(s.target_slack||'')}" style="width:120px" onchange="${P}.target_slack=this.value">`;
+  return kinds+' '+extra;
+}
 function grpPolicyRender(gid){
   const p=window._pol[gid]||{steps:[],repeat:0};
-  const rows=p.steps.map((s,i)=>`<div class="row small" style="gap:6px;align-items:center;margin-bottom:4px">
+  const rows=p.steps.map((s,i)=>`<div class="row small" style="gap:6px;align-items:center;margin-bottom:4px;flex-wrap:wrap">
     <b>#${i+1}</b>
     <select class="small" onchange="window._pol['${gid}'].steps[${i}].channel=this.value">${POL_CH.map(c=>`<option value="${c[0]}" ${s.channel===c[0]?'selected':''}>${c[1]}</option>`).join('')}</select>
-    attesa <input type="number" min="0" max="1440" value="${s.delay_min}" style="width:60px" onchange="window._pol['${gid}'].steps[${i}].delay_min=+this.value"> min
+    → ${polTargetPicker(gid,i,s)}
+    attesa <input type="number" min="0" max="1440" value="${s.delay_min}" style="width:56px" onchange="window._pol['${gid}'].steps[${i}].delay_min=+this.value"> min
     <button class="btn-ico btn ghost" title="su" onclick="grpPolMove('${gid}',${i},-1)">↑</button>
     <button class="btn-ico btn ghost" title="giù" onclick="grpPolMove('${gid}',${i},1)">↓</button>
     <button class="btn-ico btn ghost" onclick="grpPolRm('${gid}',${i})">${ICON.x}</button></div>`).join('')
-    ||'<div class="small mut">Nessuno step personalizzato → usa la ladder derivata (SMS→Voce).</div>';
+    ||'<div class="small mut">Nessuno step personalizzato → usa la ladder derivata (SMS→Voce) verso l\'on-call del gruppo.</div>';
   $('#pol_'+gid).innerHTML=`${rows}
     <div class="row small" style="gap:6px;align-items:center;margin-top:6px">
       <button class="btn ghost small" onclick="grpPolAdd('${gid}')">+ step</button>
       ripeti <input type="number" min="0" max="10" value="${p.repeat||0}" style="width:50px" onchange="window._pol['${gid}'].repeat=+this.value"> volte
       <button class="btn small" onclick="grpPolSave('${gid}')">Salva policy</button></div>
-    <div class="small faint" style="margin-top:3px">Lo step aspetta i minuti indicati prima di passare al successivo. Dopo l'ultimo, ripete da capo N volte finché non c'è presa in carico.</div>`;
+    <div class="small faint" style="margin-top:3px">Ogni step notifica il <b>target</b> scelto (on-call del gruppo, un altro gruppo, una persona o un canale Slack) sul canale indicato, poi aspetta i minuti prima del successivo. Dopo l'ultimo, ripete N volte finché non c'è presa in carico.</div>`;
 }
-function grpPolAdd(gid){ (window._pol[gid]=window._pol[gid]||{steps:[],repeat:0}).steps.push({delay_min:5,channel:'sms'}); grpPolicyRender(gid); }
+function grpPolAdd(gid){ (window._pol[gid]=window._pol[gid]||{steps:[],repeat:0}).steps.push({delay_min:5,channel:'sms',target_kind:'oncall',target_group_id:'',target_user_id:'',target_slack:''}); grpPolicyRender(gid); }
 function grpPolRm(gid,i){ window._pol[gid].steps.splice(i,1); grpPolicyRender(gid); }
 function grpPolMove(gid,i,d){ const a=window._pol[gid].steps; const j=i+d; if(j<0||j>=a.length)return; [a[i],a[j]]=[a[j],a[i]]; grpPolicyRender(gid); }
 async function grpPolSave(gid){ const p=window._pol[gid]||{steps:[],repeat:0};
-  try{ await api('/groups/'+gid+'/policy',{method:'POST',body:JSON.stringify({steps:p.steps,repeat:+p.repeat||0})}); toast('Policy salvata','ok'); }
+  const steps=p.steps.map(s=>({delay_min:+s.delay_min||0, channel:s.channel, target_kind:s.target_kind||'oncall',
+    target_group_id:(s.target_kind==='group'&&s.target_group_id)?s.target_group_id:null,
+    target_user_id:(s.target_kind==='user'&&s.target_user_id)?s.target_user_id:null,
+    target_slack:(s.target_kind==='slack'&&s.target_slack)?s.target_slack:null}));
+  try{ await api('/groups/'+gid+'/policy',{method:'POST',body:JSON.stringify({steps,repeat:+p.repeat||0})}); toast('Policy salvata','ok'); }
   catch(e){ toast(e.message,'bad'); } }
 async function grpLabelsSave(gid){
   const txt=$('#lbl_'+gid).value||''; const labels={};

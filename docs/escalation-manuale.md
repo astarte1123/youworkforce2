@@ -68,13 +68,17 @@ per-tipo → gruppo di default**.
 
 ### 2.4 Policy di escalation multi-step (⛓ sulla scheda gruppo)
 Definisci una **sequenza di step** personalizzata (parità con i motori professionali):
-- per ogni step: **canale** (SMS / Voce / Email / Slack) e **attesa** in minuti prima di passare
-  allo step successivo;
+- per ogni step: **canale** (SMS / Voce / Email / Slack), **target** (chi notificare) e **attesa** in
+  minuti prima di passare allo step successivo;
+- il **target** dello step può essere: *on-call del gruppo* (default), *un altro gruppo* (es.
+  Responsabili), *una persona* specifica, o *un canale Slack*. Così puoi fare **escalation gerarchica**
+  (step1 = reperibile, step2 = responsabili, step3 = manager);
 - **riordina** gli step (↑ ↓), aggiungi/rimuovi;
 - **ripeti** l'intera sequenza N volte finché non c'è presa in carico.
 
+Ogni destinatario viene comunque espanso nelle **sue regole di notifica** (recapiti + ritardi).
 Se non definisci step personalizzati, vale la **ladder derivata** dalle impostazioni vocali
-(SMS immediato → chiamata dopo i minuti di fallback).
+(SMS immediato → chiamata dopo i minuti di fallback) verso l'on-call del gruppo.
 
 ### 2.5 Label (ricerca)
 Assegna a un gruppo **etichette** `chiave=valore` (es. `env=prod`, `team=ops`). Servono a filtrare e
