@@ -2807,29 +2807,105 @@ pub async fn delete_device(State(st): State<AppState>, h: HeaderMap, Path(id): P
 
 // ---------------- Ingest token (credenziali macchina dei connettori) ----------------
 // Il tenant deriva SEMPRE dal token di ingest; qui il tenant_admin li vede e li ruota.
+/// Worker Safety Fase A — hash a riposo delle credenziali di ingest (sha256 hex).
+pub fn hash_token(tok: &str) -> String {
+    use sha2::{Sha256, Digest};
+    let d = Sha256::digest(tok.as_bytes());
+    d.iter().map(|b| format!("{:02x}", b)).collect()
+}
+/// Credenziale di ingest risolta dal token (header X-Ingest-Token / querystring legacy).
+pub struct IngestCred { pub tenant_id: Uuid, pub source: String, pub device_id: Option<Uuid> }
+/// Risolve il token di ingest con ciclo di vita e binding al dispositivo.
+/// Match per hash (nuovi token) o per token in chiaro (legacy non ancora ruotati).
+/// Rifiuta token revocati o scaduti; aggiorna last_used_at best-effort.
+pub async fn resolve_ingest_token(st: &AppState, token: &str) -> Option<IngestCred> {
+    let hash = hash_token(token);
+    let row = sqlx::query(
+        "SELECT tenant_id,source,device_id,expires_at,revoked_at FROM app.ingest_tokens \
+         WHERE token_hash=$1 OR token=$2 LIMIT 1")
+        .bind(&hash).bind(token).fetch_optional(&st.owner_pool).await.ok().flatten()?;
+    let revoked: Option<chrono::DateTime<chrono::Utc>> = row.try_get("revoked_at").ok().flatten();
+    if revoked.is_some() { return None; }
+    let exp: Option<chrono::DateTime<chrono::Utc>> = row.try_get("expires_at").ok().flatten();
+    if let Some(e) = exp { if e < st.clock.now() { return None; } }
+    let _ = sqlx::query("UPDATE app.ingest_tokens SET last_used_at=now() WHERE token_hash=$1 OR token=$2")
+        .bind(&hash).bind(token).execute(&st.owner_pool).await;
+    Some(IngestCred { tenant_id: row.get("tenant_id"), source: row.get("source"), device_id: row.try_get("device_id").ok().flatten() })
+}
+/// external_id del dispositivo legato a un token device-bound (per attribuire/forzare il fix).
+pub async fn bound_device_external(st: &AppState, device_id: Uuid) -> Option<String> {
+    sqlx::query_scalar::<_, Option<String>>("SELECT external_id FROM app.devices WHERE id=$1")
+        .bind(device_id).fetch_optional(&st.owner_pool).await.ok().flatten().flatten()
+}
+
 pub async fn list_ingest_tokens(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, CONNECTOR_MODS).await?;
-    let rows = sqlx::query("SELECT token,source,created_at FROM app.ingest_tokens WHERE tenant_id=$1 ORDER BY source,created_at")
+    let rows = sqlx::query(
+        "SELECT t.token,t.token_hash,t.source,t.created_at,t.device_id,t.label,t.expires_at,t.revoked_at,t.last_used_at, COALESCE(d.label, d.external_id) AS device_name \
+         FROM app.ingest_tokens t LEFT JOIN app.devices d ON d.id=t.device_id \
+         WHERE t.tenant_id=$1 ORDER BY t.source,t.created_at")
         .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-    let out: Vec<Value> = rows.iter().map(|r| json!({
-        "token": r.get::<String,_>("token"), "source": r.get::<String,_>("source"),
-        "created_at": r.get::<chrono::DateTime<chrono::Utc>,_>("created_at") })).collect();
+    let now = st.clock.now();
+    let out: Vec<Value> = rows.iter().map(|r| {
+        let hashed: Option<String> = r.try_get("token_hash").ok().flatten();
+        let raw: String = r.get("token");
+        let revoked: Option<chrono::DateTime<chrono::Utc>> = r.try_get("revoked_at").ok().flatten();
+        let exp: Option<chrono::DateTime<chrono::Utc>> = r.try_get("expires_at").ok().flatten();
+        let expired = exp.map(|e| e < now).unwrap_or(false);
+        // i token nuovi (hashed) non espongono più il segreto: solo un handle/prefisso.
+        json!({
+            "token": raw, "hashed": hashed.is_some(), "source": r.get::<String,_>("source"),
+            "created_at": r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
+            "device_id": r.try_get::<Option<Uuid>,_>("device_id").ok().flatten(),
+            "device_name": r.try_get::<Option<String>,_>("device_name").ok().flatten(),
+            "label": r.try_get::<Option<String>,_>("label").ok().flatten(),
+            "expires_at": exp, "revoked": revoked.is_some(), "expired": expired,
+            "last_used_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_used_at").ok().flatten(),
+        })
+    }).collect();
     Ok(Json(json!(out)))
 }
 #[derive(Deserialize)]
-pub struct TokenReq { pub source: String }
+pub struct TokenReq {
+    pub source: String,
+    #[serde(default)] pub device_id: Option<Uuid>,
+    #[serde(default)] pub label: Option<String>,
+    #[serde(default)] pub expires_days: Option<i64>,
+}
 pub async fn create_ingest_token(State(st): State<AppState>, h: HeaderMap, Json(b): Json<TokenReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
     const SRC: &[&str] = &["traccar","thingsboard","iot"];
     if !SRC.contains(&b.source.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "sorgente non valida")); }
-    let token = format!("{}-{}", b.source, &auth::new_token()[..24]);
-    sqlx::query("INSERT INTO app.ingest_tokens(token,tenant_id,source) VALUES($1,$2,$3)")
-        .bind(&token).bind(tid).bind(&b.source).execute(&st.owner_pool).await.map_err(ise)?;
-    audit(&st, tid, &s.email, "create_ingest_token", json!({"source":b.source})).await;
-    Ok(Json(json!({"token":token})))
+    // device opzionale: deve appartenere al tenant
+    if let Some(did) = b.device_id {
+        let ok = sqlx::query_scalar::<_, Uuid>("SELECT id FROM app.devices WHERE id=$1 AND tenant_id=$2")
+            .bind(did).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_some();
+        if !ok { return Err(err(StatusCode::BAD_REQUEST, "device non valido per questo tenant")); }
+    }
+    // segreto mostrato UNA volta; a riposo salviamo solo l'hash + un handle non segreto (prefisso).
+    let secret = format!("{}-{}", b.source, &auth::new_token()[..24]);
+    let hash = hash_token(&secret);
+    let handle = format!("{}-{}", b.source, &secret[b.source.len()+1..b.source.len()+9]);
+    let expires_at = b.expires_days.filter(|d| *d > 0).map(|d| st.clock.now() + chrono::Duration::days(d));
+    sqlx::query("INSERT INTO app.ingest_tokens(token,token_hash,tenant_id,source,device_id,label,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)")
+        .bind(&handle).bind(&hash).bind(tid).bind(&b.source).bind(b.device_id).bind(&b.label).bind(expires_at)
+        .execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, &s.email, "create_ingest_token", json!({"source":b.source,"device_id":b.device_id,"expires_at":expires_at})).await;
+    // il token completo torna SOLO ora (non più recuperabile dopo)
+    Ok(Json(json!({"token":secret,"handle":handle,"note":"Copia il token adesso: non sarà più mostrato."})))
+}
+/// Rotazione/revoca: revoca per handle (token column) del tenant.
+pub async fn revoke_ingest_token(State(st): State<AppState>, h: HeaderMap, Path(tok): Path<String>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let n = sqlx::query("UPDATE app.ingest_tokens SET revoked_at=now() WHERE token=$1 AND tenant_id=$2 AND revoked_at IS NULL")
+        .bind(&tok).bind(tid).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "token inesistente o già revocato")); }
+    audit(&st, tid, &s.email, "revoke_ingest_token", json!({})).await;
+    Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_ingest_token(State(st): State<AppState>, h: HeaderMap, Path(tok): Path<String>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
@@ -3500,15 +3576,16 @@ pub struct IngestReq {
 pub async fn ingest_event(State(st): State<AppState>, h: HeaderMap, Json(b): Json<IngestReq>) -> R {
     let token = h.get("x-ingest-token").and_then(|v| v.to_str().ok())
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing ingest token"))?;
-    let trow = sqlx::query("SELECT tenant_id,source FROM app.ingest_tokens WHERE token=$1")
-        .bind(token).fetch_optional(&st.owner_pool).await.map_err(ise)?
+    let cred = resolve_ingest_token(&st, token).await
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
-    let tid: Uuid = trow.get("tenant_id");
-    let source: String = trow.get("source");
+    let tid = cred.tenant_id;
+    let source = cred.source.clone();
     // modular per-tenant: a disabled module refuses new ingress too (history stays readable)
     if !module_active(&st, tid, "loneworker").await {
         return Err(err(StatusCode::FORBIDDEN, "modulo loneworker non abilitato"));
     }
+    // Fase A: token device-bound -> il fix è attribuito a QUEL device (anti-spoof dell'external_id).
+    let bound_ext = match cred.device_id { Some(did) => bound_device_external(&st, did).await, None => None };
 
     let idem = b.idem_key.clone().unwrap_or_else(|| b.source_event.clone());
     if idem.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "idem key required")); }
@@ -3528,7 +3605,7 @@ pub async fn ingest_event(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
         source_event: b.source_event.clone(),
         idem,
         etype,
-        device_external_id: b.device_external_id.clone(),
+        device_external_id: bound_ext.or_else(|| b.device_external_id.clone()),
         site_name: b.site_name.clone(),
         lat: b.lat, lon: b.lon, accuracy_m: b.accuracy_m,
         correlation,
@@ -3679,14 +3756,14 @@ pub async fn ingest_traccar(
     let token = h.get("x-ingest-token").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
         .or_else(|| q.get("token").cloned())
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing ingest token"))?;
-    let trow = sqlx::query("SELECT tenant_id,source FROM app.ingest_tokens WHERE token=$1")
-        .bind(&token).fetch_optional(&st.owner_pool).await.map_err(ise)?
+    let cred = resolve_ingest_token(&st, &token).await
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
-    let tid: Uuid = trow.get("tenant_id");
-    let source: String = trow.get("source");
+    let tid = cred.tenant_id;
+    let source = cred.source.clone();
     if !module_active(&st, tid, "traccar").await {
         return Err(err(StatusCode::FORBIDDEN, "modulo traccar non abilitato"));
     }
+    let bound_ext = match cred.device_id { Some(did) => bound_device_external(&st, did).await, None => None };
 
     let ev = b.get("event");
     let dev = b.get("device");
@@ -3722,7 +3799,7 @@ pub async fn ingest_traccar(
         source_event: source_event.clone(),
         idem: source_event.clone(),
         etype,
-        device_external_id: unique_id,
+        device_external_id: bound_ext.or(unique_id),
         site_name: None,
         lat, lon, accuracy_m: None,
         correlation: source_event,
@@ -4573,15 +4650,18 @@ pub async fn ingest_traccar_position(
     let token = h.get("x-ingest-token").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
         .or_else(|| q.get("token").cloned())
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing ingest token"))?;
-    let tid: Uuid = sqlx::query_scalar("SELECT tenant_id FROM app.ingest_tokens WHERE token=$1")
-        .bind(&token).fetch_optional(&st.owner_pool).await.map_err(ise)?
+    let cred = resolve_ingest_token(&st, &token).await
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
+    let tid = cred.tenant_id;
     if !module_active(&st, tid, "traccar").await {
         return Err(err(StatusCode::FORBIDDEN, "modulo traccar non abilitato"));
     }
     let pos = b.get("position").or(Some(&b)).unwrap();
     let dev = b.get("device");
-    let unique_id = dev.and_then(|d| d.get("uniqueId")).and_then(|v| v.as_str())
+    // Fase A: token device-bound -> external_id forzato (il payload non può spacciarsi per un altro device).
+    let bound_ext = match cred.device_id { Some(did) => bound_device_external(&st, did).await, None => None };
+    let unique_id = bound_ext.as_deref()
+        .or_else(|| dev.and_then(|d| d.get("uniqueId")).and_then(|v| v.as_str()))
         .or_else(|| q.get("id").map(|s| s.as_str()));
     let lat = pos.get("latitude").and_then(|v| v.as_f64());
     let lon = pos.get("longitude").and_then(|v| v.as_f64());
@@ -4785,14 +4865,15 @@ pub async fn ingest_thingsboard(
     let token = h.get("x-ingest-token").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
         .or_else(|| q.get("token").cloned())
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing ingest token"))?;
-    let trow = sqlx::query("SELECT tenant_id,source FROM app.ingest_tokens WHERE token=$1")
-        .bind(&token).fetch_optional(&st.owner_pool).await.map_err(ise)?
+    let cred = resolve_ingest_token(&st, &token).await
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
-    let tid: Uuid = trow.get("tenant_id");
+    let tid = cred.tenant_id;
     if !module_active(&st, tid, "thingsboard").await {
         return Err(err(StatusCode::FORBIDDEN, "modulo thingsboard non abilitato"));
     }
-    let device = q.get("device").cloned().filter(|s| !s.is_empty());
+    // Fase A: token device-bound -> device forzato (anti-spoof del nome device dalla querystring).
+    let bound_ext = match cred.device_id { Some(did) => bound_device_external(&st, did).await, None => None };
+    let device = bound_ext.or_else(|| q.get("device").cloned().filter(|s| !s.is_empty()));
 
     // Motore regole sensori parametrico (da YouWorkforce). Se nessuna regola fa match,
     // fallback alla policy legacy (flag alarm/critical + soglia temperatura di severity_gate).
@@ -4906,20 +4987,91 @@ pub async fn close_incident(State(st): State<AppState>, h: HeaderMap, Path(iid):
 // ----------------------------- worker SOS -----------------------------
 /// Worker-originated SOS from the PWA (session-authenticated). Distinct from
 /// machine ingress; never depends on STT/RAG (contract line 134).
+/// Worker Safety Fase B — dispositivo "app" del lavoratore (bind sessione↔device).
+/// Usa il device assegnato (devices.assigned_user) se presente; altrimenti auto-provisiona
+/// un device source='pwa' external_id `pwa-<uid>` intestato al lavoratore.
+pub async fn worker_app_device(st: &AppState, tid: Uuid, uid: Uuid, email: &str) -> Result<(Uuid, String), (StatusCode, String)> {
+    if let Some(row) = sqlx::query("SELECT id,external_id FROM app.devices WHERE tenant_id=$1 AND assigned_user=$2 AND COALESCE(enabled,true) ORDER BY created_at LIMIT 1")
+        .bind(tid).bind(uid).fetch_optional(&st.owner_pool).await.map_err(ise)? {
+        return Ok((row.get("id"), row.get("external_id")));
+    }
+    let ext = format!("pwa-{}", uid);
+    let label = format!("App {}", email);
+    let row = sqlx::query(
+        "INSERT INTO app.devices(tenant_id,source,external_id,label,assigned_user,enabled) VALUES($1,'pwa',$2,$3,$4,true) \
+         ON CONFLICT (tenant_id,source,external_id) DO UPDATE SET assigned_user=EXCLUDED.assigned_user RETURNING id")
+        .bind(tid).bind(&ext).bind(&label).bind(uid).fetch_one(&st.owner_pool).await.map_err(ise)?;
+    Ok((row.get("id"), ext))
+}
+
+/// Posizione continua dall'app lavoratore (watchPosition). Session-auth: il fix è attribuito
+/// SEMPRE al device del lavoratore autenticato (bind sessione↔device), mai a un id dal payload.
+/// Aggiorna ultima posizione, storico e presenza geofence. Nessun incidente qui.
+pub async fn worker_position(State(st): State<AppState>, h: HeaderMap, Json(b): Json<serde_json::Value>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
+    require_module(&st, tid, "loneworker").await?;
+    let lat = b.get("lat").and_then(|v| v.as_f64());
+    let lon = b.get("lon").and_then(|v| v.as_f64());
+    let (Some(lat), Some(lon)) = (lat, lon) else { return Err(err(StatusCode::BAD_REQUEST, "lat/lon mancanti")); };
+    let speed = b.get("speed").and_then(|v| v.as_f64());
+    let battery = b.get("battery").and_then(|v| v.as_f64());
+    let now = st.clock.now();
+    let (dev_id, _ext) = worker_app_device(&st, tid, s.user_id, &s.email).await?;
+    let src_id = format!("pwa-{}", now.timestamp_millis());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query(
+        "INSERT INTO app.device_positions(tenant_id,device_id,source_id,lat,lon,speed,battery,fixed_at) \
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (tenant_id,device_id,source_id) DO NOTHING")
+        .bind(tid).bind(dev_id).bind(&src_id).bind(lat).bind(lon).bind(speed).bind(battery).bind(now)
+        .execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query(
+        "UPDATE app.devices SET last_lat=$2,last_lon=$3,last_speed=$4,last_battery=COALESCE($5,last_battery),last_pos_at=$6,updated_at=now() \
+         WHERE id=$1 AND (last_pos_at IS NULL OR last_pos_at <= $6)")
+        .bind(dev_id).bind(lat).bind(lon).bind(speed).bind(battery).bind(now)
+        .execute(&mut *tx).await.map_err(ise)?;
+    // presenza geofence (dentro/fuori) — stessa logica del pull Traccar
+    let mut changes: Vec<(Uuid, bool)> = Vec::new();
+    let gfs = sqlx::query("SELECT id,geom FROM app.geofences").fetch_all(&mut *tx).await.map_err(ise)?;
+    for g in gfs {
+        let gid: Uuid = g.get("id");
+        let inside = geofence_contains(&g.get::<Value,_>("geom"), lat, lon);
+        let prev: Option<bool> = sqlx::query_scalar("SELECT inside FROM app.device_presence WHERE device_id=$1 AND geofence_id=$2")
+            .bind(dev_id).bind(gid).fetch_optional(&mut *tx).await.map_err(ise)?;
+        if prev != Some(inside) {
+            sqlx::query("INSERT INTO app.device_presence(tenant_id,device_id,geofence_id,inside) VALUES($1,$2,$3,$4) \
+                ON CONFLICT (device_id,geofence_id) DO UPDATE SET inside=EXCLUDED.inside, changed_at=now()")
+                .bind(tid).bind(dev_id).bind(gid).bind(inside).execute(&mut *tx).await.map_err(ise)?;
+            sqlx::query("INSERT INTO app.presence_log(tenant_id,device_id,geofence_id,inside,at) VALUES($1,$2,$3,$4,$5)")
+                .bind(tid).bind(dev_id).bind(gid).bind(inside).bind(now).execute(&mut *tx).await.map_err(ise)?;
+            changes.push((gid, inside));
+        }
+    }
+    tx.commit().await.map_err(ise)?;
+    publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"device_position","device_id":dev_id,"lat":lat,"lon":lon})}).await;
+    for (gid, inside) in &changes {
+        publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"presence","device_id":dev_id,"geofence_id":gid,"inside":inside})}).await;
+    }
+    Ok(Json(json!({"ok":true,"device_id":dev_id,"presence_changes":changes.len()})))
+}
+
 pub async fn worker_sos(State(st): State<AppState>, h: HeaderMap, Json(b): Json<serde_json::Value>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     let lat = b.get("lat").and_then(|v| v.as_f64());
     let lon = b.get("lon").and_then(|v| v.as_f64());
+    let accuracy = b.get("accuracy").and_then(|v| v.as_f64());
     let correlation = Uuid::new_v4().to_string();
     let now = st.clock.now();
     let (pri, repeat) = sos_escalation(&st, tid).await;
+    // Fase B: l'SOS è attribuito al device del lavoratore (bind sessione↔device).
+    let dev_id = worker_app_device(&st, tid, s.user_id, &s.email).await.ok().map(|(id,_)| id);
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let ev = sqlx::query(
-        "INSERT INTO app.events(tenant_id,source,source_event,idem_key,etype,origin_ts,received_ts,lat,lon,correlation)
-         VALUES($1,'pwa',$2,$2,'sos',$3,$3,$4,$5,$6) RETURNING id")
+        "INSERT INTO app.events(tenant_id,source,source_event,idem_key,etype,origin_ts,received_ts,lat,lon,accuracy_m,device_id,correlation)
+         VALUES($1,'pwa',$2,$2,'sos',$3,$3,$4,$5,$6,$7,$8) RETURNING id")
         .bind(tid).bind(format!("sos-{}-{}", s.user_id, now.timestamp_millis()))
-        .bind(now).bind(lat).bind(lon).bind(&correlation).fetch_one(&mut *tx).await.map_err(ise)?;
+        .bind(now).bind(lat).bind(lon).bind(accuracy).bind(dev_id).bind(&correlation).fetch_one(&mut *tx).await.map_err(ise)?;
     let eid: Uuid = ev.get("id");
     let irow = sqlx::query(
         "INSERT INTO app.incidents(tenant_id,event_id,etype,correlation,priority) VALUES($1,$2,'sos',$3,$4) RETURNING id")
@@ -5198,6 +5350,86 @@ pub async fn super_map_visibility_set(State(st): State<AppState>, h: HeaderMap, 
         .bind(tid).bind(&cfg).execute(&st.owner_pool).await.map_err(ise)?;
     audit(&st, tid, "superadmin", "map_visibility_set", json!({"map_outdoor":b.map_outdoor,"map_indoor":b.map_indoor})).await;
     Ok(Json(json!({"ok":true,"map_outdoor":b.map_outdoor,"map_indoor":b.map_indoor})))
+}
+
+/// Trigger di sicurezza (Worker Safety) — vista unica dei trigger critici del perimetro lavoratore
+/// e della loro configurazione per-tenant. Aggrega config già esistenti (traccar/alarm_map,
+/// loneworker/sos_escalation, loneworker/checkin_timer). Solo tenant_admin, richiede loneworker.
+pub async fn safety_triggers_get(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
+    require_module(&st, tid, "loneworker").await?;
+    let amap = tool_config(&st, tid, "traccar", "alarm_map").await;
+    let sos_esc = tool_config(&st, tid, "loneworker", "sos_escalation").await;
+    let chk = tool_config(&st, tid, "loneworker", "checkin_timer").await;
+    let sos_as = amap.get("sos_as").and_then(|v| v.as_str()).unwrap_or("sos").to_string();
+    let stopped = amap.get("stopped_as_immobilita").and_then(|v| v.as_str()).map(|x| x=="si").unwrap_or(false);
+    // area fuori-geofence: critica solo se mappata a un etype critico via alarm_map.events
+    let geo_crit = amap.get("events").and_then(|v| v.as_object())
+        .map(|m| m.values().any(|v| v.as_str()==Some("critico"))).unwrap_or(false);
+    let triggers = json!([
+        {"etype":"sos","label":"SOS","desc":"Pulsante antipanico dall'app lavoratore o dal dispositivo","sources":["App lavoratore (/api/sos)","Traccar: sos"],"critical":true},
+        {"etype":"man_down","label":"Uomo a terra","desc":"Rilevamento caduta/incidente","sources":["Traccar: fallDown, accident"],"critical":true},
+        {"etype":"immobilita","label":"Immobilità","desc":"Dispositivo fermo oltre soglia","sources":["Traccar: deviceStopped"],"critical":stopped},
+        {"etype":"mancato_checkin","label":"Check-in mancato","desc":"Dead-man timer: il lavoratore non conferma entro i minuti previsti","sources":["Timer check-in"],"critical":true},
+        {"etype":"movimento_non_accompagnato","label":"Movimento non accompagnato","desc":"Moto senza presenza attesa","sources":["Traccar: unaccompaniedMotion"],"critical":true},
+        {"etype":"attraversamento_geofence","label":"Attraversamento area","desc":"Ingresso/uscita da un'area; critico solo se mappato","sources":["Traccar: geofence"],"critical":geo_crit}
+    ]);
+    Ok(Json(json!({
+        "triggers": triggers,
+        "config": {
+            "sos_as": sos_as,
+            "stopped_as_immobilita": stopped,
+            "sos_priority": sos_esc.get("priority").and_then(|v| v.as_str()).unwrap_or("alta"),
+            "sos_repeat_seconds": sos_esc.get("repeat_seconds").and_then(|v| v.as_i64()).unwrap_or(0),
+            "checkin_default_minutes": chk.get("default_minutes").and_then(|v| v.as_i64()).unwrap_or(30),
+            "checkin_max_minutes": chk.get("max_minutes").and_then(|v| v.as_i64()).unwrap_or(120)
+        }
+    })))
+}
+
+#[derive(Deserialize)] pub struct SafetyTriggersReq {
+    pub sos_as: String, pub stopped_as_immobilita: bool,
+    pub sos_priority: String, pub sos_repeat_seconds: i64,
+    pub checkin_default_minutes: i64, pub checkin_max_minutes: i64,
+}
+/// Scrive la config dei trigger di sicurezza mergiando nei tool esistenti (nessuna tabella nuova).
+pub async fn safety_triggers_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SafetyTriggersReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
+    require_module(&st, tid, "loneworker").await?;
+    if b.sos_as != "sos" && b.sos_as != "man_down" {
+        return Err(err(StatusCode::BAD_REQUEST, "sos_as deve essere 'sos' o 'man_down'"));
+    }
+    if b.sos_priority != "alta" && b.sos_priority != "media" {
+        return Err(err(StatusCode::BAD_REQUEST, "sos_priority deve essere 'alta' o 'media'"));
+    }
+    // helper merge per-tool (preserva gli altri campi)
+    async fn merge_tool(st: &AppState, tid: Uuid, module: &str, tool: &str, patch: Vec<(&str, Value)>) -> Result<(), (StatusCode,String)> {
+        let existing: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code=$2 AND tool_code=$3")
+            .bind(tid).bind(module).bind(tool).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+        let mut obj = match existing { Some(Value::Object(m)) => m, _ => serde_json::Map::new() };
+        for (k,v) in patch { obj.insert(k.to_string(), v); }
+        let cfg = Value::Object(obj);
+        sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,$2,$3,$4,NULL)
+             ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config=EXCLUDED.config, updated_at=now()")
+            .bind(tid).bind(module).bind(tool).bind(&cfg).execute(&st.owner_pool).await.map_err(ise)?;
+        Ok(())
+    }
+    merge_tool(&st, tid, "traccar", "alarm_map", vec![
+        ("sos_as", json!(b.sos_as)),
+        ("stopped_as_immobilita", json!(if b.stopped_as_immobilita {"si"} else {"no"})),
+    ]).await?;
+    merge_tool(&st, tid, "loneworker", "sos_escalation", vec![
+        ("priority", json!(b.sos_priority)),
+        ("repeat_seconds", json!(b.sos_repeat_seconds.max(0))),
+    ]).await?;
+    merge_tool(&st, tid, "loneworker", "checkin_timer", vec![
+        ("default_minutes", json!(b.checkin_default_minutes.clamp(1, 1440))),
+        ("max_minutes", json!(b.checkin_max_minutes.clamp(1, 1440))),
+    ]).await?;
+    audit(&st, tid, &s.email, "safety_triggers_set", json!({"sos_as":b.sos_as,"sos_priority":b.sos_priority})).await;
+    Ok(Json(json!({"ok":true})))
 }
 
 /// SOS escalation policy (loneworker/sos_escalation): incident priority + repeat cadence.
@@ -6523,16 +6755,18 @@ pub async fn escalation_engine_get(State(st): State<AppState>, h: HeaderMap) -> 
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
     let engine = sqlx::query_scalar::<_, String>("SELECT escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_else(|| "goalert".into());
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_else(|| "native".into());
     Ok(Json(json!({"engine":engine,
-        "note":"goalert=GoAlert motore (nativo in shadow); native=nativo autoritativo (consegna live+ack). GoAlert resta rete di sicurezza."})))
+        "note":"native=nativo autoritativo (consegna live+ack, default); goalert=GoAlert motore (nativo in shadow, rollback). GoAlert resta rete di sicurezza."})))
 }
 /// FASE 4 (prep) — se il tenant è in cutover `native` E ha un percorso di consegna nativo reale,
 /// la notifica GoAlert va SOPPRESSA (niente doppio path). Guardia SOS: senza credenziali Twilio
 /// live (né override esplicito) NON si sopprime → GoAlert continua a pagare (rete di sicurezza).
 pub async fn esc_suppress_goalert(st: &AppState, tid: Uuid) -> bool {
-    let native = sqlx::query_scalar::<_, String>("SELECT escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().as_deref() == Some("native");
+    let engine = sqlx::query_scalar::<_, String>("SELECT escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    // default native: una riga mancante segue il nuovo default del prodotto.
+    let native = engine.as_deref().unwrap_or("native") == "native";
     if !native { return false; }
     let has_live = crate::delivery::TwilioCfg::from_env().is_some();
     let force = std::env::var("YW_ESC_SUPPRESS_GOALERT").ok().as_deref() == Some("1");
@@ -7667,9 +7901,9 @@ async fn esc_persist_delivery(st: &AppState, tid: Uuid, iid: Uuid, log_id: i64, 
     }
 }
 
-/// Runner di consegna per un tenant. In SHADOW (`escalation_engine='goalert'`, default) consegna al
-/// SINK di prova e NON tocca gli incidenti: GoAlert resta il motore. In CUTOVER
-/// (`escalation_engine='native'`, FASE 3) usa gli adapter live (se configurati) ed è autoritativo
+/// Runner di consegna per un tenant. In SHADOW (`escalation_engine='goalert'`, rollback) consegna al
+/// SINK di prova e NON tocca gli incidenti: GoAlert resta il motore. Con il motore NATIVO
+/// (`escalation_engine='native'`, default di prodotto) usa gli adapter live (se configurati) ed è autoritativo
 /// (l'ack applica la transizione). Idempotenza su `esc_delivery_log`; i fallimenti si ritentano.
 pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64, i64) {
     use crate::escalation::{self, AlertState, EscAction};
@@ -7686,8 +7920,8 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
     let vrow = sqlx::query("SELECT voice_fallback_on,voice_fallback_min,esc_repeat,escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
     let (voice_on, voice_min, repeat, engine) = vrow.map(|r| (r.get::<bool,_>("voice_fallback_on"), r.get::<i32,_>("voice_fallback_min") as i64, r.get::<i32,_>("esc_repeat") as i64, r.get::<String,_>("escalation_engine")))
-        .unwrap_or((true,5,0,"goalert".into()));
-    let native = engine == "native"; // FASE 3: nativo autoritativo per questo tenant
+        .unwrap_or((true,5,0,"native".into()));
+    let native = engine == "native"; // nativo autoritativo per questo tenant (default di prodotto)
     // in cutover usa gli adapter live se configurati; in shadow solo col gate globale.
     let live_on = live_cfg.is_some() && (native || crate::delivery::TwilioCfg::live_enabled());
     let (policy, chans) = esc_delivery_policy(voice_on, voice_min, repeat);

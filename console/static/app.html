@@ -25,23 +25,27 @@ const DEVICE_MODS=['loneworker','traccar','iot','thingsboard'];
 // grp: sezione nav (op=Operatività, work=Lavoro sul campo, cfg=Configurazione)
 const NAV = [
   {k:'dashboard', t:'Dashboard', ico:'home', roles:null, grp:'op'},
-  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker'], grp:'op'},
-  {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker'], grp:'op'},
-  {k:'mappa',     t:'Mappa', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'op'},
-  {k:'piantine',  t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor', grp:'op'},
-  {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar'], grp:'op'},
+  // --- Sicurezza Lavoratore (perimetro man-down/SOS): operatività allarmi + config del perimetro ---
+  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker'], grp:'safety'},
+  {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker'], grp:'safety'},
+  {k:'mappa',     t:'Mappa', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'safety'},
+  {k:'piantine',  t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor', grp:'safety'},
+  {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar'], grp:'safety'},
+  {k:'dispositivi',t:'Dispositivi & App', ico:'shield', roles:['tenant_admin'], mod:DEVICE_MODS, grp:'safety'},
+  {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
+  {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
+  // --- Lavoro sul campo ---
   {k:'ordini',    t:'Ordini di lavoro', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
   {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], mod:['consuntivi'], grp:'work'},
   {k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], mod:['workforce'], grp:'work'},
   {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'work'},
-  {k:'dispositivi',t:'Dispositivi', ico:'shield', roles:['tenant_admin'], mod:DEVICE_MODS, grp:'cfg'},
+  // --- Configurazione generale (non specifica del perimetro sicurezza) ---
   {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','thingsboard','goalert','iot'], grp:'cfg'},
-  {k:'gruppi',    t:'Gruppi allarme', ico:'users', roles:['tenant_admin'], mod:['loneworker'], grp:'cfg'},
   {k:'anagrafiche',t:'Utenti e sedi', ico:'receipt', roles:['tenant_admin'], grp:'cfg'},
   {k:'ai',        t:'AI · youworker.ai', ico:'sliders', roles:['tenant_admin'], mod:['assistant'], grp:'cfg'},
   {k:'moduli',    t:'Moduli', ico:'sliders', roles:['tenant_admin'], grp:'cfg'},
 ];
-const NAV_GROUPS=[['op','Operatività'],['iot','IoT Dashboard'],['work','Lavoro sul campo'],['cfg','Configurazione']];
+const NAV_GROUPS=[['op','Operatività'],['safety','Sicurezza Lavoratore'],['iot','IoT Dashboard'],['work','Lavoro sul campo'],['cfg','Configurazione']];
 // Cruscotti IoT attivi (ambienti/casi d'uso applicati al tenant): voci di menu dinamiche sotto
 // "IoT Dashboard". Se vuoto, il gruppo (e quindi il menu) non compare affatto.
 let SCENARIOS=[];
@@ -54,11 +58,11 @@ const I18N={ en:{
   app_subtitle:"Client console", lang:"Language", logout:"Sign out",
   login_tenant:"Tenant", login_tenant_host:"(from domain)", login_email:"Email",
   login_password:"Password", login_signin:"Sign in", login_quick:"Quick demo access (password <b>demo</b>):",
-  grp_op:"Operations", grp_iot:"IoT Dashboard", grp_work:"Field work", grp_cfg:"Configuration",
+  grp_op:"Operations", grp_safety:"Worker Safety", grp_iot:"IoT Dashboard", grp_work:"Field work", grp_cfg:"Configuration",
   "nav_dashboard":"Dashboard","nav_centrale":"Alarm center","nav_miei-allarmi":"My alarms",
   "nav_mappa":"Map","nav_piantine":"Floor plans","nav_cruscotti":"IoT dashboards","nav_report":"Reports",
   "nav_ordini":"Work orders","nav_consuntivi":"Timesheets","nav_turni":"Shifts","nav_agente":"AI agent",
-  "nav_dispositivi":"Devices","nav_connettori":"Connectors","nav_gruppi":"Alarm groups",
+  "nav_dispositivi":"Devices & Apps","nav_trigger":"Safety triggers","nav_connettori":"Connectors","nav_gruppi":"Escalation & on-call",
   "nav_anagrafiche":"Users & sites","nav_ai":"AI · youworker.ai","nav_moduli":"Modules"
 }};
 let LANG='it';
@@ -217,7 +221,7 @@ function route(){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,trigger:vTrigger,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -1521,8 +1525,8 @@ async function devTrail(id){ const el=$('#trail'); if(!el)return; el.textContent
 // ---------------- Connettori ----------------
 async function vConnettori(v){
   const trOn=ACTIVE_MODS.has('traccar');
-  const [C,T,TS]=await Promise.all([api('/connectors').catch(()=>[]),api('/ingest-tokens').catch(()=>[]),
-    trOn?api('/traccar/status').catch(()=>null):Promise.resolve(null)]);
+  const [C,T,TS,DV]=await Promise.all([api('/connectors').catch(()=>[]),api('/ingest-tokens').catch(()=>[]),
+    trOn?api('/traccar/status').catch(()=>null):Promise.resolve(null),api('/devices').catch(()=>[])]);
   const hint={traccar:'OsmAnd → '+location.origin.replace(/:\d+$/,':5055')+' · forwarding → /api/ingress/traccar?token=',
     thingsboard:'Rule Engine REST → /api/ingress/thingsboard?token=',iot:'POST → /api/events (header X-Ingest-Token)',goalert:'chiave per-tenant gestita dal superadmin'};
   v.innerHTML=`<div class="page-h"><div><h1>Connettori</h1><div class="mut">sorgenti esterne e credenziali macchina del tenant</div></div></div>
@@ -1533,20 +1537,38 @@ async function vConnettori(v){
     ${c.code==='goalert'?`<div class="small">Chiave escalation: ${c.has_key?'<span class="chip s-attivo">configurata</span>':'<span class="chip">assente (superadmin)</span>'}</div>`
       :`<div class="small">Token di ingest: <b>${c.tokens}</b> ${c.state!=='attivo'?'<span class="tag">modulo spento</span>':''}</div>`}
   </div>`).join('')}</div>
-  <div class="card" style="margin-top:16px"><div class="card-h"><h2>Credenziali di ingest</h2>
-    <div class="row" style="gap:6px"><select id="tkSrc" class="small">${['traccar','thingsboard','iot'].map(x=>`<option>${x}</option>`).join('')}</select>
-      <button class="btn ghost small" onclick="tokNew()">+ genera token</button></div></div>
-    <table class="table"><thead><tr><th>Sorgente</th><th>Token</th><th>Creato</th><th></th></tr></thead>
-    <tbody>${T.map(t=>`<tr><td>${esc(t.source)}</td>
-      <td class="mono small"><span>${esc(t.token)}</span> <a onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(t.token)}')&&toast('Copiato','ok')">copia</a></td>
-      <td class="small mut">${new Date(t.created_at).toLocaleDateString('it-IT')}</td>
-      <td style="text-align:right"><button class="btn-ico btn ghost" onclick="tokDel('${esc(t.token)}')">${ICON.x}</button></td></tr>`).join('')
-      ||`<tr><td colspan="4" class="empty">nessun token</td></tr>`}</tbody></table>
-    <div class="small mut" style="margin-top:8px">Il tenant deriva sempre dal token di ingest: usalo nella configurazione del device/connettore. Revocarlo blocca subito quella sorgente.</div></div>
+  <div class="card" style="margin-top:16px"><div class="card-h"><h2>Credenziali di ingest</h2></div>
+    <div id="newTokBox"></div>
+    <div class="row" style="gap:6px;flex-wrap:wrap;margin:8px 0">
+      <select id="tkSrc" class="small" title="sorgente">${['traccar','thingsboard','iot'].map(x=>`<option>${x}</option>`).join('')}</select>
+      <select id="tkDev" class="small" title="lega a un dispositivo (opzionale)"><option value="">— tutti i device (tenant) —</option>${(DV||[]).map(d=>`<option value="${d.id}">${esc(d.name||d.external_id||d.id)}</option>`).join('')}</select>
+      <input id="tkLabel" class="small" placeholder="etichetta (opz.)" style="width:150px">
+      <input id="tkExp" type="number" min="0" max="3650" class="small" placeholder="scad. giorni (0=mai)" style="width:140px">
+      <button class="btn ghost small" onclick="tokNew()">+ genera token</button></div>
+    <table class="table"><thead><tr><th>Sorgente</th><th>Credenziale</th><th>Dispositivo</th><th>Scadenza</th><th>Ultimo uso</th><th>Stato</th><th></th></tr></thead>
+    <tbody>${T.map(t=>{
+      const st=t.revoked?'<span class="tag" style="background:#fee2e2;color:#b91c1c">revocato</span>':(t.expired?'<span class="tag" style="background:#fef3c7;color:#92400e">scaduto</span>':'<span class="chip s-attivo">attivo</span>');
+      const copy=t.hashed?'':` <a onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(t.token)}')&&toast('Copiato','ok')">copia</a>`;
+      const hh=t.hashed?' <span class="tag mut" title="salvato solo come hash; il segreto è stato mostrato alla creazione">hash</span>':'';
+      return `<tr><td>${esc(t.source)}</td>
+      <td class="mono small"><span>${esc(t.token)}</span>${hh}${copy}${t.label?`<div class="small mut">${esc(t.label)}</div>`:''}</td>
+      <td class="small">${t.device_name?esc(t.device_name):'<span class="mut">— tutti —</span>'}</td>
+      <td class="small mut">${t.expires_at?new Date(t.expires_at).toLocaleDateString('it-IT'):'mai'}</td>
+      <td class="small mut">${t.last_used_at?new Date(t.last_used_at).toLocaleString('it-IT'):'mai'}</td>
+      <td>${st}</td>
+      <td style="text-align:right;white-space:nowrap">${t.revoked?'':`<button class="btn ghost small" onclick="tokRevoke('${esc(t.token)}')">revoca</button> `}<button class="btn-ico btn ghost" onclick="tokDel('${esc(t.token)}')">${ICON.x}</button></td></tr>`}).join('')
+      ||`<tr><td colspan="7" class="empty">nessun token</td></tr>`}</tbody></table>
+    <div class="small mut" style="margin-top:8px">Il tenant deriva sempre dalla credenziale. <b>Lega un token a un dispositivo</b> per attribuire i dati a quel device e impedire che un payload si spacci per un altro. Il segreto dei token nuovi è salvato <b>solo come hash</b>: copialo alla creazione. Revoca = blocco immediato; scadenza = blocco automatico.</div></div>
   <div id="tbHealthCard" style="margin-top:16px"></div>
   <div id="sensorRulesCard" style="margin-top:16px"></div>`;
   if(ACTIVE_MODS.has('thingsboard')) renderTbHealth();
   if(ACTIVE_MODS.has('iot')||ACTIVE_MODS.has('thingsboard')) renderSensorRules();
+  // segreto mostrato UNA sola volta subito dopo la creazione (poi solo hash a riposo)
+  if(window._newToken){ const box=$('#newTokBox'); const tk=window._newToken; window._newToken=null;
+    if(box){ box.innerHTML=`<div class="card pad" style="background:#ecfdf5;border:1px solid #10b981">
+      <b>Token creato — copialo adesso, non sarà più mostrato:</b>
+      <div class="mono" style="margin:6px 0;word-break:break-all">${esc(tk)}</div>
+      <button class="btn small" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(tk)}')&&toast('Copiato','ok')">Copia token</button></div>`; } }
 }
 async function renderTbHealth(){
   const box=$('#tbHealthCard'); if(!box)return;
@@ -2079,13 +2101,74 @@ FORWARD_ENABLE=true</pre>
   }catch(e){ toast(e.message,'bad'); }
   finally{ if(btn){btn.disabled=false;btn.textContent='Verifica collegamento';} }
 }
-async function tokNew(){ const src=$('#tkSrc').value;
-  try{const r=await api('/ingest-tokens',{method:'POST',body:JSON.stringify({source:src})}); toast('Token creato','ok'); route();
-    setTimeout(()=>{navigator.clipboard&&navigator.clipboard.writeText(r.token);},100);}catch(e){toast(e.message,'bad');} }
-async function tokDel(t){ if(!await askConfirm('Revocare il token? La sorgente collegata smette di funzionare.'))return;
-  try{await api('/ingest-tokens/'+encodeURIComponent(t),{method:'DELETE'}); toast('Revocato','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function tokNew(){
+  const body={source:$('#tkSrc').value,
+    device_id:($('#tkDev')&&$('#tkDev').value)||null,
+    label:($('#tkLabel')&&$('#tkLabel').value)||null,
+    expires_days:parseInt(($('#tkExp')&&$('#tkExp').value)||'0',10)||null};
+  try{const r=await api('/ingest-tokens',{method:'POST',body:JSON.stringify(body)}); toast('Token creato','ok');
+    window._newToken=r.token; route();
+  }catch(e){toast(e.message,'bad');} }
+async function tokRevoke(t){ if(!await askConfirm('Revocare la credenziale? La sorgente/dispositivo collegato smette subito di inviare.'))return;
+  try{await api('/ingest-tokens/'+encodeURIComponent(t)+'/revoke',{method:'POST'}); toast('Revocato','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function tokDel(t){ if(!await askConfirm('Eliminare definitivamente la credenziale?'))return;
+  try{await api('/ingest-tokens/'+encodeURIComponent(t),{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
 
 // ---------------- Gruppi allarme ----------------
+// Trigger di sicurezza (Worker Safety): catalogo trigger critici + config aggregata del perimetro.
+async function vTrigger(v){
+  const d=await api('/safety/triggers').catch(e=>({error:e.message}));
+  if(d.error){ v.innerHTML=`<div class="page-h"><h1>Trigger di sicurezza</h1></div><div class="card pad">${esc(d.error)}</div>`; return; }
+  const c=d.config||{};
+  const badge=t=>t?'<span class="tag" style="background:#fee2e2;color:#b91c1c">critico → incidente</span>':'<span class="tag mut">solo registrato</span>';
+  const rows=(d.triggers||[]).map(x=>`<tr>
+     <td><b>${esc(x.label)}</b><div class="small mut">${esc(x.desc||'')}</div></td>
+     <td class="small">${(x.sources||[]).map(s=>`<span class="tag">${esc(s)}</span>`).join(' ')}</td>
+     <td>${badge(x.critical)}</td></tr>`).join('');
+  v.innerHTML=`<div class="page-h"><div><h1>Trigger di sicurezza</h1>
+      <div class="mut">quali eventi del lavoratore generano un allarme, e come sono configurati</div></div></div>
+    <div class="card pad" style="margin-bottom:12px;background:var(--brand-soft)"><div class="small">
+      Questo è il <b>perimetro di sicurezza del lavoratore</b>: ogni trigger critico apre un incidente in <b>Centrale allarmi</b>
+      e avvia l'<b>escalation</b> verso i reperibili. La mappatura sorgente→evento dipende dai dispositivi/connettori configurati.</div></div>
+    <div class="card pad" style="margin-bottom:12px">
+      <table class="tbl"><thead><tr><th>Trigger</th><th>Sorgenti</th><th>Esito</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="card pad"><h2 style="margin-bottom:10px">Configurazione trigger</h2>
+      <div class="grid g2">
+        <label class="col small" style="gap:4px">SOS instradato come
+          <select id="tg_sos_as" class="small">
+            <option value="sos" ${c.sos_as==='sos'?'selected':''}>SOS (antipanico)</option>
+            <option value="man_down" ${c.sos_as==='man_down'?'selected':''}>Uomo a terra</option></select></label>
+        <label class="col small" style="gap:4px">Priorità SOS
+          <select id="tg_sos_prio" class="small">
+            <option value="alta" ${c.sos_priority!=='media'?'selected':''}>Alta</option>
+            <option value="media" ${c.sos_priority==='media'?'selected':''}>Media</option></select></label>
+        <label class="col small" style="gap:4px">Immobilità da "dispositivo fermo"
+          <select id="tg_stopped" class="small">
+            <option value="si" ${c.stopped_as_immobilita?'selected':''}>Sì (alza allarme)</option>
+            <option value="no" ${!c.stopped_as_immobilita?'selected':''}>No (ignora)</option></select></label>
+        <label class="col small" style="gap:4px">Ripetizione notifica SOS (secondi, 0=una volta)
+          <input id="tg_repeat" type="number" min="0" max="3600" value="${c.sos_repeat_seconds||0}" class="small"></label>
+        <label class="col small" style="gap:4px">Check-in: minuti default
+          <input id="tg_chk_def" type="number" min="1" max="1440" value="${c.checkin_default_minutes||30}" class="small"></label>
+        <label class="col small" style="gap:4px">Check-in: minuti massimi
+          <input id="tg_chk_max" type="number" min="1" max="1440" value="${c.checkin_max_minutes||120}" class="small"></label>
+      </div>
+      <div class="row" style="margin-top:12px"><button class="btn" onclick="safetyTriggersSave(this)">Salva configurazione</button></div>
+      <div class="cfg-msg small" style="margin-top:6px"></div></div>`;
+}
+async function safetyTriggersSave(btn){
+  const m=document.querySelector('.cfg-msg'); if(m){m.textContent='…';m.style.color='var(--mut)';}
+  const body={
+    sos_as:$('#tg_sos_as').value, sos_priority:$('#tg_sos_prio').value,
+    stopped_as_immobilita:$('#tg_stopped').value==='si',
+    sos_repeat_seconds:parseInt($('#tg_repeat').value||'0',10),
+    checkin_default_minutes:parseInt($('#tg_chk_def').value||'30',10),
+    checkin_max_minutes:parseInt($('#tg_chk_max').value||'120',10)
+  };
+  try{ await api('/safety/triggers',{method:'POST',body:JSON.stringify(body)}); toast('Trigger aggiornati','ok'); if(m){m.textContent='Salvato';m.style.color='var(--ok)';} }
+  catch(e){ toast(e.message,'bad'); if(m){m.textContent=e.message;m.style.color='var(--bad)';} }
+}
+
 async function vGruppi(v){
   const [G,users,ocs]=await Promise.all([api('/groups').catch(()=>({groups:[],routing:[]})),api('/users').catch(()=>[]),
     api('/oncall-settings').catch(()=>({voice_fallback_on:true,voice_fallback_min:5,status_updates_on:true}))]);
@@ -2094,13 +2177,13 @@ async function vGruppi(v){
     'perdita_contatto','manomissione_badge','perdita_alimentazione','jamming','traccar_conn_down',
     'batteria_critica','batteria_bassa'];
   const routeOf=e=>(G.routing.find(r=>r.etype===e)||{}).group_id||'';
-  v.innerHTML=`<div class="page-h"><div><h1>Gruppi allarme</h1><div class="mut">destinatari ed escalation per tipo di evento</div></div>
-    <div class="row" style="gap:8px"><button class="btn ghost" onclick="syncGoalert(this)">🔄 Sincronizza con GoAlert</button>
+  v.innerHTML=`<div class="page-h"><div><h1>Escalation e reperibilità</h1><div class="mut">destinatari, canali e rotazione per tipo di evento</div></div>
+    <div class="row" style="gap:8px"><button class="btn ghost" onclick="syncGoalert(this)" title="Rollback: ripristina il motore GoAlert come rete di sicurezza">🔄 Sincronizza con GoAlert (rollback)</button>
       <button class="btn" onclick="grpNew()">+ Nuovo gruppo</button></div></div>
   <div class="card pad" style="margin-bottom:12px;background:var(--brand-soft)"><div class="small">
-    <b>I gruppi pilotano GoAlert.</b> Dopo aver definito gruppi, membri e routing (evento→gruppo), premi <b>Sincronizza con GoAlert</b>:
-    YouWorkforce crea/aggiorna in GoAlert gli utenti, le escalation policy (step sui membri del gruppo + ripetizione da <i>Escalation SOS</i>)
-    e instrada ogni tipo di evento al servizio del gruppo responsabile. <span class="mut">Richiede che il superadmin abbia provisionato GoAlert per il tenant.</span></div>
+    <b>I gruppi pilotano l'escalation.</b> Definisci gruppi, membri, rotazione di reperibilità e routing (evento→gruppo):
+    il <b>motore nativo</b> (default) risolve on-call e consegna le notifiche (SMS/voce/e-mail/Slack) con ripetizione da <i>Escalation SOS</i>.
+    <span class="mut">GoAlert resta disponibile come rete di sicurezza: usa <b>Sincronizza con GoAlert</b> solo per il rollback di un tenant.</span></div>
     <div id="gaSyncOut" class="small" style="margin-top:6px"></div></div>
   <div class="grid g2">
     <div class="card pad"><h2 style="margin-bottom:10px">Gruppi</h2>

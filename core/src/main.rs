@@ -56,6 +56,8 @@ fn tb_parity_routes() -> Router<AppState> {
         // #4 escalation nativo FASE 2 (consegna in ombra verso sink di prova): report + trigger
         .route("/api/escalation/delivery", get(api::escalation_delivery_report))
         .route("/api/escalation/delivery/run", post(api::escalation_delivery_run))
+        // Worker Safety: trigger di sicurezza (vista+config aggregata) — tenant_admin
+        .route("/api/safety/triggers", get(api::safety_triggers_get).post(api::safety_triggers_set))
         // FASE 3 cutover: lettura motore (admin) + set/rollback (superadmin)
         .route("/api/escalation/engine", get(api::escalation_engine_get))
         .route("/api/superadmin/tenants/:id/escalation-engine", post(api::escalation_engine_set))
@@ -227,6 +229,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/oncall-calendar.ics", get(api::oncall_calendar_ics))
         .route("/api/ingest-tokens", get(api::list_ingest_tokens).post(api::create_ingest_token))
         .route("/api/ingest-tokens/:token", axum::routing::delete(api::delete_ingest_token))
+        .route("/api/ingest-tokens/:token/revoke", post(api::revoke_ingest_token))
         .route("/api/connectors", get(api::list_connectors))
         .route("/api/traccar/status", get(api::traccar_status))
         .route("/api/traccar/verify", post(api::traccar_verify))
@@ -283,6 +286,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/oncall-now", get(api::goalert_oncall))
         .route("/api/goalert/routing", post(api::goalert_set_routing))
         .route("/api/sos", post(api::worker_sos))
+        .route("/api/worker/position", post(api::worker_position))
         .route("/api/checkins", post(api::create_checkin))
         .route("/api/checkins/:id/confirm", post(api::confirm_checkin))
         .route("/api/shifts/start", post(api::shift_start))

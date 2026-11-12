@@ -19,7 +19,7 @@
 - Sempre obbligatori: identità, isolamento, permessi, configurazione tenant, audit.
 - Stati UI: `non_abilitato · da_configurare · attivo · degradato · in_disattivazione`.
 - Disattivare `loneworker` con incidenti aperti → **bloccato** (piano di disattivazione, vedi `set_module`).
-- GoAlert è l'**unico** motore di escalation. Nessun secondo motore.
+- Motore di escalation: **nativo di default** (`escalation_engine='native'`, mig 0057). GoAlert resta provisionato come **rete di sicurezza / rollback** per-tenant (`escalation_engine='goalert'`). Vedi `native-escalation-engine-project.md` e `worker-safety-rationalization.md`.
 - Spegnere AI/dettatura non toglie inserimento manuale, check-in, SOS.
 
 ## Profili collaudabili sullo stesso build

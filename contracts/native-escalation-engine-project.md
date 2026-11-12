@@ -169,8 +169,11 @@ verifica live con Twilio carrier reale (serve account). **Slack in ladder CHIUSO
 al primo step il canale `slack_channel_id` del gruppo (se `slack_notify<>off`) entra tra i
 destinatari con la stessa idempotenza.
 
-**Fase 3 — Cutover per-tenant. ✅ FATTA** (mig 0056 `tenant_oncall_cfg.escalation_engine`, default
-`goalert`, CHECK `goalert|native`, commit a309ab5). Flag per-tenant: `native` = nativo autoritativo
+**Fase 3 — Cutover per-tenant. ✅ FATTA** (mig 0056 `tenant_oncall_cfg.escalation_engine`,
+CHECK `goalert|native`, commit a309ab5). **Default promosso a `native`** (mig 0057, razionalizzazione
+Worker Safety Fase D): i nuovi tenant nascono nativi; gli esistenti si migrano opt-in con
+`scripts/flip-escalation-native.sql`. I fallback hardcoded in `api.rs` (engine_get, esc_suppress_goalert,
+delivery runner) ora assumono `native` quando la riga manca. Flag per-tenant: `native` = nativo autoritativo
 (adapter live se configurati + ack che applica la transizione sull'incidente); `goalert` = shadow
 (sink, nessun effetto sugli incidenti). **GoAlert NON soppresso** (resta rete di sicurezza attiva;
 spegnimento = FASE 4) — scelta per non perdere mai un SOS. `esc_apply_ack` applica se `native` (o gate

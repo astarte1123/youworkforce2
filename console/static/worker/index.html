@@ -60,6 +60,8 @@ function app(){
     <button class="sosbtn" onclick="sos()">${ICON.sos} SOS</button>
     <div class="small mut center" style="margin-top:-6px">Il canale SOS è indipendente da dettatura e documenti.</div>
 
+    <div class="card"><div class="card-b" id="trackBox"></div></div>
+
     <div class="card"><div class="card-b" id="ciBox"></div></div>
 
     <div><h3 style="margin:4px 2px 10px">Turno</h3><div class="card"><div class="card-b" id="shiftBox"></div></div></div>
@@ -78,6 +80,10 @@ function app(){
     <div id="diaryList" class="col" style="gap:8px;margin-top:10px"></div></div>
   </div>`;
   renderCheckin(); loadOrders(); renderShift(); loadPlans(); loadDiary(); flushNotes();
+  renderTracking();
+  // ripristina la condivisione posizione se era attiva (o se è in corso un turno)
+  let want=false; try{ want=localStorage.getItem('yw_track')==='1'; }catch(e){}
+  if(want) startTracking(true);
 }
 async function loadPlans(){
   const b=$('#plansBox'); if(!b)return;
@@ -98,10 +104,41 @@ async function out(){ try{ await api('/logout',{method:'POST'}); }catch(e){} loc
 
 // ---- SOS ----
 async function sos(){
-  let pos={}; try{ const p=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{timeout:3000}));
-    pos={lat:p.coords.latitude,lon:p.coords.longitude}; }catch(e){}
+  let pos={}; try{ const p=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{timeout:5000,enableHighAccuracy:true}));
+    pos={lat:p.coords.latitude,lon:p.coords.longitude,accuracy:p.coords.accuracy}; }catch(e){}
   try{ const r=await api('/sos',{method:'POST',body:JSON.stringify(pos)});
     toast('SOS inviato → centrale allertata','bad'); }catch(e){ toast('SOS errore: '+e.message,'bad'); }
+}
+
+// ---- Tracking posizione (watchPosition) legato al turno; bind sessione↔device lato server ----
+let WATCH=null, LASTSENT=0;
+function trackingOn(){ return WATCH!==null; }
+function startTracking(auto){
+  if(WATCH!==null) return;
+  if(!navigator.geolocation){ if(!auto)toast('Geolocalizzazione non disponibile','warn'); renderTracking(); return; }
+  WATCH=navigator.geolocation.watchPosition(async p=>{
+    const t=Date.now(); if(t-LASTSENT<15000) return;  // max ~1 invio/15s
+    LASTSENT=t;
+    const body={lat:p.coords.latitude,lon:p.coords.longitude,speed:p.coords.speed||null};
+    try{ await api('/worker/position',{method:'POST',body:JSON.stringify(body)}); }catch(e){}
+  }, e=>{ /* negato/errore: lascia il toggle, l'utente riprova */ }, {enableHighAccuracy:true,maximumAge:10000,timeout:20000});
+  try{ localStorage.setItem('yw_track','1'); }catch(e){}
+  renderTracking();
+  if(!auto) toast('Condivisione posizione attiva','ok');
+}
+function stopTracking(manual){
+  if(WATCH!==null){ try{navigator.geolocation.clearWatch(WATCH);}catch(e){} WATCH=null; }
+  if(manual){ try{localStorage.setItem('yw_track','0');}catch(e){} }
+  renderTracking();
+}
+function toggleTracking(){ trackingOn()?stopTracking(true):startTracking(false); }
+function renderTracking(){
+  const b=$('#trackBox'); if(!b)return;
+  const on=trackingOn();
+  b.innerHTML=`<div class="spread"><b>Condivisione posizione</b>
+    <span class="chip ${on?'s-attivo':''}">${on?'attiva':'spenta'}</span></div>
+    <div class="small mut" style="margin:6px 0 10px">${on?'La centrale vede la tua posizione in tempo reale durante il lavoro.':'Attivala per farti localizzare in caso di emergenza.'}</div>
+    <button class="btn ${on?'ghost':''} block" onclick="toggleTracking()">${on?'Interrompi condivisione':ICON.shield+' Condividi posizione'}</button>`;
 }
 
 // ---- check-in ----
@@ -174,8 +211,10 @@ async function renderShift(){
   }
 }
 async function shiftStart(){ try{ const r=await api('/shifts/start',{method:'POST',body:'{}'});
-  toast(r.reused?'Turno già in corso':'Turno iniziato (confermato dal server)','ok'); renderShift(); }catch(e){toast(e.message,'bad');} }
-async function shiftEnd(){ try{ await api('/shifts/end',{method:'POST'}); toast('Turno terminato (confermato dal server)','ok'); renderShift(); }catch(e){toast(e.message,'bad');} }
+  toast(r.reused?'Turno già in corso':'Turno iniziato (confermato dal server)','ok'); renderShift();
+  startTracking(true); }catch(e){toast(e.message,'bad');} }
+async function shiftEnd(){ try{ await api('/shifts/end',{method:'POST'}); toast('Turno terminato (confermato dal server)','ok'); renderShift();
+  stopTracking(true); }catch(e){toast(e.message,'bad');} }
 
 // ---- Prompt 8: nota di lavoro (dettatura browser + fallback offline) ----
 let REC=null, dictationUsed=false;
