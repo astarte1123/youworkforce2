@@ -2641,9 +2641,16 @@ pub async fn list_modules(State(st): State<AppState>, h: HeaderMap) -> R {
 pub async fn list_sites(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT id,name FROM app.sites ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT id,name,address,lat,lon,access_notes FROM app.sites ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    let out: Vec<Value> = rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name")})).collect();
+    // access_notes (indicazioni d'accesso) solo agli autorizzati (pianificatore/admin)
+    let can_access = is_planner(&s.role);
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"), "name":r.get::<String,_>("name"),
+        "address": r.try_get::<String,_>("address").ok(),
+        "lat": r.try_get::<f64,_>("lat").ok(), "lon": r.try_get::<f64,_>("lon").ok(),
+        "access_notes": if can_access { r.try_get::<String,_>("access_notes").ok() } else { None }
+    })).collect();
     Ok(Json(json!(out)))
 }
 
@@ -3355,14 +3362,15 @@ pub async fn provision_device(State(st): State<AppState>, h: HeaderMap, Json(b):
 
 // ---------------- Sedi ----------------
 #[derive(Deserialize)]
-pub struct SiteReq { pub name: String }
+pub struct SiteReq { pub name: String, #[serde(default)] pub address: Option<String>, #[serde(default)] pub lat: Option<f64>, #[serde(default)] pub lon: Option<f64>, #[serde(default)] pub access_notes: Option<String> }
 pub async fn create_site(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SiteReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let row = sqlx::query("INSERT INTO app.sites(tenant_id,name) VALUES($1,$2) RETURNING id")
-        .bind(tid).bind(b.name.trim()).fetch_one(&mut *tx).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.sites(tenant_id,name,address,lat,lon,access_notes) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(b.address.as_deref()).bind(b.lat).bind(b.lon).bind(b.access_notes.as_deref())
+        .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "create_site", json!({"name":b.name})).await;
     Ok(Json(json!({"id":row.get::<Uuid,_>("id")})))
@@ -3371,7 +3379,12 @@ pub async fn update_site(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.sites SET name=$2 WHERE id=$1").bind(id).bind(b.name.trim()).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    // COALESCE: aggiorna solo i campi passati; address/access_notes vuoti ("") azzerano.
+    let n = sqlx::query("UPDATE app.sites SET name=$2,
+            address=COALESCE($3,address), lat=COALESCE($4,lat), lon=COALESCE($5,lon), access_notes=COALESCE($6,access_notes)
+         WHERE id=$1")
+        .bind(id).bind(b.name.trim()).bind(b.address.as_deref()).bind(b.lat).bind(b.lon).bind(b.access_notes.as_deref())
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "sede inesistente")); }
     Ok(Json(json!({"ok":true})))
@@ -6519,7 +6532,8 @@ pub async fn super_set_tool(State(st): State<AppState>, h: HeaderMap, Path(tid):
 
 #[derive(Deserialize)]
 pub struct NewOrder { pub title: String, pub site_id: Option<Uuid>, pub instructions: Option<String>, pub assigned_user: Option<Uuid>,
-    pub scheduled_start: Option<String>, pub scheduled_end: Option<String>, pub priority: Option<i32> }
+    pub scheduled_start: Option<String>, pub scheduled_end: Option<String>, pub priority: Option<i32>,
+    #[serde(default)] pub checklist: Option<Vec<String>> }
 pub async fn create_order(State(st): State<AppState>, h: HeaderMap, Json(b): Json<NewOrder>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
@@ -6530,12 +6544,14 @@ pub async fn create_order(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     if let (Some(a),Some(z))=(ss,se) { if z<=a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); } }
     let pri = b.priority.unwrap_or(2).clamp(1,3);
     let state = if b.assigned_user.is_some() { "assegnato" } else { "bozza" };
+    // checklist: array di etichette -> [{label,done:false}]
+    let checklist = json!(b.checklist.clone().unwrap_or_default().into_iter().map(|l| json!({"label":l,"done":false})).collect::<Vec<_>>());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query(
-        "INSERT INTO app.work_orders(tenant_id,site_id,title,instructions,assigned_user,state,created_by,scheduled_start,scheduled_end,priority)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id")
+        "INSERT INTO app.work_orders(tenant_id,site_id,title,instructions,assigned_user,state,created_by,scheduled_start,scheduled_end,priority,checklist)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id")
         .bind(tid).bind(b.site_id).bind(&b.title).bind(&b.instructions).bind(b.assigned_user).bind(state).bind(s.user_id)
-        .bind(ss).bind(se).bind(pri)
+        .bind(ss).bind(se).bind(pri).bind(&checklist)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":row.get::<Uuid,_>("id"),"state":state})))
@@ -6584,7 +6600,9 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
     require_module(&st, s.tenant_id.unwrap(), "interventi").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     // technician sees only own; planner/admin/auditor see all (RLS already scopes to tenant)
-    let cols="o.id,o.title,o.state,o.version,o.outcome,o.instructions,o.site_id,o.assigned_user,o.scheduled_start,o.scheduled_end,o.priority,s.name AS site,u.email AS assignee";
+    let cols="o.id,o.title,o.state,o.version,o.outcome,o.instructions,o.site_id,o.assigned_user,o.scheduled_start,o.scheduled_end,o.priority,s.name AS site,u.email AS assignee,\
+        o.arrived_at,o.work_started_at,o.work_minutes,o.materials,o.checklist,o.outcome_kind,o.report,o.signed_by,o.signed_at,\
+        s.address AS site_address,s.lat AS site_lat,s.lon AS site_lon,s.access_notes AS site_access";
     let rows = if s.role == "lavoratore" {
         sqlx::query(&format!("SELECT {cols}
             FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user
@@ -6603,7 +6621,21 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
         "scheduled_start": r.try_get::<chrono::DateTime<chrono::Utc>,_>("scheduled_start").ok(),
         "scheduled_end": r.try_get::<chrono::DateTime<chrono::Utc>,_>("scheduled_end").ok(),
         "priority": r.get::<i32,_>("priority"),
-        "instructions": r.try_get::<String,_>("instructions").ok() })).collect();
+        "instructions": r.try_get::<String,_>("instructions").ok(),
+        "arrived_at": r.try_get::<chrono::DateTime<chrono::Utc>,_>("arrived_at").ok(),
+        "work_started_at": r.try_get::<chrono::DateTime<chrono::Utc>,_>("work_started_at").ok(),
+        "work_minutes": r.try_get::<i32,_>("work_minutes").ok(),
+        "materials": r.try_get::<Value,_>("materials").ok(),
+        "checklist": r.try_get::<Value,_>("checklist").ok(),
+        "outcome_kind": r.try_get::<String,_>("outcome_kind").ok(),
+        "report": r.try_get::<String,_>("report").ok(),
+        "signed_by": r.try_get::<String,_>("signed_by").ok(),
+        "signed_at": r.try_get::<chrono::DateTime<chrono::Utc>,_>("signed_at").ok(),
+        "site_address": r.try_get::<String,_>("site_address").ok(),
+        "site_lat": r.try_get::<f64,_>("site_lat").ok(), "site_lon": r.try_get::<f64,_>("site_lon").ok(),
+        // indicazioni d'accesso: solo a chi è autorizzato (assegnatario/lavoratore o pianificatore)
+        "site_access": if is_planner(&s.role) || s.role=="lavoratore" { r.try_get::<String,_>("site_access").ok() } else { None }
+    })).collect();
     Ok(Json(json!(out)))
 }
 
@@ -6645,7 +6677,12 @@ pub async fn order_start(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     let owner: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.work_orders WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.flatten();
     let _ = tx.commit().await;
     if owner != Some(s.user_id) && !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "non assegnato a te")); }
-    order_transition(&st, &s, id, &b, "in_corso", None, None, &["assegnato"]).await
+    let r = order_transition(&st, &s, id, &b, "in_corso", None, None, &["assegnato"]).await?;
+    // avvio lavoro = timestamp dedicato (distinto dall'arrivo)
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let _ = sqlx::query("UPDATE app.work_orders SET work_started_at=COALESCE(work_started_at,now()) WHERE id=$1").bind(id).execute(&mut *tx).await;
+    let _ = tx.commit().await;
+    Ok(r)
 }
 pub async fn order_complete(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
     let s = require_tenant(&st, &h).await?;
@@ -6669,18 +6706,42 @@ async fn order_edit_allowed(st: &AppState, s: &Session, oid: Uuid) -> Result<Uui
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "ordine inesistente"))?;
     if is_planner(&s.role) || au == Some(s.user_id) { Ok(tid) } else { Err(err(StatusCode::FORBIDDEN, "non autorizzato su questo ordine")) }
 }
-#[derive(Deserialize)] pub struct OrderReport { pub report: Option<String>, pub signed_by: Option<String> }
+#[derive(Deserialize)] pub struct OrderReport {
+    pub report: Option<String>, pub signed_by: Option<String>,
+    #[serde(default)] pub checklist: Option<Value>, #[serde(default)] pub materials: Option<Value>,
+    #[serde(default)] pub work_minutes: Option<i32>, #[serde(default)] pub outcome_kind: Option<String> }
+/// Salvataggio esecuzione intervento (bozza/rapporto): report, firmatario, checklist, materiali,
+/// minuti lavorati, tipo esito. Tutto opzionale e idempotente (COALESCE).
 pub async fn order_report_set(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderReport>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = order_edit_allowed(&st, &s, id).await?;
     let signed_by = b.signed_by.as_deref().map(|x| x.trim()).filter(|x| !x.is_empty());
     let signed_at = signed_by.map(|_| st.clock.now());
+    let ok = b.outcome_kind.as_deref().filter(|x| matches!(*x, "completato"|"parziale"|"cliente_assente"|"accesso_impedito"|"ritorno"));
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    sqlx::query("UPDATE app.work_orders SET report=COALESCE($2,report), signed_by=COALESCE($3,signed_by), signed_at=COALESCE($4,signed_at), updated_at=now() WHERE id=$1")
-        .bind(id).bind(b.report.as_deref()).bind(signed_by).bind(signed_at).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("UPDATE app.work_orders SET
+            report=COALESCE($2,report), signed_by=COALESCE($3,signed_by), signed_at=COALESCE($4,signed_at),
+            checklist=COALESCE($5,checklist), materials=COALESCE($6,materials),
+            work_minutes=COALESCE($7,work_minutes), outcome_kind=COALESCE($8,outcome_kind), updated_at=now()
+         WHERE id=$1")
+        .bind(id).bind(b.report.as_deref()).bind(signed_by).bind(signed_at)
+        .bind(b.checklist.as_ref()).bind(b.materials.as_ref()).bind(b.work_minutes).bind(ok)
+        .execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "order_report_set", json!({"order":id,"signed":signed_by.is_some()})).await;
     Ok(Json(json!({"ok":true,"signed_at":signed_at.map(|t| t.to_rfc3339())})))
+}
+/// Registra l'ARRIVO sul posto (distinto dall'avvio lavoro). Assegnatario o pianificatore.
+pub async fn order_arrive(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = order_edit_allowed(&st, &s, id).await?;
+    let now = st.clock.now();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("UPDATE app.work_orders SET arrived_at=COALESCE(arrived_at,$2), updated_at=now() WHERE id=$1 AND state IN ('assegnato','in_corso')")
+        .bind(id).bind(now).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "order_arrive", json!({"order":id})).await;
+    Ok(Json(json!({"ok":true,"arrived_at":now.to_rfc3339()})))
 }
 /// Upload allegato: body = bytes del file; metadati in query (kind, filename, caption); ct dall'header.
 pub async fn order_attachment_add(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>,
