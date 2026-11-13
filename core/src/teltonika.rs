@@ -8,6 +8,58 @@
 use crate::state::AppState;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use tokio::sync::{mpsc, oneshot};
+
+// ---- Registry connessioni attive (per inviare comandi GPRS codec12 al device) ----
+struct Conn { cmd: mpsc::UnboundedSender<Vec<u8>>, pending: Arc<Mutex<Option<oneshot::Sender<String>>>> }
+fn registry() -> &'static Mutex<HashMap<String, Conn>> {
+    static R: OnceLock<Mutex<HashMap<String, Conn>>> = OnceLock::new();
+    R.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// CRC-16/IBM (poly 0xA001) sul data field, come richiesto dal protocollo Teltonika.
+fn crc16(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for &b in data { crc ^= b as u16; for _ in 0..8 { if crc & 1 != 0 { crc = (crc >> 1) ^ 0xA001; } else { crc >>= 1; } } }
+    crc
+}
+/// Codifica un comando GPRS (codec12, type 0x05) in un pacchetto completo.
+fn encode_command(cmd: &str) -> Vec<u8> {
+    let c = cmd.as_bytes();
+    let mut inner = vec![0x0C, 0x01, 0x05];
+    inner.extend_from_slice(&(c.len() as u32).to_be_bytes());
+    inner.extend_from_slice(c);
+    inner.push(0x01);
+    let mut pkt = vec![0u8, 0, 0, 0];
+    pkt.extend_from_slice(&(inner.len() as u32).to_be_bytes());
+    pkt.extend_from_slice(&inner);
+    pkt.extend_from_slice(&(crc16(&inner) as u32).to_be_bytes());
+    pkt
+}
+/// Invia un comando GPRS a un device connesso (per IMEI) e attende la risposta (max 5s).
+pub async fn send_command(imei: &str, cmd: &str) -> Result<String, String> {
+    let (tx, rx) = oneshot::channel();
+    {
+        let reg = registry().lock().unwrap();
+        let conn = reg.get(imei).ok_or_else(|| "device non connesso".to_string())?;
+        *conn.pending.lock().unwrap() = Some(tx);
+        conn.cmd.send(encode_command(cmd)).map_err(|_| "connessione chiusa".to_string())?;
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        Ok(Ok(resp)) => Ok(resp),
+        _ => Err("nessuna risposta dal device entro 5s".to_string()),
+    }
+}
+/// Parsa una risposta codec12 (type 0x06): ritorna il testo.
+fn parse_cmd_response(data: &[u8]) -> Option<String> {
+    if data.len() < 8 || data[0] != 0x0C { return None; }
+    // [0]=codec,[1]=qty1,[2]=type(0x06),[3..7]=size,[7..]=text,[..]=qty2
+    let size = u32::from_be_bytes([data[3],data[4],data[5],data[6]]) as usize;
+    if data.len() < 7 + size { return None; }
+    Some(String::from_utf8_lossy(&data[7..7+size]).to_string())
+}
 
 /// Avvia il listener TCP se configurato. `YW_TELTONIKA_PORT` = "off" disabilita; default 5027.
 pub async fn serve(st: AppState) {
@@ -52,31 +104,67 @@ async fn handle(st: AppState, mut sock: TcpStream) -> std::io::Result<()> {
     sock.write_all(&[0x01]).await?; // accept
     tracing::info!("teltonika: IMEI {imei} accettato (tenant {tid})");
 
-    // 2) loop pacchetti AVL
+    // registra la connessione per i comandi GPRS (codec12) e separa read/write
+    let (mut rd, mut wr) = sock.into_split();
+    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let pending: Arc<Mutex<Option<oneshot::Sender<String>>>> = Arc::new(Mutex::new(None));
+    registry().lock().unwrap().insert(imei.clone(), Conn{ cmd: cmd_tx, pending: pending.clone() });
+
+    // writer task: scrive sul socket i comandi in coda
+    let writer = tokio::spawn(async move {
+        while let Some(bytes) = cmd_rx.recv().await {
+            if wr.write_all(&bytes).await.is_err() { break; }
+        }
+    });
+
+    // reader loop: AVL (ingest) + risposte comando (codec12 type 0x06 -> fulfill pending)
+    let res = read_loop(&st, tid, &imei, &source, &pending, &mut rd).await;
+    registry().lock().unwrap().remove(&imei);
+    writer.abort();
+    res
+}
+
+async fn read_loop(st: &AppState, tid: uuid::Uuid, imei: &str, source: &str,
+    pending: &Arc<Mutex<Option<oneshot::Sender<String>>>>,
+    rd: &mut tokio::net::tcp::OwnedReadHalf) -> std::io::Result<()> {
     loop {
-        // preamble 4 byte (zero) + data length 4 byte
         let mut head = [0u8; 8];
-        match sock.read_exact(&mut head).await { Ok(_) => {}, Err(_) => return Ok(()) }
+        match rd.read_exact(&mut head).await { Ok(_) => {}, Err(_) => return Ok(()) }
         let data_len = u32::from_be_bytes([head[4],head[5],head[6],head[7]]) as usize;
         if data_len == 0 || data_len > 1_000_000 { return Ok(()); }
         let mut buf = vec![0u8; data_len + 4]; // data + CRC16(4)
-        sock.read_exact(&mut buf).await?;
+        rd.read_exact(&mut buf).await?;
         let data = &buf[..data_len];
+        // risposta a comando GPRS (codec12 0x0C)
+        if data.first() == Some(&0x0C) {
+            if let Some(txt) = parse_cmd_response(data) {
+                if let Some(tx) = pending.lock().unwrap().take() { let _ = tx.send(txt); }
+            }
+            continue;
+        }
         match decode_avl(data) {
             Ok(records) => {
                 let n = records.len() as u32;
                 for r in &records {
                     let ts_rfc = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(r.ts_ms)
                         .unwrap_or_else(chrono::Utc::now).to_rfc3339();
-                    // allarme: event IO id mappato via config tenant teltonika.io_alarm_map
-                    let alarm = alarm_for(&st, tid, r.event_io).await;
+                    let alarm = alarm_for(st, tid, r.event_io).await;
                     let io_attrs = io_attributes(&r.io);
-                    crate::api::teltonika_ingest_one(&st, tid, &imei, &source, &ts_rfc,
+                    crate::api::teltonika_ingest_one(st, tid, imei, source, &ts_rfc,
                         r.lat, r.lon, r.speed, r.course, r.battery, alarm, io_attrs).await;
                 }
-                sock.write_all(&n.to_be_bytes()).await?; // ack = num record accettati
+                // writer non è qui: l'ack va scritto dal reader? separiamo: scriviamo l'ack via canale
+                // tramite registry (stesso writer task).
+                if let Some(conn) = registry().lock().unwrap().get(imei) {
+                    let _ = conn.cmd.send(n.to_be_bytes().to_vec());
+                }
             }
-            Err(e) => { tracing::debug!("teltonika: decode errore ({e})"); sock.write_all(&0u32.to_be_bytes()).await?; }
+            Err(e) => {
+                tracing::debug!("teltonika: decode errore ({e})");
+                if let Some(conn) = registry().lock().unwrap().get(imei) {
+                    let _ = conn.cmd.send(0u32.to_be_bytes().to_vec());
+                }
+            }
         }
     }
 }

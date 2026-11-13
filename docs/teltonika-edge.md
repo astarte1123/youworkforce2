@@ -15,6 +15,14 @@ server Traccar** (decode-edge nativo). Completa i canali d'ingest già presenti 
    (id evento, set a 1/2/4/8 byte; in 8E id e contatori a 2 byte + sezione NX variabile).
 3. **ACK**: il server risponde con `u32` = numero di record accettati (come da specifica Teltonika).
 
+### Comandi GPRS (codec12)
+
+Sul socket aperto il server può **inviare comandi** al device (codec12, type `0x05`): la connessione
+viene registrata per IMEI, un writer task invia il frame comando e il reader intercetta la risposta
+(codec12 type `0x06`). Endpoint **`POST /api/devices/:id/gprs-command {command}`** (tenant_admin):
+risolve l'IMEI del device, invia il comando e **attende la risposta** (max 5s), che torna in
+`{"ok":true,"response":"..."}`. Device non connesso → **502**. Frame con CRC-16/IBM.
+
 ## Ingest
 
 Ogni record entra nella **pipeline nativa** (la stessa di OsmAnd/HTTP):
@@ -55,5 +63,5 @@ Regressione verde (loneworker 15, patrols 14, iot-mgmt 8).
 
 ## Prossimo possibile
 
-Comandi GPRS verso il device (codec 12), onboarding kit (DOK) che espone host:porta TCP nel
-riepilogo device, visualizzazione telemetria IO in console.
+Onboarding kit (DOK) che espone host:porta TCP nel riepilogo device, visualizzazione telemetria IO
+e invio comandi GPRS dalla console.

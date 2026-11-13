@@ -5923,6 +5923,22 @@ pub async fn ingest_osmand(
     Ok(Json(json!({"ok":true,"external_id":ext,"position":position,"incident":incident})))
 }
 
+// ---- Teltonika: comando GPRS (codec12) verso un device connesso ----
+#[derive(Deserialize)] pub struct GprsCmdReq { pub command: String }
+pub async fn device_gprs_command(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GprsCmdReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if b.command.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "comando vuoto")); }
+    let imei: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND tenant_id=$2")
+        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let imei = imei.ok_or_else(|| err(StatusCode::NOT_FOUND, "device inesistente"))?;
+    match crate::teltonika::send_command(&imei, b.command.trim()).await {
+        Ok(resp) => { audit(&st, tid, &s.email, "gprs_command", json!({"device":id,"command":b.command})).await;
+                      Ok(Json(json!({"ok":true,"response":resp}))) }
+        Err(e) => Err(err(StatusCode::BAD_GATEWAY, &e)),
+    }
+}
+
 // ---- Teltonika edge nativo (Codec8/8E su TCP): helper d'ingest riusabili ----
 /// Risolve device+tenant+source dall'IMEI (= external_id). owner_pool (bypassa RLS).
 pub async fn teltonika_resolve(st: &AppState, imei: &str) -> Option<(Uuid, Uuid, String)> {

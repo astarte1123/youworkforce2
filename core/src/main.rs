@@ -237,6 +237,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/devices/:id/assign", post(api::assign_device))
         .route("/api/devices/:id/readiness", get(api::device_readiness))
         .route("/api/devices/:id/test-sos", post(api::device_test_sos))
+        .route("/api/devices/:id/gprs-command", post(api::device_gprs_command))
         .route("/api/catalog/devices", get(api::list_catalog))
         .route("/api/catalog/facets", get(api::catalog_facets))
         .route("/api/assets", get(api::list_assets).post(api::create_asset))
