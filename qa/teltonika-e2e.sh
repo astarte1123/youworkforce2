@@ -11,6 +11,9 @@ sql(){ docker exec -i ywdb psql -U postgres -d youworkforce -tAc "$1"; }
 one(){ sql "$1" | head -1 | tr -d '[:space:]'; }
 
 TID=$(one "SELECT id FROM app.tenants WHERE slug='$SLUG'")
+# stato moduli PRIMA (per ripristino: evita di inquinare altre suite, es. modularity assume traccar OFF)
+TR_PREV=$(one "SELECT COALESCE((SELECT state FROM app.tenant_modules WHERE tenant_id='$TID' AND module_code='traccar'),'non_abilitato')")
+LW_PREV=$(one "SELECT COALESCE((SELECT state FROM app.tenant_modules WHERE tenant_id='$TID' AND module_code='loneworker'),'non_abilitato')")
 sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','traccar','attivo') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
 sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','loneworker','attivo') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
 R=$RANDOM; IMEI="35612300000$R"; IMEI=${IMEI:0:15}
@@ -87,5 +90,8 @@ INC=$(one "SELECT count(*) FROM app.incidents WHERE tenant_id='$TID' AND correla
 sql "DELETE FROM app.incidents WHERE tenant_id='$TID' AND correlation LIKE 'telt-%'" >/dev/null 2>&1 || true
 sql "DELETE FROM app.device_positions WHERE device_id='$DID'" >/dev/null 2>&1 || true
 sql "DELETE FROM app.devices WHERE id='$DID'" >/dev/null
+# ripristino stato moduli
+sql "UPDATE app.tenant_modules SET state='$TR_PREV' WHERE tenant_id='$TID' AND module_code='traccar'" >/dev/null
+sql "UPDATE app.tenant_modules SET state='$LW_PREV' WHERE tenant_id='$TID' AND module_code='loneworker'" >/dev/null
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" = 0 ]
