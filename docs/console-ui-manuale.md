@@ -18,6 +18,8 @@ Ogni menu a tendina (`<select>`) della console — sia app tenant sia superadmin
   entrambe le parole).
 - **Tastiera**: ↑/↓ naviga, **Invio** seleziona, **Esc** chiude. Click fuori chiude.
 - Mostra "nessun risultato" se niente corrisponde.
+- Il menu si **apre verso l'alto** quando sotto non c'è spazio (es. le combo "Piantina" e
+  "Posiziona sulla piantina" sopra la mappa), così il contenuto resta visibile.
 - Il `<select>` nativo resta la **sorgente di verità**: il valore selezionato e tutte le
   logiche collegate non cambiano.
 
