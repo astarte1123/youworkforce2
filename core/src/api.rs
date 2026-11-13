@@ -2774,8 +2774,9 @@ pub async fn create_device(State(st): State<AppState>, h: HeaderMap, Json(b): Js
         .bind(tid).bind(b.external_id.trim()).bind(&b.source).bind(&b.label).bind(b.site_id).bind(b.assigned_user)
         .bind(b.enabled).bind(b.config.clone())
         .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "dispositivo gia' presente (source+external_id)"))?;
-    tx.commit().await.map_err(ise)?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT, "dispositivo gia' presente"))?.get::<Uuid,_>("id");
+    if b.assigned_user.is_some() { record_device_assignment(&mut tx, tid, id, None, b.assigned_user, st.clock.now()).await.map_err(ise)?; }
+    tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "create_device", json!({"external_id":b.external_id,"source":b.source})).await;
     Ok(Json(json!({"id":id})))
 }
@@ -2783,11 +2784,13 @@ pub async fn update_device(State(st): State<AppState>, h: HeaderMap, Path(id): P
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let old: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.devices WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.flatten();
     let n = sqlx::query(
         "UPDATE app.devices SET external_id=$2,source=$3,label=$4,site_id=$5,assigned_user=$6,
             enabled=COALESCE($7,enabled),config=COALESCE($8,config),updated_at=now() WHERE id=$1")
         .bind(id).bind(b.external_id.trim()).bind(&b.source).bind(&b.label).bind(b.site_id).bind(b.assigned_user)
         .bind(b.enabled).bind(b.config.clone()).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    if n>0 { record_device_assignment(&mut tx, tid, id, old, b.assigned_user, st.clock.now()).await.map_err(ise)?; }
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "dispositivo inesistente")); }
     audit(&st, tid, &s.email, "update_device", json!({"id":id})).await;
@@ -3018,8 +3021,10 @@ pub async fn assign_device(State(st): State<AppState>, h: HeaderMap, Path(id): P
     if b.user_id.is_some() && b.asset_id.is_some() { return Err(err(StatusCode::BAD_REQUEST, "assegna a utente OPPURE asset, non entrambi")); }
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let old: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.devices WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.flatten();
     let n = sqlx::query("UPDATE app.devices SET assigned_user=$2, assigned_asset=$3, updated_at=now() WHERE id=$1")
         .bind(id).bind(b.user_id).bind(b.asset_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    if n>0 { record_device_assignment(&mut tx, tid, id, old, b.user_id, st.clock.now()).await.map_err(ise)?; }
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "device inesistente")); }
     audit(&st, tid, &s.email, "assign_device", json!({"device":id,"user":b.user_id,"asset":b.asset_id})).await;
@@ -3055,6 +3060,7 @@ pub async fn provision_device(State(st): State<AppState>, h: HeaderMap, Json(b):
         .bind(&dcfg).bind(&b.model_code)
         .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "dispositivo gia' presente (uniqueId)"))?;
     let dev_id = drow.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id");
+    if b.user_id.is_some() { record_device_assignment(&mut tx, tid, dev_id, None, b.user_id, st.clock.now()).await.map_err(ise)?; }
     tx.commit().await.map_err(ise)?;
     // default alarm_map dal modello SOLO se il tenant non ha gia' una config propria
     let has_cfg: Option<Uuid> = sqlx::query_scalar("SELECT tenant_id FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='traccar' AND tool_code='alarm_map'")
@@ -3938,10 +3944,70 @@ pub async fn resolve_indoor(st: &AppState, tid: Uuid, attrs: Option<&Value>)
 
 /// Persist a normalized event idempotently; open an incident + outbox notify
 /// (one transaction, contract line 48) when the mapped etype is critical.
+/// Registra un cambio di assegnazione device->worker nello storico (chiude l'aperta, apre la nuova).
+/// No-op se l'assegnatario non cambia. Da chiamare dentro la stessa tx dell'UPDATE su devices.
+async fn record_device_assignment(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, tid: Uuid, device_id: Uuid,
+    old_user: Option<Uuid>, new_user: Option<Uuid>, at: chrono::DateTime<chrono::Utc>) -> Result<(), sqlx::Error> {
+    if old_user == new_user { return Ok(()); }
+    sqlx::query("UPDATE app.device_assignments SET unassigned_at=$3 WHERE tenant_id=$1 AND device_id=$2 AND unassigned_at IS NULL")
+        .bind(tid).bind(device_id).bind(at).execute(&mut **tx).await?;
+    if let Some(u) = new_user {
+        sqlx::query("INSERT INTO app.device_assignments(tenant_id,device_id,user_id,assigned_at) VALUES($1,$2,$3,$4)")
+            .bind(tid).bind(device_id).bind(u).bind(at).execute(&mut **tx).await?;
+    }
+    Ok(())
+}
+/// Attribuzione temporale: risolve il lavoratore assegnato al device all'ISTANTE `at`.
+/// Ritorna (worker, incerta, nota). `origin_known` = l'orario deriva dal dispositivo (affidabile).
+async fn resolve_worker_at(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, tid: Uuid, device_id: Uuid,
+    at: chrono::DateTime<chrono::Utc>, origin_known: bool) -> (Option<Uuid>, bool, Option<String>) {
+    let hist: Option<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM app.device_assignments
+          WHERE tenant_id=$1 AND device_id=$2 AND assigned_at<=$3 AND (unassigned_at IS NULL OR unassigned_at>$3)
+          ORDER BY assigned_at DESC LIMIT 1")
+        .bind(tid).bind(device_id).bind(at).fetch_optional(&mut **tx).await.ok().flatten();
+    let current: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.devices WHERE id=$1")
+        .bind(device_id).fetch_optional(&mut **tx).await.ok().flatten();
+    let changes: i64 = sqlx::query_scalar("SELECT count(*) FROM app.device_assignments WHERE tenant_id=$1 AND device_id=$2")
+        .bind(tid).bind(device_id).fetch_one(&mut **tx).await.unwrap_or(0);
+    match hist {
+        Some(u) => {
+            if !origin_known && changes > 1 {
+                (Some(u), true, Some("orario evento non fornito dal dispositivo e device con più assegnatari nello storico: attribuzione da verificare".into()))
+            } else { (Some(u), false, None) }
+        }
+        None => {
+            if current.is_some() {
+                (current, true, Some("nessuna assegnazione valida all'orario dell'evento: usato l'assegnatario corrente".into()))
+            } else {
+                (None, false, None)
+            }
+        }
+    }
+}
+/// Estrae un orario-evento affidabile dal payload (device/fix time) se presente.
+fn payload_origin_time(p: &Value) -> Option<chrono::DateTime<chrono::Utc>> {
+    let keys = ["fixTime","deviceTime","eventTime","occurred_at","occurredAt","ts","time"];
+    let try_obj = |o: &Value| -> Option<chrono::DateTime<chrono::Utc>> {
+        for k in keys { if let Some(s) = o.get(k).and_then(|v| v.as_str()) {
+            if let Ok(d) = chrono::DateTime::parse_from_rfc3339(s) { return Some(d.with_timezone(&chrono::Utc)); }
+        }}
+        None
+    };
+    try_obj(p)
+        .or_else(|| p.get("attributes").and_then(try_obj))
+        .or_else(|| p.get("position").and_then(try_obj))
+}
+
 pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
     // policy "ignora": evento non significativo per questo tenant -> nessuna persistenza.
     if n.etype == "ignore" { return Ok(Json(json!({"ignored":true,"correlation":n.correlation}))); }
     let now = st.clock.now();
+    // Attribuzione temporale: se il payload porta un orario-evento affidabile (device/fix time)
+    // lo usiamo come origin_ts; altrimenti ripieghiamo su `now` (evento considerato "live").
+    let origin_opt = payload_origin_time(&n.payload);
+    let origin_known = origin_opt.is_some();
+    let origin_ts = origin_opt.unwrap_or(now);
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
 
     // resolve device/site within tenant (optional)
@@ -3968,7 +4034,7 @@ pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
          ON CONFLICT (tenant_id,source,idem_key) DO NOTHING
          RETURNING id")
         .bind(tid).bind(&n.source).bind(&n.source_event).bind(&n.idem).bind(site_id).bind(device_id)
-        .bind(&n.etype).bind(now).bind(now).bind(n.lat).bind(n.lon).bind(n.accuracy_m)
+        .bind(&n.etype).bind(origin_ts).bind(now).bind(n.lat).bind(n.lon).bind(n.accuracy_m)
         .bind(n.payload.clone()).bind(&n.correlation).bind(n.indoor).bind(&n.beacon_uid).bind(&n.zone)
         .fetch_optional(&mut *tx).await.map_err(ise)?;
 
@@ -4021,6 +4087,17 @@ pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
                 "details": format!("etype={}; sede={}; sorgente={}; lat={:?}; lon={:?}; correlazione={}",
                     n.etype, n.site_name.clone().unwrap_or("-".into()), n.source, n.lat, n.lon, n.correlation)}))
             .execute(&mut *tx).await.map_err(ise)?;
+        // Attribuzione temporale del LAVORATORE: snapshot sull'incidente, risolto all'orario
+        // dell'evento (origin_ts) via storico assegnazioni, con marcatura di incertezza.
+        if let Some(did) = device_id {
+            let (worker, uncertain, note) = resolve_worker_at(&mut tx, tid, did, origin_ts, origin_known).await;
+            sqlx::query("UPDATE app.incidents SET worker_user_id=$2, attribution_uncertain=$3, attribution_note=$4 WHERE id=$1")
+                .bind(iid).bind(worker).bind(uncertain).bind(&note).execute(&mut *tx).await.map_err(ise)?;
+            if uncertain {
+                sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'attribution_uncertain',$3)")
+                    .bind(tid).bind(iid).bind(json!({"note":note,"origin_ts":origin_ts.to_rfc3339(),"origin_known":origin_known})).execute(&mut *tx).await.map_err(ise)?;
+            }
+        }
     }
     tx.commit().await.map_err(ise)?;
 
@@ -5204,8 +5281,17 @@ pub async fn list_incidents(State(st): State<AppState>, h: HeaderMap) -> R {
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = sqlx::query(
         "SELECT i.id,i.etype,i.state,i.priority,i.correlation,i.opened_at,i.outcome,i.assigned_user,i.site_id,
-                s.name AS site, u.email AS assignee
-         FROM app.incidents i LEFT JOIN app.sites s ON s.id=i.site_id LEFT JOIN app.users u ON u.id=i.assigned_user
+                s.name AS site, u.email AS assignee,
+                i.attribution_uncertain, i.attribution_note,
+                COALESCE(w.email, du.email) AS worker,
+                COALESCE(d.label, d.external_id) AS device
+         FROM app.incidents i
+           LEFT JOIN app.sites s ON s.id=i.site_id
+           LEFT JOIN app.users u ON u.id=i.assigned_user
+           LEFT JOIN app.users w ON w.id=i.worker_user_id
+           LEFT JOIN app.events e ON e.id=i.event_id
+           LEFT JOIN app.devices d ON d.id=e.device_id
+           LEFT JOIN app.users du ON du.id=d.assigned_user
          ORDER BY i.state<>'chiuso' DESC, i.priority DESC, i.opened_at DESC")
         .fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
@@ -5218,6 +5304,10 @@ pub async fn list_incidents(State(st): State<AppState>, h: HeaderMap) -> R {
         "site": r.try_get::<String,_>("site").ok(),
         "assigned_user": r.try_get::<Uuid,_>("assigned_user").ok(),
         "assignee": r.try_get::<String,_>("assignee").ok(),
+        "worker": r.try_get::<String,_>("worker").ok(),
+        "device": r.try_get::<String,_>("device").ok(),
+        "attribution_uncertain": r.try_get::<bool,_>("attribution_uncertain").unwrap_or(false),
+        "attribution_note": r.try_get::<String,_>("attribution_note").ok(),
         "outcome": r.try_get::<String,_>("outcome").ok() })).collect();
     Ok(Json(json!(out)))
 }
@@ -5298,7 +5388,12 @@ pub async fn worker_app_device(st: &AppState, tid: Uuid, uid: Uuid, email: &str)
         "INSERT INTO app.devices(tenant_id,source,external_id,label,assigned_user,enabled) VALUES($1,'pwa',$2,$3,$4,true) \
          ON CONFLICT (tenant_id,source,external_id) DO UPDATE SET assigned_user=EXCLUDED.assigned_user RETURNING id")
         .bind(tid).bind(&ext).bind(&label).bind(uid).fetch_one(&st.owner_pool).await.map_err(ise)?;
-    Ok((row.get("id"), ext))
+    let did: Uuid = row.get("id");
+    // storico assegnazione (device PWA): garantisce una riga aperta device->worker (idempotente)
+    let _ = sqlx::query("INSERT INTO app.device_assignments(tenant_id,device_id,user_id,assigned_at)
+        SELECT $1,$2,$3,now() WHERE NOT EXISTS (SELECT 1 FROM app.device_assignments WHERE tenant_id=$1 AND device_id=$2 AND user_id=$3 AND unassigned_at IS NULL)")
+        .bind(tid).bind(did).bind(uid).execute(&st.owner_pool).await;
+    Ok((did, ext))
 }
 
 /// Posizione continua dall'app lavoratore (watchPosition). Session-auth: il fix è attribuito

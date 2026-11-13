@@ -411,7 +411,7 @@ function cenRender(){
   const start=(CEN.page-1)*CEN.size, pageItems=list.slice(start,start+CEN.size);
   const body=$('#incBody'), empty=$('#incEmpty'), pager=$('#incPager');
   body.innerHTML=pageItems.map(i=>`<tr class="clk${i.state==='aperto'?' inc-live':''}" data-inc="${i.id}">
-    <td><b>${esc(i.etype)}</b></td><td>${esc(i.site||'—')}</td><td class="small">${esc(i.assignee||'—')}</td><td>${chip(i.state)}</td>
+    <td><b>${esc(i.etype)}</b>${i.attribution_uncertain?' <span title="attribuzione lavoratore da verificare" style="color:var(--warn)">⚠</span>':''}</td><td>${esc(i.site||'—')}</td><td class="small">${esc(i.assignee||'—')}</td><td>${chip(i.state)}</td>
     <td class="sev pri${i.priority}">${'●'.repeat(i.priority||0)}</td>
     <td class="mono small mut">${esc((i.correlation||'').slice(0,8))}</td></tr>`).join('');
   empty.hidden = total>0;
@@ -476,7 +476,9 @@ async function openIncident(id){
     <div class="row" style="gap:6px;margin-top:4px"><input id="noteInp" class="grow" placeholder="es. chiamato, risponde">
       <button class="btn ghost" onclick="incNote('${id}')">Salva</button></div>`:'';
   drawer(`Incidente · ${esc(i.etype)}`, `
-    <div class="row" style="margin-bottom:14px">${chip(i.state)}<span class="chip">prio ${i.priority}</span><span class="chip">${esc(i.site||'—')}</span>${i.assignee?`<span class="chip">${esc(i.assignee)}</span>`:''}</div>
+    <div class="row" style="margin-bottom:10px">${chip(i.state)}<span class="chip">prio ${i.priority}</span><span class="chip">${esc(i.site||'—')}</span>${i.assignee?`<span class="chip" title="operatore assegnato">🧑‍💼 ${esc(i.assignee)}</span>`:''}</div>
+    ${(i.worker||i.device)?`<div class="row" style="gap:6px;margin-bottom:10px">${i.worker?`<span class="chip" title="lavoratore (all'orario dell'evento)">👤 ${esc(i.worker)}</span>`:''}${i.device?`<span class="chip" title="dispositivo">📟 ${esc(i.device)}</span>`:''}</div>`:''}
+    ${i.attribution_uncertain?`<div class="card pad" style="margin-bottom:12px;border-left:4px solid var(--warn);background:var(--warn-soft)"><b>⚠ Attribuzione da verificare</b><div class="small" style="margin-top:2px">${esc(i.attribution_note||'Il lavoratore attribuito potrebbe non corrispondere a chi indossava il dispositivo al momento dell\'evento.')}</div></div>`:''}
     <div class="small mut">Correlazione</div><div class="mono" style="margin-bottom:16px">${esc(i.correlation)}</div>
     <div style="margin-bottom:6px">${acts}</div>${assignBox}${noteBox}
     ${AI_FEAT.incident_summary?`<div class="row" style="gap:6px;margin-top:14px"><button class="btn ghost small" onclick="aiIncidentSummary('${id}',this)">✦ Sintesi AI</button></div><div id="aiIncOut"></div>`:''}
