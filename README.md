@@ -34,6 +34,7 @@ sicurezza / rollback. L'escalation è condivisa da tutti i moduli che generano a
 - **Usabilità console**: **combo con ricerca** su tutti i menu a tendina (app + superadmin), **ricerca full-text** in Dispositivi e in Centrale, Centrale con **tab Aperti/Chiusi/Tutti + paginazione**, Mappa divisa in **Mappa allarmi** e **Mappa dispositivi** (geofence su entrambe), selezione allarme dall'elenco con evidenziazione sul pin, e **allarme live** (popup + suono + riga lampeggiante) all'apertura di un incidente da dispositivo. Guida: [`docs/console-ui-manuale.md`](docs/console-ui-manuale.md).
 
 ## Documentazione
+- [`docs/manuale.md`](docs/manuale.md) — **Manuale utente unico** (indice operativo di tutta la piattaforma)
 - [`docs/console-ui-manuale.md`](docs/console-ui-manuale.md) — Console: usabilità (ricerca combo, filtri, mappe, Centrale, allarme live)
 - [`docs/escalation-manuale.md`](docs/escalation-manuale.md) — Reperibilità e notifiche (motore nativo, parità GoAlert)
 - [`docs/traccar-manuale.md`](docs/traccar-manuale.md) — Traccar (badge/GPS)
