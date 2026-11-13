@@ -146,7 +146,8 @@ vengono migrate. Per aggiungere una lingua/stringa: inserire la chiave in `I18N.
 Le statistiche in testa al report allarmi (**Totale, Critici, Aperti, Presi in carico,
 Tempo medio risposta**) sono disposte su una **griglia a 5 colonne** che riempie tutta la
 larghezza (si impila progressivamente su schermi stretti), invece di essere addossate a
-sinistra. Il "Tempo medio risposta" mostra "—" quando il dato non è disponibile.
+sinistra. Il "Tempo medio risposta" mostra un'icona di **orologio (🕐)** quando il dato non è
+ancora disponibile (nel PDF resta "—").
 
 ## Note tecniche
 - File coinvolti: `console/static/app.html`, `console/static/app.js`, `console/static/app.css`.
