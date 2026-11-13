@@ -3072,7 +3072,11 @@ pub struct DokReq {
 pub async fn device_onboarding_kit(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DokReq>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
-    require_any_module(&st, tid, DEVICE_MODS).await?;
+    dok_build(&st, tid, &s.email, b).await.map(Json)
+}
+/// Logica riusabile del Device Onboarding Kit (usata dall'endpoint e dall'agente AI).
+pub async fn dok_build(st: &AppState, tid: Uuid, actor: &str, b: DokReq) -> Result<Value,(StatusCode,String)> {
+    require_any_module(st, tid, DEVICE_MODS).await?;
     if b.external_id.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "IMEI/uniqueId richiesto")); }
     // modello dal catalogo
     let m = sqlx::query("SELECT manufacturer,model_name,protocol,capabilities,category FROM app.device_models WHERE model_code=$1")
@@ -3144,9 +3148,9 @@ pub async fn device_onboarding_kit(State(st): State<AppState>, h: HeaderMap, Jso
     sqlx::query("INSERT INTO app.ingest_tokens(token,token_hash,tenant_id,source,device_id,label) VALUES($1,$2,$3,'traccar',$4,$5)")
         .bind(&handle).bind(&hash).bind(tid).bind(dev_id).bind(&label).execute(&st.owner_pool).await.map_err(ise)?;
 
-    audit(&st, tid, &s.email, "device_onboarding_kit", json!({"device":dev_id,"model":b.model_code,"category":category,"etypes":etypes,"profile":profile_id})).await;
+    audit(st, tid, actor, "device_onboarding_kit", json!({"device":dev_id,"model":b.model_code,"category":category,"etypes":etypes,"profile":profile_id})).await;
     let base = dok_ingress_base();
-    Ok(Json(json!({
+    Ok(json!({
         "device_id": dev_id, "external_id": b.external_id.trim(), "model_code": b.model_code,
         "manufacturer": manufacturer, "model_name": model_name, "protocol": protocol,
         "category": category, "category_label": plan.label, "capabilities": caps,
@@ -3154,7 +3158,7 @@ pub async fn device_onboarding_kit(State(st): State<AppState>, h: HeaderMap, Jso
         "token": secret, "handle": handle,
         "ingress_url": format!("{base}/api/ingress/traccar?token={secret}"),
         "note": "Copia il token adesso: non sarà più mostrato. Registra l'external_id/IMEI sul Traccar del tenant e imposta l'event forwarding verso l'ingress."
-    })))
+    }))
 }
 
 /// Readiness/idoneità del device per i suoi segnali: dichiarato (dalle capacità del modello) vs
@@ -3162,6 +3166,10 @@ pub async fn device_onboarding_kit(State(st): State<AppState>, h: HeaderMap, Jso
 pub async fn device_readiness(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
+    device_readiness_value(&st, tid, id).await.map(Json)
+}
+/// Readiness come Value (riusabile da endpoint e agente AI).
+pub async fn device_readiness_value(st: &AppState, tid: Uuid, id: Uuid) -> Result<Value,(StatusCode,String)> {
     let d = sqlx::query("SELECT external_id,label,assigned_user,enabled,config,model_code FROM app.devices WHERE id=$1 AND tenant_id=$2")
         .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "device inesistente"))?;
@@ -3185,7 +3193,7 @@ pub async fn device_readiness(State(st): State<AppState>, h: HeaderMap, Path(id)
         }
     }
     let protection_ok = assigned.is_some() && online;
-    Ok(Json(json!({
+    Ok(json!({
         "device_id": id, "category": category, "category_label": plan.label, "capabilities": caps,
         "states": {
             "registrazione": true,
@@ -3197,7 +3205,7 @@ pub async fn device_readiness(State(st): State<AppState>, h: HeaderMap, Path(id)
         "signals": signals, "missing_signals": missing,
         "ready": missing.is_empty() && assigned.is_some(),
         "needs_checkin": plan.needs_checkin
-    })))
+    }))
 }
 
 /// SOS di prova dalla console: inietta un SOS attraverso il PERCORSO REALE (ingress->incidente->
@@ -7080,12 +7088,13 @@ fn ag_meta(name: &str) -> Option<ToolMeta> {
         // lettura/analisi
         "query_incidents"|"query_checkins"|"query_events"|"query_work_orders"|"get_consuntivo"
         |"tb_list_devices"|"tb_device_telemetry"
+        |"suggest_device_model"|"device_readiness"
             => Some(ToolMeta{sensitive:false, writes:false}),
         // scrittura a basso rischio -> esecuzione diretta (audit)
         "add_diary_entry"|"add_incident_note"|"add_timesheet_line"|"add_expense"|"save_report"
             => Some(ToolMeta{sensitive:false, writes:true}),
         // scrittura sensibile -> richiede conferma operatore
-        "create_work_order"|"create_sensor_rule"|"tb_sync_devices"
+        "create_work_order"|"create_sensor_rule"|"tb_sync_devices"|"onboard_device"
             => Some(ToolMeta{sensitive:true, writes:true}),
         _ => None,
     }
@@ -7111,6 +7120,12 @@ fn ag_catalog() -> Vec<(&'static str, &'static str, Value)> {
       ("tb_list_devices","Elenca i device ThingsBoard specchiati nell'inventario.", o(json!({}), json!([]))),
       ("tb_device_telemetry","Ultima telemetria live di un device ThingsBoard (per nome).", o(json!({"device":{"type":"string"}}), json!(["device"]))),
       ("tb_sync_devices","Sincronizza i device ThingsBoard e pulla la telemetria (richiede conferma).", o(json!({}), json!([]))),
+      ("suggest_device_model","Cerca nel CATALOGO il modello di dispositivo che corrisponde a una descrizione (produttore/modello/scopo) e mostra categoria, capacità e gli allarmi (etype) che genererebbe. Usalo per aiutare l'onboarding.",
+        o(json!({"query":{"type":"string","description":"testo libero: produttore, modello, o scopo"},"category":{"type":"string","enum":["personale","veicolo","asset","sensore","smartphone"]}}), json!(["query"]))),
+      ("device_readiness","Stato di prontezza di un dispositivo (registrazione/assegnazione/connessione/protezione + segnali dichiarati e verificati). Dai l'external_id/IMEI del device.",
+        o(json!({"device_external_id":{"type":"string"}}), json!(["device_external_id"]))),
+      ("onboard_device","Genera il Device Onboarding Kit per un modello a catalogo: crea device + credenziale di ingest + routing degli allarmi + (device personali) profilo di protezione. RICHIEDE CONFERMA dell'operatore. Fornisci model_code (da suggest_device_model), external_id/IMEI, e opz. worker_email, group_name, make_profile.",
+        o(json!({"model_code":{"type":"string"},"external_id":{"type":"string"},"label":{"type":"string"},"worker_email":{"type":"string"},"group_name":{"type":"string"},"make_profile":{"type":"boolean"}}), json!(["model_code","external_id"]))),
     ]
 }
 
@@ -7287,6 +7302,52 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
             audit(st, tid, &s.email, "ai_agent_tb_sync", json!({"devices":d,"alarms":a})).await;
             Ok(json!({"ok":true,"device_sincronizzati":d,"incidenti_alzati":a}))
         }
+        // ---- Onboarding dispositivi (l'AI attore) ----
+        "suggest_device_model" => {
+            let q = gs("query").unwrap_or_default(); let q = q.trim();
+            if q.is_empty() { return Err("query richiesta".into()); }
+            let cat = gs("category");
+            let like = format!("%{}%", q.to_lowercase());
+            let rows = sqlx::query("SELECT model_code,manufacturer,model_name,protocol,category,capabilities,recommended
+                 FROM app.device_models
+                 WHERE ($2::text IS NULL OR category=$2)
+                   AND (lower(manufacturer) LIKE $1 OR lower(model_name) LIKE $1 OR lower(model_code) LIKE $1 OR lower(category) LIKE $1)
+                 ORDER BY recommended DESC NULLS LAST, manufacturer LIMIT 8")
+                .bind(&like).bind(cat.as_deref()).fetch_all(&st.owner_pool).await.map_err(|e| e.to_string())?;
+            let out: Vec<Value> = rows.iter().map(|r| {
+                let caps: Vec<String> = r.get("capabilities");
+                let ets: Vec<&str> = caps.iter().filter_map(|c| dok_cap_to_etype(c)).collect();
+                json!({"model_code":r.get::<String,_>("model_code"),"manufacturer":r.get::<String,_>("manufacturer"),
+                    "model_name":r.get::<String,_>("model_name"),"category":r.try_get::<String,_>("category").unwrap_or_default(),
+                    "protocol":r.get::<String,_>("protocol"),"capabilities":caps,"etype_allarmi":ets})
+            }).collect();
+            Ok(json!({"matches":out,"nota":"Scegli il model_code e usa onboard_device (richiede conferma)."}))
+        }
+        "device_readiness" => {
+            let ext = gs("device_external_id").unwrap_or_default();
+            if ext.trim().is_empty() { return Err("device_external_id richiesto".into()); }
+            let did: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.devices WHERE tenant_id=$1 AND external_id=$2")
+                .bind(tid).bind(ext.trim()).fetch_optional(&st.owner_pool).await.map_err(|e| e.to_string())?;
+            let Some(did) = did else { return Err("device non trovato".into()); };
+            device_readiness_value(st, tid, did).await.map_err(|e| e.1)
+        }
+        "onboard_device" => {
+            admin_only(s).map_err(|e| e.1)?;
+            let model_code = gs("model_code").ok_or("model_code richiesto")?;
+            let external_id = gs("external_id").ok_or("external_id richiesto")?;
+            // risolvi lavoratore e gruppo per nome/email (comodo per l'AI)
+            let user_id = if let Some(em) = gs("worker_email") {
+                sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.users WHERE tenant_id=$1 AND lower(email)=lower($2)")
+                    .bind(tid).bind(em.trim()).fetch_optional(&st.owner_pool).await.map_err(|e| e.to_string())?
+            } else { None };
+            let group_id = if let Some(gn) = gs("group_name") {
+                sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE tenant_id=$1 AND lower(name)=lower($2)")
+                    .bind(tid).bind(gn.trim()).fetch_optional(&st.owner_pool).await.map_err(|e| e.to_string())?
+            } else { None };
+            let req = DokReq{ model_code, external_id, label: gs("label"), site_id:None, user_id, group_id,
+                make_profile: a.get("make_profile").and_then(|v| v.as_bool()) };
+            dok_build(st, tid, &s.email, req).await.map_err(|e| e.1)
+        }
         _ => Err("tool sconosciuto".into()),
     }
 }
@@ -7382,7 +7443,11 @@ Aiuti l'operatore sul campo e in centrale: ANALIZZA i dati con i tool di lettura
 di scrittura per registrare informazioni (note di diario, note incidente, righe/spese di consuntivo, report). \
 Usa SEMPRE i tool per leggere e scrivere: non inventare dati, non dire di aver fatto qualcosa senza il tool. \
 Gli id (incidente, consuntivo, ordine) ricavali prima con i tool di lettura. Le azioni 'create_*' sono sensibili \
-e verranno confermate dall'operatore prima di scrivere. NON puoi in alcun modo agire sulla catena di sicurezza \
+e verranno confermate dall'operatore prima di scrivere. \
+ONBOARDING DISPOSITIVI: puoi aiutare a censire hardware: usa 'suggest_device_model' per trovare il modello a \
+catalogo da una descrizione, 'device_readiness' per diagnosticare lo stato/prontezza di un device e dire cosa \
+manca, e 'onboard_device' (sensibile, richiede conferma) per generare il kit completo (device+credenziale+routing+\
+profilo) differenziando per tipologia d'uso. NON puoi in alcun modo agire sulla catena di sicurezza \
 (chiudere/mettere a tacere/escalare allarmi o SOS, modificare reperibilita'): quelle restano manuali. \
 Quando hai finito, rispondi in italiano riassumendo cosa hai letto e cosa hai scritto.";
 
