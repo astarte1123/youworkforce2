@@ -113,6 +113,17 @@ già esistenti (toast di notifica, escalation/notifiche lato backend — **invar
 
 ---
 
+## 6. Responsive (mobile / tablet)
+
+- **Navigazione mobile**: sotto 820px la barra laterale diventa un **drawer a scomparsa**.
+  In alto a sinistra compare il pulsante **☰** (hamburger) che apre/chiude il menu; uno
+  sfondo scuro (scrim) chiude al tocco e il menu si chiude anche scegliendo una voce.
+  (Prima la barra veniva **nascosta** su mobile, rendendo l'app non navigabile da telefono.)
+- **Tabelle**: su schermi stretti (≤640px) le tabelle **scorrono in orizzontale** dentro la
+  loro card invece di sforare la pagina.
+- **Griglie e barre**: KPI e colonne si impilano progressivamente; le mappe passano a una
+  sola colonna (mappa sopra, dettaglio sotto); le barre strumenti vanno a capo.
+
 ## Note tecniche
 - File coinvolti: `console/static/app.html`, `console/static/app.js`, `console/static/app.css`.
 - Avvio console: dalla cartella `console/`, `./console.exe` (o `go run .`) → `:8081`,

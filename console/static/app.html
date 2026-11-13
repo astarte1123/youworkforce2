@@ -169,7 +169,7 @@ async function stopImpersonate(){ try{SSE&&SSE.close()}catch(e){} try{ await api
 function renderShell(){
   $('#root').innerHTML = `
   <div class="shell">
-    <aside class="side">
+    <aside class="side" id="side">
       <div class="brand"><div class="logo">${brandMark()}</div>
         <div style="display:flex;flex-direction:column;line-height:1.1">
           <span>${brandName()}</span>
@@ -184,6 +184,7 @@ function renderShell(){
     </aside>
     <div style="display:flex;flex-direction:column;min-width:0">
       <div class="topbar">
+        <button class="btn-ico btn ghost navtoggle" title="Menu" aria-label="Menu" onclick="toggleNav()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
         <strong id="pageTitle">Dashboard</strong>
         <span class="chip">${esc(store.slug)}</span>
         <div class="grow"></div>
@@ -209,12 +210,18 @@ function renderShell(){
     <div class="card-h" style="border-top:1px solid var(--line);border-bottom:none">
       <input id="aiQ" placeholder="Scrivi una domanda…" onkeydown="if(event.key==='Enter')askAI()">
       <button class="btn" onclick="askAI()">Invia</button></div>
-  </div>`;
-  $('#nav').onclick=e=>{const a=e.target.closest('a[data-k]'); if(a){location.hash='#/'+a.dataset.k;}};
+  <div id="navScrim" onclick="toggleNav(false)"></div>`;
+  $('#nav').onclick=e=>{const a=e.target.closest('a[data-k]'); if(a){location.hash='#/'+a.dataset.k; toggleNav(false);}};
   api('/modules').then(M=>{ if((M||[]).some(m=>m.code==='assistant'&&m.state==='attivo')) $('#fab').classList.remove('hide'); }).catch(()=>{});
   window.onhashchange=route;
   if(can(['operatore','tenant_admin','auditor'])) connectSSE();
   route();
+}
+// Nav mobile: la barra laterale diventa un drawer a scomparsa sotto 820px.
+function toggleNav(force){
+  const s=$('#side'), sc=$('#navScrim'); if(!s)return;
+  const open = force===undefined ? !s.classList.contains('open') : !!force;
+  s.classList.toggle('open',open); if(sc)sc.classList.toggle('open',open);
 }
 function rebuildNav(){ const n=$('#nav'); if(n) n.innerHTML=navHtml(); }
 function setActive(k){ $$('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.k===k));
