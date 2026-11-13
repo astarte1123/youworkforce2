@@ -71,6 +71,7 @@ per-tipo → gruppo di default**.
   base nei feriali + assegnazione "Weekend" (sab/dom) + persona fissa di notte. Vuoto = 24h.
   Un'assegnazione può essere **"tutti insieme"** o **"a turni"** (ruota i suoi membri).
   Ogni gruppo ha anche un **URL iCal** proprio (abbonamento calendario dei turni del gruppo).
+  Il token si può **ruotare** (↻, invalida il vecchio URL) o **revocare** (🗑) in qualsiasi momento.
 - **Turni calcolati (30 giorni)**: mostra il **calendario finale** del gruppo — chi è reperibile e
   quando nei prossimi 30 giorni, applicando rotazione, copertura, override, assegnazioni e
   pianificazioni temporanee. Vista **lista** o **calendario** (griglia mensile) + **filtro per persona**.
@@ -156,7 +157,10 @@ comunque registrati; a **fine finestra** gli on-call ricevono **un unico riepilo
 accumulati, poi l'escalation riprende. **Termina** la riattiva subito.
 
 **Il mio calendario reperibilità** — genera un URL iCal (Apple/Google Calendar) con i tuoi turni,
-**calcolati dalla rotazione** dei prossimi 30 giorni oltre agli eventuali turni manuali.
+**calcolati dalla rotazione** dei prossimi 30 giorni oltre agli eventuali turni manuali. Puoi
+**ruotare** il token (↻, invalida il vecchio link) o **revocarlo** (🗑). Aggiungendo `?group=<id>`
+all'URL ottieni un **abbonamento per singolo gruppo** (solo i turni calcolati di quel gruppo),
+utile per iscriversi al calendario di un team specifico.
 
 **Diagnostica motore** — mostra il motore corrente, il **report delle consegne** (quante/stato) e il
 **report di parità** (confronto nativo vs GoAlert quando GoAlert è presente).

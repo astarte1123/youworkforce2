@@ -2517,9 +2517,21 @@ async function ocMaint(hours){
       :`<span style="color:var(--ok,green)">▶ Manutenzione terminata (${r.services} servizi)</span>`; }
   catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; }
 }
-async function ocCalendar(btn){
-  try{ const r=await api('/oncall-calendar/url'); const full=location.origin+r.url;
-    $('#ocCalOut').innerHTML=`<div class="mut">Copia in Apple/Google Calendar (abbonamento):</div><code>${esc(full)}</code> <button class="btn ghost small" onclick="navigator.clipboard.writeText('${full}');toast('Copiato','ok')">copia</button>`; }
+async function ocCalendar(btn, rotate){
+  try{ const r=await api('/oncall-calendar/url'+(rotate?'?rotate=1':'')); const full=location.origin+r.url;
+    $('#ocCalOut').innerHTML=`<div class="mut">Copia in Apple/Google Calendar (abbonamento):</div><code>${esc(full)}</code>
+      <div class="row" style="gap:6px;margin-top:4px">
+        <button class="btn ghost small" onclick="navigator.clipboard.writeText('${full}');toast('Copiato','ok')">copia</button>
+        <button class="btn ghost small" onclick="ocCalRotate(this)">↻ ruota token</button>
+        <button class="btn ghost small" onclick="ocCalendarRevoke()">🗑 revoca</button>
+      </div>`;
+    if(rotate) toast('Token ruotato','ok'); }
+  catch(e){ toast(e.message,'bad'); }
+}
+async function ocCalRotate(btn){ if(await askConfirm('Rigenerare il token? Il vecchio URL smetterà di funzionare.')) ocCalendar(btn,1); }
+async function ocCalendarRevoke(){
+  if(!await askConfirm('Revocare il feed personale? L\'URL attuale smetterà di funzionare.')) return;
+  try{ await api('/oncall-calendar',{method:'DELETE'}); $('#ocCalOut').innerHTML='<div class="small mut">Feed revocato. Premi di nuovo per generarne uno nuovo.</div>'; toast('Feed revocato','ok'); }
   catch(e){ toast(e.message,'bad'); }
 }
 async function ocContacts(btn){
@@ -2716,8 +2728,15 @@ async function asgAdd(gid){ let days=''; for(let i=0;i<7;i++){ days+=($('#asgd_'
   const body={label:$('#asgL_'+gid).value||'', cov_days:days, cov_start:$('#asgS_'+gid).value||null, cov_end:$('#asgE_'+gid).value||null,
     mode:$('#asgMode_'+gid).value, oncall_type:$('#asgType_'+gid).value};
   try{ await api('/groups/'+gid+'/assignments',{method:'POST',body:JSON.stringify(body)}); grpAssignLoad(gid); }catch(e){ toast(e.message,'bad'); } }
-async function grpCalendar(gid){ try{ const r=await api('/groups/'+gid+'/calendar/url'); const full=location.origin+r.url;
-  $('#gcal_'+gid).innerHTML=`<code>${esc(full)}</code> <button class="btn ghost small" onclick="navigator.clipboard.writeText('${full}');toast('Copiato','ok')">copia</button>`; }catch(e){ toast(e.message,'bad'); } }
+async function grpCalendar(gid,rotate){ try{ const r=await api('/groups/'+gid+'/calendar/url'+(rotate?'?rotate=1':'')); const full=location.origin+r.url;
+  $('#gcal_'+gid).innerHTML=`<code>${esc(full)}</code>
+    <button class="btn ghost small" onclick="navigator.clipboard.writeText('${full}');toast('Copiato','ok')">copia</button>
+    <button class="btn ghost small" onclick="grpCalRotate('${gid}')">↻ ruota</button>
+    <button class="btn ghost small" onclick="grpCalendarRevoke('${gid}')">🗑 revoca</button>`;
+  if(rotate) toast('Token ruotato','ok'); }catch(e){ toast(e.message,'bad'); } }
+async function grpCalRotate(gid){ if(await askConfirm('Rigenerare il token del gruppo? Il vecchio URL smetterà di funzionare.')) grpCalendar(gid,1); }
+async function grpCalendarRevoke(gid){ if(!await askConfirm('Revocare il feed del gruppo? L\'URL attuale smetterà di funzionare.'))return;
+  try{ await api('/groups/'+gid+'/calendar',{method:'DELETE'}); $('#gcal_'+gid).innerHTML='<span class="small mut">Feed revocato.</span>'; toast('Feed revocato','ok'); }catch(e){ toast(e.message,'bad'); } }
 async function asgDel(gid,aid){ if(!await askConfirm('Eliminare l\'assegnazione?'))return; try{ await api('/assignments/'+aid,{method:'DELETE'}); grpAssignLoad(gid); }catch(e){ toast(e.message,'bad'); } }
 async function asgMemAdd(gid,aid){ const uid=$('#asgm_'+aid).value; if(!uid)return; try{ await api('/assignments/'+aid+'/members',{method:'POST',body:JSON.stringify({user_id:uid,position:1})}); grpAssignLoad(gid); }catch(e){ toast(e.message,'bad'); } }
 async function asgMemRm(gid,aid,uid){ try{ await api('/assignments/'+aid+'/members/'+uid,{method:'DELETE'}); grpAssignLoad(gid); }catch(e){ toast(e.message,'bad'); } }

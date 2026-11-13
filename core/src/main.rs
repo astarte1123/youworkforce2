@@ -4,7 +4,7 @@ mod delivery; // #4 FASE 2: adapter di consegna in ombra (sink di prova; GoAlert
 mod modules; // #3 FASE 1: registry manifest moduli (dipendenze + metadata)
 
 use std::sync::Arc;
-use axum::{routing::{get, post}, Router, Json};
+use axum::{routing::{get, post, delete}, Router, Json};
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::broadcast;
@@ -78,8 +78,17 @@ fn tb_parity_routes() -> Router<AppState> {
         .route("/api/oncall-now-native", get(api::oncall_now_native))
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // Runtime con stack worker grande: le fn async del motore escalation (runner, shifts) hanno
+    // frame profondi; sotto carico concorrente il default (2 MB) andava in stack-overflow.
+    let stack = std::env::var("YW_WORKER_STACK_MB").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(16);
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(stack * 1024 * 1024)
+        .build()?
+        .block_on(run())
+}
+async fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter(
         tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| "info,sqlx=warn".into())).init();
@@ -262,8 +271,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/oncall-temp-schedules/delete", post(api::temp_schedule_del))
         .route("/api/oncall-maintenance", post(api::oncall_maintenance))
         .route("/api/oncall-calendar/url", get(api::oncall_calendar_url))
+        .route("/api/oncall-calendar", delete(api::oncall_calendar_revoke))
         .route("/api/oncall-calendar.ics", get(api::oncall_calendar_ics))
         .route("/api/groups/:id/calendar/url", get(api::group_calendar_url))
+        .route("/api/groups/:id/calendar", delete(api::group_calendar_revoke))
         .route("/api/group-calendar.ics", get(api::group_calendar_ics))
         .route("/api/ingest-tokens", get(api::list_ingest_tokens).post(api::create_ingest_token))
         .route("/api/ingest-tokens/:token", axum::routing::delete(api::delete_ingest_token))

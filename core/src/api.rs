@@ -7728,37 +7728,58 @@ pub async fn maintenance_active(st: &AppState, tid: Uuid) -> bool {
 }
 
 // ---- Calendario reperibilita' (iCal), nativo YouWorkforce ----
-pub async fn oncall_calendar_url(State(st): State<AppState>, h: HeaderMap) -> R {
+/// Feed personale. `?rotate=1` rigenera il token (revoca il vecchio URL); `?group=<id>` nella .ics
+/// filtra ai turni dell'utente in quel gruppo (sottoscrizione per-schedule self-service).
+pub async fn oncall_calendar_url(State(st): State<AppState>, h: HeaderMap, axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     let uid = s.user_id;
-    let tok: Option<String> = sqlx::query_scalar("SELECT token FROM app.oncall_ical_tokens WHERE tenant_id=$1 AND user_id=$2")
+    let rotate = q.get("rotate").map(|v| v=="1"||v=="true").unwrap_or(false);
+    let existing: Option<String> = sqlx::query_scalar("SELECT token FROM app.oncall_ical_tokens WHERE tenant_id=$1 AND user_id=$2")
         .bind(tid).bind(uid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
-    let token = match tok { Some(t) => t, None => {
-        let t = auth::new_token();
-        sqlx::query("INSERT INTO app.oncall_ical_tokens(tenant_id,user_id,token) VALUES($1,$2,$3) ON CONFLICT (tenant_id,user_id) DO UPDATE SET token=EXCLUDED.token")
-            .bind(tid).bind(uid).bind(&t).execute(&st.owner_pool).await.map_err(ise)?;
-        t
-    }};
-    Ok(Json(json!({"url":format!("/api/oncall-calendar.ics?token={token}"),"token":token})))
+    let token = match (existing, rotate) {
+        (Some(t), false) => t,
+        _ => { let t = auth::new_token();
+            sqlx::query("INSERT INTO app.oncall_ical_tokens(tenant_id,user_id,token) VALUES($1,$2,$3) ON CONFLICT (tenant_id,user_id) DO UPDATE SET token=EXCLUDED.token")
+                .bind(tid).bind(uid).bind(&t).execute(&st.owner_pool).await.map_err(ise)?; t }
+    };
+    let grp = q.get("group").map(|g| format!("&group={g}")).unwrap_or_default();
+    Ok(Json(json!({"url":format!("/api/oncall-calendar.ics?token={token}{grp}"),"token":token})))
 }
-/// Abbonamento iCal PER-GRUPPO (parità GoAlert: una subscription per schedule). Genera/riusa un token.
-pub async fn group_calendar_url(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>) -> R {
+/// Revoca il feed personale (il vecchio URL smette di funzionare).
+pub async fn oncall_calendar_revoke(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    sqlx::query("DELETE FROM app.oncall_ical_tokens WHERE tenant_id=$1 AND user_id=$2").bind(s.tenant_id.unwrap()).bind(s.user_id).execute(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+/// Abbonamento iCal PER-GRUPPO. `?rotate=1` rigenera il token.
+pub async fn group_calendar_url(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
     let s = require_tenant(&st, &h).await?; admin_only(&s)?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2").bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
-    let tok: Option<String> = sqlx::query_scalar("SELECT token FROM app.esc_group_ical_tokens WHERE tenant_id=$1 AND group_id=$2")
+    let rotate = q.get("rotate").map(|v| v=="1"||v=="true").unwrap_or(false);
+    let existing: Option<String> = sqlx::query_scalar("SELECT token FROM app.esc_group_ical_tokens WHERE tenant_id=$1 AND group_id=$2")
         .bind(tid).bind(gid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
-    let token = match tok { Some(t) => t, None => {
-        let t = auth::new_token();
-        sqlx::query("INSERT INTO app.esc_group_ical_tokens(token,tenant_id,group_id) VALUES($1,$2,$3)")
-            .bind(&t).bind(tid).bind(gid).execute(&st.owner_pool).await.map_err(ise)?;
-        t
-    }};
+    let token = match (existing, rotate) {
+        (Some(t), false) => t,
+        (old, _) => {
+            if old.is_some() { sqlx::query("DELETE FROM app.esc_group_ical_tokens WHERE tenant_id=$1 AND group_id=$2").bind(tid).bind(gid).execute(&st.owner_pool).await.map_err(ise)?; }
+            let t = auth::new_token();
+            sqlx::query("INSERT INTO app.esc_group_ical_tokens(token,tenant_id,group_id) VALUES($1,$2,$3)").bind(&t).bind(tid).bind(gid).execute(&st.owner_pool).await.map_err(ise)?; t
+        }
+    };
     Ok(Json(json!({"url":format!("/api/group-calendar.ics?token={token}"),"token":token})))
 }
-#[derive(Deserialize)] pub struct IcalQuery { pub token: String }
+/// Revoca il feed del gruppo.
+pub async fn group_calendar_revoke(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    sqlx::query("DELETE FROM app.esc_group_ical_tokens WHERE tenant_id=$1 AND group_id=$2").bind(tid).bind(gid).execute(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)] pub struct IcalQuery { pub token: String, #[serde(default)] pub group: Option<Uuid> }
 pub async fn group_calendar_ics(State(st): State<AppState>, axum::extract::Query(q): axum::extract::Query<IcalQuery>) -> axum::response::Response {
     use axum::response::IntoResponse;
     let row = sqlx::query("SELECT tenant_id,group_id FROM app.esc_group_ical_tokens WHERE token=$1")
@@ -7788,8 +7809,12 @@ pub async fn oncall_calendar_ics(State(st): State<AppState>, axum::extract::Quer
         .bind(&q.token).fetch_optional(&st.owner_pool).await.ok().flatten();
     let Some(row) = row else { return (StatusCode::NOT_FOUND, "token non valido").into_response(); };
     let tid: Uuid = row.get("tenant_id"); let uid: Uuid = row.get("user_id");
-    let shifts = sqlx::query("SELECT id,starts_at,ends_at,note FROM app.oncall WHERE tenant_id=$1 AND user_id=$2 AND ends_at > now() - interval '7 days' ORDER BY starts_at")
-        .bind(tid).bind(uid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    // Con filtro ?group= la sottoscrizione mostra solo i turni calcolati di quel gruppo
+    // (i turni manuali di app.oncall non sono associati a un gruppo).
+    let shifts = if q.group.is_some() { vec![] } else {
+        sqlx::query("SELECT id,starts_at,ends_at,note FROM app.oncall WHERE tenant_id=$1 AND user_id=$2 AND ends_at > now() - interval '7 days' ORDER BY starts_at")
+            .bind(tid).bind(uid).fetch_all(&st.owner_pool).await.unwrap_or_default()
+    };
     let mut ics = String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//YouWorkforce//Reperibilita//IT\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:Reperibilita YouWorkforce\r\n");
     let fmt = |t: chrono::DateTime<chrono::Utc>| t.format("%Y%m%dT%H%M%SZ").to_string();
     for sh in &shifts {
@@ -7808,7 +7833,7 @@ pub async fn oncall_calendar_ics(State(st): State<AppState>, axum::extract::Quer
     }
     // F3 — turni CALCOLATI dalla rotazione nativa (prossimi 30 giorni), non solo i turni manuali.
     let now = chrono::Utc::now();
-    for (gi, (gname, s, e)) in esc_user_rotation_shifts(&st, tid, uid, now, 30).await.iter().enumerate() {
+    for (gi, (gname, s, e)) in esc_user_rotation_shifts_g(&st, tid, uid, now, 30, q.group).await.iter().enumerate() {
         ics.push_str("BEGIN:VEVENT\r\n");
         ics.push_str(&format!("UID:rot-{uid}-{gi}-{}@youworkforce\r\n", fmt(*s)));
         ics.push_str(&format!("DTSTAMP:{}\r\n", fmt(now)));
@@ -8784,7 +8809,6 @@ async fn esc_group_shifts(st: &AppState, tid: Uuid, gid: Uuid, now: chrono::Date
         .iter().map(|r| (r.get::<Uuid,_>("id"), r.get::<String,_>("email").to_lowercase())).collect();
     let mut sched = esc_build_schedule(&g, &members);
     sched.overrides = esc_native_overrides(st, tid, gid, &email_of).await;
-    // stato base della rotation: persistito se c'è, altrimenti seed pos0 (puro, nessuna scrittura)
     let base_state: Option<RotationState> = match &sched.rotation {
         Some(rot) => Some(
             sqlx::query("SELECT position,shift_start FROM app.esc_rotation_state WHERE tenant_id=$1 AND group_id=$2")
@@ -8792,6 +8816,45 @@ async fn esc_group_shifts(st: &AppState, tid: Uuid, gid: Uuid, now: chrono::Date
                 .map(|r| RotationState{ position: r.get::<i32,_>("position").max(0) as usize, shift_start: r.get("shift_start") })
                 .unwrap_or(RotationState{ position:0, shift_start: rot.start_time(now) })),
         None => None,
+    };
+    // PRELOAD una-tantum (niente query nel loop di campionamento): temporary schedules + assegnazioni.
+    let temps: Vec<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>, Vec<(Uuid,f64)>)> =
+        sqlx::query("SELECT start_at,end_at,blocks FROM app.esc_temp_schedules WHERE tenant_id=$1 AND group_id=$2")
+            .bind(tid).bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default()
+            .iter().map(|r| {
+                let blocks: Value = r.try_get("blocks").unwrap_or_else(|_| json!([]));
+                let bl = blocks.as_array().map(|a| a.iter().filter_map(|b| {
+                    let u = b.get("user_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok())?;
+                    Some((u, b.get("hours").and_then(|v| v.as_f64()).unwrap_or(0.0).max(0.0)))
+                }).collect()).unwrap_or_default();
+                (r.get("start_at"), r.get("end_at"), bl)
+            }).collect();
+    struct AsgM { mask: u8, sm: u32, em: u32, rot: Option<crate::escalation::Rotation>, members: Vec<Uuid> }
+    let mut asgs: Vec<AsgM> = vec![];
+    for a in sqlx::query("SELECT id,cov_days,cov_start,cov_end,mode,oncall_type,oncall_shift,handoff_time,handoff_day FROM app.esc_assignments WHERE tenant_id=$1 AND group_id=$2")
+        .bind(tid).bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default().iter() {
+        let aid: Uuid = a.get("id");
+        let amem: Vec<Uuid> = sqlx::query_scalar("SELECT user_id FROM app.esc_assignment_members WHERE assignment_id=$1 ORDER BY position")
+            .bind(aid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+        let cd: String = a.try_get("cov_days").unwrap_or_else(|_| "1111111".into());
+        let mut mask: u8 = 0; for (i,c) in cd.chars().take(7).enumerate() { if c=='1' { mask |= 1 << i; } }
+        let (sm, em) = match (a.try_get::<Option<String>,_>("cov_start").ok().flatten().as_deref().and_then(parse_hhmm),
+                              a.try_get::<Option<String>,_>("cov_end").ok().flatten().as_deref().and_then(parse_hhmm)) {
+            (Some((h1,m1)),Some((h2,m2))) => (h1*60+m1, h2*60+m2), _ => (0u32,1440u32) };
+        let rot = if a.try_get::<String,_>("mode").unwrap_or_else(|_|"tutti".into())=="turni" && !amem.is_empty() {
+            use chrono::TimeZone as _;
+            let (kind,mul)=esc_rot_kind(&a.try_get::<String,_>("oncall_type").unwrap_or_else(|_|"weekly".into()));
+            let naive = chrono::NaiveDateTime::parse_from_str(&rotation_start(a.try_get::<Option<String>,_>("handoff_time").ok().flatten().as_deref(), a.try_get("handoff_day").ok().flatten()), "%Y-%m-%dT%H:%M:%SZ").unwrap_or_else(|_| chrono::NaiveDate::from_ymd_opt(2024,1,1).unwrap().and_hms_opt(0,0,0).unwrap());
+            let start = match gtz.from_local_datetime(&naive){chrono::LocalResult::Single(d)=>d.with_timezone(&chrono::Utc),chrono::LocalResult::Ambiguous(d,_)=>d.with_timezone(&chrono::Utc),chrono::LocalResult::None=>chrono::Utc.from_utc_datetime(&naive)};
+            Some(crate::escalation::Rotation{ kind, shift_len:(a.try_get::<i32,_>("oncall_shift").unwrap_or(1) as i64).max(1)*mul, start, members:amem.clone(), tz:gtz })
+        } else { None };
+        asgs.push(AsgM{ mask, sm, em, rot, members: amem });
+    }
+    let temp_at = |t: chrono::DateTime<chrono::Utc>| -> Option<Uuid> {
+        let cur = temps.iter().filter(|(s,e,_)| *s<=t && *e>t).max_by_key(|(s,_,_)| *s)?;
+        let mut cursor = cur.0;
+        for (u,h) in &cur.2 { let bend = cursor + chrono::Duration::milliseconds((h*3_600_000.0) as i64); if t>=cursor && t<bend { return Some(*u); } cursor = bend; }
+        None
     };
     let horizon = now + chrono::Duration::days(days.clamp(1, 60));
     let step = chrono::Duration::minutes(30);
@@ -8802,19 +8865,23 @@ async fn esc_group_shifts(st: &AppState, tid: Uuid, gid: Uuid, now: chrono::Date
     let mut iters = 0;
     while t <= horizon && iters < 5000 {
         iters += 1;
-        let rot_member = match (&sched.rotation, base_state) {
-            (Some(rot), Some(bs)) if !members.is_empty() => bs.advanced_to(rot, t, members.len()).active_member(&members),
-            _ => None,
-        };
-        // temp schedule ha precedenza (sostituisce)
-        let temp = esc_temp_schedule_oncall(st, tid, gid, t).await;
-        let mut emails: Vec<String> = if let Some(tu) = temp {
-            email_of.get(&tu).cloned().into_iter().collect()
+        let mut emails: Vec<String> = if let Some(tu) = temp_at(t) {
+            email_of.get(&tu).cloned().or_else(|| ass_email.get(&tu).cloned()).into_iter().collect()
         } else {
+            let rot_member = match (&sched.rotation, base_state) {
+                (Some(rot), Some(bs)) if !members.is_empty() => bs.advanced_to(rot, t, members.len()).active_member(&members),
+                _ => None,
+            };
             let mut uids = sched.on_call_at_rot(t, rot_member);
-            for u in esc_assignments_oncall(st, tid, gid, t, gtz).await { if !uids.contains(&u) { uids.push(u); } }
-            uids.iter().filter_map(|u| email_of.get(u).cloned()
-                .or_else(|| ass_email.get(u).cloned())).collect()
+            // assegnazioni in-memory
+            for a in &asgs {
+                if !(crate::escalation::ScheduleRule{ start_min:a.sm, end_min:a.em, weekday_mask:a.mask, tz:gtz }).covers(t) { continue; }
+                match &a.rot {
+                    Some(rot) => { if let Some(u)=rot.active_at(t) { if !uids.contains(&u) { uids.push(u); } } }
+                    None => { for u in &a.members { if !uids.contains(u) { uids.push(*u); } } }
+                }
+            }
+            uids.iter().filter_map(|u| email_of.get(u).cloned().or_else(|| ass_email.get(u).cloned())).collect()
         };
         emails.sort(); emails.dedup();
         if prev.as_ref() != Some(&emails) {
@@ -8928,12 +8995,18 @@ async fn esc_temp_schedule_oncall(
 async fn esc_user_rotation_shifts(
     st: &AppState, tid: Uuid, uid: Uuid, now: chrono::DateTime<chrono::Utc>, days: i64,
 ) -> Vec<(String, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> {
+    esc_user_rotation_shifts_g(st, tid, uid, now, days, None).await
+}
+/// Come sopra, con filtro opzionale al singolo gruppo (sottoscrizione per-schedule self-service).
+async fn esc_user_rotation_shifts_g(
+    st: &AppState, tid: Uuid, uid: Uuid, now: chrono::DateTime<chrono::Utc>, days: i64, group: Option<Uuid>,
+) -> Vec<(String, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> {
     use crate::escalation::RotationState;
     let mut out = vec![];
     let groups = sqlx::query("SELECT g.id,g.name,g.oncall_mode,g.oncall_type,g.oncall_shift,g.coverage_mode,g.cov_start,g.cov_end,g.cov_days,g.handoff_time,g.handoff_day,g.goalert_service_id
          FROM app.alarm_groups g JOIN app.alarm_group_members m ON m.group_id=g.id
-        WHERE g.tenant_id=$1 AND m.user_id=$2 AND g.oncall_mode='turni'")
-        .bind(tid).bind(uid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+        WHERE g.tenant_id=$1 AND m.user_id=$2 AND g.oncall_mode='turni' AND ($3::uuid IS NULL OR g.id=$3)")
+        .bind(tid).bind(uid).bind(group).fetch_all(&st.owner_pool).await.unwrap_or_default();
     let horizon = now + chrono::Duration::days(days);
     for g in &groups {
         let gid: Uuid = g.get("id");

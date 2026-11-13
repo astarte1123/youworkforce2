@@ -44,6 +44,29 @@ CODE=$(curl -s -o /tmp/gcal.ics -w '%{http_code}' "$BASE/api/group-calendar.ics?
 VEV=$(grep -c "BEGIN:VEVENT" /tmp/gcal.ics 2>/dev/null || echo 0)
 { [ "$CODE" = 200 ] && [ "$VEV" -ge 1 ]; } && ok "feed iCal gruppo servito con eventi ($VEV)" || no "ical feed ko" "code=$CODE vev=$VEV"
 
+# --- Minor 4: revoca/rotazione token iCal PER-GRUPPO ---
+GU1=$(api "$BASE/api/groups/$G/calendar/url" | python -c "import sys,json;print(json.load(sys.stdin)['token'])")
+GU2=$(api "$BASE/api/groups/$G/calendar/url?rotate=1" | python -c "import sys,json;print(json.load(sys.stdin)['token'])")
+[ -n "$GU2" ] && [ "$GU1" != "$GU2" ] && ok "token gruppo ruotato (rotate=1)" || no "rotate gruppo ko" "$GU1/$GU2"
+OLD=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/group-calendar.ics?token=$GU1")
+NEW=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/group-calendar.ics?token=$GU2")
+{ [ "$OLD" = 404 ] && [ "$NEW" = 200 ]; } && ok "vecchio token gruppo revocato, nuovo valido" || no "rotazione gruppo feed ko" "old=$OLD new=$NEW"
+api -X DELETE "$BASE/api/groups/$G/calendar" >/dev/null
+REV=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/group-calendar.ics?token=$GU2")
+[ "$REV" = 404 ] && ok "revoca feed gruppo (DELETE) ok" || no "revoca gruppo ko" "$REV"
+
+# --- Minor 5: token PER-UTENTE revoca/rotazione + filtro ?group= ---
+UU1=$(api "$BASE/api/oncall-calendar/url" | python -c "import sys,json;print(json.load(sys.stdin)['token'])")
+UU2=$(api "$BASE/api/oncall-calendar/url?rotate=1" | python -c "import sys,json;print(json.load(sys.stdin)['token'])")
+[ "$UU1" != "$UU2" ] && ok "token utente ruotato" || no "rotate utente ko" "$UU1/$UU2"
+UOLD=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/oncall-calendar.ics?token=$UU1")
+[ "$UOLD" = 404 ] && ok "vecchio token utente revocato dalla rotazione" || no "vecchio token utente ancora valido" "$UOLD"
+GURL=$(api "$BASE/api/oncall-calendar/url?group=$G" | python -c "import sys,json;print(json.load(sys.stdin)['url'])")
+echo "$GURL" | grep -q "group=$G" && ok "URL per-utente filtrato per gruppo" || no "filtro group url ko" "$GURL"
+api -X DELETE "$BASE/api/oncall-calendar" >/dev/null
+UREV=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/oncall-calendar.ics?token=$UU2")
+[ "$UREV" = 404 ] && ok "revoca feed utente (DELETE) ok" || no "revoca utente ko" "$UREV"
+
 # teardown
 api -X DELETE "$BASE/api/groups/$G" >/dev/null 2>&1 || true
 sql "DELETE FROM app.users u USING app.tenants t WHERE t.id=u.tenant_id AND t.slug='$SLUG' AND (u.email LIKE 'rotA-%' OR u.email LIKE 'rotB-%')" >/dev/null
