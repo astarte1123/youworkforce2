@@ -1564,9 +1564,10 @@ async function wizardStart(){
 }
 let WZOPTS={users:[],assets:[]};
 async function wizardStep2(m){
-  const [users,sites,assets]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),api('/assets').catch(()=>[])]);
+  const [users,sites,assets,G]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),api('/assets').catch(()=>[]),api('/groups').catch(()=>({groups:[]}))]);
   const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
-  WZOPTS={users:workers,assets};
+  const groups=(G&&G.groups)||[];
+  WZOPTS={users:workers,assets,model:m};
   drawer('Aggiungi dispositivo · 2/2 '+esc(m.manufacturer+' '+m.model_name), `
     <div class="card pad" style="margin-bottom:12px"><div class="small mut">${esc(m.category)} · ${esc(m.protocol)}${m.default_port?':'+m.default_port:''}</div>
       <div class="row" style="flex-wrap:wrap;gap:4px;margin-top:4px">${(m.capabilities||[]).map(c=>`<span class="tag">${esc(c)}</span>`).join('')}</div></div>
@@ -1582,7 +1583,14 @@ async function wizardStep2(m){
         <input id="wzAsset" list="wzAssetList" placeholder="nome o matricola…" autocomplete="off">
         <datalist id="wzAssetList">${assets.map(a=>`<option value="${esc(a.name)}">`).join('')}</datalist></label>
       <label class="row small" style="gap:8px"><input type="checkbox" id="wzTr"> Registra anche su Traccar (se configurato)</label>
-      <button class="btn" onclick='wizardSave("${esc(m.model_code)}")'>Attiva dispositivo</button>
+      <div class="divider" style="margin:6px 0"></div>
+      <div class="small mut"><b>⚙ Onboarding Kit</b> — oltre al device genera credenziale di ingest, routing degli allarmi del modello e (per i device personali) un profilo di protezione. I segnali vengono dedotti dalla <b>tipologia d'uso</b> (${esc(m.category)}).</div>
+      <label class="small mut">Gruppo di escalation per gli allarmi
+        <select id="wzGrp"><option value="">(routing globale / default)</option>${groups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select></label>
+      <label class="row small" style="gap:8px"><input type="checkbox" id="wzProf" checked> Crea/attacca un profilo di protezione (device personali)</label>
+      <div class="row" style="gap:6px;margin-top:4px">
+        <button class="btn ghost" onclick='wizardSave("${esc(m.model_code)}")'>Solo attiva device</button>
+        <button class="btn" onclick='wizardKit("${esc(m.model_code)}")'>⚙ Genera Onboarding Kit</button></div>
       <div class="cfg-msg small"></div></div>`);
   const sync=()=>{ const k=$('#wzKind').value; $('#wzUserWrap').classList.toggle('hide',k!=='user'); $('#wzAssetWrap').classList.toggle('hide',k!=='asset'); };
   $('#wzKind').onchange=sync; sync();
@@ -1611,6 +1619,37 @@ async function wizardSave(model_code){
     toast('Dispositivo attivato','ok'); route();
   }catch(e){ m.textContent=e.message; m.style.color='var(--bad)'; }
 }
+// Device Onboarding Kit: genera device + credenziale + routing + profilo in un colpo.
+async function wizardKit(model_code){
+  const m=$('.cfg-msg'); const k=$('#wzKind').value;
+  const resolve=(txt,list,key)=>{ if(!txt)return null; const t=txt.trim().toLowerCase();
+    let x=list.find(o=>String(o[key]).toLowerCase()===t)||list.find(o=>String(o[key]).toLowerCase().includes(t)); return x?x.id:null; };
+  let uid=null, bad=null;
+  if(k==='user'){ const t=$('#wzUser').value; uid=resolve(t,WZOPTS.users,'email'); if(t&&!uid)bad='lavoratore non trovato: '+t; }
+  if(bad){ m.textContent=bad; m.style.color='var(--bad)'; return; }
+  const b={model_code, external_id:$('#wzExt').value.trim(), label:$('#wzLab').value.trim()||null,
+    user_id:uid, group_id:$('#wzGrp').value||null, make_profile:$('#wzProf').checked};
+  if(!b.external_id){ m.textContent='IMEI/uniqueId richiesto'; m.style.color='var(--bad)'; return; }
+  try{ const r=await api('/devices/onboarding-kit',{method:'POST',body:JSON.stringify(b)});
+    const et=(r.etypes||[]).map(e=>`<span class="tag">${esc(e)}</span>`).join('')||'<span class="small mut">nessun segnale di sicurezza</span>';
+    drawer('⚙ Onboarding Kit · '+esc(r.category_label||''), `<div class="col" style="gap:10px">
+      <div class="card pad"><div class="spread"><b>${esc(r.manufacturer||'')} ${esc(r.model_name||'')}</b><span class="chip">${esc(r.category_label||r.category)}</span></div>
+        <div class="small mut" style="margin-top:4px">external_id <span class="mono">${esc(r.external_id)}</span> · protocollo ${esc(r.protocol||'-')}</div>
+        <div class="row" style="flex-wrap:wrap;gap:4px;margin-top:6px">${et}</div>
+        ${r.routed_group?`<div class="small mut" style="margin-top:4px">Allarmi instradati al gruppo selezionato.</div>`:'<div class="small mut" style="margin-top:4px">Nessun gruppo scelto: usa routing globale/default.</div>'}
+        ${r.profile_id?`<div class="small" style="margin-top:4px;color:var(--ok,green)">✓ Profilo di protezione creato/aggiornato.</div>`:''}</div>
+      <div class="card pad" style="border-left:4px solid var(--warn);background:var(--warn-soft)">
+        <div class="small mut">Credenziale di ingest (mostrata una sola volta)</div>
+        <div class="mono small" style="word-break:break-all;margin:4px 0">${esc(r.token)}</div>
+        <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.token)}');toast('Token copiato','ok')">copia token</button>
+        <div class="small mut" style="margin-top:8px">URL ingress (Traccar event forwarding)</div>
+        <div class="mono small" style="word-break:break-all;margin:4px 0">${esc(r.ingress_url)}</div>
+        <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.ingress_url)}');toast('URL copiato','ok')">copia URL</button></div>
+      <div class="small mut">${esc(r.note||'')}</div>
+      <button class="btn" onclick="closeDrawer();route()">Fatto</button></div>`);
+    toast('Onboarding Kit generato','ok');
+  }catch(e){ m.textContent=e.message; m.style.color='var(--bad)'; }
+}
 
 let DEV_OPTS={sites:[],users:[]};
 function devEdit(d){
@@ -1630,6 +1669,9 @@ function devEdit(d){
       <div id="trail" class="small mut" style="margin-top:8px"></div>
     </div>` : '';
   drawer(isNew?'Nuovo dispositivo':'Modifica dispositivo', posBlock+`
+    ${!isNew && d.id?`<div class="card pad" style="margin-bottom:12px"><div class="spread"><b class="small">Stato / readiness</b>
+      <button class="btn ghost small" onclick="devTestSos('${d.id}')" title="Invia un SOS di prova sul percorso reale">🆘 SOS di prova</button></div>
+      <div id="dokReady" class="small mut" style="margin-top:8px">carico…</div></div>`:''}
     <div class="col" style="gap:10px">
     <label class="small mut">ID esterno (uniqueId badge / nome sensore)<input id="dEx" value="${esc(d.external_id||'')}"></label>
     <label class="small mut">Sorgente<select id="dSrc">${['manual','traccar','thingsboard','iot'].map(x=>`<option ${x===d.source?'selected':''}>${x}</option>`).join('')}</select></label>
@@ -1660,7 +1702,26 @@ function devEdit(d){
     <div class="cfg-msg small"></div></div>`);
   if(!isNew && d.last_lat!=null && d.last_lon!=null) loadAddr(d.last_lat,d.last_lon);
   if(!isNew && d.source==='traccar'){ devCmds(d.id); devCmdTypes(d.id); }
+  if(!isNew && d.id) devReadiness(d.id);
 }
+// Readiness del device: 4 stati + segnali dichiarati/verificati (per tipologia d'uso).
+async function devReadiness(id){ const el=$('#dokReady'); if(!el)return;
+  try{ const r=await api('/devices/'+id+'/readiness');
+    const st=r.states||{}; const chip=(k,v,okset)=>`<span class="chip ${okset.includes(v)?'s-attivo':''}" title="${k}">${k}: ${esc(v)}</span>`;
+    const sig=(r.signals||[]).map(s=>`<span class="tag" style="${s.verified?'':'opacity:.55'}">${s.verified?'✓':'·'} ${esc(s.etype)}</span>`).join('')||'<span class="small mut">nessun segnale di sicurezza dichiarato</span>';
+    el.innerHTML=`<div class="row" style="flex-wrap:wrap;gap:4px">
+        <span class="chip s-attivo">${esc(r.category_label||r.category)}</span>
+        ${chip('registrazione', st.registrazione?'sì':'no', ['sì'])}
+        ${chip('assegnazione', st.assegnazione?'sì':'no', ['sì'])}
+        ${chip('connessione', st.connessione, ['online'])}
+        ${chip('protezione', st.protezione, ['attiva'])}</div>
+      <div class="small mut" style="margin:6px 0 2px">Segnali (dichiarati → ✓ verificati):</div>
+      <div class="row" style="flex-wrap:wrap;gap:4px">${sig}</div>
+      <div class="small ${r.ready?'':'mut'}" style="margin-top:6px">${r.ready?'<span style="color:var(--ok,green)">✓ Pronto</span>':'⏳ In attesa di verifica: '+(r.missing_signals||[]).join(', ')||'—'}</div>`;
+  }catch(e){ el.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function devTestSos(id){ if(!await askConfirm('Inviare un SOS di PROVA? Percorre il flusso reale (incidente + escalation).'))return;
+  try{ const r=await api('/devices/'+id+'/test-sos',{method:'POST'}); toast('SOS di prova inviato ('+r.correlation+')','ok'); setTimeout(()=>devReadiness(id),800); }
+  catch(e){ toast(e.message,'bad'); } }
 async function devCmd(id,type){ const m=$('#cmdMsg'); if(m){m.textContent='invio…';m.style.color='var(--mut)';}
   try{ const r=await api('/devices/'+id+'/command',{method:'POST',body:JSON.stringify({type})});
     const okv = r.traccar_status>=200 && r.traccar_status<300;

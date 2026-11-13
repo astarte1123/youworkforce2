@@ -23,10 +23,12 @@ DO $$ BEGIN
     WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
--- Backfill: le assegnazioni correnti diventano storia "aperta".
+-- Backfill: le assegnazioni correnti diventano storia "aperta" (idempotente).
 INSERT INTO app.device_assignments(tenant_id, device_id, user_id, assigned_at)
-  SELECT tenant_id, id, assigned_user, COALESCE(updated_at, now())
-  FROM app.devices WHERE assigned_user IS NOT NULL;
+  SELECT d.tenant_id, d.id, d.assigned_user, COALESCE(d.updated_at, now())
+  FROM app.devices d
+  WHERE d.assigned_user IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM app.device_assignments da WHERE da.device_id = d.id AND da.unassigned_at IS NULL);
 
 -- Incidenti: lavoratore snapshot all'evento + incertezza di attribuzione.
 ALTER TABLE app.incidents ADD COLUMN IF NOT EXISTS worker_user_id uuid REFERENCES app.users(id) ON DELETE SET NULL;

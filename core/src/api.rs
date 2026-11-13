@@ -3031,6 +3031,195 @@ pub async fn assign_device(State(st): State<AppState>, h: HeaderMap, Path(id): P
     Ok(Json(json!({"ok":true})))
 }
 
+// ================= Device Onboarding Kit (DOK) =================
+// Da un modello a catalogo (qualsiasi hardware censito) genera in un colpo tutto il lato-YW:
+// device + credenziale di ingest (token device-bound) + routing degli allarmi + (per i device
+// personali) profilo di protezione, differenziando per TIPOLOGIA D'USO (device_models.category).
+
+/// Mappa una capacità dichiarata del modello all'etype YW (solo segnali di sicurezza diretti).
+fn dok_cap_to_etype(cap: &str) -> Option<&'static str> {
+    match cap.to_ascii_lowercase().as_str() {
+        "sos" => Some("sos"),
+        "fall" | "falldown" | "man_down" | "mandown" => Some("man_down"),
+        "movement" | "motion" | "immobility" | "immobilita" => Some("immobilita"),
+        "battery" => Some("batteria_bassa"),
+        _ => None, // gps/ignition/temperature/immobilizer/ecc.: non sono allarmi di sicurezza diretti
+    }
+}
+struct DokPlan { needs_checkin: bool, suggest_profile: bool, label: &'static str }
+fn dok_category_plan(cat: &str) -> DokPlan {
+    match cat {
+        "personale"  => DokPlan{needs_checkin:true,  suggest_profile:true,  label:"Lavoratore isolato"},
+        "smartphone" => DokPlan{needs_checkin:true,  suggest_profile:true,  label:"Smartphone / app"},
+        "veicolo"    => DokPlan{needs_checkin:false, suggest_profile:false, label:"Veicolo / flotta"},
+        "asset"      => DokPlan{needs_checkin:false, suggest_profile:false, label:"Asset / attrezzatura"},
+        "sensore"    => DokPlan{needs_checkin:false, suggest_profile:false, label:"Sensore IoT"},
+        _            => DokPlan{needs_checkin:false, suggest_profile:false, label:"Generico"},
+    }
+}
+fn dok_ingress_base() -> String { std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_else(|_| "http://localhost:8080".into()) }
+
+#[derive(Deserialize)]
+pub struct DokReq {
+    pub model_code: String,
+    pub external_id: String,
+    pub label: Option<String>,
+    pub site_id: Option<Uuid>,
+    pub user_id: Option<Uuid>,
+    pub group_id: Option<Uuid>,      // gruppo di escalation per gli allarmi del device
+    pub make_profile: Option<bool>,  // crea/attacca un profilo di protezione (device personali)
+}
+pub async fn device_onboarding_kit(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DokReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, DEVICE_MODS).await?;
+    if b.external_id.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "IMEI/uniqueId richiesto")); }
+    // modello dal catalogo
+    let m = sqlx::query("SELECT manufacturer,model_name,protocol,capabilities,category FROM app.device_models WHERE model_code=$1")
+        .bind(&b.model_code).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "modello inesistente nel catalogo"))?;
+    let manufacturer: String = m.get("manufacturer");
+    let model_name: String = m.get("model_name");
+    let protocol: String = m.get("protocol");
+    let caps: Vec<String> = m.get("capabilities");
+    let category: String = m.try_get("category").unwrap_or_else(|_| "altro".into());
+    let plan = dok_category_plan(&category);
+    // etype derivati dalle capacità (segnali di sicurezza)
+    let mut etypes: Vec<String> = vec![];
+    for c in &caps { if let Some(e) = dok_cap_to_etype(c) { if !etypes.iter().any(|x| x==e) { etypes.push(e.to_string()); } } }
+
+    let now = st.clock.now();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // 1) device
+    let dcfg = json!({"model_code": b.model_code, "capabilities": caps, "protocol": protocol, "category": category});
+    let label = b.label.clone().unwrap_or_else(|| format!("{manufacturer} {model_name}"));
+    let drow = sqlx::query(
+        "INSERT INTO app.devices(tenant_id,external_id,source,label,site_id,assigned_user,enabled,config,model_code)
+         VALUES($1,$2,'traccar',$3,$4,$5,true,$6,$7) RETURNING id")
+        .bind(tid).bind(b.external_id.trim()).bind(&label).bind(b.site_id).bind(b.user_id).bind(&dcfg).bind(&b.model_code)
+        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "dispositivo gia' presente (uniqueId)"))?;
+    let dev_id = drow.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id");
+    if b.user_id.is_some() { record_device_assignment(&mut tx, tid, dev_id, None, b.user_id, now).await.map_err(ise)?; }
+    // 2) routing degli etype -> gruppo (se fornito)
+    let mut routed: Vec<String> = vec![];
+    if let Some(g) = b.group_id {
+        let okg = sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2").bind(g).bind(tid).fetch_optional(&mut *tx).await.map_err(ise)?.is_some();
+        if !okg { return Err(err(StatusCode::BAD_REQUEST, "gruppo inesistente")); }
+        for et in &etypes {
+            sqlx::query("INSERT INTO app.alarm_routing(tenant_id,etype,group_id) VALUES($1,$2,$3)
+                 ON CONFLICT (tenant_id,etype) DO UPDATE SET group_id=EXCLUDED.group_id")
+                .bind(tid).bind(et).bind(g).execute(&mut *tx).await.map_err(ise)?;
+            routed.push(et.clone());
+        }
+    }
+    // 3) profilo di protezione (device personali/smartphone, se richiesto e con lavoratore)
+    let mut profile_id: Option<Uuid> = None;
+    if plan.suggest_profile && b.make_profile.unwrap_or(false) {
+        if let Some(uid) = b.user_id {
+            let triggers = json!({
+                "sos": etypes.iter().any(|e|e=="sos"),
+                "man_down": etypes.iter().any(|e|e=="man_down"),
+                "immobilita": etypes.iter().any(|e|e=="immobilita"),
+                "mancato_checkin": plan.needs_checkin,
+                "geofence": false });
+            let pname = format!("DOK {} · {}", plan.label, label);
+            let prow = sqlx::query("INSERT INTO app.protection_profiles(tenant_id,name,descr,escalation_group_id,triggers,checkin_minutes,enabled)
+                 VALUES($1,$2,$3,$4,$5,$6,true)
+                 ON CONFLICT (tenant_id,name) DO UPDATE SET escalation_group_id=EXCLUDED.escalation_group_id, triggers=EXCLUDED.triggers RETURNING id")
+                .bind(tid).bind(&pname).bind("Generato dal Device Onboarding Kit").bind(b.group_id).bind(&triggers)
+                .bind(if plan.needs_checkin { Some(30i32) } else { None })
+                .fetch_one(&mut *tx).await.map_err(ise)?;
+            let pid: Uuid = prow.get("id"); profile_id = Some(pid);
+            // membro (sposta dal profilo precedente per via dell'UNIQUE tenant_id,user_id)
+            sqlx::query("DELETE FROM app.protection_profile_members WHERE tenant_id=$1 AND user_id=$2").bind(tid).bind(uid).execute(&mut *tx).await.map_err(ise)?;
+            sqlx::query("INSERT INTO app.protection_profile_members(tenant_id,profile_id,user_id) VALUES($1,$2,$3)").bind(tid).bind(pid).bind(uid).execute(&mut *tx).await.map_err(ise)?;
+        }
+    }
+    tx.commit().await.map_err(ise)?;
+
+    // 4) credenziale di ingest device-bound (segreto one-time)
+    let secret = format!("traccar-{}", &auth::new_token()[..24]);
+    let hash = hash_token(&secret);
+    let handle = format!("traccar-{}", &secret[8..16]);
+    sqlx::query("INSERT INTO app.ingest_tokens(token,token_hash,tenant_id,source,device_id,label) VALUES($1,$2,$3,'traccar',$4,$5)")
+        .bind(&handle).bind(&hash).bind(tid).bind(dev_id).bind(&label).execute(&st.owner_pool).await.map_err(ise)?;
+
+    audit(&st, tid, &s.email, "device_onboarding_kit", json!({"device":dev_id,"model":b.model_code,"category":category,"etypes":etypes,"profile":profile_id})).await;
+    let base = dok_ingress_base();
+    Ok(Json(json!({
+        "device_id": dev_id, "external_id": b.external_id.trim(), "model_code": b.model_code,
+        "manufacturer": manufacturer, "model_name": model_name, "protocol": protocol,
+        "category": category, "category_label": plan.label, "capabilities": caps,
+        "etypes": etypes, "routed_etypes": routed, "routed_group": b.group_id, "profile_id": profile_id,
+        "token": secret, "handle": handle,
+        "ingress_url": format!("{base}/api/ingress/traccar?token={secret}"),
+        "note": "Copia il token adesso: non sarà più mostrato. Registra l'external_id/IMEI sul Traccar del tenant e imposta l'event forwarding verso l'ingress."
+    })))
+}
+
+/// Readiness/idoneità del device per i suoi segnali: dichiarato (dalle capacità del modello) vs
+/// verificato (abbiamo mai ricevuto quel segnale). Stati: registrazione · assegnazione · connessione · protezione.
+pub async fn device_readiness(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let d = sqlx::query("SELECT external_id,label,assigned_user,enabled,config,model_code FROM app.devices WHERE id=$1 AND tenant_id=$2")
+        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "device inesistente"))?;
+    let cfg: Value = d.try_get("config").unwrap_or(json!({}));
+    let caps: Vec<String> = cfg.get("capabilities").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+    let category = cfg.get("category").and_then(|v| v.as_str()).unwrap_or("altro").to_string();
+    let plan = dok_category_plan(&category);
+    let assigned: Option<Uuid> = d.try_get("assigned_user").ok().flatten();
+    // ultimo contatto = max(received_ts) degli eventi del device (la tabella devices non lo tiene)
+    let last_seen: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar("SELECT max(received_ts) FROM app.events WHERE tenant_id=$1 AND device_id=$2")
+        .bind(tid).bind(id).fetch_optional(&st.owner_pool).await.map_err(ise)?.flatten();
+    let online = last_seen.map(|t| (st.clock.now() - t) < chrono::Duration::minutes(15)).unwrap_or(false);
+    // per capacità -> etype -> verificato se esiste almeno un evento di quell'etype per il device
+    let mut signals = vec![]; let mut missing = vec![];
+    for c in &caps {
+        if let Some(et) = dok_cap_to_etype(c) {
+            let seen: bool = sqlx::query_scalar::<_,Option<Uuid>>("SELECT id FROM app.events WHERE tenant_id=$1 AND device_id=$2 AND etype=$3 LIMIT 1")
+                .bind(tid).bind(id).bind(et).fetch_optional(&st.owner_pool).await.map_err(ise)?.flatten().is_some();
+            signals.push(json!({"capability":c,"etype":et,"verified":seen}));
+            if !seen { missing.push(et.to_string()); }
+        }
+    }
+    let protection_ok = assigned.is_some() && online;
+    Ok(Json(json!({
+        "device_id": id, "category": category, "category_label": plan.label, "capabilities": caps,
+        "states": {
+            "registrazione": true,
+            "assegnazione": assigned.is_some(),
+            "connessione": if online {"online"} else if last_seen.is_some() {"offline"} else {"mai_visto"},
+            "protezione": if protection_ok {"attiva"} else {"degradata"}
+        },
+        "last_seen": last_seen.map(|t| t.to_rfc3339()),
+        "signals": signals, "missing_signals": missing,
+        "ready": missing.is_empty() && assigned.is_some(),
+        "needs_checkin": plan.needs_checkin
+    })))
+}
+
+/// SOS di prova dalla console: inietta un SOS attraverso il PERCORSO REALE (ingress->incidente->
+/// escalation), marcato come test. Serve a validare il profilo end-to-end (spec §3.4).
+pub async fn device_test_sos(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let ext: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND tenant_id=$2")
+        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let Some(ext) = ext else { return Err(err(StatusCode::NOT_FOUND, "device inesistente")); };
+    let corr = format!("TEST-SOS-{}", &Uuid::new_v4().to_string()[..8]);
+    let src_evt = format!("test-sos-{}", Uuid::new_v4());
+    let r = persist_ingest(&st, tid, Normalized{
+        source:"traccar".into(), source_event: src_evt.clone(), idem: src_evt,
+        etype:"sos".into(), device_external_id: Some(ext.clone()),
+        site_name:None, lat:None, lon:None, accuracy_m:None, correlation: corr.clone(),
+        payload: json!({"test":true,"by":s.email,"source":"test_sos_console"}),
+        indoor:false, beacon_uid:None, zone:None }).await?;
+    audit(&st, tid, &s.email, "device_test_sos", json!({"device":id,"correlation":corr})).await;
+    Ok(Json(json!({"ok":true,"correlation":corr,"result":r.0,"note":"SOS di PROVA inviato sul percorso reale (incidente + escalation). Chiudilo in Centrale."})))
+}
+
 // ================= Fase B — Provisioning guidato =================
 #[derive(Deserialize)]
 pub struct ProvisionReq {
