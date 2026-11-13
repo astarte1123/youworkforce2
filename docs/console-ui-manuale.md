@@ -124,6 +124,16 @@ già esistenti (toast di notifica, escalation/notifiche lato backend — **invar
 - **Griglie e barre**: KPI e colonne si impilano progressivamente; le mappe passano a una
   sola colonna (mappa sopra, dettaglio sotto); le barre strumenti vanno a capo.
 
+## 7. Lingua (i18n IT/EN)
+
+La console ha un selettore **IT/EN** (in alto a destra; la scelta è salvata e ricaricata).
+L'infrastruttura è `t('chiave','testo IT')`: con lingua EN usa la traduzione se presente,
+altrimenti mostra il testo italiano (fallback sicuro). Sono tradotte le **schermate chiave**
+(login, menu/gruppi, **Centrale allarmi** con tab/ricerca/paginazione/colonne, **Dispositivi**,
+**Mappa allarmi/dispositivi**, **Piantine**); le altre viste restano in italiano finché non
+vengono migrate. Per aggiungere una lingua/stringa: inserire la chiave in `I18N.en` (in
+`app.html`) e avvolgere il testo con `t('chiave','testo IT')`.
+
 ## Note tecniche
 - File coinvolti: `console/static/app.html`, `console/static/app.js`, `console/static/app.css`.
 - Avvio console: dalla cartella `console/`, `./console.exe` (o `go run .`) → `:8081`,

@@ -69,7 +69,28 @@ const I18N={ en:{
   "nav_mappa":"Alarm map","nav_mappa-dispositivi":"Device map","nav_piantine":"Floor plans","nav_cruscotti":"IoT dashboards","nav_report":"Reports",
   "nav_ordini":"Work orders","nav_consuntivi":"Timesheets","nav_turni":"Shifts","nav_agente":"AI agent",
   "nav_dispositivi":"Devices & Apps","nav_trigger":"Safety triggers","nav_profili":"Protection profiles","nav_connettori":"Connectors","nav_gruppi":"Escalation & on-call",
-  "nav_anagrafiche":"Users & sites","nav_ai":"AI · youworker.ai","nav_moduli":"Modules"
+  "nav_anagrafiche":"Users & sites","nav_ai":"AI · youworker.ai","nav_moduli":"Modules",
+  // Centrale allarmi
+  cen_title:"Alarm center", cen_tab_open:"Open", cen_tab_closed:"Closed", cen_tab_all:"All",
+  cen_search:"🔎 Search: type, site, assignee, status, priority, correlation…",
+  cen_ackall:"Acknowledge all", cen_closeall:"Close all",
+  cen_empty:"No incidents in this view", cen_checkins:"Active check-ins",
+  cen_incidents:"incidents", cen_checkins_n:"check-ins", cen_expired:"expired", cen_live:"live",
+  col_type:"Type", col_site:"Site", col_assignee:"Assignee", col_status:"Status", col_priority:"Priority", col_correlation:"Correlation",
+  col_worker:"Worker", col_due:"Due", pager_showing:"Showing", pager_of:"of", pager_page:"Page", pager_prev:"‹ Prev", pager_next:"Next ›",
+  ck_none:"no active check-in",
+  // Dispositivi
+  dev_title:"Devices", dev_sub:"catalog, fleet", dev_add_guided:"+ Add (guided)", dev_add_manual:"manual",
+  dev_search:"🔎 Search: external ID, model, label, assignee, capabilities, last contact, onboarding…",
+  dev_count:"devices", dev_empty:"No devices. Use \"+ Add (guided)\".", dev_no_match:"No device matches the search.",
+  col_extid:"External ID", col_model:"Model", col_label:"Label", col_caps:"Capabilities", col_lastseen:"Last contact", col_onboarding:"Onboarding",
+  // Mappe
+  map_from:"From", map_to:"To", map_type:"Type", map_all_critical:"All critical", map_refresh:"Refresh",
+  gf_color:"Geofence area color", map_alarms_title:"Alarm map", map_devices_title:"Device map",
+  alarms_n:"Alarms", none_period:"No alarm in the period.",
+  // Piantine
+  fp_floorplan:"Floor plan", fp_place:"Place on floor plan", fp_place_choose:"— choose beacon or device —",
+  fp_place_btn:"📍 on the map", fp_config:"⚙ Configure indoor floor plan", fp_none:"— none —"
 }};
 let LANG='it';
 try{ LANG=localStorage.getItem('yw_lang')|| (navigator.language||'it').slice(0,2); }catch(e){}
@@ -339,28 +360,28 @@ async function vCentrale(v){
   const onc = OC.available ? `<span class="chip s-attivo" title="reperibili ora (motore nativo)">📞 on-call: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
   const canBulk = ['operatore','tenant_admin'].includes(ME.role);
   const open = I.filter(i=>i.state!=='chiuso').length;
-  const bulk = (canBulk && open>0) ? `<button class="btn ghost small" onclick="incAckAll(this)">Prendi in carico tutti</button>
-    <button class="btn ghost small" onclick="incCloseAll(this)">Chiudi tutti</button>` : '';
+  const bulk = (canBulk && open>0) ? `<button class="btn ghost small" onclick="incAckAll(this)">${t('cen_ackall','Prendi in carico tutti')}</button>
+    <button class="btn ghost small" onclick="incCloseAll(this)">${t('cen_closeall','Chiudi tutti')}</button>` : '';
   // stato vista: mantiene tab/ricerca tra i re-render; reset pagina se cambia il dataset
   CEN={all:I, tab:CEN.tab||'aperti', q:CEN.q||'', page:1, size:25};
-  v.innerHTML=`<div class="page-h"><div><h1>Centrale allarmi</h1><div class="mut">${I.length} incidenti · ${CK.length} check-in (${scaduti} scaduti) · live</div></div><div class="row" style="gap:8px;align-items:center">${bulk}${onc}</div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('cen_title','Centrale allarmi')}</h1><div class="mut">${I.length} ${t('cen_incidents','incidenti')} · ${CK.length} ${t('cen_checkins_n','check-in')} (${scaduti} ${t('cen_expired','scaduti')}) · ${t('cen_live','live')}</div></div><div class="row" style="gap:8px;align-items:center">${bulk}${onc}</div></div>
   <div class="card" style="padding:12px">
     <div class="row" style="gap:12px;align-items:center;flex-wrap:wrap">
       <div class="seg" id="cenTabs"></div>
-      <input id="incSearch" class="grow" placeholder="🔎 Cerca: tipo, sede, assegnato, stato, priorità, correlazione…" value="${esc(CEN.q)}" oninput="CEN.q=this.value;CEN.page=1;cenRender()" style="min-width:220px">
+      <input id="incSearch" class="grow" placeholder="${t('cen_search','🔎 Cerca: tipo, sede, assegnato, stato, priorità, correlazione…')}" value="${esc(CEN.q)}" oninput="CEN.q=this.value;CEN.page=1;cenRender()" style="min-width:220px">
     </div>
-    <div style="overflow-x:auto;margin-top:10px"><table class="table" id="incTable"><thead><tr><th>Tipo</th><th>Sede</th><th>Assegnato</th><th>Stato</th><th>Priorità</th><th>Correlazione</th></tr></thead>
+    <div style="overflow-x:auto;margin-top:10px"><table class="table" id="incTable"><thead><tr><th>${t('col_type','Tipo')}</th><th>${t('col_site','Sede')}</th><th>${t('col_assignee','Assegnato')}</th><th>${t('col_status','Stato')}</th><th>${t('col_priority','Priorità')}</th><th>${t('col_correlation','Correlazione')}</th></tr></thead>
     <tbody id="incBody"></tbody></table></div>
-    <div id="incEmpty" class="empty" hidden style="padding:28px 8px">${ICON.check}<div>Nessun incidente in questa vista</div></div>
+    <div id="incEmpty" class="empty" hidden style="padding:28px 8px">${ICON.check}<div>${t('cen_empty','Nessun incidente in questa vista')}</div></div>
     <div id="incPager" class="row" style="justify-content:space-between;align-items:center;margin-top:10px;flex-wrap:wrap;gap:8px"></div>
   </div>
-  <div class="card" style="margin-top:16px"><div class="card-h"><h2>Check-in attivi</h2>
+  <div class="card" style="margin-top:16px"><div class="card-h"><h2>${t('cen_checkins','Check-in attivi')}</h2>
     ${AI_FEAT.checkin_anomaly?`<button class="btn ghost small" onclick="aiCheckinAnomaly(this)">✦ Anomalie check-in (AI)</button>`:''}</div>
     <div id="aiCkOut"></div>
-    <table class="table"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Scadenza</th><th>Stato</th></tr></thead>
+    <table class="table"><thead><tr><th>${t('col_worker','Lavoratore')}</th><th>${t('col_site','Sede')}</th><th>${t('col_due','Scadenza')}</th><th>${t('col_status','Stato')}</th></tr></thead>
     <tbody>${CK.map(c=>`<tr><td>${esc(c.email)}</td><td>${esc(c.site||'—')}</td>
-      <td class="small mut">${new Date(c.due_at).toLocaleString('it-IT')}</td><td>${chip(c.state)}</td></tr>`).join('')
-      ||`<tr><td colspan="4" class="empty">nessun check-in attivo</td></tr>`}</tbody></table></div>`;
+      <td class="small mut">${new Date(c.due_at).toLocaleString(LANG==='en'?'en-GB':'it-IT')}</td><td>${chip(c.state)}</td></tr>`).join('')
+      ||`<tr><td colspan="4" class="empty">${t('ck_none','nessun check-in attivo')}</td></tr>`}</tbody></table></div>`;
   cenRender();
 }
 // Lista filtrata per tab (aperti = non chiusi) + ricerca full-text, ordinata (aperti per priorità desc).
@@ -382,7 +403,7 @@ function cenPage(d){ CEN.page=Math.max(1,CEN.page+d); cenRender(); }
 function cenRender(){
   const tabsEl=$('#cenTabs'); if(!tabsEl) return;
   const c=cenCounts();
-  tabsEl.innerHTML=[['aperti','Aperti',c.aperti],['chiusi','Chiusi',c.chiusi],['tutti','Tutti',c.tutti]]
+  tabsEl.innerHTML=[['aperti',t('cen_tab_open','Aperti'),c.aperti],['chiusi',t('cen_tab_closed','Chiusi'),c.chiusi],['tutti',t('cen_tab_all','Tutti'),c.tutti]]
     .map(([k,lab,n])=>`<button class="seg-btn${CEN.tab===k?' on':''}" onclick="cenTab('${k}')">${lab} <span class="seg-n">${n}</span></button>`).join('');
   const list=cenFiltered();
   const total=list.length, pages=Math.max(1,Math.ceil(total/CEN.size));
@@ -397,11 +418,11 @@ function cenRender(){
   $$('#incBody [data-inc]').forEach(r=>r.onclick=()=>openIncident(r.dataset.inc));
   if(total===0){ pager.innerHTML=''; return; }
   const from=start+1, to=Math.min(start+CEN.size,total);
-  pager.innerHTML=`<span class="small mut">Mostrando ${from}–${to} di ${total}</span>
+  pager.innerHTML=`<span class="small mut">${t('pager_showing','Mostrando')} ${from}–${to} ${t('pager_of','di')} ${total}</span>
     <div class="row" style="gap:6px;align-items:center">
-      <button class="btn ghost small" ${CEN.page<=1?'disabled':''} onclick="cenPage(-1)">‹ Prec</button>
-      <span class="small" style="min-width:74px;text-align:center">Pagina ${CEN.page} / ${pages}</span>
-      <button class="btn ghost small" ${CEN.page>=pages?'disabled':''} onclick="cenPage(1)">Succ ›</button>
+      <button class="btn ghost small" ${CEN.page<=1?'disabled':''} onclick="cenPage(-1)">${t('pager_prev','‹ Prec')}</button>
+      <span class="small" style="min-width:74px;text-align:center">${t('pager_page','Pagina')} ${CEN.page} / ${pages}</span>
+      <button class="btn ghost small" ${CEN.page>=pages?'disabled':''} onclick="cenPage(1)">${t('pager_next','Succ ›')}</button>
     </div>`;
 }
 // Testo ricercabile (full-text) di un incidente: tipo (+etichetta), sede, assegnato, stato
@@ -665,7 +686,7 @@ window.addEventListener('orientationchange',()=>setTimeout(invalidateMaps,300));
 // La mappa dei DISPOSITIVI è una voce separata (vMappaDispositivi), condivisa con "Lavoro sul campo".
 async function vMappa(v){
   const admin=can(['tenant_admin']);
-  v.innerHTML=`<div class="page-h"><div><h1>Mappa allarmi</h1><div class="mut" id="mapSub">—</div></div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('map_alarms_title','Mappa allarmi')}</h1><div class="mut" id="mapSub">—</div></div></div>
     <div class="row" id="mapCtl" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px"></div>
     <div class="grid map-grid">
       <div class="card" style="padding:0;overflow:hidden"><div id="map"></div></div>
@@ -677,7 +698,7 @@ async function vMappa(v){
 // GH-5200), geofence, presenza. Stessa resa di prima, senza toggle.
 async function vMappaDispositivi(v){
   const admin=can(['tenant_admin']);
-  v.innerHTML=`<div class="page-h"><div><h1>Mappa dispositivi</h1><div class="mut" id="mapSub">—</div></div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('map_devices_title','Mappa dispositivi')}</h1><div class="mut" id="mapSub">—</div></div></div>
     <div class="row" id="mapCtl" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px"></div>
     <div class="grid map-grid">
       <div class="card" style="padding:0;overflow:hidden"><div id="map"></div></div>
@@ -742,11 +763,11 @@ async function renderAlarms(admin){
   admin = admin!==undefined?admin:can(['tenant_admin']); window._mapAdmin=admin;
   $('#mapSub').textContent='allarmi georeferenziati · indoor/outdoor · aree';
   const today=new Date().toISOString().slice(0,10), wago=new Date(Date.now()-7*864e5).toISOString().slice(0,10);
-  $('#mapCtl').innerHTML=`<div class="field"><label>Dal</label><input id="mFrom" type="date" value="${wago}"></div>
-    <div class="field"><label>Al</label><input id="mTo" type="date" value="${today}"></div>
-    <div class="field"><label>Tipo</label><select id="mEtype"><option value="">Tutti i critici</option><option value="sos">SOS</option><option value="man_down">Uomo a terra</option>${ALARM_ETYPES.filter(e=>e!=='sos'&&e!=='man_down').map(e=>`<option value="${e}">${esc(etLab(e))}</option>`).join('')}</select></div>
-    ${admin?`<div class="field"><label>Colore area Geofence</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" title="Colore delle nuove aree geofence" style="width:120px;height:40px;padding:3px;cursor:pointer"></div>`:''}
-    <div class="field"><label>&nbsp;</label><button class="btn" onclick="loadAlarmsOnMap()">Aggiorna</button></div>`;
+  $('#mapCtl').innerHTML=`<div class="field"><label>${t('map_from','Dal')}</label><input id="mFrom" type="date" value="${wago}"></div>
+    <div class="field"><label>${t('map_to','Al')}</label><input id="mTo" type="date" value="${today}"></div>
+    <div class="field"><label>${t('map_type','Tipo')}</label><select id="mEtype"><option value="">${t('map_all_critical','Tutti i critici')}</option><option value="sos">SOS</option><option value="man_down">${esc(etLab('man_down'))}</option>${ALARM_ETYPES.filter(e=>e!=='sos'&&e!=='man_down').map(e=>`<option value="${e}">${esc(etLab(e))}</option>`).join('')}</select></div>
+    ${admin?`<div class="field"><label>${t('gf_color','Colore area Geofence')}</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" title="${t('gf_color','Colore area Geofence')}" style="width:120px;height:40px;padding:3px;cursor:pointer"></div>`:''}
+    <div class="field"><label>&nbsp;</label><button class="btn" onclick="loadAlarmsOnMap()">${t('map_refresh','Aggiorna')}</button></div>`;
   // aree geofence disegnate e gestibili anche in modalità allarmi (stesso prodotto)
   let GF=[]; try{ GF=(await api('/geofences')).filter(g=>!g.floorplan_id); }catch(e){}
   if(GFLAYER){ try{MAP.removeLayer(GFLAYER);}catch(e){} }
@@ -900,12 +921,12 @@ async function renderIndoor(admin,selectId){
   let FP=[]; try{ FP=await api('/floorplans'); }catch(e){}
   window._FP=FP; window._fpAdmin=admin; window._bkPlace=false;
   const sel=selectId&&FP.some(f=>f.id===selectId)?selectId:(FP[0]&&FP[0].id);
-  $('#mapCtl').innerHTML=`<div class="field"><label>Piantina</label><select id="fpSel" onchange="fpOpen()">${FP.length?FP.map(f=>`<option value="${f.id}" ${f.id===sel?'selected':''}>${esc(f.name)}</option>`).join(''):'<option value="">— nessuna —</option>'}</select></div>`
-    +(admin&&FP.length?`<div class="field" style="flex:1 1 340px;min-width:280px"><label>Posiziona sulla piantina</label>
-        <div class="row" style="gap:6px;flex-wrap:nowrap;align-items:stretch"><select id="fpPlaceSel" class="grow"><option value="">— scegli beacon o dispositivo —</option></select>
-        <button class="btn ghost small" id="fpPlaceBtn" onclick="fpArmPlace(this)" style="flex:none;white-space:nowrap">📍 sulla mappa</button></div></div>`:'')
-    +(admin&&FP.length?`<div class="field"><label>Colore area Geofence</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" title="Colore delle nuove aree geofence" style="height:40px;padding:3px;width:120px;cursor:pointer"></div>`:'')
-    +(admin&&FP.length?`<div class="field" style="margin-left:auto"><label>&nbsp;</label><button class="btn ghost small" onclick="configIndoor()" style="flex:none">⚙ Configura piantina indoor</button></div>`:'');
+  $('#mapCtl').innerHTML=`<div class="field"><label>${t('fp_floorplan','Piantina')}</label><select id="fpSel" onchange="fpOpen()">${FP.length?FP.map(f=>`<option value="${f.id}" ${f.id===sel?'selected':''}>${esc(f.name)}</option>`).join(''):`<option value="">${t('fp_none','— nessuna —')}</option>`}</select></div>`
+    +(admin&&FP.length?`<div class="field" style="flex:1 1 340px;min-width:280px"><label>${t('fp_place','Posiziona sulla piantina')}</label>
+        <div class="row" style="gap:6px;flex-wrap:nowrap;align-items:stretch"><select id="fpPlaceSel" class="grow"><option value="">${t('fp_place_choose','— scegli beacon o dispositivo —')}</option></select>
+        <button class="btn ghost small" id="fpPlaceBtn" onclick="fpArmPlace(this)" style="flex:none;white-space:nowrap">${t('fp_place_btn','📍 sulla mappa')}</button></div></div>`:'')
+    +(admin&&FP.length?`<div class="field"><label>${t('gf_color','Colore area Geofence')}</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" title="${t('gf_color','Colore area Geofence')}" style="height:40px;padding:3px;width:120px;cursor:pointer"></div>`:'')
+    +(admin&&FP.length?`<div class="field" style="margin-left:auto"><label>&nbsp;</label><button class="btn ghost small" onclick="configIndoor()" style="flex:none">${t('fp_config','⚙ Configura piantina indoor')}</button></div>`:'');
   if(FP.length){ fpOpen(); }
   else {
     if(FPMAP){ try{FPMAP.remove();}catch(e){} FPMAP=null; }
@@ -950,7 +971,7 @@ async function fpOpen(){
         const here=d.floorplan_id===id&&d.fp_x!=null; const elsewhere=d.floorplan_id&&d.floorplan_id!==id;
         return `<option value="d:${d.id}">${devLabel(d)}${d.model_name?(' · '+esc(d.model_name)):''}${here?' (già qui)':elsewhere?' (altra piantina)':''}</option>`;
       }).join('');
-      psel.innerHTML='<option value="">— scegli beacon o dispositivo —</option>'
+      psel.innerHTML=`<option value="">${t('fp_place_choose','— scegli beacon o dispositivo —')}</option>`
         +(bOpts?`<optgroup label="📡 Beacon (zone)">${bOpts}</optgroup>`:'')
         +(dOpts?`<optgroup label="📟 Dispositivi">${dOpts}</optgroup>`:'')
         +((!bOpts&&!dOpts)?'<option value="" disabled>nessun beacon/dispositivo registrato</option>':'');
@@ -1469,19 +1490,19 @@ async function vDispositivi(v){
   const prov=p=>{ if(!p)return''; const m={attivo:'s-attivo',in_attesa_primo_fix:'',traccar_registrato:'',configurato:''}; const lab={in_attesa_primo_fix:'attesa 1° fix',traccar_registrato:'registrato',configurato:'configurato',attivo:'attivo'}; return `<span class="chip ${m[p]||''}">${lab[p]||p}</span>`; };
   const who=d=> d.asset_name?('🚚 '+esc(d.asset_name)) : d.user_email?('👤 '+esc(d.user_email)) : '—';
   const model=d=> d.model_code?esc((d.manufacturer||'')+' '+(d.model_name||'')):'<span class="mut">generico</span>';
-  v.innerHTML=`<div class="page-h"><div><h1>Dispositivi</h1><div class="mut">${D.length} dispositivi · catalogo, flotta</div></div>
-    <div class="row" style="gap:8px"><button class="btn" onclick="wizardStart()">+ Aggiungi (guidato)</button>
-      <button class="btn ghost" onclick="devEdit(null)">manuale</button></div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('dev_title','Dispositivi')}</h1><div class="mut">${D.length} ${t('dev_count','dispositivi')} · ${t('dev_sub','catalogo, flotta')}</div></div>
+    <div class="row" style="gap:8px"><button class="btn" onclick="wizardStart()">${t('dev_add_guided','+ Aggiungi (guidato)')}</button>
+      <button class="btn ghost" onclick="devEdit(null)">${t('dev_add_manual','manuale')}</button></div></div>
   <div class="card pad" style="margin-bottom:10px"><div class="row" style="gap:8px;align-items:center">
-    <input id="devSearch" class="grow" placeholder="🔎 Cerca: ID esterno, modello, etichetta, assegnatario, capacità, ultimo contatto, onboarding…" oninput="devFilter(this.value)" style="width:100%">
-    <span id="devCount" class="small mut" style="white-space:nowrap">${D.length} dispositivi</span></div></div>
-  <div class="card"><table class="table" id="devTable"><thead><tr><th>ID esterno</th><th>Modello</th><th>Etichetta</th><th>Assegnato a</th><th>Capacità</th><th>Ultimo contatto</th><th>Onboarding</th></tr></thead>
+    <input id="devSearch" class="grow" placeholder="${t('dev_search','🔎 Cerca: ID esterno, modello, etichetta, assegnatario, capacità, ultimo contatto, onboarding…')}" oninput="devFilter(this.value)" style="width:100%">
+    <span id="devCount" class="small mut" style="white-space:nowrap">${D.length} ${t('dev_count','dispositivi')}</span></div></div>
+  <div class="card"><table class="table" id="devTable"><thead><tr><th>${t('col_extid','ID esterno')}</th><th>${t('col_model','Modello')}</th><th>${t('col_label','Etichetta')}</th><th>${t('col_assignee','Assegnato a')}</th><th>${t('col_caps','Capacità')}</th><th>${t('col_lastseen','Ultimo contatto')}</th><th>${t('col_onboarding','Onboarding')}</th></tr></thead>
   <tbody>${D.map(d=>`<tr class="clk" data-dev='${encodeURIComponent(JSON.stringify(d))}' data-hay="${esc(devHay(d))}">
     <td class="mono">${esc(d.external_id)}</td><td class="small">${model(d)}</td><td>${esc(d.label||'—')}</td>
     <td class="small">${who(d)}</td><td class="small">${(d.capabilities||[]).slice(0,4).map(c=>`<span class="tag">${esc(c)}</span>`).join('')||'—'}</td>
     <td class="small">${seen(d)}</td><td>${prov(d.prov_step)||(d.enabled?'<span class="chip s-attivo">attivo</span>':'<span class="chip">off</span>')}</td></tr>`).join('')
-    ||`<tr><td colspan="7" class="empty">${ICON.shield}<div>Nessun dispositivo. Usa "+ Aggiungi (guidato)".</div></td></tr>`}</tbody></table>
-    <div id="devEmpty" class="small mut pad" hidden style="text-align:center">Nessun dispositivo corrisponde alla ricerca.</div></div>`;
+    ||`<tr><td colspan="7" class="empty">${ICON.shield}<div>${t('dev_empty','Nessun dispositivo. Usa "+ Aggiungi (guidato)".')}</div></td></tr>`}</tbody></table>
+    <div id="devEmpty" class="small mut pad" hidden style="text-align:center">${t('dev_no_match','Nessun dispositivo corrisponde alla ricerca.')}</div></div>`;
   $$('[data-dev]',v).forEach(r=>r.onclick=()=>devEdit(JSON.parse(decodeURIComponent(r.dataset.dev))));
 }
 // Testo ricercabile (full-text) di un dispositivo: unisce tutte le colonne mostrate + sinonimi utili.
@@ -1498,7 +1519,7 @@ function devFilter(q){
   q=(q||'').trim().toLowerCase(); const toks=q.split(/\s+/).filter(Boolean);
   let n=0, tot=0;
   $$('#devTable tbody tr[data-hay]').forEach(r=>{ tot++; const ok=toks.every(t=>r.dataset.hay.includes(t)); r.hidden=!ok; if(ok)n++; });
-  const c=$('#devCount'); if(c) c.textContent = toks.length ? (n+' di '+tot) : (tot+' dispositivi');
+  const c=$('#devCount'); if(c) c.textContent = toks.length ? (n+' '+t('pager_of','di')+' '+tot) : (tot+' '+t('dev_count','dispositivi'));
   const e=$('#devEmpty'); if(e) e.hidden = !(tot>0 && n===0);
 }
 // ---- Wizard onboarding dispositivo (Fase A+B+C) ----
