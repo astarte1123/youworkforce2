@@ -356,6 +356,9 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/orders/:id/start", post(api::order_start))
         .route("/api/orders/:id/complete", post(api::order_complete))
         .route("/api/orders/:id/cancel", post(api::order_cancel))
+        .route("/api/orders/:id/report", post(api::order_report_set))
+        .route("/api/orders/:id/attachments", get(api::order_attachments_list).post(api::order_attachment_add))
+        .route("/api/orders/attachments/:aid", get(api::order_attachment_get).delete(api::order_attachment_del))
         // Prompt 9: consuntivi
         .route("/api/timesheets", post(api::create_timesheet).get(api::list_timesheets))
         .route("/api/timesheets/:id", get(api::get_timesheet))

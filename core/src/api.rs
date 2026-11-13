@@ -6659,6 +6659,86 @@ pub async fn order_cancel(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     order_transition(&st, &s, id, &b, "annullato", Some("cancel_reason"), Some(SetVal::Txt(reason)), &["bozza","assegnato","in_corso"]).await
 }
 
+// ---- Intervento end-to-end: report, allegati (foto/doc), firma ----
+/// Chi può operare sull'esecuzione di un ordine: il pianificatore/admin oppure l'assegnatario.
+async fn order_edit_allowed(st: &AppState, s: &Session, oid: Uuid) -> Result<Uuid,(StatusCode,String)> {
+    let tid = s.tenant_id.unwrap();
+    if !module_active(st, tid, "interventi").await { return Err(err(StatusCode::FORBIDDEN, "modulo interventi non abilitato")); }
+    let au: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.work_orders WHERE id=$1 AND tenant_id=$2")
+        .bind(oid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "ordine inesistente"))?;
+    if is_planner(&s.role) || au == Some(s.user_id) { Ok(tid) } else { Err(err(StatusCode::FORBIDDEN, "non autorizzato su questo ordine")) }
+}
+#[derive(Deserialize)] pub struct OrderReport { pub report: Option<String>, pub signed_by: Option<String> }
+pub async fn order_report_set(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderReport>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = order_edit_allowed(&st, &s, id).await?;
+    let signed_by = b.signed_by.as_deref().map(|x| x.trim()).filter(|x| !x.is_empty());
+    let signed_at = signed_by.map(|_| st.clock.now());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("UPDATE app.work_orders SET report=COALESCE($2,report), signed_by=COALESCE($3,signed_by), signed_at=COALESCE($4,signed_at), updated_at=now() WHERE id=$1")
+        .bind(id).bind(b.report.as_deref()).bind(signed_by).bind(signed_at).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "order_report_set", json!({"order":id,"signed":signed_by.is_some()})).await;
+    Ok(Json(json!({"ok":true,"signed_at":signed_at.map(|t| t.to_rfc3339())})))
+}
+/// Upload allegato: body = bytes del file; metadati in query (kind, filename, caption); ct dall'header.
+pub async fn order_attachment_add(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>,
+    body: axum::body::Bytes) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = order_edit_allowed(&st, &s, id).await?;
+    if body.len() < 4 { return Err(err(StatusCode::BAD_REQUEST, "file vuoto")); }
+    if body.len() > 10_000_000 { return Err(err(StatusCode::BAD_REQUEST, "file troppo grande (max 10MB)")); }
+    let kind = match q.get("kind").map(|s| s.as_str()) { Some("doc") => "doc", Some("signature") => "signature", _ => "photo" };
+    let ct = h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream").to_string();
+    let filename = q.get("filename").map(|x| x.trim().to_string());
+    let caption = q.get("caption").map(|x| x.trim().to_string());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.work_order_attachments(tenant_id,work_order_id,kind,filename,content_type,caption,data,created_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id")
+        .bind(tid).bind(id).bind(kind).bind(&filename).bind(&ct).bind(&caption).bind(body.as_ref()).bind(&s.email)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "order_attachment_add", json!({"order":id,"kind":kind,"bytes":body.len()})).await;
+    Ok(Json(json!({"id": row.get::<Uuid,_>("id"), "kind": kind})))
+}
+pub async fn order_attachments_list(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = order_edit_allowed(&st, &s, id).await?;
+    let rows = sqlx::query("SELECT id,kind,filename,content_type,caption,created_by,created_at FROM app.work_order_attachments WHERE tenant_id=$1 AND work_order_id=$2 ORDER BY created_at")
+        .bind(tid).bind(id).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id": r.get::<Uuid,_>("id"), "kind": r.get::<String,_>("kind"),
+        "filename": r.try_get::<String,_>("filename").ok(), "content_type": r.get::<String,_>("content_type"),
+        "caption": r.try_get::<String,_>("caption").ok(), "created_by": r.try_get::<String,_>("created_by").ok(),
+        "created_at": r.get::<chrono::DateTime<chrono::Utc>,_>("created_at").to_rfc3339() })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn order_attachment_get(State(st): State<AppState>, h: HeaderMap, Path(aid): Path<Uuid>)
+    -> Result<Response,(StatusCode,String)> {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let row = sqlx::query("SELECT data,content_type FROM app.work_order_attachments WHERE id=$1 AND tenant_id=$2")
+        .bind(aid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "allegato inesistente"))?;
+    let data: Vec<u8> = row.get("data"); let ct: String = row.get("content_type");
+    Ok(([(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, "private, max-age=3600".to_string())], data).into_response())
+}
+pub async fn order_attachment_del(State(st): State<AppState>, h: HeaderMap, Path(aid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    if !module_active(&st, tid, "interventi").await { return Err(err(StatusCode::FORBIDDEN, "modulo interventi non abilitato")); }
+    // il pianificatore/admin o chi l'ha caricato
+    let owner: Option<String> = sqlx::query_scalar("SELECT created_by FROM app.work_order_attachments WHERE id=$1 AND tenant_id=$2")
+        .bind(aid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "allegato inesistente"))?;
+    if !is_planner(&s.role) && owner.as_deref() != Some(s.email.as_str()) { return Err(err(StatusCode::FORBIDDEN, "non autorizzato")); }
+    sqlx::query("DELETE FROM app.work_order_attachments WHERE id=$1 AND tenant_id=$2").bind(aid).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, &s.email, "order_attachment_del", json!({"id":aid})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
 // ---- consuntivi ----
 #[derive(Deserialize)]
 pub struct NewTimesheet { pub work_order_id: Option<Uuid>, pub note: Option<String> }

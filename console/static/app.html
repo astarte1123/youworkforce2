@@ -1359,7 +1359,57 @@ async function openOrder(id){
     <div class="small mut">Istruzioni</div><div style="margin-bottom:16px">${esc(o.instructions||'—')}</div>
     ${o.outcome?`<div class="small mut">Esito</div><div style="margin-bottom:16px">${esc(o.outcome)}</div>`:''}
     <div class="col">${acts||'<div class="chip">nessuna azione disponibile</div>'}${editBtn}</div>
-    ${AI_FEAT.interventi_assist?`<div class="row" style="gap:6px;margin-top:12px"><button class="btn ghost small" onclick="aiOrderBrief('${id}',this)">✦ Brief AI</button></div><div id="aiOrdOut"></div>`:''}`);
+    ${AI_FEAT.interventi_assist?`<div class="row" style="gap:6px;margin-top:12px"><button class="btn ghost small" onclick="aiOrderBrief('${id}',this)">✦ Brief AI</button></div><div id="aiOrdOut"></div>`:''}
+    ${((mine||planner)&&(o.state==='in_corso'||o.state==='completato'))?`
+      <div class="divider" style="margin:16px 0"></div>
+      <h3 style="margin:0 0 8px">Esecuzione intervento</h3>
+      <div class="field"><label>Report (cosa è stato fatto)</label><textarea id="ordReport" style="width:100%;height:70px">${esc(o.report||'')}</textarea></div>
+      <div class="field"><label>Firmato da (cliente)</label><input id="ordSigner" value="${esc(o.signed_by||'')}" placeholder="nome e cognome"></div>
+      <button class="btn ghost small" onclick="ordReportSave('${id}')">Salva report</button>
+      <div class="small mut" style="margin-top:14px">Allegati (foto / documenti)</div>
+      <div id="ordAtt" class="small mut" style="margin-top:4px">carico…</div>
+      <div class="row" style="gap:6px;margin-top:6px"><input type="file" id="ordFile" accept="image/*,application/pdf" style="font-size:12px"><button class="btn ghost small" onclick="ordAttUpload('${id}')">⬆ Carica</button></div>
+      <div class="small mut" style="margin-top:14px">Firma cliente</div>
+      <canvas id="ordSig" width="300" height="120" style="border:1px solid var(--line);border-radius:8px;touch-action:none;background:#fff;max-width:100%"></canvas>
+      <div class="row" style="gap:6px;margin-top:4px"><button class="btn ghost small" onclick="ordSigClear()">pulisci</button><button class="btn ghost small" onclick="ordSigSave('${id}')">✍ Salva firma</button></div>`:''}`);
+  if((mine||planner)&&(o.state==='in_corso'||o.state==='completato')){ ordAttLoad(id); ordSigInit(); }
+}
+async function ordReportSave(id){ try{ await api('/orders/'+id+'/report',{method:'POST',body:JSON.stringify({report:$('#ordReport').value,signed_by:$('#ordSigner').value||null})}); toast('Report salvato','ok'); }catch(e){ toast(e.message,'bad'); } }
+async function ordAttLoad(id){ const el=$('#ordAtt'); if(!el)return;
+  try{ const A=await api('/orders/'+id+'/attachments');
+    el.innerHTML=(A||[]).map(a=>{ const url='/api/orders/attachments/'+a.id;
+      const prev=a.content_type&&a.content_type.startsWith('image/')?`<img src="${url}" alt="" style="width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid var(--line)">`:`<span style="font-size:22px">📄</span>`;
+      return `<div class="row" style="gap:8px;align-items:center;border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:4px">
+        <a href="${url}" target="_blank" rel="noopener">${prev}</a>
+        <div class="grow small"><b>${esc(a.kind)}</b> ${esc(a.filename||'')}${a.caption?' · '+esc(a.caption):''}<div class="mut">${new Date(a.created_at).toLocaleString('it-IT')}</div></div>
+        <button class="btn-ico btn ghost" onclick="ordAttDel('${a.id}','${id}')">${ICON.x}</button></div>`; }).join('')||'<div class="small mut">nessun allegato</div>';
+  }catch(e){ el.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function ordAttUpload(id){ const f=$('#ordFile'); const file=f&&f.files&&f.files[0]; if(!file){ toast('Scegli un file','bad'); return; }
+  if(file.size>10e6){ toast('File troppo grande (max 10MB)','bad'); return; }
+  const kind=file.type.startsWith('image/')?'photo':'doc';
+  const q=new URLSearchParams({kind,filename:file.name});
+  try{ const res=await fetch('/api/orders/'+id+'/attachments?'+q.toString(),{method:'POST',credentials:'include',
+      headers:{'x-tenant-slug':store.slug,'x-csrf-token':csrfToken(),'content-type':file.type||'application/octet-stream'},body:file});
+    if(!res.ok) throw new Error('HTTP '+res.status); f.value=''; toast('Allegato caricato','ok'); ordAttLoad(id);
+  }catch(e){ toast(e.message,'bad'); } }
+async function ordAttDel(aid,id){ if(!await askConfirm('Eliminare l\'allegato?'))return; try{ await api('/orders/attachments/'+aid,{method:'DELETE'}); ordAttLoad(id); }catch(e){ toast(e.message,'bad'); } }
+// firma su canvas (mouse + touch)
+let _sigDraw=false;
+function ordSigInit(){ const c=$('#ordSig'); if(!c)return; const ctx=c.getContext('2d'); ctx.lineWidth=2; ctx.lineCap='round'; ctx.strokeStyle='#111';
+  const pos=e=>{ const r=c.getBoundingClientRect(); const t=e.touches?e.touches[0]:e; return [ (t.clientX-r.left)*(c.width/r.width), (t.clientY-r.top)*(c.height/r.height) ]; };
+  const down=e=>{ _sigDraw=true; const [x,y]=pos(e); ctx.beginPath(); ctx.moveTo(x,y); e.preventDefault(); };
+  const move=e=>{ if(!_sigDraw)return; const [x,y]=pos(e); ctx.lineTo(x,y); ctx.stroke(); e.preventDefault(); };
+  const up=()=>{ _sigDraw=false; };
+  c.onmousedown=down; c.onmousemove=move; window.addEventListener('mouseup',up);
+  c.ontouchstart=down; c.ontouchmove=move; c.ontouchend=up;
+}
+function ordSigClear(){ const c=$('#ordSig'); if(c)c.getContext('2d').clearRect(0,0,c.width,c.height); }
+async function ordSigSave(id){ const c=$('#ordSig'); if(!c)return;
+  c.toBlob(async(blob)=>{ if(!blob){ toast('Firma vuota','bad'); return; }
+    try{ const res=await fetch('/api/orders/'+id+'/attachments?'+new URLSearchParams({kind:'signature',filename:'firma.png'}).toString(),{method:'POST',credentials:'include',
+        headers:{'x-tenant-slug':store.slug,'x-csrf-token':csrfToken(),'content-type':'image/png'},body:blob});
+      if(!res.ok) throw new Error('HTTP '+res.status); toast('Firma salvata','ok'); ordSigClear(); ordAttLoad(id);
+    }catch(e){ toast(e.message,'bad'); } }, 'image/png');
 }
 async function aiOrderBrief(id,btn){ const box=$('#aiOrdOut'); if(!box)return; btn.disabled=true; box.innerHTML='<div class="small mut" style="margin-top:6px">youworker.ai…</div>';
   try{ const r=await api('/orders/'+id+'/ai-assist'); box.innerHTML=`<div class="card pad" style="margin-top:6px;background:var(--brand-soft)"><div class="small mut">✦ youworker.ai — proposta d'aiuto</div><div style="white-space:pre-wrap;margin-top:4px">${esc(r.brief)}</div></div>`; }
