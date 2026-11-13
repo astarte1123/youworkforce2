@@ -109,11 +109,7 @@ function enhanceSelect(sel){
   }
   function paintHi(){ Array.from(panel.children).forEach((c,i)=>c.classList.toggle('hi', i===hi)); }
   function scrollHi(){ const el=panel.children[hi]; if(el&&el.scrollIntoView)el.scrollIntoView({block:'nearest'}); }
-  function open(){ if(!panel.hidden||sel.disabled)return; render('');
-    // apri verso l'alto se sotto non c'è spazio (es. combo sopra una mappa)
-    try{ const r=wrap.getBoundingClientRect(); const below=window.innerHeight-r.bottom, above=r.top;
-      wrap.classList.toggle('up', below<280 && above>below); }catch(e){}
-    panel.hidden=false; wrap.classList.add('open'); setTimeout(()=>inp.select(),0); }
+  function open(){ if(!panel.hidden||sel.disabled)return; render(''); panel.hidden=false; wrap.classList.add('open'); setTimeout(()=>inp.select(),0); }
   function close(restore){ panel.hidden=true; wrap.classList.remove('open'); if(restore!==false) inp.value=curLabel(); }
   function pick(o){ if(!o||o.disabled)return; if(sel.value!==o.value){ sel.value=o.value; sel.dispatchEvent(new Event('change',{bubbles:true})); sel.dispatchEvent(new Event('input',{bubbles:true})); } inp.value=o.text; close(false); }
   inp.addEventListener('focus',open);
@@ -136,6 +132,7 @@ function initComboUI(){
   if(!document.getElementById('comboCss')){
     const st=document.createElement('style'); st.id='comboCss'; st.textContent=`
     .combo{position:relative;display:flex;width:100%;min-width:0;max-width:100%;vertical-align:top}
+    .combo.open{z-index:3000}
     .combo.grow{flex:1 1 auto}
     .combo-input{width:100%;min-width:0;font:inherit;cursor:text;
       background-image:linear-gradient(45deg,transparent 50%,var(--faint) 50%),linear-gradient(135deg,var(--faint) 50%,transparent 50%);
@@ -143,7 +140,6 @@ function initComboUI(){
     .combo-panel{position:absolute;z-index:1200;top:calc(100% + 2px);left:0;min-width:100%;width:max-content;max-width:min(360px,90vw);
       max-height:260px;overflow:auto;background:var(--surface,#fff);border:1px solid var(--line);border-radius:8px;
       box-shadow:var(--sh-lg,0 8px 28px rgba(0,0,0,.22));padding:4px}
-    .combo.up .combo-panel{top:auto;bottom:calc(100% + 2px)}
     .combo-opt{padding:6px 9px;border-radius:6px;cursor:pointer;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .combo-opt.hi{background:var(--surface2,#eef2ff)}
     .combo-opt.sel{font-weight:600}
