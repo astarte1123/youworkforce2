@@ -2654,6 +2654,101 @@ pub async fn list_sites(State(st): State<AppState>, h: HeaderMap) -> R {
     Ok(Json(json!(out)))
 }
 
+// ---- Gruppi di persone CONDIVISI (primitiva comune, riusabile da tutti i moduli) ----
+pub async fn list_user_groups(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let groups = sqlx::query("SELECT id,name,kind,labels FROM app.user_groups ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
+    let mems = sqlx::query("SELECT m.group_id,m.user_id,u.email FROM app.user_group_members m JOIN app.users u ON u.id=m.user_id ORDER BY u.email")
+        .fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = groups.iter().map(|g| {
+        let gid: Uuid = g.get("id");
+        let members: Vec<Value> = mems.iter().filter(|m| m.get::<Uuid,_>("group_id")==gid)
+            .map(|m| json!({"user_id":m.get::<Uuid,_>("user_id"),"email":m.get::<String,_>("email")})).collect();
+        json!({"id":gid,"name":g.get::<String,_>("name"),"kind":g.get::<String,_>("kind"),
+            "labels":g.try_get::<Value,_>("labels").unwrap_or(json!({})),"members":members})
+    }).collect();
+    Ok(Json(json!(out)))
+}
+#[derive(Deserialize)] pub struct UserGroupReq { pub name: String, #[serde(default)] pub kind: Option<String>, #[serde(default)] pub labels: Option<Value> }
+pub async fn create_user_group(State(st): State<AppState>, h: HeaderMap, Json(b): Json<UserGroupReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.user_groups(tenant_id,name,kind,labels) VALUES($1,$2,COALESCE($3,'squadra'),COALESCE($4,'{}'::jsonb)) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(b.kind.as_deref()).bind(b.labels.as_ref())
+        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "gruppo già esistente (nome)"))?;
+    let id = row.ok_or_else(|| err(StatusCode::CONFLICT,"già esistente"))?.get::<Uuid,_>("id");
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "create_user_group", json!({"name":b.name})).await;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn update_user_group(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<UserGroupReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.user_groups SET name=$2, kind=COALESCE($3,kind), labels=COALESCE($4,labels) WHERE id=$1")
+        .bind(id).bind(b.name.trim()).bind(b.kind.as_deref()).bind(b.labels.as_ref())
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_user_group(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.user_groups WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
+    audit(&st, tid, &s.email, "delete_user_group", json!({"id":id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn user_group_member_add(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<MemberReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // verifica appartenenza al tenant del gruppo e dell'utente (RLS già scopa, ma espliciti i 404)
+    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.user_groups WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"gruppo inesistente")); }
+    sqlx::query("INSERT INTO app.user_group_members(tenant_id,group_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+        .bind(tid).bind(id).bind(b.user_id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn user_group_member_del(State(st): State<AppState>, h: HeaderMap, Path((id,uid)): Path<(Uuid,Uuid)>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.user_group_members WHERE group_id=$1 AND user_id=$2").bind(id).bind(uid).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+/// Import "serve a tutti i moduli": copia i membri di un gruppo comune in un GRUPPO DI ALLARME
+/// (escalation). Dimostra il riuso senza accoppiare i modelli. Richiede il modulo escalation.
+#[derive(Deserialize)] pub struct ImportGroupReq { pub user_group_id: Uuid }
+pub async fn alarm_group_import_members(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<ImportGroupReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1").bind(gid).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"gruppo allarme inesistente")); }
+    // posizione iniziale = dopo gli attuali membri
+    let base: i32 = sqlx::query_scalar("SELECT COALESCE(MAX(position),0)::int FROM app.alarm_group_members WHERE group_id=$1").bind(gid).fetch_one(&mut *tx).await.map_err(ise)?;
+    let n = sqlx::query(
+        "INSERT INTO app.alarm_group_members(tenant_id,group_id,user_id,position)
+         SELECT $1,$2,m.user_id, ($4 + row_number() OVER (ORDER BY u.email))::int
+         FROM app.user_group_members m JOIN app.users u ON u.id=m.user_id
+         WHERE m.group_id=$3
+         ON CONFLICT (group_id,user_id) DO NOTHING")
+        .bind(tid).bind(gid).bind(b.user_group_id).bind(base).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "alarm_group_import_members", json!({"group":gid,"from":b.user_group_id,"added":n})).await;
+    Ok(Json(json!({"ok":true,"added":n})))
+}
+
 pub async fn list_users(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;

@@ -3226,7 +3226,7 @@ async function grpHandoffDel(gid,id){ try{ await api('/handoff-notes/'+id,{metho
 
 // ---------------- Anagrafiche: utenti e sedi ----------------
 async function vAnagrafiche(v){
-  const [users,sites,teams,assets]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),api('/teams').catch(()=>[]),api('/assets').catch(()=>[])]);
+  const [users,sites,teams,assets,ugroups,agroups]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),api('/teams').catch(()=>[]),api('/assets').catch(()=>[]),api('/user-groups').catch(()=>[]),api('/groups').catch(()=>[])]);
   v._users=users;
   v.innerHTML=`<div class="page-h"><div><h1>Utenti e sedi</h1><div class="mut">anagrafiche del tenant</div></div></div>
   <div class="grid g2">
@@ -3248,6 +3248,17 @@ async function vAnagrafiche(v){
       <div class="row" style="gap:6px"><select id="tm_${t.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
         <button class="btn ghost small" onclick="teamAdd('${t.id}')">+ membro</button></div></div>`).join('')
       ||'<div class="small mut">Nessuna squadra.</div>'}</div></div>
+  <div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Gruppi di persone (${ugroups.length})</h2><div class="small mut">insiemi di persone condivisi, riusabili da qualunque modulo (es. importabili nei gruppi di allarme)</div></div><a onclick="ugNew()">+ nuovo gruppo</a></div>
+    <div class="grid g2" style="margin-top:10px">${ugroups.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px">
+      <div class="spread"><b>${esc(g.name)} <span class="chip">${esc(g.kind)}</span></b>
+        <span><button class="btn ghost small" onclick='ugRename(${JSON.stringify(g).replace(/'/g,"&#39;")})'>rinomina</button>
+        <button class="btn-ico btn ghost" onclick="ugDel('${g.id}')">${ICON.x}</button></span></div>
+      <div class="small mut" style="margin:6px 0">${g.members.map(m=>`<span class="tag">${esc(m.email)} <a onclick="ugRm('${g.id}','${m.user_id}')">✕</a></span>`).join(' ')||'nessun membro'}</div>
+      <div class="row" style="gap:6px"><select id="ugm_${g.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
+        <button class="btn ghost small" onclick="ugAdd('${g.id}')">+ membro</button></div>
+      ${agroups.length?`<div class="row" style="gap:6px;margin-top:6px"><select id="ugimp_${g.id}" class="grow small">${agroups.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>
+        <button class="btn ghost small" onclick="ugImport('${g.id}')">→ importa in gruppo allarme</button></div>`:''}
+      </div>`).join('')||'<div class="small mut">Nessun gruppo. Crea insiemi di persone da riusare ovunque.</div>'}</div></div>
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Asset / mezzi (${assets.length})</h2><a onclick="assetNew()">+ nuovo asset</a></div>
     <table class="table"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th></th></tr></thead>
     <tbody>${assets.map(a=>`<tr><td>${esc(a.name)}</td><td><span class="chip">${esc(a.kind)}</span></td><td class="small mut">${esc(a.identifier||'—')}</td>
@@ -3263,6 +3274,14 @@ async function teamNew(){ const n=await askPrompt('Nome squadra?'); if(!n)return
 async function teamDel(id){ if(!await askConfirm('Eliminare squadra?'))return; try{await api('/teams/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function teamAdd(tid){ const uid=$('#tm_'+tid).value; if(!uid)return; try{await api('/teams/'+tid+'/members',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Aggiunto','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function teamRm(tid,uid){ try{await api('/teams/'+tid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function ugNew(){ const n=await askPrompt('Nome gruppo di persone?'); if(!n)return; const k=await askPrompt('Tipo (squadra/reparto/zona/turno...)?','squadra')||'squadra';
+  try{await api('/user-groups',{method:'POST',body:JSON.stringify({name:n,kind:k})}); toast('Gruppo creato','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function ugRename(g){ const n=await askPrompt('Nuovo nome?',g.name); if(!n)return; const k=await askPrompt('Tipo?',g.kind)||g.kind;
+  try{await api('/user-groups/'+g.id,{method:'POST',body:JSON.stringify({name:n,kind:k})}); toast('Aggiornato','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function ugDel(id){ if(!await askConfirm('Eliminare il gruppo? (i gruppi di allarme già popolati restano intatti)'))return; try{await api('/user-groups/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function ugAdd(gid){ const uid=$('#ugm_'+gid).value; if(!uid)return; try{await api('/user-groups/'+gid+'/members',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Aggiunto','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function ugRm(gid,uid){ try{await api('/user-groups/'+gid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function ugImport(gid){ const ag=$('#ugimp_'+gid).value; if(!ag)return; try{const r=await api('/groups/'+ag+'/members/import',{method:'POST',body:JSON.stringify({user_group_id:gid})}); toast((r.added||0)+' membri importati nel gruppo allarme','ok');}catch(e){toast(e.message,'bad');} }
 const ROLES=['tenant_admin','operatore','pianificatore','responsabile','lavoratore','reperibile','auditor'];
 function userNew(){
   drawer('Invita utente',`<div class="col" style="gap:10px">

@@ -188,6 +188,25 @@ ancora disponibile (nel PDF resta "—").
 - **Revisione**: dal dettaglio ordine in console il responsabile vede esecuzione (arrivo/avvio/
   ore/checklist/materiali/esito), report, allegati e firma.
 
+## 10. Gruppi di persone condivisi (Utenti e sedi)
+
+In **Utenti e sedi** c'è la card **«Gruppi di persone»**: un **insieme di persone** riusabile da
+qualunque modulo, **additivo** e distinto dai tre raggruppamenti esistenti (gruppi di **allarme**
+= escalation, **squadre** = Workforce, **profili di protezione** = Sicurezza), che restano
+invariati.
+
+- **Crea / rinomina / elimina** gruppo (nome + *tipo* libero: squadra/reparto/zona/turno…).
+- **Membri**: aggiungi/togli persone del tenant.
+- **→ Importa in gruppo allarme**: copia i membri del gruppo in un **gruppo di allarme**
+  (alimenta instradamento/escalation). È **idempotente** (non duplica) e **disaccoppiato**:
+  eliminare il gruppo condiviso **non** svuota il gruppo di allarme già popolato. L'import
+  richiede un modulo escalation attivo (loneworker/traccar/iot/thingsboard); senza, risponde 403.
+
+Solo **tenant_admin** gestisce i gruppi (controllo lato backend). Isolati per tenant (RLS):
+un tenant non vede né modifica i gruppi di un altro. Backend: tabelle `app.user_groups` /
+`app.user_group_members` (mig `0072`), API `/api/user-groups*` e
+`POST /api/groups/:id/members/import`.
+
 ## Note tecniche
 - File coinvolti: `console/static/app.html`, `console/static/app.js`, `console/static/app.css`.
 - Avvio console: dalla cartella `console/`, `./console.exe` (o `go run .`) → `:8081`,
