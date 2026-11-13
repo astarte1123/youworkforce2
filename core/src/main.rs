@@ -257,6 +257,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/oncall-contacts/:uid/status-pref", post(api::user_status_pref_set))
         .route("/api/oncall-overrides", get(api::oncall_overrides_list).post(api::oncall_override_add))
         .route("/api/oncall-overrides/delete", post(api::oncall_override_del))
+        .route("/api/oncall-overrides/update", post(api::oncall_override_update))
         .route("/api/oncall-temp-schedules", get(api::temp_schedule_list).post(api::temp_schedule_add))
         .route("/api/oncall-temp-schedules/delete", post(api::temp_schedule_del))
         .route("/api/oncall-maintenance", post(api::oncall_maintenance))

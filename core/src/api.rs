@@ -7613,6 +7613,26 @@ pub async fn oncall_override_del(State(st): State<AppState>, h: HeaderMap, Json(
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "override inesistente")); }
     Ok(Json(json!({"ok":true})))
 }
+#[derive(Deserialize)] pub struct OverrideUpdate { pub id: Uuid, pub start: String, pub end: String, pub add_user_id: Option<Uuid>, pub remove_user_id: Option<Uuid> }
+/// Modifica un override esistente (edit in-place, parità GoAlert).
+pub async fn oncall_override_update(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OverrideUpdate>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    if b.add_user_id.is_none() && b.remove_user_id.is_none() { return Err(err(StatusCode::BAD_REQUEST, "indica sostituto e/o assente")); }
+    let start = chrono::DateTime::parse_from_rfc3339(&b.start).map_err(|_| err(StatusCode::BAD_REQUEST, "start: RFC3339"))?.with_timezone(&chrono::Utc);
+    let end = chrono::DateTime::parse_from_rfc3339(&b.end).map_err(|_| err(StatusCode::BAD_REQUEST, "end: RFC3339"))?.with_timezone(&chrono::Utc);
+    if end <= start { return Err(err(StatusCode::BAD_REQUEST, "end deve essere dopo start")); }
+    for u in [b.add_user_id, b.remove_user_id].into_iter().flatten() {
+        if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.users WHERE id=$1 AND tenant_id=$2").bind(u).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_none() { return Err(err(StatusCode::BAD_REQUEST, "utente non nel tenant")); }
+    }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.esc_overrides SET start_at=$3,end_at=$4,add_user=$5,remove_user=$6 WHERE id=$1 AND tenant_id=$2")
+        .bind(b.id).bind(tid).bind(start).bind(end).bind(b.add_user_id).bind(b.remove_user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "override inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
 
 // ---- F3: Temporary schedule (sostituzione a tempo, parità GoAlert) ----
 pub async fn temp_schedule_list(State(st): State<AppState>, h: HeaderMap, axum::extract::Query(q): axum::extract::Query<OverrideQuery>) -> R {

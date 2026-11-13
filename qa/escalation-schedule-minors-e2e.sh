@@ -12,7 +12,8 @@ curl -s -o /dev/null -c "$JAR" -X POST "$BASE/api/login" -H 'content-type: appli
 CS=$(awk '$6=="yw_csrf"{print $7}' "$JAR" | tail -1)
 api(){ curl -s -b "$JAR" -H "x-tenant-slug: $SLUG" -H "x-csrf-token: $CS" "$@"; }
 TID="(SELECT id FROM app.tenants WHERE slug='$SLUG')"
-G=$(api -H 'content-type: application/json' -X POST "$BASE/api/groups" -d "{\"name\":\"SchedMin-$RANDOM\"}" | python -c "import sys,json;print(json.load(sys.stdin)['id'])")
+GNAME="SchedMin-$RANDOM"
+G=$(api -H 'content-type: application/json' -X POST "$BASE/api/groups" -d "{\"name\":\"$GNAME\"}" | python -c "import sys,json;print(json.load(sys.stdin)['id'])")
 api -H 'content-type: application/json' -X POST "$BASE/api/groups/$G/oncall" -d '{"mode":"tutti","coverage_mode":"24_7","tz":"UTC"}' >/dev/null
 sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id,escalation_engine) SELECT $TID,'$G','native' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$G',escalation_engine='native'" >/dev/null
 UA=$(sql "WITH t AS (SELECT id FROM app.tenants WHERE slug='$SLUG') INSERT INTO app.users(tenant_id,email,pass_hash,role,phone) SELECT id,'rotA-$RANDOM@globex.loneworker.eu','x','operatore','+390666000001' FROM t RETURNING id" | head -1)
@@ -24,7 +25,7 @@ MODE=$(sql "SELECT mode FROM app.esc_assignments WHERE id='$AID'")
 [ "$MODE" = turni ] && ok "assegnazione mode=turni salvata" || no "mode turni ko" "$MODE"
 api -H 'content-type: application/json' -X POST "$BASE/api/assignments/$AID/members" -d "{\"user_id\":\"$UA\",\"position\":1}" >/dev/null
 api -H 'content-type: application/json' -X POST "$BASE/api/assignments/$AID/members" -d "{\"user_id\":\"$UB\",\"position\":2}" >/dev/null
-CNT=$(api "$BASE/api/oncall-now-native" | python -c "import sys,json;d=json.load(sys.stdin);g=[x for x in d['groups'] if x['group'].startswith('SchedMin')];print(len([e for e in (g[0]['oncall'] if g else []) if 'rot' in e]))")
+CNT=$(api "$BASE/api/oncall-now-native" | GNAME="$GNAME" python -c "import sys,json,os;d=json.load(sys.stdin);g=[x for x in d['groups'] if x['group']==os.environ['GNAME']];print(len([e for e in (g[0]['oncall'] if g else []) if 'rot' in e]))")
 [ "$CNT" = 1 ] && ok "assegnazione a turni: UN solo membro on-call (rotazione)" || no "rotazione assegnazione ko" "$CNT"
 
 # --- Minor 2: Allow gaps ---

@@ -2595,7 +2595,8 @@ async function ocAbsences(btn){
   try{ const r=await api('/oncall-overrides?group_id='+gid);
     const list=(r.overrides||[]).map(o=>`<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:4px">
       <span>${o.remove_email?('➖ '+esc(o.remove_email)):''}${o.add_email?(' ➕ '+esc(o.add_email)):''} · ${new Date(o.start).toLocaleDateString('it-IT')}→${new Date(o.end).toLocaleDateString('it-IT')}</span>
-      <button class="btn ghost small" onclick="ocAbsDel('${o.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessuna assenza.</div>';
+      <span><button class="btn ghost small" onclick='ocAbsEdit(${JSON.stringify(o).replace(/'/g,"&#39;")})'>modifica</button>
+      <button class="btn-ico btn ghost" onclick="ocAbsDel('${o.id}')">${ICON.x}</button></span></div>`).join('')||'<div class="small mut">Nessuna assenza.</div>';
     out.innerHTML=`${r.note?`<div class="small mut">${esc(r.note)}</div>`:list}
       <div class="row small" style="gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap">
         Assente <select id="absRem" class="small"><option value="">—</option>${(window._users||[]).filter(u=>['reperibile','operatore','tenant_admin'].includes(u.role)).map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
@@ -2604,10 +2605,17 @@ async function ocAbsences(btn){
         <button class="btn small" onclick="ocAbsAdd('${gid}')">Aggiungi</button></div>`;
   }catch(e){ out.innerHTML='<span class="small" style="color:var(--bad)">'+esc(e.message)+'</span>'; }
 }
+function ocAbsEdit(o){ window._absEditId=o.id;
+  const sE=$('#absS'), eE=$('#absE'), rE=$('#absRem'), aE=$('#absAdd');
+  if(sE) sE.value=(o.start||'').slice(0,10); if(eE) eE.value=(o.end||'').slice(0,10);
+  if(rE) rE.value=o.remove_user||''; if(aE) aE.value=o.add_user||'';
+  toast('Modifica: aggiorna i campi e premi Aggiungi/Salva','ok'); }
 async function ocAbsAdd(gid){
   const rem=$('#absRem').value, add=$('#absAdd').value, s=$('#absS').value, e=$('#absE').value;
   if(!s||!e){ toast('indica le date','bad'); return; }
   if(!rem&&!add){ toast('indica assente e/o sostituto','bad'); return; }
+  if(window._absEditId){ const id=window._absEditId; window._absEditId=null;
+    try{ await api('/oncall-overrides/update',{method:'POST',body:JSON.stringify({id,start:s+'T00:00:00Z',end:e+'T23:59:59Z',remove_user_id:rem||null,add_user_id:add||null})}); toast('Override aggiornato','ok'); ocAbsences(); }catch(err){ toast(err.message,'bad'); } return; }
   const body={group_id:gid, start:s+'T00:00:00Z', end:e+'T23:59:59Z', remove_user_id:rem||null, add_user_id:add||null};
   try{ await api('/oncall-overrides',{method:'POST',body:JSON.stringify(body)}); toast('Assenza registrata','ok'); ocAbsences(); }
   catch(err){ toast(err.message,'bad'); }
@@ -2642,12 +2650,44 @@ async function grpAdd(gid){ const uid=$('#mSel_'+gid).value; if(!uid)return;
   try{await api('/groups/'+gid+'/members',{method:'POST',body:JSON.stringify({user_id:uid,position:1})}); toast('Membro aggiunto','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function grpRm(gid,uid){ try{await api('/groups/'+gid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function grpSetActive(gid,uid){ try{await api('/groups/'+gid+'/rotation/set-active',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Reperibile attivato ora','ok');}catch(e){toast(e.message,'bad');} }
+window._shf={}; // gid -> {shifts, view, user}
 async function grpShiftsLoad(gid){ const out=$('#shf_'+gid); out.innerHTML='<span class="mut">Calcolo…</span>';
   try{ const r=await api('/groups/'+gid+'/shifts?days=30');
-    out.innerHTML=(r.shifts||[]).map(s=>`<div class="row small" style="gap:6px;border-bottom:1px solid var(--line);padding:3px 0">
-      <span style="min-width:200px">${new Date(s.start).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})} → ${new Date(s.end).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
-      <span>${(s.oncall||[]).map(esc).join(', ')}</span></div>`).join('')||'<div class="mut">nessun turno con reperibili nei prossimi 30 giorni</div>';
+    window._shf[gid]={shifts:r.shifts||[], view:(window._shf[gid]||{}).view||'list', user:(window._shf[gid]||{}).user||''};
+    grpShiftsRender(gid);
   }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+function grpShiftsRender(gid){
+  const S=window._shf[gid]||{shifts:[],view:'list',user:''};
+  let shifts=S.shifts; if(S.user) shifts=shifts.filter(s=>(s.oncall||[]).includes(S.user));
+  const users=[...new Set(S.shifts.flatMap(s=>s.oncall||[]))].sort();
+  const ctrl=`<div class="row small" style="gap:6px;align-items:center;margin-bottom:6px">
+    <button class="btn ghost small" onclick="grpShiftsView('${gid}','list')" ${S.view==='list'?'style="font-weight:700"':''}>lista</button>
+    <button class="btn ghost small" onclick="grpShiftsView('${gid}','cal')" ${S.view==='cal'?'style="font-weight:700"':''}>calendario</button>
+    <select class="small" onchange="grpShiftsUser('${gid}',this.value)"><option value="">tutti</option>${users.map(u=>`<option value="${u}" ${S.user===u?'selected':''}>${esc(u)}</option>`).join('')}</select></div>`;
+  let body;
+  if(S.view==='cal'){ body=grpShiftsCalendar(shifts); }
+  else { body=shifts.map(s=>`<div class="row small" style="gap:6px;border-bottom:1px solid var(--line);padding:3px 0">
+      <span style="min-width:200px">${new Date(s.start).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})} → ${new Date(s.end).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+      <span>${(s.oncall||[]).map(esc).join(', ')}</span></div>`).join('')||'<div class="mut">nessun turno</div>'; }
+  $('#shf_'+gid).innerHTML=ctrl+body;
+}
+function grpShiftsView(gid,v){ (window._shf[gid]=window._shf[gid]||{}).view=v; grpShiftsRender(gid); }
+function grpShiftsUser(gid,u){ (window._shf[gid]=window._shf[gid]||{}).user=u; grpShiftsRender(gid); }
+function grpShiftsCalendar(shifts){
+  // nomi on-call per giorno (chi è reperibile in quel giorno)
+  const byDay={};
+  shifts.forEach(s=>{ let d=new Date(s.start); d.setHours(0,0,0,0); const end=new Date(s.end);
+    for(let t=new Date(d); t<end; t.setDate(t.getDate()+1)){ const k=t.toISOString().slice(0,10); byDay[k]=byDay[k]||new Set(); (s.oncall||[]).forEach(e=>byDay[k].add(e)); } });
+  const days=Object.keys(byDay).sort(); if(!days.length) return '<div class="mut">nessun turno</div>';
+  // griglia a settimane (lun-dom) dal primo all'ultimo giorno
+  const first=new Date(days[0]+'T00:00:00'); const last=new Date(days[days.length-1]+'T00:00:00');
+  const startGrid=new Date(first); startGrid.setDate(first.getDate()-((first.getDay()+6)%7)); // lunedì
+  let html='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px">'+['Lu','Ma','Me','Gi','Ve','Sa','Do'].map(d=>`<div class="small mut" style="text-align:center">${d}</div>`).join('');
+  for(let t=new Date(startGrid); t<=last; t.setDate(t.getDate()+1)){ const k=t.toISOString().slice(0,10); const names=byDay[k]?[...byDay[k]]:[];
+    const inrange=t>=first; html+=`<div style="border:1px solid var(--line);border-radius:6px;padding:3px;min-height:48px;${inrange?'':'opacity:.4'}">
+      <div class="small mut">${t.getDate()}</div><div style="font-size:11px;line-height:1.2">${names.map(n=>esc(n.split('@')[0])).join('<br>')}</div></div>`; }
+  return html+'</div>';
+}
 async function grpAssignLoad(gid){ const out=$('#asg_'+gid); out.innerHTML='<span class="mut">Carico…</span>';
   const uopts=(window._users||[]).map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('');
   try{ const r=await api('/groups/'+gid+'/assignments');

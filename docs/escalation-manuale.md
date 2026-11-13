@@ -73,7 +73,7 @@ per-tipo → gruppo di default**.
   Ogni gruppo ha anche un **URL iCal** proprio (abbonamento calendario dei turni del gruppo).
 - **Turni calcolati (30 giorni)**: mostra il **calendario finale** del gruppo — chi è reperibile e
   quando nei prossimi 30 giorni, applicando rotazione, copertura, override, assegnazioni e
-  pianificazioni temporanee.
+  pianificazioni temporanee. Vista **lista** o **calendario** (griglia mensile) + **filtro per persona**.
 
 ### 2.3 Copertura · handoff · Slack (menu ⚙ sul gruppo)
 - **Copertura**: *24/7* oppure *solo fasce orarie* (es. 20:00–08:00) nei giorni scelti. Fuori fascia
