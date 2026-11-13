@@ -88,9 +88,11 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,va
 .card-h{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px}
 .card-b{padding:18px}
 .grid{display:grid;gap:14px}
-.g2{grid-template-columns:repeat(2,1fr)} .g3{grid-template-columns:repeat(3,1fr)} .g4{grid-template-columns:repeat(4,1fr)}
+.g2{grid-template-columns:repeat(2,1fr)} .g3{grid-template-columns:repeat(3,1fr)} .g4{grid-template-columns:repeat(4,1fr)} .g5{grid-template-columns:repeat(5,1fr)}
+@media(max-width:1000px){.g5{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:900px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:620px){.g2,.g3,.g4{grid-template-columns:1fr}}
+@media(max-width:620px){.g2,.g3,.g4,.g5{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:420px){.g5{grid-template-columns:1fr}}
 
 /* ---- mappa / piantine: layout responsive (map + pannello laterale) ---- */
 .map-grid{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;align-items:stretch}

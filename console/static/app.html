@@ -566,7 +566,7 @@ const ETYPE_LAB={sos:'SOS / richiesta soccorso',man_down:'Uomo a terra (man down
   sensore_critico:'Sensore critico',allarme_sensore:'Allarme sensore (ThingsBoard)',telemetria:'Telemetria'};
 function etLab(e){ return ETYPE_LAB[e]||e; }
 function fmtD(s){ return s? new Date(s).toLocaleString('it-IT') : '—'; }
-function fmtResp(sec){ if(sec==null) return '—'; return sec>=60 ? Math.floor(sec/60)+'m '+(sec%60)+'s' : sec+'s'; }
+function fmtResp(sec){ sec=Number(sec); if(!isFinite(sec)) return '—'; return sec>=60 ? Math.floor(sec/60)+'m '+Math.round(sec%60)+'s' : Math.round(sec)+'s'; }
 async function vReport(v){
   const mods=await api('/modules').catch(()=>[]);
   const active=new Set((mods||[]).filter(m=>m.state==='attivo').map(m=>m.code));
@@ -626,7 +626,7 @@ async function runAlarmReport(){
           <button class="btn ghost small" onclick="downloadFile('/reports/alarms.csv?${q}','allarmi.csv')">CSV</button>
           <button class="btn ghost small" onclick="downloadFile('/reports/alarms.txt?${q}','allarmi.txt')">TXT</button>
           <button class="btn small" onclick="pdfAlarms()">PDF</button></div></div>
-        <div class="pad"><div class="row" style="gap:20px;flex-wrap:wrap">
+        <div class="pad"><div class="grid g5" style="gap:14px">
           ${kpi('alert','Totale',sm.totale)}${kpi('alert','Critici',sm.critici)}${kpi('clipboard','Aperti',sm.aperti)}${kpi('receipt','Presi in carico',sm.presi_in_carico+'/'+sm.totale)}${kpi('clock','Tempo medio risposta',fmtResp(sm.ack_medio_s))}</div>
           <div class="small mut" style="margin-top:8px">Periodo ${fmtD(d.from)} — ${fmtD(d.to)}</div></div>
         <table class="table"><thead><tr><th>Aperto il</th><th>Tipo</th><th>Stato</th><th>Preso in carico</th><th>Risposta</th><th>Chiuso il</th><th>Sede</th><th>Assegnato a</th><th>Esito</th></tr></thead><tbody>${rows}</tbody></table></div>`;

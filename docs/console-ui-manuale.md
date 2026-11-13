@@ -141,6 +141,13 @@ altrimenti mostra il testo italiano (fallback sicuro). Sono tradotte le **scherm
 vengono migrate. Per aggiungere una lingua/stringa: inserire la chiave in `I18N.en` (in
 `app.html`) e avvolgere il testo con `t('chiave','testo IT')`.
 
+## 8. Report
+
+Le statistiche in testa al report allarmi (**Totale, Critici, Aperti, Presi in carico,
+Tempo medio risposta**) sono disposte su una **griglia a 5 colonne** che riempie tutta la
+larghezza (si impila progressivamente su schermi stretti), invece di essere addossate a
+sinistra. Il "Tempo medio risposta" mostra "—" quando il dato non è disponibile.
+
 ## Note tecniche
 - File coinvolti: `console/static/app.html`, `console/static/app.js`, `console/static/app.css`.
 - Avvio console: dalla cartella `console/`, `./console.exe` (o `go run .`) → `:8081`,
