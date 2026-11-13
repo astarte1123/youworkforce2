@@ -1846,7 +1846,13 @@ function devEdit(d){
          <a class="btn ghost small" href="#" onclick="devReportCsv('${d.id}','trips');return false">⬇ CSV viaggi</a></div>
        <div id="devRepOut" class="small" style="margin-top:6px"></div>
        <div class="spread" style="margin-top:10px"><b class="small">Contatori (odometro / ore)</b><button class="btn ghost small" onclick="devAccum('${d.id}')">mostra</button></div>
-       <div id="devAccOut" class="small mut" style="margin-top:4px"></div></div>`:''}
+       <div id="devAccOut" class="small mut" style="margin-top:4px"></div>
+       <div class="spread" style="margin-top:10px"><b class="small">Telemetria IO (ultimo fix)</b><button class="btn ghost small" onclick="devTelemetry('${d.id}')">mostra</button></div>
+       <div id="devTelemOut" class="small mut" style="margin-top:4px"></div>
+       <div style="margin-top:10px"><b class="small">Comando GPRS diretto (Teltonika)</b>
+         <div class="row" style="gap:6px;margin-top:4px"><input id="gprsCmd" class="grow small" placeholder="es. getinfo · getver · cpureset"><button class="btn ghost small" onclick="devGprs('${d.id}')">invia</button></div>
+         <div class="small mut" style="margin-top:2px">Richiede il device connesso via edge TCP nativo. Attende la risposta (max 5s).</div>
+         <div id="gprsOut" class="small" style="margin-top:4px"></div></div></div>`:''}
     <div class="cfg-msg small"></div></div>`);
   if(!isNew && d.last_lat!=null && d.last_lon!=null) loadAddr(d.last_lat,d.last_lon);
   if(!isNew && d.source==='traccar'){ devCmds(d.id); devCmdTypes(d.id); }
@@ -1888,6 +1894,17 @@ async function devCmdTypes(id){ const el=$('#cmdBtns'); if(!el)return;
     (T||[]).forEach(t=>{ const ty=t.type||t; if(!ty||seen.has(ty))return; seen.add(ty);
       el.insertAdjacentHTML('beforeend',`<button class="btn ghost small" onclick="devCmd('${id}','${esc(ty)}')">${esc(known[ty]||ty)}</button>`); });
   }catch(e){} }
+async function devTelemetry(id){ const out=$('#devTelemOut'); if(!out)return; out.innerHTML='Carico…';
+  try{ const P=await api('/devices/'+id+'/positions?limit=1'); const p=(Array.isArray(P)?P:[])[0];
+    const a=(p&&p.attributes)||{}; const io=a.io||{};
+    const named=Object.entries(a).filter(([k])=>k!=='io'&&a[k]!=null).map(([k,v])=>`<span class="tag">${esc(k)}: ${esc(String(v))}</span>`).join(' ');
+    const raw=Object.entries(io).map(([k,v])=>`<span class="chip">IO ${esc(k)}=${esc(String(v))}</span>`).join(' ');
+    out.innerHTML=(named||raw)?(named+(raw?'<div style="margin-top:4px">'+raw+'</div>':'')):'<span class="mut">nessuna telemetria registrata</span>';
+  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function devGprs(id){ const cmd=($('#gprsCmd').value||'').trim(); const out=$('#gprsOut'); if(!cmd)return; out.innerHTML='<span class="mut">invio…</span>';
+  try{ const r=await api('/devices/'+id+'/gprs-command',{method:'POST',body:JSON.stringify({command:cmd})});
+    out.innerHTML='<span style="color:var(--ok,green)">risposta: '+esc(r.response||'(vuota)')+'</span>'; toast('Comando eseguito','ok');
+  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; toast(e.message,'bad'); } }
 function _repRange(){ const to=new Date(); const from=new Date(Date.now()-7*864e5);
   return {from:from.toISOString().slice(0,19)+'Z', to:to.toISOString().slice(0,19)+'Z'}; }
 async function devReport(id,kind){ const out=$('#devRepOut'); if(!out)return; out.innerHTML='<span class="mut">Carico…</span>';

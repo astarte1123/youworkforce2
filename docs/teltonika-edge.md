@@ -61,7 +61,14 @@ Codec8 con ACK record, posizione ingerita (ultima posizione aggiornata), **telem
 in attributes** (movement/temp/raw io), Codec8 Extended con ACK, event IO mappato → incidente.
 Regressione verde (loneworker 15, patrols 14, iot-mgmt 8).
 
+## Console
+
+Nel dettaglio dispositivo (Dispositivi & app → device con sorgente *traccar*): pannello
+**«Telemetria IO (ultimo fix)»** (mostra gli attributi IO dell'ultima posizione: nomi noti + mappa
+grezza) e **«Comando GPRS diretto (Teltonika)»** (campo comando → `POST .../gprs-command`, mostra la
+risposta del device o l'errore se non connesso).
+
 ## Prossimo possibile
 
-Onboarding kit (DOK) che espone host:porta TCP nel riepilogo device, visualizzazione telemetria IO
-e invio comandi GPRS dalla console.
+Onboarding kit (DOK) che espone host:porta TCP nel riepilogo device; comandi GPRS predefiniti
+(bottoni) oltre al campo libero.
