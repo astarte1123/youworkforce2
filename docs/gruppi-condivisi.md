@@ -63,5 +63,5 @@ CRUD, add/del membri, import nel gruppo allarme (+ idempotenza), isolamento acme
 ## Roadmap
 
 - **Fase 2 — Capability layer**: FATTA → [capability-layer.md](capability-layer.md) (mig 0073).
-- **Fase 3 — Ruoli personalizzati per tenant** (progettata, non fatta): ogni tenant definisce
-  ruoli propri = insiemi di capability, assegnabili a utenti e/o a questi gruppi di persone.
+- **Fase 3 — Ruoli personalizzati per tenant**: FATTA → [custom-roles.md](custom-roles.md)
+  (mig 0074); ruoli custom = bundle di capability assegnabili a utenti e/o a questi gruppi.

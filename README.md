@@ -40,6 +40,7 @@ sicurezza / rollback. L'escalation è condivisa da tutti i moduli che generano a
 - [`docs/thingsboard-manuale.md`](docs/thingsboard-manuale.md) — ThingsBoard (IoT)
 - [`docs/gruppi-condivisi.md`](docs/gruppi-condivisi.md) — Gruppi di persone condivisi (primitiva comune, import nei gruppi allarme)
 - [`docs/capability-layer.md`](docs/capability-layer.md) — Capability layer (permessi per ruolo, override per-tenant)
+- [`docs/custom-roles.md`](docs/custom-roles.md) — Ruoli personalizzati per tenant (bundle di capability per utenti/gruppi)
 - `contracts/` — contratti di progetto (fasi, decisioni, stato)
 
 ## Non implementato (backlog, dichiarato)
