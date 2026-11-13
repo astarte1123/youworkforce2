@@ -626,6 +626,13 @@ function alarmPopup(a){
     ${a.person?('👤 '+esc(a.person)+'<br>'):'<span style="color:#888">persona non associata al device</span><br>'}
     <a href="#" onclick="openIncident('${a.id}');return false">Apri incidente</a>`;
 }
+// Riepilogo compatto mostrato come TOOLTIP sul pin (meno invasivo del popup) quando si seleziona
+// un allarme dall'elenco. Il popup completo resta disponibile cliccando direttamente il pin.
+function alarmTip(a){
+  const emo = a.etype==='sos'?'🆘':a.etype==='man_down'?'🧍':'⚠️';
+  return `<b>${emo} ${esc(a.label)}</b><br><span style="opacity:.75">${new Date(a.opened_at).toLocaleString('it-IT')} · ${a.state==='chiuso'?'🟢 chiuso':'🔴 aperto'}</span>`
+    + (a.person?`<br>👤 ${esc(a.person)}`:'') + (a.device?`<br>📟 ${esc(a.device)}`:'');
+}
 async function renderAlarms(admin){
   admin = admin!==undefined?admin:can(['tenant_admin']); window._mapAdmin=admin;
   $('#mapSub').textContent='allarmi georeferenziati · indoor/outdoor · aree';
@@ -653,21 +660,49 @@ async function loadAlarmsOnMap(){
     const al=d.alarms||[]; const pts=[]; const noGeo=[];
     al.forEach(a=>{
       if(a.lat==null||a.lon==null){ noGeo.push(a); return; }
-      const m=L.marker([a.lat,a.lon],{icon:alarmIcon(a)}).bindPopup(alarmPopup(a));
+      const m=L.marker([a.lat,a.lon],{icon:alarmIcon(a)}).bindPopup(alarmPopup(a))
+        .bindTooltip(alarmTip(a),{direction:'top',offset:[0,-12],opacity:1,className:'alarm-tip'});
       AMARK[a.id]=m; m.addTo(ALARMLAYER); pts.push([a.lat,a.lon]);
     });
     if(pts.length) MAP.fitBounds(pts,{padding:[40,40],maxZoom:16});
-    const row=a=>`<div class="clk" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px" onclick="focusAlarm('${a.id}',${a.lat},${a.lon})">
+    const row=a=>`<div class="clk alarm-row" data-aid="${a.id}" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px" onclick="focusAlarm('${a.id}',${a.lat},${a.lon})">
       <div class="spread"><b class="small">${esc(a.label)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString('it-IT')}</span></div>
       <div class="small">${a.indoor?'🏭 indoor · '+esc(a.zone||'zona non mappata'):'📍 outdoor'} · ${a.state==='chiuso'?'🟢 chiuso':'🔴 aperto'}</div>
       <div class="small mut">${a.device?('📟 '+esc(a.device)):''}${a.person?(' · 👤 '+esc(a.person)):''}</div></div>`;
     side.innerHTML=`<h2 style="margin-bottom:4px">Allarmi (${al.length})</h2>${ALARM_LEGEND}
-      ${noGeo.length?`<div class="small" style="color:var(--bad);margin:6px 0">⚠ ${noGeo.length} indoor senza posizione (beacon non mappato) — registra la zona in “⚙ Zone indoor”:</div>${noGeo.map(a=>`<div style="border:1px dashed var(--bad);border-radius:8px;padding:8px;margin-bottom:6px"><div class="spread"><b class="small">${esc(a.label)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString('it-IT')}</span></div><div class="small">beacon <span class="mono">${esc(a.beacon_uid||'—')}</span> · ${a.device?esc(a.device):''}</div></div>`).join('')}<hr style="border:none;border-top:1px solid var(--line);margin:8px 0">`:''}
+      ${noGeo.length?`<div class="small" style="color:var(--bad);margin:6px 0">⚠ ${noGeo.length} indoor senza posizione (beacon non mappato) — registra la zona in “⚙ Zone indoor”:</div>${noGeo.map(a=>`<div class="alarm-row" data-aid="${a.id}" onclick="focusAlarm('${a.id}',null,null)" style="cursor:pointer;border:1px dashed var(--bad);border-radius:8px;padding:8px;margin-bottom:6px"><div class="spread"><b class="small">${esc(a.label)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString('it-IT')}</span></div><div class="small">beacon <span class="mono">${esc(a.beacon_uid||'—')}</span> · ${a.device?esc(a.device):''} · <span class="mut">senza posizione GPS</span></div></div>`).join('')}<hr style="border:none;border-top:1px solid var(--line);margin:8px 0">`:''}
       ${al.filter(a=>a.lat!=null).map(row).join('')||(noGeo.length?'':'<div class="small mut">Nessun allarme nel periodo.</div>')}
       ${geofencePanel(window._ALARM_GF||[], window._mapAdmin)}`;
   }catch(err){ side.innerHTML='<div class="small" style="color:var(--bad)">'+esc(err.message)+'</div>'; }
 }
-function focusAlarm(id,lat,lon){ if(lat==null||lat==='null')return; MAP.setView([lat,lon],18); const m=AMARK[id]; if(m)m.openPopup(); }
+let _alarmHi=null, _alarmHiT=null, _alarmTipM=null;
+function _selAlarmRow(id){
+  try{ $$('#mapSide .alarm-row').forEach(r=>{ r.classList.remove('sel'); r.style.borderColor=''; r.style.boxShadow=''; });
+    const el=document.querySelector('#mapSide .alarm-row[data-aid="'+id+'"]');
+    if(el){ el.classList.add('sel'); el.style.borderColor='var(--brand)'; el.style.boxShadow='0 0 0 2px var(--brand-soft)'; el.scrollIntoView({block:'nearest'}); }
+  }catch(e){}
+}
+// Click su una riga dell'elenco allarmi: centra la mappa, evidenzia il pin con un anello pulsante
+// e mostra un TOOLTIP compatto sul pin (NON il popup, che resta disponibile cliccando il pin).
+// L'anello è animato in JS (niente dipendenza dal CSS, potenzialmente in cache).
+// Allarmi senza GPS: apre direttamente l'incidente.
+function focusAlarm(id,lat,lon){
+  _selAlarmRow(id);
+  if(lat==null||lat==='null'||lat===''||isNaN(+lat)){ toast('Allarme senza posizione GPS — apro l\'incidente','mut'); openIncident(id); return; }
+  lat=+lat; lon=+lon;
+  MAP.setView([lat,lon], Math.max(MAP.getZoom()||0,17));
+  const m=AMARK[id];
+  if(_alarmTipM&&_alarmTipM!==m){ try{_alarmTipM.closeTooltip();}catch(e){} }
+  if(m){ if(m.setZIndexOffset)m.setZIndexOffset(1000); try{m.openTooltip();}catch(e){} _alarmTipM=m; }
+  // anello di evidenziazione temporaneo, raggio animato in JS
+  if(_alarmHi){ try{MAP.removeLayer(_alarmHi);}catch(e){} _alarmHi=null; }
+  if(_alarmHiT){ clearInterval(_alarmHiT); }
+  _alarmHi=L.circleMarker([lat,lon],{radius:10,color:'#2563eb',weight:3,opacity:.95,fill:false,interactive:false}).addTo(MAP);
+  let r=10, grow=true, ticks=0;
+  _alarmHiT=setInterval(()=>{ r+=grow?3:-3; if(r>=28)grow=false; if(r<=10)grow=true;
+    try{_alarmHi.setRadius(r);}catch(e){}
+    if(++ticks>42){ clearInterval(_alarmHiT); _alarmHiT=null; if(_alarmHi){ try{MAP.removeLayer(_alarmHi);}catch(e){} _alarmHi=null; } } },55);
+}
 // ---- Modalità DISPOSITIVI (live + geofence) ----
 async function renderDevices(admin){
   $('#mapSub').textContent='dispositivi live · geofence · presenza';
