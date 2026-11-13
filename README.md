@@ -27,8 +27,10 @@ sicurezza / rollback. L'escalation è condivisa da tutti i moduli che generano a
 - **Interventi pianificati (Fase 3)**: ordini di lavoro con **finestra temporale** e **priorità**, vista **Agenda** (pianificati) + "da pianificare", **modifica/ripianifica** con concorrenza ottimistica (versione). Orario e priorità mostrati anche nella PWA. Prova: `qa/interventi-e2e.sh` (8/8).
 - **Forza lavoro e turni (Fase 2)**: **squadre** (team + membri), **turni pianificati** (pianificatore crea, lavoratore conferma, annullo/elimina) distinti dai turni reali timbrati, **reperibilità** (on-call) per utente. RLS per tenant, RBAC pianificatore/admin. Prova: `qa/workforce-e2e.sh` (14/14). Turni pianificati visibili e confermabili anche dalla PWA lavoratore.
 - **UI**: design system completo (chiaro/scuro, responsive), console SPA (dashboard, centrale live con assegna/note/check-in, ordini, consuntivi, **turni**, **dispositivi**, **gruppi allarme**, **utenti e sedi/squadre**, moduli con **config strumenti**) con drawer e toast; PWA lavoratore mobile-first con turni pianificati.
+- **Usabilità console**: **combo con ricerca** su tutti i menu a tendina (app + superadmin), **ricerca full-text** in Dispositivi e in Centrale, Centrale con **tab Aperti/Chiusi/Tutti + paginazione**, Mappa divisa in **Mappa allarmi** e **Mappa dispositivi** (geofence su entrambe), selezione allarme dall'elenco con evidenziazione sul pin, e **allarme live** (popup + suono + riga lampeggiante) all'apertura di un incidente da dispositivo. Guida: [`docs/console-ui-manuale.md`](docs/console-ui-manuale.md).
 
 ## Documentazione
+- [`docs/console-ui-manuale.md`](docs/console-ui-manuale.md) — Console: usabilità (ricerca combo, filtri, mappe, Centrale, allarme live)
 - [`docs/escalation-manuale.md`](docs/escalation-manuale.md) — Reperibilità e notifiche (motore nativo, parità GoAlert)
 - [`docs/traccar-manuale.md`](docs/traccar-manuale.md) — Traccar (badge/GPS)
 - [`docs/thingsboard-manuale.md`](docs/thingsboard-manuale.md) — ThingsBoard (IoT)

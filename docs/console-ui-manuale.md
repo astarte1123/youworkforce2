@@ -1,0 +1,105 @@
+# Console YouWorkforce — Guida all'interfaccia
+
+Questa guida descrive le funzionalità di usabilità della console tenant (`app.html`,
+`http://localhost:8081`) e, dove indicato, della console superadmin (`superadmin.html`).
+Riguarda solo il front-end: nessuna modifica al backend, nessuna migration.
+
+> Dopo un aggiornamento della console: **ricarica forzata** della pagina (`Ctrl+Shift+R`).
+> `app.html` è servito `no-store` (sempre fresco), ma `app.js`/`app.css` sono cacheabili dal browser.
+
+---
+
+## 1. Ricerca nelle combo (tutta la piattaforma)
+
+Ogni menu a tendina (`<select>`) della console — sia app tenant sia superadmin — è una
+**combo con ricerca**: ci si scrive dentro e le opzioni vengono filtrate.
+
+- **Filtro multi-parola** in AND (es. `teltonika sos` mostra solo le opzioni che contengono
+  entrambe le parole).
+- **Tastiera**: ↑/↓ naviga, **Invio** seleziona, **Esc** chiude. Click fuori chiude.
+- Mostra "nessun risultato" se niente corrisponde.
+- Il `<select>` nativo resta la **sorgente di verità**: il valore selezionato e tutte le
+  logiche collegate non cambiano.
+
+Implementazione: enhancer unico in `console/static/app.js` (caricato da entrambe le pagine),
+applicato automaticamente a ogni render. Nessuna libreria esterna. Per escludere un singolo
+select si può aggiungere l'attributo `data-nocombo`.
+
+---
+
+## 2. Dispositivi & App — ricerca full-text
+
+Sopra la tabella dispositivi c'è un **unico campo di ricerca** che filtra su tutte le colonne:
+**ID esterno, Modello** (produttore/nome/codice, + "generico"), **Etichetta, Assegnato a**
+(asset o email), **Capacità, Ultimo contatto** (data o "mai"), **Onboarding**
+(attivo/attesa/registrato/configurato/off).
+
+- Multi-parola in AND, filtro istantaneo (client-side), con **conteggio** live ("12 di 48")
+  e messaggio "nessun risultato".
+
+---
+
+## 3. Mappe separate: Allarmi e Dispositivi
+
+La vecchia pagina **Mappa** (con toggle interno) è stata divisa in due voci di menu:
+
+- **Mappa allarmi** (gruppo *Sicurezza lavoratore*): solo incidenti georeferenziati
+  (indoor/outdoor, aree).
+- **Mappa dispositivi** (voce condivisa fra *Sicurezza lavoratore* e *Lavoro sul campo*):
+  dispositivi live, geofence, presenza. È condivisa perché i device (es. Teltonika GH-5200)
+  generano allarmi SOS/man-down **e** sono asset di campo.
+
+Su entrambe le mappe (e sulle Piantine) resta attiva la **gestione completa delle aree
+geofence** (disegno ⬡, rinomina, colore, modifica forma, associa device/eventi, elimina) —
+riservata ai `tenant_admin`.
+
+### Selezione allarme dall'elenco
+Nella Mappa allarmi, cliccando una riga dell'elenco a destra:
+- la mappa si **centra/zooma** sul pin e lo evidenzia con un **anello pulsante** (animato in JS);
+- appare un **tooltip compatto** sul pin (tipo, orario, stato, persona, device) — non il popup
+  completo, che resta disponibile cliccando direttamente il pin;
+- la riga viene **selezionata** nell'elenco;
+- gli allarmi **senza coordinate GPS** (beacon non mappato) sono comunque cliccabili e aprono
+  direttamente l'incidente.
+
+---
+
+## 4. Centrale allarmi — ricerca, tab, paginazione
+
+La Centrale può contenere moltissimi incidenti. Per tenerla ordinata:
+
+- **Tab segmentati**: **Aperti** · **Chiusi** · **Tutti**, ciascuno con il **conteggio**.
+  Default = *Aperti* (gli attuabili).
+- **Ricerca full-text** accanto ai tab: filtra nel tab corrente su **Tipo** (+ etichetta),
+  **Sede, Assegnato, Stato** (+ sinonimi), **Priorità** (numero + livello bassa/media/alta/critica),
+  **Correlazione**.
+- **Paginazione** 25/pagina: `‹ Prec · Pagina N/K · Succ ›` + "Mostrando X–Y di Z".
+- **Ordinamento**: gli aperti per priorità decrescente; Chiusi/Tutti nell'ordine del backend.
+- Tornando sulla pagina, **ricorda** tab e ricerca.
+
+Paginazione e filtro sono client-side; per volumi enormi (decine di migliaia) si potrà spostare
+la paginazione sul server in futuro.
+
+---
+
+## 5. Centrale allarmi — allarme live (popup + suono + riga lampeggiante)
+
+Quando un **dispositivo apre un incidente** (evento SSE `incident_opened`), oltre agli eventi
+già esistenti (toast di notifica, escalation/notifiche lato backend — **invariati**):
+
+- **Suono**: beep d'allarme a tre impulsi, generato via Web Audio (nessun file esterno).
+  Il browser sblocca l'audio dopo la prima interazione dell'operatore (policy autoplay).
+- **Popup**: modale rosso "🚨 NUOVO ALLARME" con tipo, correlazione e ora. Se arrivano più
+  allarmi mentre è aperto, li **accumula** (badge "N allarmi"). Pulsanti **Chiudi** e
+  **Vai alla Centrale**; cliccando una riga si apre l'incidente. Appare da qualsiasi pagina.
+- **Riga lampeggiante**: gli incidenti ancora **aperti** (`aperto`, non ancora presi in carico)
+  hanno la riga **evidenziata e pulsante** (sfondo rosso, barra laterale, tipo in rosso),
+  distinta dalle altre. Smette quando l'allarme passa a *preso in carico* o *chiuso*.
+  Rispetta `prefers-reduced-motion` (resta evidenziata senza lampeggio).
+
+---
+
+## Note tecniche
+- File coinvolti: `console/static/app.html`, `console/static/app.js`, `console/static/app.css`.
+- Avvio console: dalla cartella `console/`, `./console.exe` (o `go run .`) → `:8081`,
+  reverse-proxy `/api` verso il core su `:8080`.

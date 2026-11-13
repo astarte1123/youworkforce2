@@ -238,13 +238,53 @@ function connectSSE(){
   SSE.onopen =()=>{ if(w())w().innerHTML='<span class="live on">live</span>'; };
   SSE.onerror=()=>{ if(w())w().innerHTML='<span class="live off">flusso interrotto</span>'; };
   SSE.onmessage=e=>{ let d={};try{d=JSON.parse(e.data)}catch(_){}
-    if(d.type==='incident_opened') toast('Nuovo incidente: '+(d.etype||'')+' — '+(d.correlation||'').slice(0,8),'bad');
+    if(d.type==='incident_opened'){ toast('Nuovo incidente: '+(d.etype||'')+' — '+(d.correlation||'').slice(0,8),'bad'); incidentAlert(d); }
     if(d.type==='device_position' && typeof mapLivePos==='function') mapLivePos(d.device_id,d.lat,d.lon);
     const k=location.hash.replace('#/','')||'dashboard';
     if(d.type==='presence' && k==='mappa') route();
     if(k==='centrale'||k==='dashboard') route();
   };
 }
+// ---- Allarme: suono + popup quando un dispositivo apre un incidente ----
+// Suono generato con Web Audio (nessun file esterno, CSP-safe). Il contesto va "sbloccato" da
+// un'interazione utente (policy autoplay): lo riattiviamo al primo gesto.
+let _almCtx=null;
+function _almAudio(){ try{ if(!_almCtx) _almCtx=new (window.AudioContext||window.webkitAudioContext)(); if(_almCtx.state==='suspended')_almCtx.resume(); }catch(e){} return _almCtx; }
+document.addEventListener('pointerdown',_almAudio);
+function alarmBeep(){ const ctx=_almAudio(); if(!ctx)return;
+  try{ const now=ctx.currentTime;
+    [0,0.26,0.52].forEach((t,i)=>{ const o=ctx.createOscillator(), g=ctx.createGain();
+      o.type='square'; o.frequency.value=(i%2)?660:960; o.connect(g); g.connect(ctx.destination);
+      g.gain.setValueAtTime(0.0001,now+t); g.gain.exponentialRampToValueAtTime(0.3,now+t+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001,now+t+0.22); o.start(now+t); o.stop(now+t+0.24); });
+  }catch(e){} }
+// Popup allarme: un solo modale che accumula gli allarmi arrivati mentre è aperto.
+function incidentAlert(d){
+  alarmBeep();
+  const label=(typeof etLab==='function'?etLab(d.etype):d.etype)||'Allarme';
+  const corr=(d.correlation||'').slice(0,8);
+  let m=document.getElementById('almModal');
+  if(!m){
+    m=document.createElement('div'); m.id='almModal';
+    m.style.cssText='position:fixed;inset:0;z-index:3000;display:flex;align-items:flex-start;justify-content:center;padding:8vh 16px 16px;background:rgba(0,0,0,.45)';
+    m.innerHTML=`<div class="card" style="max-width:460px;width:100%;overflow:hidden;border:2px solid var(--bad);box-shadow:var(--sh-lg,0 10px 40px rgba(0,0,0,.3))">
+      <div class="alm-hd" style="background:var(--bad);color:#fff;padding:12px 16px;font-weight:800;display:flex;align-items:center;gap:8px;font-size:15px">
+        🚨 <span>NUOVO ALLARME</span><span id="almN" class="chip" style="margin-left:auto;background:#fff;color:var(--bad);border:none"></span></div>
+      <div class="card-b"><div id="almList" class="col" style="gap:8px;max-height:48vh;overflow:auto"></div>
+        <div class="row" style="gap:8px;justify-content:flex-end;margin-top:12px">
+          <button class="btn ghost" onclick="almClose()">Chiudi</button>
+          <button class="btn bad" onclick="location.hash='#/centrale';almClose()">Vai alla Centrale</button></div></div></div>`;
+    m.addEventListener('mousedown',e=>{ if(e.target===m) almClose(); });
+    document.body.appendChild(m);
+  }
+  const list=m.querySelector('#almList');
+  const row=document.createElement('div'); row.className='card pad'; row.style.cssText='border-left:4px solid var(--bad);cursor:pointer';
+  row.innerHTML=`<b>${esc(label)}</b><div class="small mut">correlazione ${esc(corr||'—')} · ${new Date().toLocaleTimeString('it-IT')}</div>`;
+  if(d.incident_id) row.onclick=()=>{ almClose(); openIncident(d.incident_id); };
+  list.prepend(row);
+  const n=list.children.length, nb=m.querySelector('#almN'); if(nb)nb.textContent=(n>1?n+' allarmi':'1 allarme');
+}
+function almClose(){ const m=document.getElementById('almModal'); if(m)m.remove(); }
 
 // ---------------- Dashboard ----------------
 async function vDashboard(v){
@@ -342,7 +382,7 @@ function cenRender(){
   if(CEN.page>pages)CEN.page=pages;
   const start=(CEN.page-1)*CEN.size, pageItems=list.slice(start,start+CEN.size);
   const body=$('#incBody'), empty=$('#incEmpty'), pager=$('#incPager');
-  body.innerHTML=pageItems.map(i=>`<tr class="clk" data-inc="${i.id}">
+  body.innerHTML=pageItems.map(i=>`<tr class="clk${i.state==='aperto'?' inc-live':''}" data-inc="${i.id}">
     <td><b>${esc(i.etype)}</b></td><td>${esc(i.site||'—')}</td><td class="small">${esc(i.assignee||'—')}</td><td>${chip(i.state)}</td>
     <td class="sev pri${i.priority}">${'●'.repeat(i.priority||0)}</td>
     <td class="mono small mut">${esc((i.correlation||'').slice(0,8))}</td></tr>`).join('');
