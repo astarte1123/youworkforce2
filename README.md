@@ -42,6 +42,7 @@ sicurezza / rollback. L'escalation è condivisa da tutti i moduli che generano a
 - [`docs/capability-layer.md`](docs/capability-layer.md) — Capability layer (permessi per ruolo, override per-tenant)
 - [`docs/custom-roles.md`](docs/custom-roles.md) — Ruoli personalizzati per tenant (bundle di capability per utenti/gruppi)
 - [`docs/ronde-manuale.md`](docs/ronde-manuale.md) — Ronde e punzonature (modulo giri: checkpoint QR/NFC/beacon/GPS)
+- [`docs/teltonika-edge.md`](docs/teltonika-edge.md) — Edge nativo Teltonika (TCP Codec8/8E, senza Traccar)
 - `contracts/` — contratti di progetto (fasi, decisioni, stato)
 
 ## Non implementato (backlog, dichiarato)

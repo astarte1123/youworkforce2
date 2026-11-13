@@ -2,6 +2,7 @@ mod state; mod clock; mod auth; mod db; mod goalert; mod worker; mod api; mod cr
 #[allow(dead_code)] mod escalation; // #4 FASE 0: libreria pura (non ancora wirata; GoAlert resta il motore)
 mod delivery; // #4 FASE 2: adapter di consegna in ombra (sink di prova; GoAlert resta il motore)
 mod modules; // #3 FASE 1: registry manifest moduli (dipendenze + metadata)
+mod teltonika; // edge nativo Teltonika Codec8/8E su TCP (decode-edge senza Traccar)
 
 use std::sync::Arc;
 use axum::{routing::{get, post, delete}, Router, Json};
@@ -132,6 +133,7 @@ async fn run() -> anyhow::Result<()> {
     }
 
     tokio::spawn(worker::run(st.clone()));
+    tokio::spawn(teltonika::serve(st.clone())); // edge nativo Teltonika (TCP Codec8/8E)
 
     // Multi-instance live events: re-broadcast Postgres NOTIFY('yw_events') into the
     // local SSE bus, so SSE clients on ANY core instance receive events from all.

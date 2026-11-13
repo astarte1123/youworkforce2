@@ -5923,6 +5923,43 @@ pub async fn ingest_osmand(
     Ok(Json(json!({"ok":true,"external_id":ext,"position":position,"incident":incident})))
 }
 
+// ---- Teltonika edge nativo (Codec8/8E su TCP): helper d'ingest riusabili ----
+/// Risolve device+tenant+source dall'IMEI (= external_id). owner_pool (bypassa RLS).
+pub async fn teltonika_resolve(st: &AppState, imei: &str) -> Option<(Uuid, Uuid, String)> {
+    let row = sqlx::query("SELECT id, tenant_id, source FROM app.devices WHERE external_id=$1 LIMIT 1")
+        .bind(imei).fetch_optional(&st.owner_pool).await.ok().flatten()?;
+    Some((row.get::<Uuid,_>("tenant_id"), row.get::<Uuid,_>("id"),
+          row.try_get::<String,_>("source").unwrap_or_else(|_| "traccar".into())))
+}
+/// Almeno un modulo dispositivi attivo sul tenant?
+pub async fn any_device_module(st: &AppState, tid: Uuid) -> bool {
+    for m in DEVICE_MODS { if module_active(st, tid, m).await { return true; } }
+    false
+}
+/// Ingest di un record AVL Teltonika decodificato: posizione (pipeline nativa) + eventuale allarme.
+#[allow(clippy::too_many_arguments)]
+pub async fn teltonika_ingest_one(st: &AppState, tid: Uuid, ext: &str, source: &str, ts_rfc: &str,
+    lat: f64, lon: f64, speed: Option<f64>, course: Option<f64>, battery: Option<f64>, alarm: Option<String>) {
+    if source == "traccar" {
+        let pos = json!({"latitude":lat,"longitude":lon,"speed":speed,"course":course,
+            "attributes":{"batteryLevel":battery},
+            "id": format!("telt-{}-{}", ext, ts_rfc), "fixTime": ts_rfc, "source": source});
+        let _ = process_traccar_position(st, tid, &pos, ext).await;
+    }
+    if let Some(al) = alarm {
+        let amap = tool_config(st, tid, "traccar", "alarm_map").await;
+        let etype = map_traccar_etype(&amap, "", Some(&al), battery);
+        let src_evt = format!("telt-evt-{}", Uuid::new_v4());
+        let corr = format!("telt-{}-{}", ext, &Uuid::new_v4().to_string()[..8]);
+        let _ = persist_ingest(st, tid, Normalized{
+            source: source.into(), source_event: src_evt.clone(), idem: src_evt, etype,
+            device_external_id: Some(ext.into()), site_name: None,
+            lat: Some(lat), lon: Some(lon), accuracy_m: None, correlation: corr,
+            payload: json!({"channel":"teltonika","alarm":al,"lat":lat,"lon":lon,"battery":battery,"occurred_at":ts_rfc}),
+            indoor: false, beacon_uid: None, zone: None }).await;
+    }
+}
+
 /// Pipeline posizione condivisa da webhook (push) e poller API (pull): filtri #7,
 /// storico, ultima posizione, presenza geofence #3, primo-fix->attivo. Idempotente
 /// per (tenant,device,source_id) cosi' push e pull convergono senza duplicare.

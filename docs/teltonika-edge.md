@@ -1,0 +1,53 @@
+# Edge nativo Teltonika — TCP Codec8 / Codec8 Extended
+
+Ricezione **diretta** dai tracker Teltonika (FMB/GH…) sul loro protocollo binario TCP, **senza
+server Traccar** (decode-edge nativo). Completa i canali d'ingest già presenti (OsmAnd/HTTP).
+
+## Protocollo
+
+1. **Handshake IMEI**: il device apre il TCP e invia `[u16 lunghezza][IMEI ASCII]`. Il server
+   risponde **`0x01`** (accetta) se l'IMEI corrisponde all'`external_id` di un **device censito** su
+   un tenant con **almeno un modulo dispositivi attivo**; altrimenti **`0x00`** (rifiuta) e chiude.
+   L'identità è l'IMEI (il protocollo non porta token): si accettano solo IMEI noti.
+2. **Pacchetti AVL**: `[preambolo 4B=0][lunghezza dati 4B][codec 1B][n record 1B] … [n record 1B][CRC16 4B]`.
+   Supportati **Codec8 (`0x08`)** e **Codec8 Extended (`0x8E`)**. Per ogni record si decodificano
+   timestamp (ms), GPS (lon/lat int32 /1e7, altitudine, angolo, satelliti, velocità) ed elemento IO
+   (id evento, set a 1/2/4/8 byte; in 8E id e contatori a 2 byte + sezione NX variabile).
+3. **ACK**: il server risponde con `u32` = numero di record accettati (come da specifica Teltonika).
+
+## Ingest
+
+Ogni record entra nella **pipeline nativa** (la stessa di OsmAnd/HTTP):
+
+- **Posizione** → `process_traccar_position` (storico, ultima posizione, presenza geofence,
+  primo-fix→attivo) per i device con `source='traccar'` (decode-edge).
+- **Batteria** → IO **113** (livello %).
+- **Allarme** → se l'`event IO id` è mappato, `persist_ingest` crea l'incidente (etype via
+  `alarm_map` Traccar; attribuzione temporale dall'orario del record). Mappa di **default**
+  built-in: `1→sos` (DIN1/panico), `236→alarm`, `247→crash`, `246→tow`; override per-tenant
+  possibile via config `teltonika.io_alarm_map`.
+
+## Configurazione
+
+- **Avvio**: variabile `YW_TELTONIKA_PORT` (default **5027**; `off`/`0` disabilita). Il listener
+  parte col core e logga `teltonika edge TCP in ascolto su 0.0.0.0:<porta>`.
+- **Device**: censire il tracker con **`external_id = IMEI`** e `source = traccar`, poi puntare il
+  device (config APN/server Teltonika) a `host:5027`.
+
+## Perimetro e sicurezza
+
+Decode-edge: il perimetro Traccar resta solo la decodifica. Nessun server Traccar richiesto.
+Autenticazione = IMEI censito (nessun IMEI sconosciuto viene accettato); per deployment pubblici
+usare rete/VPN o un reverse-proxy TCP con allowlist. Multi-record e multi-pacchetto per connessione
+supportati; connessioni con IMEI non valido vengono chiuse subito.
+
+## Prove
+
+`qa/teltonika-e2e.sh` **5/5**: IMEI sconosciuto rifiutato (0x00), IMEI censito accettato (0x01) +
+Codec8 con ACK record, posizione ingerita (ultima posizione aggiornata), Codec8 Extended con ACK,
+event IO mappato → incidente. Regressione verde (loneworker 15, patrols 14, custom-roles 16).
+
+## Prossimo possibile
+
+Decodifica IO estesa (temperatura, carburante, DIN/DOUT), comandi GPRS verso il device (codec 12),
+onboarding kit (DOK) che espone host:porta TCP nel riepilogo device.
