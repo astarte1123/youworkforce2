@@ -119,7 +119,7 @@ function enhanceSelect(sel){
   document.addEventListener('mousedown',e=>{ if(!wrap.contains(e.target)) close(true); });
   sel.addEventListener('change',()=>{ if(document.activeElement!==inp) inp.value=curLabel(); });
 }
-function enhanceAllSelects(root){ try{ (root||document).querySelectorAll('select:not([data-combo])').forEach(enhanceSelect); }catch(e){} }
+function enhanceAllSelects(root){ try{ (root||document).querySelectorAll('select:not([data-combo])').forEach(s=>{ try{ enhanceSelect(s); }catch(e){} }); }catch(e){} }
 let _comboT=null;
 function initComboUI(){
   if(!document.getElementById('comboCss')){

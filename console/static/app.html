@@ -894,17 +894,17 @@ async function renderIndoor(admin,selectId){
   window._FP=FP; window._fpAdmin=admin; window._bkPlace=false;
   const sel=selectId&&FP.some(f=>f.id===selectId)?selectId:(FP[0]&&FP[0].id);
   $('#mapCtl').innerHTML=`<div class="field"><label>Piantina</label><select id="fpSel" onchange="fpOpen()">${FP.length?FP.map(f=>`<option value="${f.id}" ${f.id===sel?'selected':''}>${esc(f.name)}</option>`).join(''):'<option value="">— nessuna —</option>'}</select></div>`
-    +(admin&&FP.length?`<div class="field"><label>Posiziona sulla piantina</label>
-        <div class="row" style="gap:6px"><select id="fpPlaceSel"><option value="">— scegli beacon o dispositivo —</option></select>
-        <button class="btn ghost small" id="fpPlaceBtn" onclick="fpArmPlace(this)">📍 sulla mappa</button></div></div>`:'')
-    +(admin&&FP.length?`<label class="field" style="max-width:150px"><label>Colore nuova area</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" style="height:34px;padding:2px;width:60px"></label>`:'')
-    +(admin?`<button class="btn ghost small" onclick="configIndoor()">⚙ Configura indoor</button>`:'');
+    +(admin&&FP.length?`<div class="field" style="flex:1 1 340px;min-width:280px"><label>Posiziona sulla piantina</label>
+        <div class="row" style="gap:6px;flex-wrap:nowrap;align-items:stretch"><select id="fpPlaceSel" class="grow"><option value="">— scegli beacon o dispositivo —</option></select>
+        <button class="btn ghost small" id="fpPlaceBtn" onclick="fpArmPlace(this)" style="flex:none;white-space:nowrap">📍 sulla mappa</button></div></div>`:'')
+    +(admin&&FP.length?`<div class="field"><label>Colore area Geofence</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" title="Colore delle nuove aree geofence" style="height:40px;padding:3px;width:120px;cursor:pointer"></div>`:'')
+    +(admin&&FP.length?`<div class="field" style="margin-left:auto"><label>&nbsp;</label><button class="btn ghost small" onclick="configIndoor()" style="flex:none">⚙ Configura piantina indoor</button></div>`:'');
   if(FP.length){ fpOpen(); }
   else {
     if(FPMAP){ try{FPMAP.remove();}catch(e){} FPMAP=null; }
-    $('#map').innerHTML=`<div class="pad mut" style="height:68vh;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px">Nessuna piantina indoor configurata.${admin?' Aprila da <b>⚙ Configura indoor</b> per caricare una mappa (immagine o PDF) e registrare i beacon.':' Chiedi all’amministratore di configurarla.'}</div>`;
+    $('#map').innerHTML=`<div class="pad mut" style="height:68vh;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px">Nessuna piantina indoor configurata.${admin?' Aprila da <b>⚙ Configura piantina indoor</b> per caricare una mappa (immagine o PDF) e registrare i beacon.':' Chiedi all’amministratore di configurarla.'}</div>`;
     $('#mapSide').innerHTML='';
-    if(admin) $('#mapCtl').innerHTML=`<button class="btn" onclick="configIndoor()">⚙ Configura indoor</button>`;
+    if(admin) $('#mapCtl').innerHTML=`<button class="btn" onclick="configIndoor()">⚙ Configura piantina indoor</button>`;
   }
 }
 async function fpOpen(){

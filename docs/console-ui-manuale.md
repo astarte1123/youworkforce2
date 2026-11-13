@@ -57,11 +57,15 @@ allineato agli altri campi della barra (Dal / Al / Tipo).
 ### Piantine — posizionamento unificato
 
 Nelle Piantine il posizionamento di **beacon** e **dispositivi** usa un **unico campo**
-"Posiziona sulla piantina": un solo selettore (ricercabile) con le voci **raggruppate**
-in *📡 Beacon (zone)* e *📟 Dispositivi*, e un solo pulsante "📍 sulla mappa". Il tipo si
-deduce dalla voce scelta e instrada all'endpoint corretto. Restano due entità distinte:
-il **beacon** è un'ancora fissa che definisce una **zona** (gli allarmi indoor vi si
-agganciano), il **dispositivo** è l'asset tracciato.
+"Posiziona sulla piantina": un solo selettore (**ricercabile**, con le voci **raggruppate**
+in *📡 Beacon (zone)* e *📟 Dispositivi*) e il pulsante **"📍 sulla mappa" accanto** al
+selettore. Il tipo si deduce dalla voce scelta e instrada all'endpoint corretto. Restano due
+entità distinte: il **beacon** è un'ancora fissa che definisce una **zona** (gli allarmi indoor
+vi si agganciano), il **dispositivo** è l'asset tracciato.
+
+Nella barra della piantina il campo **"Colore area Geofence"** è allineato agli altri; il
+pulsante **"⚙ Configura piantina indoor"** sta in alto a **destra**, sopra il pannello di
+dettaglio.
 
 ### Selezione allarme dall'elenco
 Nella Mappa allarmi, cliccando una riga dell'elenco a destra:
