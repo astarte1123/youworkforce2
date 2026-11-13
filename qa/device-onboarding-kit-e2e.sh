@@ -42,8 +42,20 @@ sleep 1
 SOSV2=$(api "$BASE/api/devices/$D1/readiness" | jq "[s['verified'] for s in d['signals'] if s['etype']=='sos'][0]")
 [ "$SOSV2" = "True" ] && ok "readiness: dopo test-SOS il segnale sos risulta VERIFICATO" || no "sos post-test" "$SOSV2"
 
+# --- Bulk: 3 righe (2 ok, 1 errore worker isolato) ---
+GN=$(api "$BASE/api/groups" | jq "d['groups'][0]['name']")
+RB=$RANDOM
+BB=$(python -c "import json;print(json.dumps({'default_model_code':'teltonika-tmt250','default_group':'$GN','make_profile':True,'rows':[{'external_id':'BULKE-$RB-1'},{'external_id':'BULKE-$RB-2'},{'external_id':'BULKE-$RB-3','worker_email':'nope@x.y'}]}))")
+RES=$(api -H 'content-type: application/json' -X POST "$BASE/api/devices/onboarding-kit/bulk" -d "$BB")
+CR=$(echo "$RES" | jq "d['created']"); FL=$(echo "$RES" | jq "d['failed']")
+{ [ "$CR" = "2" ] && [ "$FL" = "1" ]; } && ok "bulk: 2 creati, 1 fallito (errore isolato)" || no "bulk ko" "created=$CR failed=$FL"
+echo "$RES" | jq "[r for r in d['results'] if r['ok']][0].get('token') is not None" | grep -qi true && ok "bulk: token per-device nel risultato" || no "bulk token" "-"
+
 # teardown
 sql(){ docker exec -i ywdb psql -U postgres -d youworkforce -tAc "$1" >/dev/null; }
+sql "DELETE FROM app.ingest_tokens WHERE device_id IN (SELECT id FROM app.devices WHERE external_id LIKE 'BULKE-$RB-%')"
+sql "DELETE FROM app.device_assignments WHERE device_id IN (SELECT id FROM app.devices WHERE external_id LIKE 'BULKE-$RB-%')"
+sql "DELETE FROM app.devices WHERE external_id LIKE 'BULKE-$RB-%'"
 sql "DELETE FROM app.incidents WHERE event_id IN (SELECT id FROM app.events WHERE device_id IN ('$D1'))"
 sql "DELETE FROM app.events WHERE device_id IN ('$D1')"
 sql "DELETE FROM app.device_assignments WHERE device_id IN ('$D1')"

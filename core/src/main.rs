@@ -210,6 +210,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/devices", get(api::list_devices).post(api::create_device))
         .route("/api/devices/provision", post(api::provision_device))
         .route("/api/devices/onboarding-kit", post(api::device_onboarding_kit))
+        .route("/api/devices/onboarding-kit/bulk", post(api::device_onboarding_kit_bulk))
         .route("/api/devices/:id", post(api::update_device).delete(api::delete_device))
         .route("/api/devices/:id/assign", post(api::assign_device))
         .route("/api/devices/:id/readiness", get(api::device_readiness))

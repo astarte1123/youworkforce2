@@ -3074,6 +3074,62 @@ pub async fn device_onboarding_kit(State(st): State<AppState>, h: HeaderMap, Jso
     let tid = s.tenant_id.unwrap();
     dok_build(&st, tid, &s.email, b).await.map(Json)
 }
+
+// ---- DOK massivo (import CSV/lista): censisce N device con UN'unica chiamata ----
+#[derive(Deserialize)]
+pub struct DokBulkRow {
+    pub external_id: String,
+    pub model_code: Option<String>,   // override per-riga; altrimenti default_model_code
+    pub label: Option<String>,
+    pub worker_email: Option<String>,
+    pub group: Option<String>,        // nome gruppo, override; altrimenti default_group
+}
+#[derive(Deserialize)]
+pub struct DokBulkReq {
+    pub default_model_code: Option<String>,
+    pub default_group: Option<String>,     // nome gruppo di default per tutte le righe
+    pub make_profile: Option<bool>,
+    pub rows: Vec<DokBulkRow>,
+}
+pub async fn device_onboarding_kit_bulk(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DokBulkReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, DEVICE_MODS).await?;
+    if b.rows.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nessuna riga")); }
+    if b.rows.len() > 500 { return Err(err(StatusCode::BAD_REQUEST, "massimo 500 righe per import")); }
+    let mut results: Vec<Value> = Vec::with_capacity(b.rows.len());
+    let mut created = 0i64; let mut failed = 0i64;
+    for row in &b.rows {
+        let ext = row.external_id.trim();
+        if ext.is_empty() { failed+=1; results.push(json!({"external_id":"","ok":false,"error":"external_id vuoto"})); continue; }
+        let model_code = row.model_code.clone().or_else(|| b.default_model_code.clone());
+        let Some(model_code) = model_code else { failed+=1; results.push(json!({"external_id":ext,"ok":false,"error":"model_code mancante (nessun default)"})); continue; };
+        // lavoratore
+        let user_id = if let Some(em) = &row.worker_email {
+            let u = sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.users WHERE tenant_id=$1 AND lower(email)=lower($2)")
+                .bind(tid).bind(em.trim()).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+            if u.is_none() { failed+=1; results.push(json!({"external_id":ext,"ok":false,"error":format!("lavoratore non trovato: {}", em)})); continue; }
+            u
+        } else { None };
+        // gruppo (riga o default)
+        let gname = row.group.clone().or_else(|| b.default_group.clone());
+        let group_id = if let Some(gn) = &gname {
+            sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE tenant_id=$1 AND lower(name)=lower($2)")
+                .bind(tid).bind(gn.trim()).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        } else { None };
+        if gname.is_some() && group_id.is_none() { failed+=1; results.push(json!({"external_id":ext,"ok":false,"error":format!("gruppo non trovato: {}", gname.unwrap())})); continue; }
+        let req = DokReq{ model_code, external_id: ext.to_string(), label: row.label.clone(), site_id:None, user_id, group_id, make_profile: b.make_profile };
+        match dok_build(&st, tid, &s.email, req).await {
+            Ok(v) => { created+=1; results.push(json!({
+                "external_id": ext, "ok": true, "device_id": v.get("device_id"),
+                "category": v.get("category_label"), "etypes": v.get("etypes"),
+                "token": v.get("token"), "ingress_url": v.get("ingress_url"), "profile_id": v.get("profile_id") })); }
+            Err(e) => { failed+=1; results.push(json!({"external_id":ext,"ok":false,"error":e.1})); }
+        }
+    }
+    audit(&st, tid, &s.email, "device_onboarding_kit_bulk", json!({"total":b.rows.len(),"created":created,"failed":failed})).await;
+    Ok(Json(json!({"total": b.rows.len(), "created": created, "failed": failed, "results": results})))
+}
 /// Logica riusabile del Device Onboarding Kit (usata dall'endpoint e dall'agente AI).
 pub async fn dok_build(st: &AppState, tid: Uuid, actor: &str, b: DokReq) -> Result<Value,(StatusCode,String)> {
     require_any_module(st, tid, DEVICE_MODS).await?;
