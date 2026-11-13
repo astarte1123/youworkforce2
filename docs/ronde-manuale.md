@@ -60,8 +60,14 @@ Validazione: tipo fuori catalogo → 400; gps senza coord → 400; qr/nfc/beacon
   (QR/NFC/beacon con codice, GPS con lat/lon/raggio) e rivede le ronde eseguite con esito per
   checkpoint e compliance.
 - **PWA «Oggi» (`/worker/`)**: sezione **Ronde** (visibile solo se il modulo è attivo); l'operatore
-  avvia la ronda, punzona ogni checkpoint (codice per QR/NFC/beacon, geolocalizzazione del browser
-  per GPS), vede il progresso e chiude il giro.
+  avvia la ronda, punzona ogni checkpoint, vede il progresso e chiude il giro.
+  - **QR**: scanner **nativo** con fotocamera (`BarcodeDetector`) — overlay con mirino, timeout 30s;
+    bottone «Annulla / digita» per l'inserimento manuale.
+  - **NFC**: lettura tag **nativa** (`NDEFReader`, Web NFC su Android/Chrome).
+  - **beacon**: inserimento codice manuale.
+  - **GPS**: geolocalizzazione del browser.
+  - Dove lo scanner non è supportato (browser/permessi), si ripiega automaticamente sull'input
+    manuale del codice. La verifica resta lato server (match codice / distanza GPS).
 
 ## Prove
 

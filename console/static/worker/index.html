@@ -27,6 +27,11 @@
     border-top:1px solid var(--line);max-height:88vh;overflow:auto}
   .sheet textarea{width:100%;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--fg);padding:10px;font:inherit;resize:vertical}
   #micBtn.on{background:var(--bad);color:#fff;border-color:transparent}
+  .scan-ov{position:fixed;inset:0;z-index:60;background:#000;display:flex;align-items:center;justify-content:center}
+  .scan-box{position:relative;width:100%;max-width:460px;display:flex;flex-direction:column;align-items:center;gap:12px;padding:16px}
+  .scan-box video{width:100%;max-height:70vh;border-radius:12px;object-fit:cover;background:#111}
+  .scan-frame{position:absolute;top:50%;left:50%;transform:translate(-50%,-60%);width:62%;aspect-ratio:1;border:3px solid #16a34a;border-radius:16px;box-shadow:0 0 0 2000px rgba(0,0,0,.25);pointer-events:none}
+  .scan-cancel{max-width:460px}
 </style></head><body>
 <div id="root"></div>
 <script src="/app.js"></script>
@@ -218,10 +223,52 @@ async function doPunch(cid,kind){
     try{ const pos=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{enableHighAccuracy:true,timeout:10000}));
       body.lat=pos.coords.latitude; body.lon=pos.coords.longitude; }catch(e){ toast('Posizione negata','bad'); return; }
   } else {
-    const code=await askPrompt('Codice '+kind.toUpperCase()+' (scansiona o digita)'); if(!code)return; body.code=code;
+    let code=null;
+    if(kind==='qr') code=await scanQR();
+    else if(kind==='nfc') code=await scanNFC();
+    // beacon o scanner non disponibile/annullato dalla camera -> input manuale
+    if(code===null) code=await askPrompt('Codice '+kind.toUpperCase()+' (scansiona o digita)');
+    if(!code)return; body.code=code;
   }
   try{ const r=await api('/patrol-rounds/'+PATROL_ROUND.id+'/punch',{method:'POST',body:JSON.stringify(body)});
     PATROL_ROUND=r.round; toast(r.ok?'Punzonatura OK':('KO: '+(r.reason||'non valido')), r.ok?'ok':'bad'); renderRound(); }catch(e){toast(e.message,'bad');}
+}
+// Scanner QR nativo (BarcodeDetector + camera). null = non disponibile/annullato -> fallback manuale.
+async function scanQR(){
+  if(!('BarcodeDetector' in window) || !navigator.mediaDevices?.getUserMedia) return null;
+  let stream;
+  try{ stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}}); }
+  catch(e){ return null; }
+  const det=new BarcodeDetector({formats:['qr_code','code_128','ean_13','data_matrix']});
+  return await new Promise(resolve=>{
+    const ov=document.createElement('div'); ov.className='scan-ov';
+    ov.innerHTML='<div class="scan-box"><video playsinline></video><div class="scan-frame"></div><button class="btn block ghost scan-cancel">Annulla / digita</button></div>';
+    document.body.appendChild(ov);
+    const video=ov.querySelector('video'); video.srcObject=stream; video.play();
+    let done=false;
+    const finish=v=>{ if(done)return; done=true; try{stream.getTracks().forEach(t=>t.stop());}catch(e){} ov.remove(); resolve(v); };
+    ov.querySelector('.scan-cancel').onclick=()=>finish(null);
+    const tick=async()=>{ if(done)return;
+      try{ const codes=await det.detect(video); if(codes&&codes.length){ return finish(codes[0].rawValue); } }catch(e){}
+      requestAnimationFrame(tick); };
+    video.onloadedmetadata=()=>tick();
+    setTimeout(()=>finish(null),30000); // timeout di sicurezza
+  });
+}
+// Scanner NFC nativo (Web NFC / NDEFReader, Android Chrome). null = non disponibile -> fallback.
+async function scanNFC(){
+  if(!('NDEFReader' in window)) return null;
+  try{ const r=new NDEFReader(); await r.scan();
+    toast('Avvicina il tag NFC…','warn');
+    return await new Promise(resolve=>{
+      const to=setTimeout(()=>resolve(null),15000);
+      r.onreading=ev=>{ clearTimeout(to);
+        let txt=ev.serialNumber||'';
+        try{ for(const rec of ev.message.records){ const d=new TextDecoder().decode(rec.data); if(d){txt=d;break;} } }catch(e){}
+        resolve(txt||null); };
+      r.onreadingerror=()=>{ clearTimeout(to); resolve(null); };
+    });
+  }catch(e){ return null; }
 }
 async function closeRound(){ try{ const r=await api('/patrol-rounds/'+PATROL_ROUND.id+'/close',{method:'POST',body:'{}'});
   toast('Ronda '+r.status+(r.status==='completato'?' ✓':' (incompleta)'), r.status==='completato'?'ok':'warn');
