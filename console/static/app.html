@@ -2525,7 +2525,15 @@ async function vGruppi(v){
             </span>
             <button class="btn ghost small" onclick="grpOncallSave('${g.id}')">Salva</button>
           </div>
-          <details style="margin-top:6px"><summary class="small mut" style="cursor:pointer">⚙ Copertura · handoff · Slack</summary>
+          <div class="gsub" data-g="${g.id}">
+            <button class="gsub-b" data-k="cover" onclick="grpSub('${g.id}','cover')">⚙ Copertura·handoff·Slack</button>
+            <button class="gsub-b" data-k="policy" onclick="grpSub('${g.id}','policy')">⛓ Policy</button>
+            <button class="gsub-b" data-k="label" onclick="grpSub('${g.id}','label')">🏷 Label</button>
+            <button class="gsub-b" data-k="playbook" onclick="grpSub('${g.id}','playbook')">📋 Playbook</button>
+            <button class="gsub-b" data-k="assign" onclick="grpSub('${g.id}','assign')">👥 Assegnazioni</button>
+            <button class="gsub-b" data-k="shifts" onclick="grpSub('${g.id}','shifts')">📅 Turni</button>
+          </div>
+          <div class="gsub-p" data-g="${g.id}" data-k="cover" hidden>
             <div class="col small" style="gap:8px;margin-top:8px">
               <label class="row" style="gap:6px;align-items:center">Copertura
                 <select id="cov_${g.id}" class="small" onchange="covToggle('${g.id}')">
@@ -2546,30 +2554,30 @@ async function vGruppi(v){
                   <option value="onchange" ${g.slack_notify==='onchange'?'selected':''}>a ogni cambio turno</option>
                   <option value="08:00" ${g.slack_notify==='08:00'?'selected':''}>ogni giorno 08:00</option></select></label>
             </div>
-          </details>
-          <details style="margin-top:6px" ontoggle="if(this.open)grpPolicyLoad('${g.id}')"><summary class="small mut" style="cursor:pointer">⛓ Policy escalation (step multipli, nativo)</summary>
-            <div id="pol_${g.id}" class="small mut" style="margin-top:8px">apri per caricare…</div>
-          </details>
-          <details style="margin-top:6px"><summary class="small mut" style="cursor:pointer">🏷 Label (ricerca)</summary>
+          </div>
+          <div class="gsub-p" data-g="${g.id}" data-k="policy" hidden>
+            <div id="pol_${g.id}" class="small mut" style="margin-top:8px">carico…</div>
+          </div>
+          <div class="gsub-p" data-g="${g.id}" data-k="label" hidden>
             <div class="col small" style="gap:6px;margin-top:8px">
               <textarea id="lbl_${g.id}" class="small" style="width:100%;height:50px;font-family:monospace" placeholder="env=prod&#10;team=ops">${Object.entries(g.labels||{}).map(([k,v])=>esc(k)+'='+esc(v)).join('\n')}</textarea>
               <div><button class="btn ghost small" onclick="grpLabelsSave('${g.id}')">Salva label</button></div>
             </div>
-          </details>
-          <details style="margin-top:6px" ontoggle="if(this.open)grpHandoffLoad('${g.id}')"><summary class="small mut" style="cursor:pointer">📋 Playbook & note di passaggio</summary>
+          </div>
+          <div class="gsub-p" data-g="${g.id}" data-k="playbook" hidden>
             <div class="col small" style="gap:6px;margin-top:8px">
               <div class="mut">Playbook (cosa fare quando scatta un allarme di questo gruppo):</div>
               <textarea id="pb_${g.id}" class="small" style="width:100%;height:60px">${esc(g.playbook||'')}</textarea>
               <div><button class="btn ghost small" onclick="grpPlaybookSave('${g.id}')">Salva playbook</button></div>
-              <div id="ho_${g.id}" class="mut">apri per caricare le note…</div>
+              <div id="ho_${g.id}" class="mut">carico le note…</div>
             </div>
-          </details>
-          <details style="margin-top:6px" ontoggle="if(this.open)grpAssignLoad('${g.id}')"><summary class="small mut" style="cursor:pointer">👥 Assegnazioni aggiuntive (coperture)</summary>
-            <div id="asg_${g.id}" class="small mut" style="margin-top:8px">apri per caricare…</div>
-          </details>
-          <details style="margin-top:6px" ontoggle="if(this.open)grpShiftsLoad('${g.id}')"><summary class="small mut" style="cursor:pointer">📅 Turni calcolati (30 giorni)</summary>
-            <div id="shf_${g.id}" class="small mut" style="margin-top:8px">apri per caricare…</div>
-          </details>
+          </div>
+          <div class="gsub-p" data-g="${g.id}" data-k="assign" hidden>
+            <div id="asg_${g.id}" class="small mut" style="margin-top:8px">carico…</div>
+          </div>
+          <div class="gsub-p" data-g="${g.id}" data-k="shifts" hidden>
+            <div id="shf_${g.id}" class="small mut" style="margin-top:8px">carico…</div>
+          </div>
           <div class="small faint" style="margin-top:3px">${g.oncall_mode==='turni'?'Il reperibile di turno viene avvisato per primo.':'Tutti i membri vengono avvisati insieme.'} Rotazione/copertura/assegnazioni: motore nativo (self-sufficient).</div>
         </div>
       </div>`).join('')||'<div class="small mut">Nessun gruppo. Creane uno.</div>'}
@@ -2659,6 +2667,23 @@ async function vGruppi(v){
 function escTab(k){
   $$('#escTabs .seg-btn').forEach(b=>b.classList.toggle('on', b.dataset.et===k));
   $$('.esc-tab').forEach(p=>{ p.hidden = p.dataset.et!==k; });
+}
+// Sotto-tab per-gruppo (Copertura/Policy/Label/Playbook/Assegnazioni/Turni): un pannello per
+// volta; ri-click chiude. Lazy-load dei pannelli che lo richiedono.
+function grpSub(gid,k){
+  const sel='[data-g="'+gid+'"]';
+  const strip=document.querySelector('.gsub'+sel);
+  const btn=strip?strip.querySelector('.gsub-b[data-k="'+k+'"]'):null;
+  const already=btn&&btn.classList.contains('on');
+  if(strip) strip.querySelectorAll('.gsub-b').forEach(b=>b.classList.remove('on'));
+  document.querySelectorAll('.gsub-p'+sel).forEach(p=>{ p.hidden=true; });
+  if(already) return;
+  if(btn) btn.classList.add('on');
+  const p=document.querySelector('.gsub-p'+sel+'[data-k="'+k+'"]'); if(p)p.hidden=false;
+  if(k==='policy')grpPolicyLoad(gid);
+  else if(k==='playbook')grpHandoffLoad(gid);
+  else if(k==='assign')grpAssignLoad(gid);
+  else if(k==='shifts')grpShiftsLoad(gid);
 }
 function grpOpts(sel){ return (window._groupsCache||[]).map(g=>`<option value="${g.id}" ${sel===g.id?'selected':''}>${esc(g.name)}</option>`).join(''); }
 async function hbLoad(btn){ const out=$('#hbOut'); out.innerHTML='<span class="mut">Carico…</span>';

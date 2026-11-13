@@ -124,9 +124,11 @@ già esistenti (toast di notifica, escalation/notifiche lato backend — **invar
 
 La pagina (molto densa) è organizzata in **tab** in cima, un pannello per volta:
 
-- **Gruppi**: gruppo di default (catch-all) + elenco gruppi/membri/rotazione (le funzioni
-  per-gruppo — policy, copertura, label, playbook, assegnazioni, turni calcolati — restano
-  collassabili dentro ogni gruppo).
+- **Gruppi**: gruppo di default (catch-all) + elenco gruppi/membri/rotazione. Le funzioni
+  per-gruppo sono su una **striscia di sotto-tab** dentro ogni gruppo
+  (**⚙ Copertura·handoff·Slack · ⛓ Policy · 🏷 Label · 📋 Playbook · 👥 Assegnazioni ·
+  📅 Turni**): si apre un pannello per volta, ri-click chiude; i pannelli pesanti si caricano
+  solo all'apertura. Niente più sei fisarmoniche impilate.
 - **Routing**: evento → gruppo.
 - **Notifiche**: fallback vocale, aggiornamenti al reperibile, manutenzione (sospende
   escalation), calendario reperibilità, diagnostica motore.
