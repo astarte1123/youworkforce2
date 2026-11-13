@@ -46,8 +46,13 @@ const initials = e => (e||'?').split('@')[0].split(/[.\-_]/).map(x=>x[0]).join('
 
 function theme(){ try{return localStorage.getItem('yw_theme')||''}catch(e){return ''} }
 function setTheme(t){ try{localStorage.setItem('yw_theme',t)}catch(e){} applyTheme(); }
-function applyTheme(){ const t=theme(); if(t) document.documentElement.setAttribute('data-theme',t); else document.documentElement.removeAttribute('data-theme'); }
+function applyTheme(){ const t=theme(); if(t) document.documentElement.setAttribute('data-theme',t); else document.documentElement.removeAttribute('data-theme'); syncThemeBtn(); }
 function toggleTheme(){ const cur=document.documentElement.getAttribute('data-theme'); setTheme(cur==='dark'?'light':'dark'); }
+// Icona del toggle tema: luna col tema chiaro, sole col tema scuro.
+function isDarkTheme(){ const a=document.documentElement.getAttribute('data-theme'); if(a==='dark')return true; if(a==='light')return false; try{return matchMedia('(prefers-color-scheme:dark)').matches;}catch(e){return false;} }
+function themeIconHtml(){ return isDarkTheme()?ICON.sun:ICON.moon; }
+function syncThemeBtn(){ try{ const b=document.getElementById('themeBtn'); if(b) b.innerHTML=themeIconHtml(); }catch(e){} }
+try{ matchMedia('(prefers-color-scheme:dark)').addEventListener('change',syncThemeBtn); }catch(e){}
 applyTheme();
 
 const ICON = {
@@ -70,6 +75,7 @@ const ICON = {
   play:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="6 4 20 12 6 20"/></svg>',
   stop:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>',
   clock:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  sun:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
   logomark:'<img src="/youworkforce.webp" alt="YouWorkforce" style="width:100%;height:100%;object-fit:contain;display:block">',
 };
 

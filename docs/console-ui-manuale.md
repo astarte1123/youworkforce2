@@ -120,6 +120,27 @@ già esistenti (toast di notifica, escalation/notifiche lato backend — **invar
 
 ---
 
+## 5bis. Escalation e reperibilità — a tab
+
+La pagina (molto densa) è organizzata in **tab** in cima, un pannello per volta:
+
+- **Gruppi**: gruppo di default (catch-all) + elenco gruppi/membri/rotazione (le funzioni
+  per-gruppo — policy, copertura, label, playbook, assegnazioni, turni calcolati — restano
+  collassabili dentro ogni gruppo).
+- **Routing**: evento → gruppo.
+- **Notifiche**: fallback vocale, aggiornamenti al reperibile, manutenzione (sospende
+  escalation), calendario reperibilità, diagnostica motore.
+- **Recapiti**: recapiti dei reperibili + verifica OTP.
+- **Assenze & turni**: assenze/sostituzioni, pianificazione temporanea.
+- **Monitor**: diagnostica consegne/parità, heartbeat monitor, ingress email → allarme.
+
+La riorganizzazione è solo visiva: logica, ID e azioni invariati.
+
+## 5ter. Tema (chiaro/scuro)
+
+Il pulsante tema in topbar mostra l'icona **🌙 luna con tema chiaro** e **☀️ sole con tema
+scuro** (si aggiorna anche se il sistema cambia tema da solo).
+
 ## 6. Responsive (mobile / tablet)
 
 - **Navigazione mobile**: sotto 820px la barra laterale diventa un **drawer a scomparsa**.
