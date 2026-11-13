@@ -30,8 +30,11 @@ const NAV = [
   // --- Sicurezza Lavoratore (perimetro man-down/SOS): operatività allarmi + config del perimetro ---
   {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
   {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
-  {k:'mappa',     t:'Mappa', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'safety'},
+  {k:'mappa',     t:'Mappa allarmi', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'safety'},
   {k:'piantine',  t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor', grp:'safety'},
+  // Mappa dispositivi: i device (es. Teltonika GH-5200) generano allarmi E sono asset di campo,
+  // quindi la voce compare in ENTRAMBI i gruppi (Sicurezza lavoratore + Lavoro sul campo).
+  {k:'mappa-dispositivi', t:'Mappa dispositivi', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grps:['safety','work']},
   {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar'], grp:'safety'},
   {k:'dispositivi',t:'Dispositivi & App', ico:'shield', roles:['tenant_admin'], mod:DEVICE_MODS, grp:'safety'},
   {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
@@ -63,7 +66,7 @@ const I18N={ en:{
   login_password:"Password", login_signin:"Sign in", login_quick:"Quick demo access (password <b>demo</b>):",
   grp_op:"Operations", grp_safety:"Worker Safety", grp_iot:"IoT Dashboard", grp_work:"Field work", grp_cfg:"Configuration",
   "nav_dashboard":"Dashboard","nav_centrale":"Alarm center","nav_miei-allarmi":"My alarms",
-  "nav_mappa":"Map","nav_piantine":"Floor plans","nav_cruscotti":"IoT dashboards","nav_report":"Reports",
+  "nav_mappa":"Alarm map","nav_mappa-dispositivi":"Device map","nav_piantine":"Floor plans","nav_cruscotti":"IoT dashboards","nav_report":"Reports",
   "nav_ordini":"Work orders","nav_consuntivi":"Timesheets","nav_turni":"Shifts","nav_agente":"AI agent",
   "nav_dispositivi":"Devices & Apps","nav_trigger":"Safety triggers","nav_profili":"Protection profiles","nav_connettori":"Connectors","nav_gruppi":"Escalation & on-call",
   "nav_anagrafiche":"Users & sites","nav_ai":"AI · youworker.ai","nav_moduli":"Modules"
@@ -80,7 +83,7 @@ function langSelect(){ return `<select class="small" onchange="setLang(this.valu
 try{ document.documentElement.lang=LANG; }catch(e){}
 function navLabel(n){ return t('nav_'+n.k, n.t); }
 function navHtml(){ const items=visibleNav(); let h='';
-  for(const [g,label] of NAV_GROUPS){ const gi=items.filter(n=>(n.grp||'op')===g); if(!gi.length)continue;
+  for(const [g,label] of NAV_GROUPS){ const gi=items.filter(n=> n.grps ? n.grps.includes(g) : (n.grp||'op')===g); if(!gi.length)continue;
     h+=`<div class="nav-grp">${t('grp_'+g,label)}</div>`+gi.map(n=>`<a data-k="${n.k}"><span class="ico">${ICON[n.ico]}</span>${navLabel(n)}</a>`).join(''); }
   return h; }
 const modOk = n => !n.mod || n.mod.some(m=>ACTIVE_MODS.has(m));
@@ -224,7 +227,7 @@ function route(){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -553,22 +556,29 @@ window.addEventListener('resize',()=>{ clearTimeout(_mapRzT); _mapRzT=setTimeout
 window.addEventListener('orientationchange',()=>setTimeout(invalidateMaps,300));
 // MAPPA (outdoor): ALLARMI (dove si sono verificati) e DISPOSITIVI (live+geofence).
 // L'indoor sta nella voce di menu separata "Piantine" (vPiantine).
+// Mappa ALLARMI (Sicurezza lavoratore): incidenti georeferenziati indoor/outdoor.
+// La mappa dei DISPOSITIVI è una voce separata (vMappaDispositivi), condivisa con "Lavoro sul campo".
 async function vMappa(v){
   const admin=can(['tenant_admin']);
-  const alarmsOn=ACTIVE_MODS.has('loneworker')||ACTIVE_MODS.has('traccar');
-  if(MAPMODE!=='allarmi'&&MAPMODE!=='dispositivi') MAPMODE='allarmi';
-  if(!alarmsOn) MAPMODE='dispositivi';
-  v.innerHTML=`<div class="page-h"><div><h1>Mappa</h1><div class="mut" id="mapSub">—</div></div>
-    <div class="row" style="gap:8px">
-      ${alarmsOn?`<button class="btn ghost small ${MAPMODE==='allarmi'?'ok':''}" onclick="setMapMode('allarmi')">🚨 Allarmi</button>
-        <button class="btn ghost small ${MAPMODE==='dispositivi'?'ok':''}" onclick="setMapMode('dispositivi')">📟 Dispositivi</button>`:''}
-    </div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>Mappa allarmi</h1><div class="mut" id="mapSub">—</div></div></div>
     <div class="row" id="mapCtl" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px"></div>
     <div class="grid map-grid">
       <div class="card" style="padding:0;overflow:hidden"><div id="map"></div></div>
       <div class="card pad" id="mapSide"></div></div>`;
   if(typeof L==='undefined'){ $('#map').innerHTML='<div class="pad mut">Libreria mappa non disponibile (serve connessione).</div>'; return; }
-  setTimeout(()=>{ initMap(); (MAPMODE==='allarmi'?renderAlarms:renderDevices)(admin); },60);
+  setTimeout(()=>{ initMap(); renderAlarms(admin); },60);
+}
+// Mappa DISPOSITIVI (condivisa Sicurezza lavoratore + Lavoro sul campo): device live (es. Teltonika
+// GH-5200), geofence, presenza. Stessa resa di prima, senza toggle.
+async function vMappaDispositivi(v){
+  const admin=can(['tenant_admin']);
+  v.innerHTML=`<div class="page-h"><div><h1>Mappa dispositivi</h1><div class="mut" id="mapSub">—</div></div></div>
+    <div class="row" id="mapCtl" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px"></div>
+    <div class="grid map-grid">
+      <div class="card" style="padding:0;overflow:hidden"><div id="map"></div></div>
+      <div class="card pad" id="mapSide"></div></div>`;
+  if(typeof L==='undefined'){ $('#map').innerHTML='<div class="pad mut">Libreria mappa non disponibile (serve connessione).</div>'; return; }
+  setTimeout(()=>{ initMap(); renderDevices(admin); },60);
 }
 // PIANTINE (indoor): planimetrie con beacon posizionati, geofence indoor, allarmi/dispositivi indoor.
 async function vPiantine(v){
