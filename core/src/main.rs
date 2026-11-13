@@ -199,7 +199,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/me", get(api::me))
         .route("/api/logout", post(api::logout))
         .route("/api/modules", get(api::list_modules))
-        .route("/api/ui/features", get(api::ui_features))
+        .route("/api/ui/features", get(api::ui_features).post(api::ui_features_set))
         .route("/api/modules/:code/tools", get(api::list_module_tools))
         .route("/api/modules/:code/tools/:tool", post(api::set_module_tool))
         .route("/api/sites", get(api::list_sites).post(api::create_site))

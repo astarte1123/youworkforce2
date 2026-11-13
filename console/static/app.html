@@ -761,20 +761,32 @@ function alarmTip(a){
 }
 async function renderAlarms(admin){
   admin = admin!==undefined?admin:can(['tenant_admin']); window._mapAdmin=admin;
-  $('#mapSub').textContent='allarmi georeferenziati · indoor/outdoor · aree';
+  // Geofence su Mappa allarmi: nascosto di default, attivabile dal tenant_admin (flag geofence_alarms).
+  const gfOn = admin && UI_FEAT.geofence_alarms===true; window._alarmGfOn=gfOn;
+  $('#mapSub').textContent='allarmi georeferenziati · indoor/outdoor';
   const today=new Date().toISOString().slice(0,10), wago=new Date(Date.now()-7*864e5).toISOString().slice(0,10);
   $('#mapCtl').innerHTML=`<div class="field"><label>${t('map_from','Dal')}</label><input id="mFrom" type="date" value="${wago}"></div>
     <div class="field"><label>${t('map_to','Al')}</label><input id="mTo" type="date" value="${today}"></div>
     <div class="field"><label>${t('map_type','Tipo')}</label><select id="mEtype"><option value="">${t('map_all_critical','Tutti i critici')}</option><option value="sos">SOS</option><option value="man_down">${esc(etLab('man_down'))}</option>${ALARM_ETYPES.filter(e=>e!=='sos'&&e!=='man_down').map(e=>`<option value="${e}">${esc(etLab(e))}</option>`).join('')}</select></div>
-    ${admin?`<div class="field"><label>${t('gf_color','Colore area Geofence')}</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" title="${t('gf_color','Colore area Geofence')}" style="width:120px;height:40px;padding:3px;cursor:pointer"></div>`:''}
-    <div class="field"><label>&nbsp;</label><button class="btn" onclick="loadAlarmsOnMap()">${t('map_refresh','Aggiorna')}</button></div>`;
-  // aree geofence disegnate e gestibili anche in modalità allarmi (stesso prodotto)
-  let GF=[]; try{ GF=(await api('/geofences')).filter(g=>!g.floorplan_id); }catch(e){}
-  if(GFLAYER){ try{MAP.removeLayer(GFLAYER);}catch(e){} }
-  GFLAYER=L.layerGroup().addTo(MAP); GF_LAYERS={}; window._GF_CACHE=GF; window._ALARM_GF=GF;
-  GF.forEach(g=>drawGeofence(g,admin));
-  if(admin) setupGeofenceTools(MAP,{geo:true});
+    ${gfOn?`<div class="field"><label>${t('gf_color','Colore area Geofence')}</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" title="${t('gf_color','Colore area Geofence')}" style="width:120px;height:40px;padding:3px;cursor:pointer"></div>`:''}
+    <div class="field"><label>&nbsp;</label><button class="btn" onclick="loadAlarmsOnMap()">${t('map_refresh','Aggiorna')}</button></div>
+    ${admin?`<div class="field" style="margin-left:auto"><label>&nbsp;</label><button class="btn ghost small" onclick="geofenceAlarmsSet(${gfOn?'false':'true'})" title="${gfOn?'Nascondi la gestione delle aree geofence':'Mostra la gestione delle aree geofence'}">${gfOn?'▣ Nascondi aree geofence':'▢ Mostra aree geofence'}</button></div>`:''}`;
+  // aree geofence: solo se attivate dall'admin
+  if(GFLAYER){ try{MAP.removeLayer(GFLAYER);}catch(e){} GFLAYER=null; }
+  GF_LAYERS={}; window._GF_CACHE=[]; window._ALARM_GF=[];
+  if(gfOn){
+    let GF=[]; try{ GF=(await api('/geofences')).filter(g=>!g.floorplan_id); }catch(e){}
+    GFLAYER=L.layerGroup().addTo(MAP); window._GF_CACHE=GF; window._ALARM_GF=GF;
+    GF.forEach(g=>drawGeofence(g,admin));
+    setupGeofenceTools(MAP,{geo:true});
+  }
   loadAlarmsOnMap();
+}
+// Attiva/disattiva (tenant_admin) la gestione geofence su Mappa allarmi + Piantine.
+async function geofenceAlarmsSet(on){
+  try{ await api('/ui/features',{method:'POST',body:JSON.stringify({geofence_alarms:!!on})});
+    UI_FEAT.geofence_alarms=!!on; toast(on?'Aree geofence attivate':'Aree geofence nascoste','ok'); route();
+  }catch(e){ toast(e.message,'bad'); }
 }
 async function loadAlarmsOnMap(){
   if(ALARMLAYER){ try{MAP.removeLayer(ALARMLAYER);}catch(e){} }
@@ -798,7 +810,7 @@ async function loadAlarmsOnMap(){
     side.innerHTML=`<h2 style="margin-bottom:4px">Allarmi (${al.length})</h2>${ALARM_LEGEND}
       ${noGeo.length?`<div class="small" style="color:var(--bad);margin:6px 0">⚠ ${noGeo.length} indoor senza posizione (beacon non mappato) — registra la zona in “⚙ Zone indoor”:</div>${noGeo.map(a=>`<div class="alarm-row" data-aid="${a.id}" onclick="focusAlarm('${a.id}',null,null)" style="cursor:pointer;border:1px dashed var(--bad);border-radius:8px;padding:8px;margin-bottom:6px"><div class="spread"><b class="small">${esc(a.label)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString('it-IT')}</span></div><div class="small">beacon <span class="mono">${esc(a.beacon_uid||'—')}</span> · ${a.device?esc(a.device):''} · <span class="mut">senza posizione GPS</span></div></div>`).join('')}<hr style="border:none;border-top:1px solid var(--line);margin:8px 0">`:''}
       ${al.filter(a=>a.lat!=null).map(row).join('')||(noGeo.length?'':'<div class="small mut">Nessun allarme nel periodo.</div>')}
-      ${geofencePanel(window._ALARM_GF||[], window._mapAdmin)}`;
+      ${window._alarmGfOn?geofencePanel(window._ALARM_GF||[], window._mapAdmin):''}`;
   }catch(err){ side.innerHTML='<div class="small" style="color:var(--bad)">'+esc(err.message)+'</div>'; }
 }
 let _alarmHi=null, _alarmHiT=null, _alarmTipM=null;
@@ -917,16 +929,19 @@ function devicePlacedIcon(){ return L.divIcon({className:'',iconSize:[24,24],ico
   html:`<div style="background:#b45309;border:2px solid #fff;border-radius:6px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 4px rgba(0,0,0,.4)">📟</div>`}); }
 async function fpImageUrl(id){ const r=await fetch('/api/floorplans/'+id+'/image',{headers:{'x-tenant-slug':store.slug},credentials:'include'}); if(!r.ok) throw new Error('immagine piantina non disponibile'); const b=await r.blob(); return URL.createObjectURL(b); }
 async function renderIndoor(admin,selectId){
-  $('#mapSub').textContent='piantine indoor · beacon · geofence';
+  $('#mapSub').textContent='piantine indoor · beacon';
   let FP=[]; try{ FP=await api('/floorplans'); }catch(e){}
+  // Geofence indoor: nascosto di default, attivabile dal tenant_admin (flag geofence_alarms).
+  const gfOn = admin && UI_FEAT.geofence_alarms===true; window._fpGfOn=gfOn;
   window._FP=FP; window._fpAdmin=admin; window._bkPlace=false;
   const sel=selectId&&FP.some(f=>f.id===selectId)?selectId:(FP[0]&&FP[0].id);
   $('#mapCtl').innerHTML=`<div class="field"><label>${t('fp_floorplan','Piantina')}</label><select id="fpSel" onchange="fpOpen()">${FP.length?FP.map(f=>`<option value="${f.id}" ${f.id===sel?'selected':''}>${esc(f.name)}</option>`).join(''):`<option value="">${t('fp_none','— nessuna —')}</option>`}</select></div>`
     +(admin&&FP.length?`<div class="field" style="flex:1 1 340px;min-width:280px"><label>${t('fp_place','Posiziona sulla piantina')}</label>
         <div class="row" style="gap:6px;flex-wrap:nowrap;align-items:stretch"><select id="fpPlaceSel" class="grow"><option value="">${t('fp_place_choose','— scegli beacon o dispositivo —')}</option></select>
         <button class="btn ghost small" id="fpPlaceBtn" onclick="fpArmPlace(this)" style="flex:none;white-space:nowrap">${t('fp_place_btn','📍 sulla mappa')}</button></div></div>`:'')
-    +(admin&&FP.length?`<div class="field"><label>${t('gf_color','Colore area Geofence')}</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" title="${t('gf_color','Colore area Geofence')}" style="height:40px;padding:3px;width:120px;cursor:pointer"></div>`:'')
-    +(admin&&FP.length?`<div class="field" style="margin-left:auto"><label>&nbsp;</label><button class="btn ghost small" onclick="configIndoor()" style="flex:none">${t('fp_config','⚙ Configura piantina indoor')}</button></div>`:'');
+    +(gfOn&&FP.length?`<div class="field"><label>${t('gf_color','Colore area Geofence')}</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" title="${t('gf_color','Colore area Geofence')}" style="height:40px;padding:3px;width:120px;cursor:pointer"></div>`:'')
+    +(admin&&FP.length?`<div class="field" style="margin-left:auto"><label>&nbsp;</label><button class="btn ghost small" onclick="geofenceAlarmsSet(${gfOn?'false':'true'})" title="${gfOn?'Nascondi aree geofence':'Mostra aree geofence'}" style="flex:none">${gfOn?'▣ Nascondi aree geofence':'▢ Mostra aree geofence'}</button></div>`:'')
+    +(admin&&FP.length?`<div class="field"><label>&nbsp;</label><button class="btn ghost small" onclick="configIndoor()" style="flex:none">${t('fp_config','⚙ Configura piantina indoor')}</button></div>`:'');
   if(FP.length){ fpOpen(); }
   else {
     if(FPMAP){ try{FPMAP.remove();}catch(e){} FPMAP=null; }
@@ -976,8 +991,9 @@ async function fpOpen(){
         +(dOpts?`<optgroup label="📟 Dispositivi">${dOpts}</optgroup>`:'')
         +((!bOpts&&!dOpts)?'<option value="" disabled>nessun beacon/dispositivo registrato</option>':'');
     }
-    const gfs=(GFs||[]).filter(g=>g.floorplan_id===id); const gl=L.layerGroup().addTo(FPMAP);
-    GF_LAYERS={}; window._GF_CACHE=gfs; gfs.forEach(g=>drawIndoorGeofence(g,gl));
+    const gfs=(GFs||[]).filter(g=>g.floorplan_id===id);
+    GF_LAYERS={}; window._GF_CACHE=gfs;
+    if(window._fpGfOn){ const gl=L.layerGroup().addTo(FPMAP); gfs.forEach(g=>drawIndoorGeofence(g,gl)); }
     // allarmi INDOOR avvenuti su questa piantina (match beacon posizionato), ultimi 7 giorni
     const placedByUid={}; beacons.forEach(b=> placedByUid[b.beacon_uid]={x:b.x,y:b.y});
     let alarmsHere=[];
@@ -999,12 +1015,12 @@ async function fpOpen(){
           .bindPopup(`<b>📟 ${esc(d.device||'dispositivo')}</b><br>${d.person?('👤 '+esc(d.person)+'<br>'):''}🏭 ${esc(d.zone)}<br><span style="color:#666">ultima posizione indoor: ${new Date(d.at).toLocaleString('it-IT')}</span>`).addTo(dl); });
     }catch(e){}
     $('#mapSide').innerHTML=`<h2 style="margin-bottom:8px">${esc(f.name)}</h2>
-      <div class="small mut">${beacons.length} beacon · ${placedDevs.length} dispositivi fissi · ${gfs.length} geofence · ${(devHere||[]).length} indoor (live) · ${w}×${h}px</div>
+      <div class="small mut">${beacons.length} beacon · ${placedDevs.length} dispositivi fissi${window._fpGfOn?` · ${gfs.length} geofence`:''} · ${(devHere||[]).length} indoor (live) · ${w}×${h}px</div>
       ${alarmsHere.length?`<div class="small" style="color:var(--bad);margin-top:8px">🚨 ${alarmsHere.length} allarme/i su questa piantina (ultimi 7gg)</div>`:'<div class="small mut" style="margin-top:8px">Nessun allarme indoor su questa piantina negli ultimi 7gg.</div>'}
-      ${window._fpAdmin?'<div class="small mut" style="margin-top:10px">• <b>📍 Posiziona beacon / dispositivo</b>: scegli un\'entità registrata, poi clicca sulla piantina.<br>• Disegna geofence con gli strumenti ⬡ in alto a sinistra (cerchio, rettangolo, poligono).</div>':''}
-      ${geofencePanel(gfs, window._fpAdmin)}`;
+      ${window._fpAdmin?`<div class="small mut" style="margin-top:10px">• <b>📍 Posiziona beacon / dispositivo</b>: scegli un'entità registrata, poi clicca sulla piantina.${window._fpGfOn?'<br>• Disegna geofence con gli strumenti ⬡ in alto a sinistra (cerchio, rettangolo, poligono).':''}</div>`:''}
+      ${window._fpGfOn?geofencePanel(gfs, window._fpAdmin):''}`;
     if(window._fpAdmin){
-      setupGeofenceTools(FPMAP,{xy:true, onSave:(name,kind,geom)=> saveIndoorGeofence(name,kind,geom,id)});
+      if(window._fpGfOn) setupGeofenceTools(FPMAP,{xy:true, onSave:(name,kind,geom)=> saveIndoorGeofence(name,kind,geom,id)});
       FPMAP.on('click',e=>{ if(window._bkPlace) fpPlaceAt(e.latlng, id); });
     }
   }catch(e){ host.innerHTML='<div class="pad" style="color:var(--bad)">'+esc(e.message)+'</div>'; }

@@ -5632,7 +5632,27 @@ pub async fn ui_features(State(st): State<AppState>, h: HeaderMap) -> R {
     Ok(Json(json!({
         "map_outdoor": on("view_mappa", true),
         "map_indoor":  on("view_piantine", false),
+        // Gestione aree geofence sulla Mappa allarmi e sulle Piantine: NASCOSTA di default
+        // (non serve al perimetro sicurezza). Il tenant_admin può attivarla. Sulla Mappa
+        // dispositivi (lavori sul campo) resta sempre disponibile, indipendente da questo flag.
+        "geofence_alarms": on("geofence_alarms", false),
     })))
+}
+/// Attiva/disattiva (tenant_admin) la gestione geofence su Mappa allarmi + Piantine.
+#[derive(Deserialize)] pub struct GeofenceAlarmsFlag { pub geofence_alarms: bool }
+pub async fn ui_features_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GeofenceAlarmsFlag>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
+    let existing: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='traccar' AND tool_code='alarm_map'")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let mut obj = match existing { Some(Value::Object(m)) => m, _ => serde_json::Map::new() };
+    obj.insert("geofence_alarms".into(), json!(if b.geofence_alarms {"si"} else {"no"}));
+    let cfg = Value::Object(obj);
+    sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'traccar','alarm_map',$2,NULL)
+         ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config=EXCLUDED.config, updated_at=now()")
+        .bind(tid).bind(&cfg).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, "tenant_admin", "geofence_alarms_set", json!({"geofence_alarms":b.geofence_alarms})).await;
+    Ok(Json(json!({"ok":true,"geofence_alarms":b.geofence_alarms})))
 }
 
 /// Visibilità voci di menu mappa (superadmin): legge/scrive i flag view_mappa/view_piantine

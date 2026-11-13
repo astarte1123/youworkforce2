@@ -49,10 +49,17 @@ La vecchia pagina **Mappa** (con toggle interno) è stata divisa in due voci di 
   dispositivi live, geofence, presenza. È condivisa perché i device (es. Teltonika GH-5200)
   generano allarmi SOS/man-down **e** sono asset di campo.
 
-Su entrambe le mappe (e sulle Piantine) resta attiva la **gestione completa delle aree
-geofence** (disegno ⬡, rinomina, colore, modifica forma, associa device/eventi, elimina) —
-riservata ai `tenant_admin`. Nella Mappa allarmi il campo **"Colore area Geofence"** è
-allineato agli altri campi della barra (Dal / Al / Tipo).
+La **gestione delle aree geofence** (disegno ⬡, rinomina, colore, modifica forma, associa
+device/eventi, elimina) è riservata ai `tenant_admin` e ha visibilità differenziata:
+
+- **Mappa dispositivi** (lavori sul campo): **sempre disponibile**.
+- **Mappa allarmi** e **Piantine**: **nascosta di default** (non serve al perimetro
+  sicurezza). Il `tenant_admin` può attivarla con il pulsante **▢ Mostra aree geofence**
+  nella barra (e **▣ Nascondi** per rimetterla via). La scelta è **per-tenant** e persistente
+  (flag `geofence_alarms`, endpoint `POST /api/ui/features`, default `false`).
+
+Quando attiva, nella Mappa allarmi il campo **"Colore area Geofence"** è allineato agli altri
+campi della barra (Dal / Al / Tipo).
 
 ### Piantine — posizionamento unificato
 
