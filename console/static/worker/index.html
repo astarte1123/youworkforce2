@@ -72,6 +72,8 @@ function app(){
 
     <div><h3 style="margin:4px 2px 10px">Oggi · ordini assegnati</h3><div id="orders" class="col"></div></div>
 
+    <div id="patrolsSec" style="display:none"><h3 style="margin:4px 2px 10px">Ronde</h3><div id="patrols" class="col"></div></div>
+
     <div><h3 style="margin:4px 2px 10px">Azioni</h3><div class="col" style="gap:10px">
       <button class="act" onclick="openNote()"><span class="ic">${ICON.mic}</span>
         <span class="grow">Detta una nota di lavoro</span><span class="tag" id="noteBadge"></span></button>
@@ -81,7 +83,7 @@ function app(){
     <div class="small mut center" style="margin-top:8px">Input manuale sempre disponibile. La dettatura usa il riconoscimento vocale del browser; se assente o negato, scrivi a mano.</div>
     <div id="diaryList" class="col" style="gap:8px;margin-top:10px"></div></div>
   </div>`;
-  renderCheckin(); loadOrders(); renderShift(); loadPlans(); loadDiary(); flushNotes();
+  renderCheckin(); loadOrders(); renderShift(); loadPlans(); loadDiary(); flushNotes(); loadPatrols();
   renderTracking();
   // ripristina la condivisione posizione se era attiva (o se è in corso un turno)
   let want=false; try{ want=localStorage.getItem('yw_track')==='1'; }catch(e){}
@@ -183,6 +185,47 @@ async function loadOrders(){
   flushDrafts();
 }
 async function oAct(id,act,v){ try{ await api('/orders/'+id+'/'+act,{method:'POST',body:JSON.stringify({version:v})}); toast('Avviato','ok'); loadOrders(); }catch(e){toast(e.message,'bad');} }
+// ---- ronde (giri) ----
+let PATROL_ROUND=null;
+async function loadPatrols(){
+  const sec=$('#patrolsSec'); const box=$('#patrols');
+  const routes=await api('/patrol-routes').catch(()=>null);
+  if(routes===null){ sec.style.display='none'; return; } // modulo non attivo
+  sec.style.display='block';
+  const active=routes.filter(r=>r.active!==false);
+  if(PATROL_ROUND){ return renderRound(); }
+  box.innerHTML = active.length? active.map(r=>`<div class="card pad">
+    <div class="spread"><b>${esc(r.name)}</b><span class="tag">${r.checkpoints.length} punti</span></div>
+    <div class="small mut" style="margin:4px 0 10px">${r.checkpoints.map(c=>esc(c.name)).join(' → ')||'nessun checkpoint'}</div>
+    <button class="btn block" onclick="startRound('${r.id}')">Avvia ronda</button></div>`).join('')
+    : '<div class="card pad mut center">Nessun giro disponibile</div>';
+}
+async function startRound(rid){ try{ PATROL_ROUND=await api('/patrol-routes/'+rid+'/rounds',{method:'POST',body:'{}'}); renderRound(); }catch(e){toast(e.message,'bad');} }
+function renderRound(){ const r=PATROL_ROUND, box=$('#patrols'); if(!r)return loadPatrols();
+  box.innerHTML=`<div class="card pad">
+    <div class="spread"><b>${esc(r.route_name)}</b><span class="tag">${r.done}/${r.total}</span></div>
+    <div class="col" style="gap:8px;margin-top:10px">${r.checkpoints.map(c=>`<div class="spread" style="border:1px solid var(--line,#ddd);border-radius:8px;padding:8px">
+      <span>${c.position}. <b>${esc(c.name)}</b> <span class="tag">${c.kind}</span>${c.punched?` <span style="color:${c.punched.ok?'var(--ok,#16a34a)':'var(--bad,#c0392b)'}">${c.punched.ok?'✓':'✗'}</span>`:''}</span>
+      ${c.punched&&c.punched.ok?'':`<button class="btn small" onclick="doPunch('${c.id}','${c.kind}')">punzona</button>`}</div>`).join('')}</div>
+    <button class="btn block" style="margin-top:12px" onclick="closeRound()">Chiudi ronda</button>
+    <button class="btn block ghost" style="margin-top:6px" onclick="PATROL_ROUND=null;loadPatrols()">Annulla</button></div>`;
+}
+async function doPunch(cid,kind){
+  const body={checkpoint_id:cid};
+  if(kind==='gps'){
+    if(!navigator.geolocation){ toast('GPS non disponibile','bad'); return; }
+    toast('Rilevo posizione…','warn');
+    try{ const pos=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{enableHighAccuracy:true,timeout:10000}));
+      body.lat=pos.coords.latitude; body.lon=pos.coords.longitude; }catch(e){ toast('Posizione negata','bad'); return; }
+  } else {
+    const code=await askPrompt('Codice '+kind.toUpperCase()+' (scansiona o digita)'); if(!code)return; body.code=code;
+  }
+  try{ const r=await api('/patrol-rounds/'+PATROL_ROUND.id+'/punch',{method:'POST',body:JSON.stringify(body)});
+    PATROL_ROUND=r.round; toast(r.ok?'Punzonatura OK':('KO: '+(r.reason||'non valido')), r.ok?'ok':'bad'); renderRound(); }catch(e){toast(e.message,'bad');}
+}
+async function closeRound(){ try{ const r=await api('/patrol-rounds/'+PATROL_ROUND.id+'/close',{method:'POST',body:'{}'});
+  toast('Ronda '+r.status+(r.status==='completato'?' ✓':' (incompleta)'), r.status==='completato'?'ok':'warn');
+  PATROL_ROUND=null; loadPatrols(); }catch(e){toast(e.message,'bad');} }
 // --- Esecuzione intervento (PWA «Oggi») ---
 let _exMat=[];
 function openOrderExec(o){

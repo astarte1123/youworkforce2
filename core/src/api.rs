@@ -4238,6 +4238,239 @@ pub async fn custom_role_unassign_group(State(st): State<AppState>, h: HeaderMap
     Ok(Json(json!({"ok":true})))
 }
 
+// ============================ Campo Slice 2 — Ronde e punzonature (giri) ============================
+const PATROL_KINDS: &[&str] = &["qr","nfc","beacon","gps"];
+
+// ---- Configurazione (pianificatore) ----
+pub async fn list_patrol_routes(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let routes = sqlx::query("SELECT r.id,r.name,r.site_id,r.window_minutes,r.active,s.name as site_name FROM app.patrol_routes r LEFT JOIN app.sites s ON s.id=r.site_id ORDER BY r.name").fetch_all(&mut *tx).await.map_err(ise)?;
+    let cps = sqlx::query("SELECT id,route_id,name,position,kind,code,lat,lon,radius_m FROM app.patrol_checkpoints ORDER BY position,name").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = routes.iter().map(|r| {
+        let rid: Uuid = r.get("id");
+        let checkpoints: Vec<Value> = cps.iter().filter(|c| c.get::<Uuid,_>("route_id")==rid).map(|c| json!({
+            "id":c.get::<Uuid,_>("id"),"name":c.get::<String,_>("name"),"position":c.get::<i32,_>("position"),
+            "kind":c.get::<String,_>("kind"),"code":c.try_get::<String,_>("code").ok(),
+            "lat":c.try_get::<f64,_>("lat").ok(),"lon":c.try_get::<f64,_>("lon").ok(),"radius_m":c.get::<i32,_>("radius_m")})).collect();
+        json!({"id":rid,"name":r.get::<String,_>("name"),"site_id":r.try_get::<Uuid,_>("site_id").ok(),
+            "site_name":r.try_get::<String,_>("site_name").ok(),"window_minutes":r.try_get::<i32,_>("window_minutes").ok(),
+            "active":r.get::<bool,_>("active"),"checkpoints":checkpoints})
+    }).collect();
+    Ok(Json(json!(out)))
+}
+#[derive(Deserialize)] pub struct PatrolRouteReq { pub name: String, #[serde(default)] pub site_id: Option<Uuid>, #[serde(default)] pub window_minutes: Option<i32>, #[serde(default)] pub active: Option<bool> }
+pub async fn create_patrol_route(State(st): State<AppState>, h: HeaderMap, Json(b): Json<PatrolRouteReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.patrol_routes(tenant_id,name,site_id,window_minutes) VALUES($1,$2,$3,$4) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(b.site_id).bind(b.window_minutes)
+        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "giro già esistente (nome)"))?;
+    let id = row.ok_or_else(|| err(StatusCode::CONFLICT,"già esistente"))?.get::<Uuid,_>("id");
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "create_patrol_route", json!({"name":b.name})).await;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn update_patrol_route(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<PatrolRouteReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.patrol_routes SET name=$2, site_id=$3, window_minutes=$4, active=COALESCE($5,active) WHERE id=$1")
+        .bind(id).bind(b.name.trim()).bind(b.site_id).bind(b.window_minutes).bind(b.active).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "giro inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_patrol_route(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.patrol_routes WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "giro inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)] pub struct CheckpointReq { pub name: String, pub kind: String, #[serde(default)] pub code: Option<String>, #[serde(default)] pub lat: Option<f64>, #[serde(default)] pub lon: Option<f64>, #[serde(default)] pub radius_m: Option<i32>, #[serde(default)] pub position: Option<i32> }
+pub async fn create_checkpoint(State(st): State<AppState>, h: HeaderMap, Path(rid): Path<Uuid>, Json(b): Json<CheckpointReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    if !PATROL_KINDS.contains(&b.kind.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "tipo checkpoint sconosciuto (qr/nfc/beacon/gps)")); }
+    if b.kind=="gps" && (b.lat.is_none()||b.lon.is_none()) { return Err(err(StatusCode::BAD_REQUEST, "checkpoint GPS richiede lat/lon")); }
+    if (b.kind=="qr"||b.kind=="nfc"||b.kind=="beacon") && b.code.as_deref().unwrap_or("").trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "checkpoint qr/nfc/beacon richiede un codice")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.patrol_routes WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"giro inesistente")); }
+    let pos = match b.position { Some(p) => p, None => {
+        let m: i32 = sqlx::query_scalar("SELECT COALESCE(MAX(position),0)::int FROM app.patrol_checkpoints WHERE route_id=$1").bind(rid).fetch_one(&mut *tx).await.map_err(ise)?;
+        m + 1 } };
+    let row = sqlx::query("INSERT INTO app.patrol_checkpoints(tenant_id,route_id,name,position,kind,code,lat,lon,radius_m) VALUES($1,$2,$3,$4,$5,$6,$7,$8,COALESCE($9,50)) RETURNING id")
+        .bind(tid).bind(rid).bind(b.name.trim()).bind(pos).bind(&b.kind).bind(b.code.as_deref()).bind(b.lat).bind(b.lon).bind(b.radius_m)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    let id = row.get::<Uuid,_>("id");
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn update_checkpoint(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<CheckpointReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    if !PATROL_KINDS.contains(&b.kind.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "tipo checkpoint sconosciuto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.patrol_checkpoints SET name=$2, kind=$3, code=$4, lat=$5, lon=$6, radius_m=COALESCE($7,radius_m), position=COALESCE($8,position) WHERE id=$1")
+        .bind(id).bind(b.name.trim()).bind(&b.kind).bind(b.code.as_deref()).bind(b.lat).bind(b.lon).bind(b.radius_m).bind(b.position).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "checkpoint inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_checkpoint(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.patrol_checkpoints WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "checkpoint inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---- Esecuzione (qualunque utente del tenant col modulo attivo) ----
+async fn round_view(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, rid: Uuid) -> Result<Value, (StatusCode,String)> {
+    let r = sqlx::query("SELECT ro.id,ro.route_id,ro.user_id,ro.started_at,ro.ended_at,ro.status,rt.name as route_name,rt.window_minutes FROM app.patrol_rounds ro JOIN app.patrol_routes rt ON rt.id=ro.route_id WHERE ro.id=$1")
+        .bind(rid).fetch_optional(&mut **tx).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND,"ronda inesistente"))?;
+    let route_id: Uuid = r.get("route_id");
+    let cps = sqlx::query("SELECT id,name,position,kind,code,lat,lon,radius_m FROM app.patrol_checkpoints WHERE route_id=$1 ORDER BY position,name").bind(route_id).fetch_all(&mut **tx).await.map_err(ise)?;
+    let punches = sqlx::query("SELECT checkpoint_id,method,punched_at,ok,note FROM app.patrol_punches WHERE round_id=$1").bind(rid).fetch_all(&mut **tx).await.map_err(ise)?;
+    let cpv: Vec<Value> = cps.iter().map(|c| {
+        let cid: Uuid = c.get("id");
+        let p = punches.iter().find(|p| p.get::<Uuid,_>("checkpoint_id")==cid);
+        json!({"id":cid,"name":c.get::<String,_>("name"),"position":c.get::<i32,_>("position"),"kind":c.get::<String,_>("kind"),
+            "code":c.try_get::<String,_>("code").ok(),"lat":c.try_get::<f64,_>("lat").ok(),"lon":c.try_get::<f64,_>("lon").ok(),"radius_m":c.get::<i32,_>("radius_m"),
+            "punched": p.map(|p| json!({"method":p.get::<String,_>("method"),"at":p.get::<chrono::DateTime<chrono::Utc>,_>("punched_at").to_rfc3339(),"ok":p.get::<bool,_>("ok"),"note":p.try_get::<String,_>("note").ok()}))})
+    }).collect();
+    let total = cps.len();
+    let done = cpv.iter().filter(|c| c["punched"].get("ok").and_then(|v| v.as_bool())==Some(true)).count();
+    Ok(json!({"id":rid,"route_id":route_id,"route_name":r.get::<String,_>("route_name"),"user_id":r.get::<Uuid,_>("user_id"),
+        "started_at":r.get::<chrono::DateTime<chrono::Utc>,_>("started_at").to_rfc3339(),
+        "ended_at":r.try_get::<chrono::DateTime<chrono::Utc>,_>("ended_at").ok().map(|d| d.to_rfc3339()),
+        "status":r.get::<String,_>("status"),"window_minutes":r.try_get::<i32,_>("window_minutes").ok(),
+        "checkpoints":cpv,"total":total,"done":done}))
+}
+pub async fn start_round(State(st): State<AppState>, h: HeaderMap, Path(rid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let act = sqlx::query_scalar::<_,bool>("SELECT active FROM app.patrol_routes WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?;
+    match act { None => return Err(err(StatusCode::NOT_FOUND,"giro inesistente")), Some(false) => return Err(err(StatusCode::BAD_REQUEST,"giro non attivo")), _ => {} }
+    let row = sqlx::query("INSERT INTO app.patrol_rounds(tenant_id,route_id,user_id) VALUES($1,$2,$3) RETURNING id")
+        .bind(tid).bind(rid).bind(s.user_id).fetch_one(&mut *tx).await.map_err(ise)?;
+    let round_id = row.get::<Uuid,_>("id");
+    let v = round_view(&mut tx, round_id).await?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(v))
+}
+pub async fn list_rounds(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // pianificatore vede tutte; altri vedono le proprie
+    let rows = if is_planner(&s) {
+        sqlx::query("SELECT ro.id,ro.route_id,ro.user_id,ro.started_at,ro.ended_at,ro.status,rt.name as route_name,u.email FROM app.patrol_rounds ro JOIN app.patrol_routes rt ON rt.id=ro.route_id JOIN app.users u ON u.id=ro.user_id ORDER BY ro.started_at DESC LIMIT 200").fetch_all(&mut *tx).await.map_err(ise)?
+    } else {
+        sqlx::query("SELECT ro.id,ro.route_id,ro.user_id,ro.started_at,ro.ended_at,ro.status,rt.name as route_name,u.email FROM app.patrol_rounds ro JOIN app.patrol_routes rt ON rt.id=ro.route_id JOIN app.users u ON u.id=ro.user_id WHERE ro.user_id=$1 ORDER BY ro.started_at DESC LIMIT 200").bind(s.user_id).fetch_all(&mut *tx).await.map_err(ise)?
+    };
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"route_id":r.get::<Uuid,_>("route_id"),
+        "route_name":r.get::<String,_>("route_name"),"email":r.get::<String,_>("email"),
+        "started_at":r.get::<chrono::DateTime<chrono::Utc>,_>("started_at").to_rfc3339(),
+        "ended_at":r.try_get::<chrono::DateTime<chrono::Utc>,_>("ended_at").ok().map(|d| d.to_rfc3339()),
+        "status":r.get::<String,_>("status")})).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn get_round(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let v = round_view(&mut tx, id).await?;
+    if !is_planner(&s) && v["user_id"].as_str() != Some(&s.user_id.to_string()) { return Err(err(StatusCode::FORBIDDEN, "non è la tua ronda")); }
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(v))
+}
+#[derive(Deserialize)] pub struct PunchReq { pub checkpoint_id: Uuid, #[serde(default)] pub code: Option<String>, #[serde(default)] pub lat: Option<f64>, #[serde(default)] pub lon: Option<f64>, #[serde(default)] pub note: Option<String> }
+pub async fn punch(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<PunchReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let round = sqlx::query("SELECT user_id,route_id,status FROM app.patrol_rounds WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND,"ronda inesistente"))?;
+    if round.get::<Uuid,_>("user_id") != s.user_id && !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "non è la tua ronda")); }
+    if round.get::<String,_>("status") != "in_corso" { return Err(err(StatusCode::BAD_REQUEST, "ronda già chiusa")); }
+    let route_id: Uuid = round.get("route_id");
+    let cp = sqlx::query("SELECT kind,code,lat,lon,radius_m FROM app.patrol_checkpoints WHERE id=$1 AND route_id=$2")
+        .bind(b.checkpoint_id).bind(route_id).fetch_optional(&mut *tx).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST,"checkpoint non appartiene al giro"))?;
+    let kind: String = cp.get("kind");
+    // verifica per tipo
+    let (ok, method, reason) = match kind.as_str() {
+        "qr"|"nfc"|"beacon" => {
+            let exp = cp.try_get::<String,_>("code").ok().unwrap_or_default();
+            let got = b.code.clone().unwrap_or_default();
+            (!exp.is_empty() && exp==got, kind.clone(), if exp==got {""} else {"codice non corrispondente"})
+        }
+        "gps" => {
+            match (cp.try_get::<f64,_>("lat").ok(), cp.try_get::<f64,_>("lon").ok(), b.lat, b.lon) {
+                (Some(clat),Some(clon),Some(ulat),Some(ulon)) => {
+                    let d = haversine_m(clat,clon,ulat,ulon);
+                    let rad = cp.get::<i32,_>("radius_m") as f64;
+                    (d<=rad, "gps".to_string(), if d<=rad {""} else {"fuori raggio"})
+                }
+                _ => (false, "gps".to_string(), "posizione mancante")
+            }
+        }
+        _ => (false, "manual".to_string(), "tipo ignoto")
+    };
+    sqlx::query("INSERT INTO app.patrol_punches(tenant_id,round_id,checkpoint_id,user_id,method,lat,lon,ok,note) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                 ON CONFLICT (round_id,checkpoint_id) DO UPDATE SET method=EXCLUDED.method,lat=EXCLUDED.lat,lon=EXCLUDED.lon,ok=EXCLUDED.ok,note=EXCLUDED.note,punched_at=now()")
+        .bind(tid).bind(id).bind(b.checkpoint_id).bind(s.user_id).bind(&method).bind(b.lat).bind(b.lon).bind(ok).bind(b.note.as_deref())
+        .execute(&mut *tx).await.map_err(ise)?;
+    let v = round_view(&mut tx, id).await?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":ok,"reason":reason,"round":v})))
+}
+pub async fn close_round(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let round = sqlx::query("SELECT ro.user_id,ro.route_id,ro.started_at,ro.status,rt.window_minutes FROM app.patrol_rounds ro JOIN app.patrol_routes rt ON rt.id=ro.route_id WHERE ro.id=$1")
+        .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND,"ronda inesistente"))?;
+    if round.get::<Uuid,_>("user_id") != s.user_id && !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "non è la tua ronda")); }
+    if round.get::<String,_>("status") != "in_corso" { return Err(err(StatusCode::BAD_REQUEST, "ronda già chiusa")); }
+    let route_id: Uuid = round.get("route_id");
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM app.patrol_checkpoints WHERE route_id=$1").bind(route_id).fetch_one(&mut *tx).await.map_err(ise)?;
+    let done: i64 = sqlx::query_scalar("SELECT count(*) FROM app.patrol_punches WHERE round_id=$1 AND ok=true").bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
+    // finestra: se impostata, controlla che la chiusura sia entro i minuti dall'avvio
+    let mut in_window = true;
+    if let Ok(win) = round.try_get::<i32,_>("window_minutes") {
+        let started: chrono::DateTime<chrono::Utc> = round.get("started_at");
+        let elapsed = (chrono::Utc::now() - started).num_minutes();
+        in_window = elapsed <= win as i64;
+    }
+    let status = if total>0 && done==total && in_window { "completato" } else { "incompleto" };
+    sqlx::query("UPDATE app.patrol_rounds SET ended_at=$2, status=$3 WHERE id=$1")
+        .bind(id).bind(chrono::Utc::now()).bind(status).execute(&mut *tx).await.map_err(ise)?;
+    let v = round_view(&mut tx, id).await?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "close_round", json!({"round":id,"status":status,"done":done,"total":total})).await;
+    Ok(Json(json!({"status":status,"in_window":in_window,"round":v})))
+}
+
 // ============================ Fase 2 — Forza lavoro + turni ============================
 fn parse_ts(s: &str) -> Result<chrono::DateTime<chrono::Utc>, (StatusCode, String)> {
     chrono::DateTime::parse_from_rfc3339(s).map(|d| d.with_timezone(&chrono::Utc))

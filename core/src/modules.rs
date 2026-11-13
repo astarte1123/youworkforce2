@@ -34,6 +34,8 @@ pub const REGISTRY: &[Manifest] = &[
         description:"Ordini di lavoro, cantieri, interventi." },
     Manifest{ code:"consuntivi", name:"Ore, spese e consuntivi", requires:&[], provides:&["timesheets"],
         description:"Ore, spese, consuntivi di lavoro." },
+    Manifest{ code:"giri", name:"Ronde e punzonature", requires:&[], provides:&["patrols"],
+        description:"Giri di controllo: checkpoint QR/NFC/beacon/GPS, punzonature, compliance." },
     Manifest{ code:"assistant", name:"Assistente YouWorker.ai e diario vocale", requires:&[], provides:&["ai"],
         description:"AI attore nei processi + diario vocale." },
     Manifest{ code:"qualifiche", name:"Qualifiche e scadenze", requires:&[], provides:&["qualifications"],

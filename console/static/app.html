@@ -42,6 +42,7 @@ const NAV = [
   {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
   // --- Lavoro sul campo ---
   {k:'ordini',    t:'Ordini di lavoro', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
+  {k:'ronde',     t:'Ronde', ico:'route', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['giri'], grp:'work'},
   {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], mod:['consuntivi'], grp:'work'},
   {k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], mod:['workforce'], grp:'work'},
   {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'work'},
@@ -255,7 +256,7 @@ function route(){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,ronde:vRonde,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -1298,6 +1299,54 @@ function schedLabel(o){ if(!o.scheduled_start)return'<span class="mut">—</span
   const d=a.toLocaleDateString('it-IT',{weekday:'short',day:'2-digit',month:'2-digit'});
   const hh=a.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
   return `${d} ${hh}${z?'–'+z.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}):''}`; }
+async function vRonde(v){
+  const [routes,rounds]=await Promise.all([api('/patrol-routes').catch(()=>[]),api('/patrol-rounds').catch(()=>[])]);
+  const sites=await api('/sites').catch(()=>[]);
+  const canCfg=can(['pianificatore','tenant_admin']);
+  const stChip=s=>`<span class="chip ${s==='completato'?'ok':(s==='incompleto'?'bad':'')}">${esc(s)}</span>`;
+  v.innerHTML=`<div class="page-h"><div><h1>Ronde</h1><div class="mut">giri di controllo · checkpoint QR/NFC/beacon/GPS · punzonature</div></div>${canCfg?'<button class="btn" onclick="ronNew()">+ nuovo giro</button>':''}</div>
+  <div class="grid g2">
+    <div class="card pad"><h2>Giri configurati (${routes.length})</h2>
+      ${routes.map(r=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:8px">
+        <div class="spread"><b>${esc(r.name)} ${r.active?'':'<span class="chip bad">inattivo</span>'}</b>
+          <span>${canCfg?`<button class="btn ghost small" onclick="ronCp('${r.id}','${esc(r.name).replace(/'/g,"&#39;")}')">checkpoint (${r.checkpoints.length})</button><button class="btn-ico btn ghost" onclick="ronDel('${r.id}')">${ICON.x}</button>`:`<span class="small mut">${r.checkpoints.length} checkpoint</span>`}</span></div>
+        <div class="small mut" style="margin-top:4px">${r.site_name?('📍 '+esc(r.site_name)+' · '):''}${r.window_minutes?('finestra '+r.window_minutes+' min · '):''}${r.checkpoints.map(c=>esc(c.name)+' ['+c.kind+']').join(' → ')||'nessun checkpoint'}</div>
+      </div>`).join('')||'<div class="small mut" style="margin-top:8px">Nessun giro. Crea un giro e aggiungi i checkpoint.</div>'}
+    </div>
+    <div class="card pad"><h2>Ronde eseguite (${rounds.length})</h2>
+      <table class="table" style="margin-top:8px"><thead><tr><th>Giro</th><th>Operatore</th><th>Avvio</th><th>Stato</th></tr></thead>
+      <tbody>${rounds.map(r=>`<tr style="cursor:pointer" onclick="ronView('${r.id}')"><td>${esc(r.route_name)}</td><td class="small">${esc(r.email)}</td><td class="small mut">${r.started_at?new Date(r.started_at).toLocaleString():''}</td><td>${stChip(r.status)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessuna ronda</td></tr>'}</tbody></table>
+    </div>
+  </div>`;
+  v._sites=sites;
+}
+async function ronNew(){ const n=await askPrompt('Nome giro?'); if(!n)return; const w=await askPrompt('Finestra max in minuti (opz.)?')||null;
+  try{await api('/patrol-routes',{method:'POST',body:JSON.stringify({name:n,window_minutes:w?parseInt(w):null})}); toast('Giro creato','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function ronDel(id){ if(!await askConfirm('Eliminare il giro? (ronde e checkpoint inclusi)'))return; try{await api('/patrol-routes/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function ronCp(rid,rname){ const r=(await api('/patrol-routes').catch(()=>[])).find(x=>x.id===rid); if(!r)return;
+  drawer('Checkpoint — '+rname, `<div class="col" style="gap:8px">
+    ${r.checkpoints.map(c=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:6px"><span>${c.position}. <b>${esc(c.name)}</b> <span class="chip">${c.kind}</span> <span class="small mut">${c.kind==='gps'?((c.lat||'?')+','+(c.lon||'?')+' r'+c.radius_m+'m'):esc(c.code||'')}</span></span><button class="btn-ico btn ghost" onclick="ronCpDel('${c.id}','${rid}','${esc(rname).replace(/'/g,"&#39;")}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">nessun checkpoint</div>'}
+    <hr><div class="small mut">Nuovo checkpoint</div>
+    <label class="small">Nome<input id="cpN"></label>
+    <label class="small">Tipo<select id="cpK" onchange="ronCpKind()"><option value="qr">QR</option><option value="nfc">NFC</option><option value="beacon">Beacon</option><option value="gps">GPS</option></select></label>
+    <div id="cpCode"><label class="small">Codice atteso (QR/NFC/beacon)<input id="cpC"></label></div>
+    <div id="cpGps" style="display:none"><div class="row" style="gap:6px"><label class="small grow">Lat<input id="cpLat"></label><label class="small grow">Lon<input id="cpLon"></label><label class="small" style="width:90px">Raggio m<input id="cpR" value="50"></label></div></div>
+    <button class="btn" onclick="ronCpAdd('${rid}','${esc(rname).replace(/'/g,"&#39;")}')">+ aggiungi checkpoint</button></div>`);
+}
+function ronCpKind(){ const k=$('#cpK').value; $('#cpCode').style.display=(k==='gps')?'none':'block'; $('#cpGps').style.display=(k==='gps')?'block':'none'; }
+async function ronCpAdd(rid,rname){ const k=$('#cpK').value; const body={name:$('#cpN').value,kind:k};
+  if(k==='gps'){ body.lat=parseFloat($('#cpLat').value); body.lon=parseFloat($('#cpLon').value); body.radius_m=parseInt($('#cpR').value||'50'); } else { body.code=$('#cpC').value; }
+  try{await api('/patrol-routes/'+rid+'/checkpoints',{method:'POST',body:JSON.stringify(body)}); toast('Checkpoint aggiunto','ok'); closeDrawer&&closeDrawer(); ronCp(rid,rname);}catch(e){toast(e.message,'bad');} }
+async function ronCpDel(cid,rid,rname){ try{await api('/patrol-checkpoints/'+cid,{method:'DELETE'}); toast('Rimosso','ok'); closeDrawer&&closeDrawer(); ronCp(rid,rname);}catch(e){toast(e.message,'bad');} }
+async function ronView(id){ const r=await api('/patrol-rounds/'+id).catch(()=>null); if(!r)return;
+  drawer('Ronda — '+esc(r.route_name), `<div class="col" style="gap:8px">
+    <div>Operatore: <b>${esc((r.user_id||'').slice(0,8))}</b> · Stato: <span class="chip ${r.status==='completato'?'ok':(r.status==='incompleto'?'bad':'')}">${esc(r.status)}</span> · ${r.done}/${r.total}</div>
+    <div class="small mut">Avvio: ${r.started_at?new Date(r.started_at).toLocaleString():''}${r.ended_at?(' · Fine: '+new Date(r.ended_at).toLocaleString()):''}${r.window_minutes?(' · finestra '+r.window_minutes+' min'):''}</div>
+    <table class="table"><thead><tr><th>#</th><th>Checkpoint</th><th>Tipo</th><th>Punzonatura</th></tr></thead>
+    <tbody>${r.checkpoints.map(c=>`<tr><td>${c.position}</td><td>${esc(c.name)}</td><td><span class="chip">${c.kind}</span></td>
+      <td>${c.punched?(`<span class="chip ${c.punched.ok?'ok':'bad'}">${c.punched.ok?'OK':'KO'}</span> <span class="small mut">${new Date(c.punched.at).toLocaleTimeString()} · ${c.punched.method}</span>`):'<span class="small mut">—</span>'}</td></tr>`).join('')}</tbody></table>
+  </div>`);
+}
 async function vOrdini(v){
   const O=await api('/orders').catch(()=>[]);
   const canCreate=can(['pianificatore','tenant_admin']);
