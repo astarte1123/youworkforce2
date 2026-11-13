@@ -1327,11 +1327,13 @@ async function newOrder(){
   const [sites,users]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[])]);
   const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
   drawer('Nuovo ordine', `<div class="col">${orderFormFields(null,sites,workers)}
+      <label class="small mut">Checklist (una voce per riga)<textarea id="o_cl" style="width:100%;height:60px" placeholder="Verifica impianto&#10;Sostituisci pezzo&#10;Test finale"></textarea></label>
       <button class="btn block" id="o_save">Crea ordine</button><div class="cfg-msg small"></div></div>`);
   $('#o_save').onclick=async()=>{
     const m=$('.cfg-msg');
+    const checklist=($('#o_cl').value||'').split('\n').map(x=>x.trim()).filter(Boolean);
     const b={title:$('#o_title').value,site_id:$('#o_site').value||null,assigned_user:$('#o_asg').value||null,
-      instructions:$('#o_instr').value||null,scheduled_start:toISO($('#o_ss').value),scheduled_end:toISO($('#o_se').value),priority:+$('#o_pri').value};
+      instructions:$('#o_instr').value||null,scheduled_start:toISO($('#o_ss').value),scheduled_end:toISO($('#o_se').value),priority:+$('#o_pri').value,checklist};
     if(!b.title){m.textContent='titolo richiesto';m.style.color='var(--bad)';return;}
     try{ await api('/orders',{method:'POST',body:JSON.stringify(b)});
       toast('Ordine creato','ok'); closeDrawer(); route(); }catch(e){m.textContent=e.message;m.style.color='var(--bad)';} };
@@ -1358,6 +1360,13 @@ async function openOrder(id){
     <div class="small mut">Quando</div><div style="margin-bottom:12px">${schedLabel(o)}</div>
     <div class="small mut">Istruzioni</div><div style="margin-bottom:16px">${esc(o.instructions||'—')}</div>
     ${o.outcome?`<div class="small mut">Esito</div><div style="margin-bottom:16px">${esc(o.outcome)}</div>`:''}
+    ${(o.arrived_at||o.work_started_at||o.work_minutes||(o.checklist&&o.checklist.length)||(o.materials&&o.materials.length)||o.outcome_kind)?`
+      <div class="card pad" style="margin-bottom:14px">
+        <b class="small">Esecuzione</b>
+        <div class="small mut" style="margin-top:4px">
+          ${o.arrived_at?`Arrivo ${new Date(o.arrived_at).toLocaleString('it-IT')}`:''}${o.work_started_at?` · Avvio ${new Date(o.work_started_at).toLocaleTimeString('it-IT')}`:''}${o.work_minutes?` · ${o.work_minutes} min`:''}${o.outcome_kind?` · <b>${esc(o.outcome_kind)}</b>`:''}</div>
+        ${(o.checklist&&o.checklist.length)?`<div class="small" style="margin-top:6px">${o.checklist.map(c=>`${c.done?'✓':'▢'} ${esc(c.label)}`).join('<br>')}</div>`:''}
+        ${(o.materials&&o.materials.length)?`<div class="small mut" style="margin-top:6px">Materiali: ${o.materials.map(mm=>esc((mm.descr||'')+' '+(mm.qta||'')+(mm.unita||''))).join(', ')}</div>`:''}</div>`:''}
     <div class="col">${acts||'<div class="chip">nessuna azione disponibile</div>'}${editBtn}</div>
     ${AI_FEAT.interventi_assist?`<div class="row" style="gap:6px;margin-top:12px"><button class="btn ghost small" onclick="aiOrderBrief('${id}',this)">✦ Brief AI</button></div><div id="aiOrdOut"></div>`:''}
     ${((mine||planner)&&(o.state==='in_corso'||o.state==='completato'))?`
@@ -3225,12 +3234,12 @@ async function vAnagrafiche(v){
       <table class="table"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
       <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip">${esc(u.role)}</span></td>
         <td style="text-align:right"><button class="btn ghost small" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'>gestisci</button></td></tr>`).join('')}</tbody></table></div>
-    <div class="card"><div class="card-h"><h2>Sedi (${sites.length})</h2><a onclick="siteNew()">+ aggiungi</a></div>
-      <table class="table"><thead><tr><th>Nome</th><th></th></tr></thead>
-      <tbody>${sites.map(s=>`<tr><td>${esc(s.name)}</td>
-        <td style="text-align:right"><button class="btn ghost small" onclick="siteRen('${s.id}','${esc(s.name)}')">rinomina</button>
+    <div class="card"><div class="card-h"><h2>Sedi (${sites.length})</h2><a onclick="siteForm()">+ aggiungi</a></div>
+      <table class="table"><thead><tr><th>Nome</th><th>Indirizzo</th><th></th></tr></thead>
+      <tbody>${sites.map(s=>`<tr><td>${esc(s.name)}</td><td class="small mut">${esc(s.address||'—')}${(s.lat!=null&&s.lon!=null)?' · 📍':''}${s.access_notes?' · 🔑':''}</td>
+        <td style="text-align:right"><button class="btn ghost small" onclick='siteForm(${JSON.stringify(s).replace(/'/g,"&#39;")})'>gestisci</button>
         <button class="btn-ico btn ghost" onclick="siteDel('${s.id}')">${ICON.x}</button></td></tr>`).join('')
-        ||'<tr><td colspan="2" class="empty">nessuna sede</td></tr>'}</tbody></table></div>
+        ||'<tr><td colspan="3" class="empty">nessuna sede</td></tr>'}</tbody></table></div>
   </div>
   <div class="card pad" style="margin-top:16px"><div class="spread"><h2>Squadre (${teams.length})</h2><a onclick="teamNew()">+ nuova squadra</a></div>
     <div class="grid g2" style="margin-top:10px">${teams.map(t=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px">
@@ -3294,8 +3303,19 @@ async function userSave(id,scoped){
 }
 async function userDel(id){ if(!await askConfirm('Eliminare utente?'))return;
   try{await api('/users/'+id,{method:'DELETE'}); toast('Eliminato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
-async function siteNew(){ const n=await askPrompt('Nome sede?'); if(!n)return;
-  try{await api('/sites',{method:'POST',body:JSON.stringify({name:n})}); toast('Sede creata','ok'); route();}catch(e){toast(e.message,'bad');} }
+// Form sede: nome + indirizzo + coordinate + indicazioni d'accesso (opzionali).
+function siteForm(s){ s=s||{};
+  drawer(s.id?'Sede · '+esc(s.name):'Nuova sede', `<div class="col" style="gap:10px">
+    <label class="small mut">Nome<input id="stName" value="${esc(s.name||'')}"></label>
+    <label class="small mut">Indirizzo (facoltativo)<input id="stAddr" value="${esc(s.address||'')}" placeholder="Via, civico, città"></label>
+    <div class="row" style="gap:8px"><label class="small mut grow">Lat<input id="stLat" type="number" step="any" value="${s.lat!=null?s.lat:''}"></label>
+      <label class="small mut grow">Lon<input id="stLon" type="number" step="any" value="${s.lon!=null?s.lon:''}"></label></div>
+    <label class="small mut">Indicazioni d'accesso (visibili solo agli autorizzati)<textarea id="stAcc" style="width:100%;height:60px" placeholder="es. chiave in portineria, codice cancello…">${esc(s.access_notes||'')}</textarea></label>
+    <button class="btn" onclick="siteSave('${s.id||''}')">Salva</button><div class="cfg-msg small"></div></div>`);
+}
+async function siteSave(id){ const m=$('.cfg-msg'); const name=$('#stName').value.trim(); if(!name){ m.textContent='nome richiesto'; m.style.color='var(--bad)'; return; }
+  const b={name, address:$('#stAddr').value.trim()||null, lat:$('#stLat').value!==''?Number($('#stLat').value):null, lon:$('#stLon').value!==''?Number($('#stLon').value):null, access_notes:$('#stAcc').value.trim()||null};
+  try{ await api(id?('/sites/'+id):'/sites',{method:'POST',body:JSON.stringify(b)}); toast('Sede salvata','ok'); closeDrawer(); route(); }catch(e){ m.textContent=e.message; m.style.color='var(--bad)'; } }
 async function siteRen(id,cur){ const n=await askPrompt('Nuovo nome?',cur); if(!n||n===cur)return;
   try{await api('/sites/'+id,{method:'POST',body:JSON.stringify({name:n})}); toast('Rinominata','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function siteDel(id){ if(!await askConfirm('Eliminare sede?'))return;

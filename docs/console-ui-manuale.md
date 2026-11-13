@@ -174,6 +174,20 @@ larghezza (si impila progressivamente su schermi stretti), invece di essere addo
 sinistra. Il "Tempo medio risposta" mostra un'icona di **orologio (🕐)** quando il dato non è
 ancora disponibile (nel PDF resta "—").
 
+## 9. Lavoro sul campo — intervento (console + PWA)
+
+- **Sedi** (Utenti e sedi): oltre al nome, una sede ha **indirizzo, coordinate** (lat/lon) e
+  **indicazioni d'accesso** (es. "chiave in portineria"); queste ultime sono **visibili solo agli
+  autorizzati** (pianificatore/admin e il tecnico assegnato). Funziona anche con sedi solo-nome.
+- **Nuovo ordine**: si può allegare una **checklist** (una voce per riga).
+- **PWA «Oggi»** (`/worker/`): il tecnico apre l'intervento e registra **arrivo** e **avvio**
+  separati, spunta la **checklist**, scrive **note/report**, **ore** e **materiali**, carica
+  **foto** (online) e sceglie l'**esito**, poi invia il rapporto. Le note d'accesso compaiono in
+  evidenza. Se la rete cade, la **bozza di testo** resta in coda sul dispositivo (stato "in
+  attesa") e si sincronizza da sola; **le foto restano online** (non salvate offline).
+- **Revisione**: dal dettaglio ordine in console il responsabile vede esecuzione (arrivo/avvio/
+  ore/checklist/materiali/esito), report, allegati e firma.
+
 ## Note tecniche
 - File coinvolti: `console/static/app.html`, `console/static/app.js`, `console/static/app.css`.
 - Avvio console: dalla cartella `console/`, `./console.exe` (o `go run .`) → `:8081`,

@@ -176,12 +176,71 @@ async function loadOrders(){
   box.innerHTML=mine.map(o=>`<div class="card pad">
     <div class="spread"><b>${esc(o.title)}</b>${chip(o.state)}</div>
     ${sched(o)?`<div class="small" style="margin-top:4px">🕑 ${sched(o)}${o.priority>=3?' · <b style="color:var(--bad,#c0392b)">priorità alta</b>':''}</div>`:''}
-    <div class="small mut" style="margin:4px 0 10px">${esc(o.site||'—')} ${o.instructions?'· '+esc(o.instructions):''}</div>
-    ${o.state==='assegnato'?`<button class="btn block" onclick="oAct('${o.id}','start',${o.version})">${ICON.play} Avvia intervento</button>`:''}
-    ${o.state==='in_corso'?`<button class="btn ok block" onclick="oComplete('${o.id}',${o.version})">${ICON.check} Completa</button>`:''}
+    <div class="small mut" style="margin:4px 0 10px">${esc(o.site||'—')}${o.site_address?' · '+esc(o.site_address):''} ${o.instructions?'· '+esc(o.instructions):''}</div>
+    ${localStorage.getItem('yw_draft_'+o.id)?'<div class="small" style="color:var(--warn,#b45309);margin-bottom:6px">⏳ bozza in attesa di invio</div>':''}
+    <button class="btn block" onclick='openOrderExec(${JSON.stringify(o).replace(/'/g,"&#39;")})'>Apri intervento</button>
   </div>`).join('');
+  flushDrafts();
 }
 async function oAct(id,act,v){ try{ await api('/orders/'+id+'/'+act,{method:'POST',body:JSON.stringify({version:v})}); toast('Avviato','ok'); loadOrders(); }catch(e){toast(e.message,'bad');} }
+// --- Esecuzione intervento (PWA «Oggi») ---
+let _exMat=[];
+function openOrderExec(o){
+  _exMat=(o.materials||[]).slice();
+  const m=document.createElement('div'); m.className='modal'; m.onclick=e=>{ if(e.target===m) m.remove(); };
+  const cl=o.checklist||[];
+  const exec=(o.state==='in_corso'||o.state==='completato');
+  m.innerHTML=`<div class="sheet" style="max-height:88vh;overflow:auto">
+    <div class="spread"><b>${esc(o.title)}</b>${chip(o.state)}</div>
+    <div class="small mut" style="margin:4px 0">${esc(o.site||'—')}${o.site_address?' · '+esc(o.site_address):''}</div>
+    ${o.site_access?`<div class="card pad" style="background:#fdf0d4;border-left:3px solid #c7820a;margin:6px 0"><b class="small">🔑 Accesso</b><div class="small">${esc(o.site_access)}</div></div>`:''}
+    ${o.instructions?`<div class="small" style="margin:6px 0"><b>Istruzioni:</b> ${esc(o.instructions)}</div>`:''}
+    <div class="row" style="gap:6px;margin:8px 0">
+      <button class="btn ghost" ${o.arrived_at?'disabled':''} onclick="oArrive('${o.id}')">${o.arrived_at?'✓ Arrivato':'📍 Registra arrivo'}</button>
+      ${o.state==='assegnato'?`<button class="btn" onclick="oStartExec('${o.id}',${o.version})">▶ Avvia lavoro</button>`:''}</div>
+    ${exec?`
+      <div class="small mut">Checklist</div>
+      <div id="exCl">${cl.map((c,i)=>`<label class="row" style="gap:8px;align-items:center;margin:2px 0"><input type="checkbox" data-i="${i}" ${c.done?'checked':''}> <span class="small">${esc(c.label)}</span></label>`).join('')||'<span class="small mut">nessuna</span>'}</div>
+      <div class="small mut" style="margin-top:8px">Note / report</div>
+      <textarea id="exReport" style="width:100%;height:60px">${esc(o.report||'')}</textarea>
+      <div class="row" style="gap:6px;margin-top:6px;align-items:center"><span class="small mut">Ore (minuti)</span><input id="exMin" type="number" value="${o.work_minutes||''}" style="width:90px"></div>
+      <div class="small mut" style="margin-top:8px">Materiali</div>
+      <div id="exMat"></div>
+      <div class="row" style="gap:4px"><input id="exMd" placeholder="materiale" style="flex:1"><input id="exMq" type="number" placeholder="q" style="width:60px"><button class="btn ghost" onclick="exMatAdd()">+</button></div>
+      <div class="small mut" style="margin-top:8px">Foto (online)</div>
+      <div id="exAtt" class="small mut">—</div>
+      <div class="row" style="gap:6px"><input type="file" id="exFile" accept="image/*" capture="environment" style="font-size:12px;flex:1"><button class="btn ghost" onclick="exPhoto('${o.id}')">⬆</button></div>
+      <div class="row" style="gap:6px;margin-top:10px;align-items:center"><span class="small mut">Esito</span>
+        <select id="exOutcome" style="flex:1"><option value="completato">completato</option><option value="parziale">parziale</option><option value="cliente_assente">cliente assente</option><option value="accesso_impedito">accesso impedito</option><option value="ritorno">ritorno da programmare</option></select></div>
+      <div class="row" style="gap:6px;margin-top:10px"><button class="btn ghost" onclick="exSave('${o.id}',false)">💾 Salva bozza</button><button class="btn ok" onclick="exSave('${o.id}',true)">✓ Invia rapporto</button></div>
+    `:''}
+    <button class="btn ghost block" style="margin-top:12px" onclick="this.closest('.modal').remove()">Chiudi</button></div>`;
+  document.body.appendChild(m); if(exec){ exMatRender(); exAttLoad(o.id); }
+}
+async function oArrive(id){ try{ await api('/orders/'+id+'/arrive',{method:'POST',body:'{}'}); toast('Arrivo registrato','ok'); const m=document.querySelector('.modal'); if(m)m.remove(); loadOrders(); }catch(e){toast(e.message,'bad');} }
+async function oStartExec(id,v){ try{ await api('/orders/'+id+'/start',{method:'POST',body:JSON.stringify({version:v})}); toast('Lavoro avviato','ok'); const m=document.querySelector('.modal'); if(m)m.remove(); loadOrders(); }catch(e){toast(e.message,'bad');} }
+function exMatRender(){ const el=$('#exMat'); if(el) el.innerHTML=_exMat.map((mm,i)=>`<div class="small" style="display:flex;gap:6px;align-items:center">• ${esc(mm.descr||'')} ${mm.qta||''}${esc(mm.unita||'')} <button class="btn ghost" style="padding:0 6px" onclick="exMatDel(${i})">×</button></div>`).join('')||'<span class="small mut">—</span>'; }
+function exMatAdd(){ const d=$('#exMd').value.trim(); if(!d)return; _exMat.push({descr:d,qta:Number($('#exMq').value)||1,unita:'pz'}); $('#exMd').value='';$('#exMq').value=''; exMatRender(); }
+function exMatDel(i){ _exMat.splice(i,1); exMatRender(); }
+function exCollect(){ const cl=[...document.querySelectorAll('#exCl input[type=checkbox]')].map((c,i)=>({label:c.parentNode.innerText.trim(),done:c.checked}));
+  return {report:$('#exReport')?.value||'', checklist:cl, materials:_exMat, work_minutes:Number($('#exMin')?.value)||null, outcome_kind:$('#exOutcome')?.value}; }
+async function exSave(id,send){ const body=exCollect();
+  try{ await api('/orders/'+id+'/report',{method:'POST',body:JSON.stringify(body)});
+    try{ localStorage.removeItem('yw_draft_'+id); }catch(e){}
+    if(send){ const o=(ORDERS||[]).find(x=>x.id===id)||{}; try{ await api('/orders/'+id+'/complete',{method:'POST',body:JSON.stringify({version:o.version,outcome:body.outcome_kind||'completato'})}); toast('Rapporto inviato','ok'); }catch(e){ toast('Salvato, chiusura: '+e.message,'warn'); } }
+    else toast('Bozza salvata (server)','ok');
+    const m=document.querySelector('.modal'); if(m)m.remove(); loadOrders();
+  }catch(e){ // offline: conserva SOLO i dati testuali (no foto/doc)
+    try{ localStorage.setItem('yw_draft_'+id, JSON.stringify(body)); }catch(_){}
+    toast('Offline: bozza in attesa (le foto restano online)','warn'); const m=document.querySelector('.modal'); if(m)m.remove(); loadOrders(); } }
+async function flushDrafts(){ for(const o of (ORDERS||[])){ const k='yw_draft_'+o.id; let d=null; try{ d=localStorage.getItem(k); }catch(e){}
+  if(d){ try{ await api('/orders/'+o.id+'/report',{method:'POST',body:d}); localStorage.removeItem(k); }catch(e){} } } }
+async function exAttLoad(id){ const el=$('#exAtt'); if(!el)return; try{ const A=await api('/orders/'+id+'/attachments');
+  el.innerHTML=(A||[]).filter(a=>a.kind!=='signature').map(a=>`<a href="/api/orders/attachments/${a.id}" target="_blank">${a.content_type&&a.content_type.startsWith('image/')?`<img src="/api/orders/attachments/${a.id}" style="width:44px;height:44px;object-fit:cover;border-radius:6px;margin:2px">`:'📄'}</a>`).join('')||'<span class="small mut">nessuna</span>'; }catch(e){ el.textContent='—'; } }
+async function exPhoto(id){ const f=$('#exFile'); const file=f&&f.files&&f.files[0]; if(!file){ toast('Scegli una foto','bad'); return; }
+  try{ const res=await fetch('/api/orders/'+id+'/attachments?'+new URLSearchParams({kind:'photo',filename:file.name}),{method:'POST',credentials:'include',headers:{'x-tenant-slug':store.slug,'x-csrf-token':csrfToken(),'content-type':file.type||'image/jpeg'},body:file});
+    if(!res.ok) throw new Error('HTTP '+res.status); f.value=''; toast('Foto caricata','ok'); exAttLoad(id);
+  }catch(e){ toast('Foto: '+e.message,'bad'); } }
 // Prompt non-bloccante (window.prompt è bloccato in alcune webview): bottom-sheet con Promise.
 function askPrompt(msg,val){ return new Promise(res=>{
   const m=document.createElement('div'); m.className='modal';
