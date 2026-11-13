@@ -1681,7 +1681,10 @@ async function wizardKit(model_code){
         <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.token)}');toast('Token copiato','ok')">copia token</button>
         <div class="small mut" style="margin-top:8px">URL ingress (Traccar event forwarding)</div>
         <div class="mono small" style="word-break:break-all;margin:4px 0">${esc(r.ingress_url)}</div>
-        <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.ingress_url)}');toast('URL copiato','ok')">copia URL</button></div>
+        <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.ingress_url)}');toast('URL copiato','ok')">copia URL</button>
+        ${r.osmand_url?`<div class="small mut" style="margin-top:8px">URL nativo OsmAnd/HTTP (senza server Traccar)</div>
+        <div class="mono small" style="word-break:break-all;margin:4px 0">${esc(r.osmand_url)}</div>
+        <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.osmand_url)}');toast('URL OsmAnd copiato','ok')">copia URL OsmAnd</button>`:''}</div>
       <div class="small mut">${esc(r.note||'')}</div>
       <button class="btn" onclick="closeDrawer();route()">Fatto</button></div>`);
     toast('Onboarding Kit generato','ok');

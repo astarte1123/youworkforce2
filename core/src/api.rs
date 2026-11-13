@@ -3213,7 +3213,8 @@ pub async fn dok_build(st: &AppState, tid: Uuid, actor: &str, b: DokReq) -> Resu
         "etypes": etypes, "routed_etypes": routed, "routed_group": b.group_id, "profile_id": profile_id,
         "token": secret, "handle": handle,
         "ingress_url": format!("{base}/api/ingress/traccar?token={secret}"),
-        "note": "Copia il token adesso: non sarà più mostrato. Registra l'external_id/IMEI sul Traccar del tenant e imposta l'event forwarding verso l'ingress."
+        "osmand_url": format!("{base}/api/ingress/osmand?token={secret}&id={}&lat={{lat}}&lon={{lon}}&timestamp={{unix}}", b.external_id.trim()),
+        "note": "Copia il token adesso: non sarà più mostrato. Due canali: Traccar (event forwarding verso ingress_url) OPPURE nativo OsmAnd/HTTP (osmand_url: smartphone/tracker che parlano OsmAnd, senza server Traccar)."
     }))
 }
 
@@ -5294,6 +5295,73 @@ pub async fn ingest_traccar_position(
     let Some(ext) = unique_id else { return Err(err(StatusCode::BAD_REQUEST, "device uniqueId mancante")); };
     let out = process_traccar_position(&st, tid, pos, ext).await.map_err(ise)?;
     Ok(Json(out))
+}
+
+/// Ingest NATIVO OsmAnd/HTTP (senza server Traccar): smartphone e tracker che parlano il
+/// protocollo OsmAnd inviano posizioni e allarmi via HTTP (GET/POST con query string).
+/// Autenticazione con token device-bound (anti-spoof, come gli altri ingress). Riusa la pipeline
+/// nativa: process_traccar_position (posizione/presenza) + persist_ingest (allarme->incidente),
+/// con orario-evento affidabile (timestamp del device) per l'attribuzione temporale.
+pub async fn ingest_osmand(
+    State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>,
+) -> R {
+    let token = h.get("x-ingest-token").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+        .or_else(|| q.get("token").cloned())
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing ingest token"))?;
+    let cred = resolve_ingest_token(&st, &token).await.ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
+    let tid = cred.tenant_id;
+    // gating: almeno un modulo dispositivi attivo sul tenant
+    let mut mod_ok=false; for m in DEVICE_MODS { if module_active(&st, tid, m).await { mod_ok=true; break; } }
+    if !mod_ok { return Err(err(StatusCode::FORBIDDEN, "nessun modulo dispositivi attivo")); }
+    // device-bound: external_id forzato (il payload non può spacciarsi per un altro device)
+    let ext = match cred.device_id { Some(did) => bound_device_external(&st, did).await, None => None }
+        .or_else(|| q.get("id").cloned()).or_else(|| q.get("deviceid").cloned())
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "device id mancante"))?;
+    // sorgente reale del device (per far combaciare la risoluzione in persist_ingest/position)
+    let dev_source: String = match cred.device_id {
+        Some(did) => sqlx::query_scalar("SELECT source FROM app.devices WHERE id=$1").bind(did).fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_else(|| "traccar".into()),
+        None => "traccar".into(),
+    };
+    let getf = |keys: &[&str]| -> Option<f64> { for k in keys { if let Some(v)=q.get(*k){ if let Ok(x)=v.parse::<f64>(){ return Some(x); } } } None };
+    let lat = getf(&["lat","latitude"]); let lon = getf(&["lon","longitude"]);
+    let battery = getf(&["batt","battery","batteryLevel"]);
+    let speed = getf(&["speed"]); let course = getf(&["bearing","heading","course"]);
+    let accuracy = getf(&["accuracy","hdop"]);
+    // timestamp -> RFC3339 (accetta unix secondi o ISO)
+    let ts_rfc = q.get("timestamp").or_else(|| q.get("time")).and_then(|s| {
+        if let Ok(secs)=s.parse::<i64>() { chrono::DateTime::<chrono::Utc>::from_timestamp(secs,0).map(|d| d.to_rfc3339()) }
+        else { chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&chrono::Utc).to_rfc3339()) }
+    });
+    let alarm = q.get("alarm").map(|s| s.to_string());
+    // 1) posizione (pipeline nativa) se coordinate presenti
+    let mut position = json!({"skipped":"no_coords"});
+    if let (Some(la),Some(lo)) = (lat,lon) {
+        let pos = json!({"latitude":la,"longitude":lo,"speed":speed,"course":course,
+            "attributes":{"batteryLevel":battery,"accuracy":accuracy},
+            "id": format!("osmand-{}-{}", ext, ts_rfc.clone().unwrap_or_default()),
+            "fixTime": ts_rfc.clone(), "source": dev_source});
+        // process_traccar_position filtra source='traccar': per device con quella sorgente aggiorna,
+        // altrimenti ignora (la posizione resta comunque nel payload dell'eventuale allarme).
+        if dev_source=="traccar" { position = process_traccar_position(&st, tid, &pos, &ext).await.map_err(ise)?; }
+        else { position = json!({"skipped":"source_non_traccar"}); }
+    }
+    // 2) allarme -> incidente (etype mappato; orario affidabile -> attribuzione temporale)
+    let mut incident = json!(null);
+    if let Some(al) = alarm.as_deref() {
+        let amap = tool_config(&st, tid, "traccar", "alarm_map").await;
+        let etype = map_traccar_etype(&amap, "", Some(al), battery);
+        let corr = format!("osmand-{}-{}", ext, &Uuid::new_v4().to_string()[..8]);
+        let src_evt = format!("osmand-evt-{}", Uuid::new_v4());
+        let payload = json!({"channel":"osmand","alarm":al,"lat":lat,"lon":lon,"battery":battery,"occurred_at":ts_rfc});
+        let r = persist_ingest(&st, tid, Normalized{
+            source: dev_source.clone(), source_event: src_evt.clone(), idem: src_evt,
+            etype, device_external_id: Some(ext.clone()), site_name:None,
+            lat, lon, accuracy_m: accuracy, correlation: corr, payload,
+            indoor:false, beacon_uid:None, zone:None }).await?;
+        incident = r.0;
+    }
+    Ok(Json(json!({"ok":true,"external_id":ext,"position":position,"incident":incident})))
 }
 
 /// Pipeline posizione condivisa da webhook (push) e poller API (pull): filtri #7,

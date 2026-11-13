@@ -300,6 +300,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/events", post(api::ingest_event))
         .route("/api/ingress/traccar", post(api::ingest_traccar))
         .route("/api/ingress/traccar/position", post(api::ingest_traccar_position))
+        .route("/api/ingress/osmand", get(api::ingest_osmand).post(api::ingest_osmand))
         .route("/api/devices/:id/positions", get(api::list_device_positions))
         .route("/api/geocode/reverse", get(api::reverse_geocode))
         .route("/api/devices/:id/command", post(api::device_command))
