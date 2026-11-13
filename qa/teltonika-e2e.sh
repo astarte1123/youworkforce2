@@ -63,6 +63,29 @@ LP=$(one "SELECT round(lat::numeric,3)||','||round(lon::numeric,3) FROM app.devi
 [ -z "$LP" ] && LP=$(one "SELECT round(last_lat::numeric,3)||','||round(last_lon::numeric,3) FROM app.devices WHERE id='$DID'" 2>/dev/null)
 echo "$LP" | grep -q "45.464" && ok "posizione ingerita (last pos ~45.464,9.190)" || no "pos ko" "$LP"
 
+# 2b) record con IO (telemetria): movement(240)=1 [1B], temp1(72)=235 [2B] -> attributes
+ACKIO=$(python - <<'PY'
+import socket,struct,os,time
+imei=os.environ["IMEI"].encode()
+s=socket.create_connection(("127.0.0.1",int(os.environ["TPORT"])),timeout=5)
+s.sendall(struct.pack(">H",len(imei))+imei); assert s.recv(1)==b"\x01"
+ts=int(time.time()*1000); lon=int(9.1900*1e7); lat=int(45.4647*1e7)  # ~55m dalla pos prec: supera min_move, sotto max_jump
+rec=struct.pack(">Q",ts)+b"\x00"+struct.pack(">ii",lon,lat)+struct.pack(">HHBH",0,0,8,0)
+rec+=b"\x00"          # event io id 0
+rec+=b"\x02"          # total io = 2
+rec+=b"\x01"+bytes([240,1])          # N1=1: id240=1 (movement)
+rec+=b"\x01"+struct.pack(">B",72)+struct.pack(">H",235)  # N2=1: id72=235 (temp1)
+rec+=b"\x00\x00"      # N4=0,N8=0
+data=b"\x08"+b"\x01"+rec+b"\x01"
+pkt=b"\x00\x00\x00\x00"+struct.pack(">I",len(data))+data+b"\x00\x00\x00\x00"
+s.sendall(pkt); ack=s.recv(4); print(struct.unpack(">I",ack)[0] if len(ack)==4 else -1); s.close()
+PY
+)
+[ "$ACKIO" = "1" ] && ok "record con IO ack" || no "io ack ko" "$ACKIO"
+sleep 1
+ATTR=$(one "SELECT attributes->'io'->>'240' || '|' || COALESCE(attributes->>'movement','') || '|' || (attributes->'io'->>'72') FROM app.device_positions WHERE device_id='$DID' ORDER BY received_at DESC LIMIT 1")
+echo "$ATTR" | grep -q "^1|1|235$" && ok "IO decodificati in attributes (movement=1, temp1=235, raw io)" || no "io attr ko" "$ATTR"
+
 # 3) Codec8 Extended con event IO 1 -> allarme -> incidente
 ACKE=$(python - <<'PY'
 import socket,struct,os,time

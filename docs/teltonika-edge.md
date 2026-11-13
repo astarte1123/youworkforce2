@@ -22,6 +22,11 @@ Ogni record entra nella **pipeline nativa** (la stessa di OsmAnd/HTTP):
 - **Posizione** → `process_traccar_position` (storico, ultima posizione, presenza geofence,
   primo-fix→attivo) per i device con `source='traccar'` (decode-edge).
 - **Batteria** → IO **113** (livello %).
+- **Telemetria IO** → tutti gli AVL IO del record finiscono in `attributes`: mappa grezza
+  `io:{<id>:<val>}` + alcuni nomi noti Teltonika (`ext_voltage_mv` 66, `battery_voltage_mv` 67,
+  `gsm_signal` 21, `gnss_status` 69, `sleep_mode` 200, `movement` 240, `odometer_total_m` 16,
+  `trip_odometer_m` 199, `din1/2/3` 1/2/3, `dout1/2` 179/180, `temp1/2/3_dc` 72/73/74). Supporta
+  set a 1/2/4/8 byte (Codec8) e id/contatori a 2 byte (Codec8E).
 - **Allarme** → se l'`event IO id` è mappato, `persist_ingest` crea l'incidente (etype via
   `alarm_map` Traccar; attribuzione temporale dall'orario del record). Mappa di **default**
   built-in: `1→sos` (DIN1/panico), `236→alarm`, `247→crash`, `246→tow`; override per-tenant
@@ -43,11 +48,12 @@ supportati; connessioni con IMEI non valido vengono chiuse subito.
 
 ## Prove
 
-`qa/teltonika-e2e.sh` **5/5**: IMEI sconosciuto rifiutato (0x00), IMEI censito accettato (0x01) +
-Codec8 con ACK record, posizione ingerita (ultima posizione aggiornata), Codec8 Extended con ACK,
-event IO mappato → incidente. Regressione verde (loneworker 15, patrols 14, custom-roles 16).
+`qa/teltonika-e2e.sh` **7/7**: IMEI sconosciuto rifiutato (0x00), IMEI censito accettato (0x01) +
+Codec8 con ACK record, posizione ingerita (ultima posizione aggiornata), **telemetria IO decodificata
+in attributes** (movement/temp/raw io), Codec8 Extended con ACK, event IO mappato → incidente.
+Regressione verde (loneworker 15, patrols 14, iot-mgmt 8).
 
 ## Prossimo possibile
 
-Decodifica IO estesa (temperatura, carburante, DIN/DOUT), comandi GPRS verso il device (codec 12),
-onboarding kit (DOK) che espone host:porta TCP nel riepilogo device.
+Comandi GPRS verso il device (codec 12), onboarding kit (DOK) che espone host:porta TCP nel
+riepilogo device, visualizzazione telemetria IO in console.

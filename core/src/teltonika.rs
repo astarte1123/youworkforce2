@@ -70,8 +70,9 @@ async fn handle(st: AppState, mut sock: TcpStream) -> std::io::Result<()> {
                         .unwrap_or_else(chrono::Utc::now).to_rfc3339();
                     // allarme: event IO id mappato via config tenant teltonika.io_alarm_map
                     let alarm = alarm_for(&st, tid, r.event_io).await;
+                    let io_attrs = io_attributes(&r.io);
                     crate::api::teltonika_ingest_one(&st, tid, &imei, &source, &ts_rfc,
-                        r.lat, r.lon, r.speed, r.course, r.battery, alarm).await;
+                        r.lat, r.lon, r.speed, r.course, r.battery, alarm, io_attrs).await;
                 }
                 sock.write_all(&n.to_be_bytes()).await?; // ack = num record accettati
             }
@@ -99,7 +100,28 @@ async fn alarm_for(st: &AppState, tid: uuid::Uuid, event_io: i64) -> Option<Stri
 }
 
 #[derive(Debug)]
-pub struct Rec { pub ts_ms: i64, pub lat: f64, pub lon: f64, pub speed: Option<f64>, pub course: Option<f64>, pub battery: Option<f64>, pub event_io: i64 }
+pub struct Rec { pub ts_ms: i64, pub lat: f64, pub lon: f64, pub speed: Option<f64>, pub course: Option<f64>, pub battery: Option<f64>, pub event_io: i64, pub io: Vec<(i64,i64)> }
+
+/// Converte gli IO AVL in attributi: mappa grezza `io:{id:val}` + alcuni nomi noti Teltonika.
+fn io_attributes(io: &[(i64,i64)]) -> serde_json::Value {
+    let mut raw = serde_json::Map::new();
+    let mut named = serde_json::Map::new();
+    for &(id, val) in io {
+        raw.insert(id.to_string(), serde_json::json!(val));
+        let name = match id {
+            66 => Some("ext_voltage_mv"), 67 => Some("battery_voltage_mv"),
+            21 => Some("gsm_signal"), 69 => Some("gnss_status"), 200 => Some("sleep_mode"),
+            240 => Some("movement"), 16 => Some("odometer_total_m"), 199 => Some("trip_odometer_m"),
+            1 => Some("din1"), 2 => Some("din2"), 3 => Some("din3"),
+            179 => Some("dout1"), 180 => Some("dout2"),
+            72 => Some("temp1_dc"), 73 => Some("temp2_dc"), 74 => Some("temp3_dc"),
+            _ => None,
+        };
+        if let Some(n) = name { named.insert(n.to_string(), serde_json::json!(val)); }
+    }
+    named.insert("io".to_string(), serde_json::Value::Object(raw));
+    serde_json::Value::Object(named)
+}
 
 struct Cur<'a> { b: &'a [u8], i: usize }
 impl<'a> Cur<'a> {
@@ -136,6 +158,7 @@ pub fn decode_avl(data: &[u8]) -> Result<Vec<Rec>, String> {
         let event_io = if ext { c.u16()? as i64 } else { c.u8()? as i64 };
         let _total = if ext { c.u16()? as usize } else { c.u8()? as usize };
         let mut battery: Option<f64> = None;
+        let mut io: Vec<(i64,i64)> = Vec::new();
         let mut read_set = |c: &mut Cur, vlen: usize| -> Result<(),String> {
             let n = if ext { c.u16()? as usize } else { c.u8()? as usize };
             for _ in 0..n {
@@ -144,6 +167,7 @@ pub fn decode_avl(data: &[u8]) -> Result<Vec<Rec>, String> {
                 let mut val: i64 = 0; for &x in raw { val = (val << 8) | x as i64; }
                 // IO 113 = livello batteria % (FMB/GH). Fallback: 68 battery current ignorato.
                 if id == 113 { battery = Some(val as f64); }
+                io.push((id, val));
             }
             Ok(())
         };
@@ -156,7 +180,7 @@ pub fn decode_avl(data: &[u8]) -> Result<Vec<Rec>, String> {
             let nx = c.u16()? as usize;
             for _ in 0..nx { let _id = c.u16()?; let l = c.u16()? as usize; let _ = c.take(l)?; }
         }
-        out.push(Rec{ ts_ms, lat, lon, speed: Some(speed), course: Some(angle), battery, event_io });
+        out.push(Rec{ ts_ms, lat, lon, speed: Some(speed), course: Some(angle), battery, event_io, io });
     }
     let count2 = c.u8()? as usize;
     if count2 != count { return Err(format!("mismatch record count {count} != {count2}")); }

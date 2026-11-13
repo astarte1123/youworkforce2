@@ -5939,10 +5939,13 @@ pub async fn any_device_module(st: &AppState, tid: Uuid) -> bool {
 /// Ingest di un record AVL Teltonika decodificato: posizione (pipeline nativa) + eventuale allarme.
 #[allow(clippy::too_many_arguments)]
 pub async fn teltonika_ingest_one(st: &AppState, tid: Uuid, ext: &str, source: &str, ts_rfc: &str,
-    lat: f64, lon: f64, speed: Option<f64>, course: Option<f64>, battery: Option<f64>, alarm: Option<String>) {
+    lat: f64, lon: f64, speed: Option<f64>, course: Option<f64>, battery: Option<f64>, alarm: Option<String>,
+    io_attrs: Value) {
     if source == "traccar" {
+        let mut attrs = match io_attrs { Value::Object(m) => m, _ => serde_json::Map::new() };
+        attrs.insert("batteryLevel".into(), json!(battery));
         let pos = json!({"latitude":lat,"longitude":lon,"speed":speed,"course":course,
-            "attributes":{"batteryLevel":battery},
+            "attributes": Value::Object(attrs),
             "id": format!("telt-{}-{}", ext, ts_rfc), "fixTime": ts_rfc, "source": source});
         let _ = process_traccar_position(st, tid, &pos, ext).await;
     }
