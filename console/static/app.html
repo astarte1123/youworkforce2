@@ -3226,7 +3226,8 @@ async function grpHandoffDel(gid,id){ try{ await api('/handoff-notes/'+id,{metho
 
 // ---------------- Anagrafiche: utenti e sedi ----------------
 async function vAnagrafiche(v){
-  const [users,sites,teams,assets,ugroups,agroups]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),api('/teams').catch(()=>[]),api('/assets').catch(()=>[]),api('/user-groups').catch(()=>[]),api('/groups').catch(()=>[])]);
+  const [users,sites,teams,assets,ugroups,agroups,caps]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),api('/teams').catch(()=>[]),api('/assets').catch(()=>[]),api('/user-groups').catch(()=>[]),api('/groups').catch(()=>[]),api('/capabilities').catch(()=>null)]);
+  v._caps=caps;
   v._users=users;
   v.innerHTML=`<div class="page-h"><div><h1>Utenti e sedi</h1><div class="mut">anagrafiche del tenant</div></div></div>
   <div class="grid g2">
@@ -3259,6 +3260,11 @@ async function vAnagrafiche(v){
       ${agroups.length?`<div class="row" style="gap:6px;margin-top:6px"><select id="ugimp_${g.id}" class="grow small">${agroups.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>
         <button class="btn ghost small" onclick="ugImport('${g.id}')">→ importa in gruppo allarme</button></div>`:''}
       </div>`).join('')||'<div class="small mut">Nessun gruppo. Crea insiemi di persone da riusare ovunque.</div>'}</div></div>
+  ${caps?`<div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Permessi (capability)</h2><div class="small mut">cosa può fare ogni ruolo. Il default riproduce i ruoli di sempre; puoi aggiungere/togliere capability per questo tenant. <b>neretto</b> = modificato rispetto al default.</div></div><a onclick="capReset()">↺ ripristina default</a></div>
+    <div style="overflow-x:auto;margin-top:10px"><table class="table"><thead><tr><th>Ruolo</th>${caps.catalog.map(c=>`<th title="${esc(c.desc)}">${esc(c.code)}</th>`).join('')}</tr></thead>
+    <tbody>${caps.roles.map(role=>`<tr><td><b>${esc(role)}</b></td>${caps.matrix[role].map(x=>`<td style="text-align:center">
+      <input type="checkbox" ${x.granted?'checked':''} ${(role==='tenant_admin'&&x.cap==='admin')?'disabled title="sempre attivo (anti-lockout)"':''} onchange="capSet('${role}','${x.cap}',this.checked)">
+      ${x.override?'<div class="small" style="color:var(--accent);font-weight:700">●</div>':''}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>`:''}
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Asset / mezzi (${assets.length})</h2><a onclick="assetNew()">+ nuovo asset</a></div>
     <table class="table"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th></th></tr></thead>
     <tbody>${assets.map(a=>`<tr><td>${esc(a.name)}</td><td><span class="chip">${esc(a.kind)}</span></td><td class="small mut">${esc(a.identifier||'—')}</td>
@@ -3274,6 +3280,8 @@ async function teamNew(){ const n=await askPrompt('Nome squadra?'); if(!n)return
 async function teamDel(id){ if(!await askConfirm('Eliminare squadra?'))return; try{await api('/teams/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function teamAdd(tid){ const uid=$('#tm_'+tid).value; if(!uid)return; try{await api('/teams/'+tid+'/members',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Aggiunto','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function teamRm(tid,uid){ try{await api('/teams/'+tid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function capSet(role,cap,granted){ try{await api('/capabilities',{method:'POST',body:JSON.stringify({role,capability:cap,granted})}); toast('Permesso aggiornato','ok'); route();}catch(e){toast(e.message,'bad'); route();} }
+async function capReset(){ if(!await askConfirm('Ripristinare tutti i permessi ai valori di default?'))return; try{await api('/capabilities',{method:'DELETE'}); toast('Permessi ripristinati','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function ugNew(){ const n=await askPrompt('Nome gruppo di persone?'); if(!n)return; const k=await askPrompt('Tipo (squadra/reparto/zona/turno...)?','squadra')||'squadra';
   try{await api('/user-groups',{method:'POST',body:JSON.stringify({name:n,kind:k})}); toast('Gruppo creato','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function ugRename(g){ const n=await askPrompt('Nuovo nome?',g.name); if(!n)return; const k=await askPrompt('Tipo?',g.kind)||g.kind;

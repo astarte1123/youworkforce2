@@ -211,6 +211,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/user-groups/:id", post(api::update_user_group).delete(api::delete_user_group))
         .route("/api/user-groups/:id/members", post(api::user_group_member_add))
         .route("/api/user-groups/:id/members/:uid", axum::routing::delete(api::user_group_member_del))
+        .route("/api/capabilities", get(api::list_capabilities).post(api::set_capability).delete(api::reset_capabilities))
         .route("/api/devices", get(api::list_devices).post(api::create_device))
         .route("/api/devices/provision", post(api::provision_device))
         .route("/api/devices/onboarding-kit", post(api::device_onboarding_kit))

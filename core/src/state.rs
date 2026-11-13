@@ -26,6 +26,8 @@ pub struct Session {
     pub role: String,             // "superadmin" for control plane
     pub is_super: bool,
     pub impersonator: Option<String>, // super email when this is an impersonation session
+    #[allow(dead_code)]
+    pub caps: Vec<String>,            // capability effettive (default ruolo ± override tenant) — Fase 2
 }
 
 #[derive(Clone, Debug)]

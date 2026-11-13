@@ -60,9 +60,8 @@ CRUD, add/del membri, import nel gruppo allarme (+ idempotenza), isolamento acme
   tutte le migrazioni: il rollback previsto è **via flag** (preserva i dati), non il downgrade
   del binario.
 
-## Roadmap (progettate, NON implementate)
+## Roadmap
 
-- **Fase 2 — Capability layer**: permessi come capability (`can(cap)`) mappate oggi sui ruoli,
-  per sganciare le autorizzazioni dai 7 ruoli fissi.
-- **Fase 3 — Ruoli personalizzati per tenant**: ogni tenant definisce ruoli propri = insiemi di
-  capability, assegnabili a utenti e/o a questi gruppi di persone.
+- **Fase 2 — Capability layer**: FATTA → [capability-layer.md](capability-layer.md) (mig 0073).
+- **Fase 3 — Ruoli personalizzati per tenant** (progettata, non fatta): ogni tenant definisce
+  ruoli propri = insiemi di capability, assegnabili a utenti e/o a questi gruppi di persone.

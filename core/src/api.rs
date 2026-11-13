@@ -124,13 +124,17 @@ async fn session_of(state: &AppState, h: &HeaderMap) -> Option<Session> {
         "SELECT user_id, tenant_id, email, role, is_super, impersonator
          FROM app.sessions WHERE token=$1 AND expires_at > now()")
         .bind(&tok).fetch_optional(&state.owner_pool).await.ok().flatten()?;
+    let tenant_id = r.try_get::<Option<Uuid>, _>("tenant_id").ok().flatten();
+    let role: String = r.get("role");
+    let caps = match tenant_id { Some(tid) => effective_caps(state, tid, &role).await, None => vec![] };
     Some(Session {
         user_id: r.get("user_id"),
-        tenant_id: r.try_get::<Option<Uuid>, _>("tenant_id").ok().flatten(),
+        tenant_id,
         email: r.get("email"),
-        role: r.get("role"),
+        role,
         is_super: r.get("is_super"),
         impersonator: r.try_get::<Option<String>, _>("impersonator").ok().flatten(),
+        caps,
     })
 }
 
@@ -275,7 +279,7 @@ pub async fn superadmin_login(State(st): State<AppState>, h: HeaderMap, Json(b):
                 let tok = auth::new_token();
                 let csrf = auth::new_token();
                 let sess = Session { user_id: id, tenant_id: None, email: b.email.clone(),
-                    role: "superadmin".into(), is_super: true, impersonator: None };
+                    role: "superadmin".into(), is_super: true, impersonator: None, caps: vec![] };
                 persist_session(&st, &tok, &sess).await;
                 (StatusCode::OK, set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"role":"superadmin","csrf":csrf}))).into_response()
             } else {
@@ -438,6 +442,7 @@ pub async fn super_impersonate(State(st): State<AppState>, h: HeaderMap, Path(ti
     let sess = Session {
         user_id: u.get("user_id"), tenant_id: Some(tid), email: u.get("email"),
         role: "tenant_admin".into(), is_super: false, impersonator: Some(s.email.clone()),
+        caps: effective_caps(&st, tid, "tenant_admin").await,
     };
     let tok = auth::new_token(); let csrf = auth::new_token();
     persist_session(&st, &tok, &sess).await;
@@ -453,7 +458,7 @@ pub async fn impersonate_stop(State(st): State<AppState>, h: HeaderMap) -> impl 
     let sa = sqlx::query("SELECT email FROM app.superadmins WHERE email=$1").bind(&imp).fetch_optional(&st.owner_pool).await.ok().flatten();
     if sa.is_none() { return err(StatusCode::FORBIDDEN, "impersonator non valido").into_response(); }
     if let Some(t) = get_cookie(&h, "yw_session") { let _ = sqlx::query("DELETE FROM app.sessions WHERE token=$1").bind(&t).execute(&st.owner_pool).await; }
-    let sess = Session { user_id: s.user_id, tenant_id: None, email: imp.clone(), role: "superadmin".into(), is_super: true, impersonator: None };
+    let sess = Session { user_id: s.user_id, tenant_id: None, email: imp.clone(), role: "superadmin".into(), is_super: true, impersonator: None, caps: vec![] };
     let tok = auth::new_token(); let csrf = auth::new_token();
     persist_session(&st, &tok, &sess).await;
     if let Some(tid) = s.tenant_id {
@@ -2594,7 +2599,7 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
                 }
             }
             let csrf = auth::new_token();
-            let sess = Session { user_id: uid, tenant_id: Some(tid), email: b.email.clone(), role: role.clone(), is_super: false, impersonator: None };
+            let sess = Session { user_id: uid, tenant_id: Some(tid), email: b.email.clone(), role: role.clone(), is_super: false, impersonator: None, caps: effective_caps(&st, tid, &role).await };
             persist_session(&st, &tok, &sess).await;
             (StatusCode::OK, set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"role":role,"tenant":slug,"csrf":csrf}))).into_response()
         }
@@ -2607,7 +2612,7 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
 
 pub async fn me(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = session_of(&st, &h).await.ok_or_else(|| err(StatusCode::UNAUTHORIZED, "no session"))?;
-    Ok(Json(json!({"email":s.email,"role":s.role,"is_super":s.is_super,"tenant_id":s.tenant_id,"impersonator":s.impersonator})))
+    Ok(Json(json!({"email":s.email,"role":s.role,"is_super":s.is_super,"tenant_id":s.tenant_id,"impersonator":s.impersonator,"caps":s.caps})))
 }
 
 pub async fn logout(State(st): State<AppState>, h: HeaderMap) -> impl IntoResponse {
@@ -2644,7 +2649,7 @@ pub async fn list_sites(State(st): State<AppState>, h: HeaderMap) -> R {
     let rows = sqlx::query("SELECT id,name,address,lat,lon,access_notes FROM app.sites ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     // access_notes (indicazioni d'accesso) solo agli autorizzati (pianificatore/admin)
-    let can_access = is_planner(&s.role);
+    let can_access = is_planner(&s);
     let out: Vec<Value> = rows.iter().map(|r| json!({
         "id":r.get::<Uuid,_>("id"), "name":r.get::<String,_>("name"),
         "address": r.try_get::<String,_>("address").ok(),
@@ -2763,8 +2768,39 @@ pub async fn list_users(State(st): State<AppState>, h: HeaderMap) -> R {
 // ============================ Gestione (Fase 1) ============================
 // Anagrafiche e operazioni che mancavano: dispositivi, sedi, utenti, gruppi di
 // allarme + routing, assegnazione/note incidenti, check-in in centrale.
+// ---- Fase 2: capability layer -------------------------------------------------
+// Catalogo capability (coarse, allineato ai controlli concentrati di oggi).
+pub const CAPABILITIES: &[(&str,&str)] = &[
+    ("admin",   "Amministrazione: impostazioni, utenti, dispositivi, gruppi, configurazione escalation"),
+    ("plan",    "Pianificazione: ordini/interventi, turni"),
+    ("approve", "Approvazione consuntivi"),
+];
+/// Mappa di DEFAULT ruolo -> capability (riproduce ESATTAMENTE il comportamento storico).
+fn default_role_caps(role: &str) -> Vec<&'static str> {
+    match role {
+        "tenant_admin" => vec!["admin","plan","approve"],
+        "pianificatore" => vec!["plan"],
+        "responsabile" => vec!["approve"],
+        _ => vec![],
+    }
+}
+/// Capability effettive = default del ruolo ± override per-tenant (granted true/false).
+pub async fn effective_caps(st: &AppState, tid: Uuid, role: &str) -> Vec<String> {
+    let mut set: std::collections::BTreeSet<String> =
+        default_role_caps(role).into_iter().map(|c| c.to_string()).collect();
+    if let Ok(rows) = sqlx::query("SELECT capability, granted FROM app.role_capabilities WHERE tenant_id=$1 AND role=$2")
+        .bind(tid).bind(role).fetch_all(&st.owner_pool).await {
+        for r in rows {
+            let cap: String = r.get("capability");
+            if r.get::<bool,_>("granted") { set.insert(cap); } else { set.remove(&cap); }
+        }
+    }
+    set.into_iter().collect()
+}
+fn has_cap(s: &Session, cap: &str) -> bool { s.caps.iter().any(|c| c == cap) }
+
 fn admin_only(s: &Session) -> Result<(), (StatusCode, String)> {
-    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "riservato all'admin del tenant")); }
+    if !has_cap(s, "admin") { return Err(err(StatusCode::FORBIDDEN, "riservato all'admin del tenant")); }
     Ok(())
 }
 const USER_ROLES: &[&str] = &["tenant_admin","operatore","pianificatore","responsabile","lavoratore","reperibile","auditor"];
@@ -4020,6 +4056,60 @@ pub(crate) async fn audit(st: &AppState, tid: Uuid, actor: &str, action: &str, d
         .bind(tid).bind(actor).bind(action).bind(detail).execute(&st.owner_pool).await;
 }
 
+// ---- Fase 2: gestione capability per ruolo (override per-tenant) ----
+pub async fn list_capabilities(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let catalog: Vec<Value> = CAPABILITIES.iter().map(|(c,d)| json!({"code":c,"desc":d})).collect();
+    // matrice effettiva ruolo x capability + flag "override" (diverso dal default)
+    let mut matrix = serde_json::Map::new();
+    for role in USER_ROLES {
+        let eff = effective_caps(&st, tid, role).await;
+        let def: Vec<&str> = default_role_caps(role);
+        let row: Vec<Value> = CAPABILITIES.iter().map(|(c,_)| {
+            let has = eff.iter().any(|x| x==c);
+            let is_def = def.contains(c);
+            json!({"cap":c,"granted":has,"default":is_def,"override":has!=is_def})
+        }).collect();
+        matrix.insert(role.to_string(), json!(row));
+    }
+    Ok(Json(json!({"catalog":catalog,"roles":USER_ROLES,"matrix":matrix})))
+}
+#[derive(Deserialize)] pub struct CapReq { pub role: String, pub capability: String, pub granted: bool }
+pub async fn set_capability(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CapReq>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    if !USER_ROLES.contains(&b.role.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "ruolo sconosciuto")); }
+    if !CAPABILITIES.iter().any(|(c,_)| *c==b.capability) { return Err(err(StatusCode::BAD_REQUEST, "capability sconosciuta")); }
+    // guardia anti-lockout: non togliere 'admin' a tenant_admin
+    if b.role=="tenant_admin" && b.capability=="admin" && !b.granted {
+        return Err(err(StatusCode::BAD_REQUEST, "non si puo' togliere 'admin' a tenant_admin"));
+    }
+    // se granted coincide col default -> rimuovi l'override (torna al default)
+    let is_def = default_role_caps(&b.role).contains(&b.capability.as_str());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    if b.granted == is_def {
+        sqlx::query("DELETE FROM app.role_capabilities WHERE tenant_id=$1 AND role=$2 AND capability=$3")
+            .bind(tid).bind(&b.role).bind(&b.capability).execute(&mut *tx).await.map_err(ise)?;
+    } else {
+        sqlx::query("INSERT INTO app.role_capabilities(tenant_id,role,capability,granted) VALUES($1,$2,$3,$4)
+                     ON CONFLICT (tenant_id,role,capability) DO UPDATE SET granted=EXCLUDED.granted, updated_at=now()")
+            .bind(tid).bind(&b.role).bind(&b.capability).bind(b.granted).execute(&mut *tx).await.map_err(ise)?;
+    }
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "set_capability", json!({"role":b.role,"capability":b.capability,"granted":b.granted})).await;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn reset_capabilities(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.role_capabilities WHERE tenant_id=$1").bind(tid).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "reset_capabilities", json!({})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
 // ============================ Fase 2 — Forza lavoro + turni ============================
 fn parse_ts(s: &str) -> Result<chrono::DateTime<chrono::Utc>, (StatusCode, String)> {
     chrono::DateTime::parse_from_rfc3339(s).map(|d| d.with_timezone(&chrono::Utc))
@@ -4090,7 +4180,7 @@ pub async fn create_shift_plan(State(st): State<AppState>, h: HeaderMap, Json(b)
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     need_workforce(&st, tid).await?;
-    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
     let (a,z) = (parse_ts(&b.starts_at)?, parse_ts(&b.ends_at)?);
     if z <= a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -4142,7 +4232,7 @@ pub async fn shift_plan_action(State(st): State<AppState>, h: HeaderMap, Path(id
         "confirm" => sqlx::query("UPDATE app.shift_plans SET state='confermato' WHERE id=$1 AND user_id=$2 AND state='pianificato'")
             .bind(id).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected(),
         // pianificatore/admin annulla
-        "cancel" => { if !is_planner(&s.role) { let _=tx.rollback().await; return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+        "cancel" => { if !is_planner(&s) { let _=tx.rollback().await; return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
             sqlx::query("UPDATE app.shift_plans SET state='annullato' WHERE id=$1 AND state<>'annullato'")
                 .bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected() }
         _ => { let _=tx.rollback().await; return Err(err(StatusCode::BAD_REQUEST, "azione non valida")); }
@@ -4153,7 +4243,7 @@ pub async fn shift_plan_action(State(st): State<AppState>, h: HeaderMap, Path(id
 }
 pub async fn delete_shift_plan(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.shift_plans WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
@@ -4182,7 +4272,7 @@ pub async fn create_oncall(State(st): State<AppState>, h: HeaderMap, Json(b): Js
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     need_workforce(&st, tid).await?;
-    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
     let (a,z) = (parse_ts(&b.starts_at)?, parse_ts(&b.ends_at)?);
     if z <= a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -4193,7 +4283,7 @@ pub async fn create_oncall(State(st): State<AppState>, h: HeaderMap, Json(b): Js
 }
 pub async fn delete_oncall(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.oncall WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
@@ -6100,8 +6190,8 @@ pub fn tenant_slug(st: &AppState, h: &HeaderMap) -> Option<String> {
 }
 
 // ======================= Prompt 9: ordini + consuntivi =======================
-fn is_planner(role: &str) -> bool { matches!(role, "pianificatore"|"tenant_admin") }
-fn is_approver(role: &str) -> bool { matches!(role, "responsabile"|"tenant_admin") }
+fn is_planner(s: &Session) -> bool { has_cap(s, "plan") }
+fn is_approver(s: &Session) -> bool { has_cap(s, "approve") }
 
 pub async fn module_active(st: &AppState, tid: Uuid, code: &str) -> bool {
     sqlx::query_scalar::<_, String>("SELECT state FROM app.tenant_modules WHERE tenant_id=$1 AND module_code=$2")
@@ -6632,7 +6722,7 @@ pub struct NewOrder { pub title: String, pub site_id: Option<Uuid>, pub instruct
 pub async fn create_order(State(st): State<AppState>, h: HeaderMap, Json(b): Json<NewOrder>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
-    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
     if !module_active(&st, tid, "interventi").await { return Err(err(StatusCode::FORBIDDEN, "modulo interventi non abilitato")); }
     let ss = b.scheduled_start.as_deref().map(parse_ts).transpose()?;
     let se = b.scheduled_end.as_deref().map(parse_ts).transpose()?;
@@ -6661,7 +6751,7 @@ pub struct EditOrder { pub version: i32, pub title: Option<String>, pub site_id:
 pub async fn edit_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<EditOrder>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
-    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
     let ss = b.scheduled_start.as_deref().filter(|x| !x.is_empty()).map(parse_ts).transpose()?;
     let se = b.scheduled_end.as_deref().filter(|x| !x.is_empty()).map(parse_ts).transpose()?;
     if let (Some(a),Some(z))=(ss,se) { if z<=a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); } }
@@ -6729,7 +6819,7 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
         "site_address": r.try_get::<String,_>("site_address").ok(),
         "site_lat": r.try_get::<f64,_>("site_lat").ok(), "site_lon": r.try_get::<f64,_>("site_lon").ok(),
         // indicazioni d'accesso: solo a chi è autorizzato (assegnatario/lavoratore o pianificatore)
-        "site_access": if is_planner(&s.role) || s.role=="lavoratore" { r.try_get::<String,_>("site_access").ok() } else { None }
+        "site_access": if is_planner(&s) || s.role=="lavoratore" { r.try_get::<String,_>("site_access").ok() } else { None }
     })).collect();
     Ok(Json(json!(out)))
 }
@@ -6759,7 +6849,7 @@ async fn order_transition(st: &AppState, s: &Session, iid: Uuid, b: &OrderAction
 
 pub async fn order_assign(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
     let uid = b.user_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "user_id richiesto"))?;
     order_transition(&st, &s, id, &b, "assegnato",
         Some("assigned_user"), Some(SetVal::Id(uid)), &["bozza","assegnato"]).await
@@ -6771,7 +6861,7 @@ pub async fn order_start(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let owner: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.work_orders WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.flatten();
     let _ = tx.commit().await;
-    if owner != Some(s.user_id) && !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "non assegnato a te")); }
+    if owner != Some(s.user_id) && !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "non assegnato a te")); }
     let r = order_transition(&st, &s, id, &b, "in_corso", None, None, &["assegnato"]).await?;
     // avvio lavoro = timestamp dedicato (distinto dall'arrivo)
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -6786,7 +6876,7 @@ pub async fn order_complete(State(st): State<AppState>, h: HeaderMap, Path(id): 
 }
 pub async fn order_cancel(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !is_planner(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
     let reason = b.reason.clone().unwrap_or_default();
     order_transition(&st, &s, id, &b, "annullato", Some("cancel_reason"), Some(SetVal::Txt(reason)), &["bozza","assegnato","in_corso"]).await
 }
@@ -6799,7 +6889,7 @@ async fn order_edit_allowed(st: &AppState, s: &Session, oid: Uuid) -> Result<Uui
     let au: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.work_orders WHERE id=$1 AND tenant_id=$2")
         .bind(oid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "ordine inesistente"))?;
-    if is_planner(&s.role) || au == Some(s.user_id) { Ok(tid) } else { Err(err(StatusCode::FORBIDDEN, "non autorizzato su questo ordine")) }
+    if is_planner(&s) || au == Some(s.user_id) { Ok(tid) } else { Err(err(StatusCode::FORBIDDEN, "non autorizzato su questo ordine")) }
 }
 #[derive(Deserialize)] pub struct OrderReport {
     pub report: Option<String>, pub signed_by: Option<String>,
@@ -6889,7 +6979,7 @@ pub async fn order_attachment_del(State(st): State<AppState>, h: HeaderMap, Path
     let owner: Option<String> = sqlx::query_scalar("SELECT created_by FROM app.work_order_attachments WHERE id=$1 AND tenant_id=$2")
         .bind(aid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "allegato inesistente"))?;
-    if !is_planner(&s.role) && owner.as_deref() != Some(s.email.as_str()) { return Err(err(StatusCode::FORBIDDEN, "non autorizzato")); }
+    if !is_planner(&s) && owner.as_deref() != Some(s.email.as_str()) { return Err(err(StatusCode::FORBIDDEN, "non autorizzato")); }
     sqlx::query("DELETE FROM app.work_order_attachments WHERE id=$1 AND tenant_id=$2").bind(aid).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
     audit(&st, tid, &s.email, "order_attachment_del", json!({"id":aid})).await;
     Ok(Json(json!({"ok":true})))
@@ -6913,7 +7003,7 @@ pub async fn list_timesheets(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     require_module(&st, s.tenant_id.unwrap(), "consuntivi").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
-    let rows = if is_approver(&s.role) || s.role=="auditor" {
+    let rows = if is_approver(&s) || s.role=="auditor" {
         sqlx::query("SELECT t.id,t.state,t.created_at,u.email AS owner,o.title AS order_title
             FROM app.timesheets t JOIN app.users u ON u.id=t.user_id LEFT JOIN app.work_orders o ON o.id=t.work_order_id
             ORDER BY t.updated_at DESC").fetch_all(&mut *tx).await
@@ -6974,7 +7064,7 @@ pub async fn get_timesheet(State(st): State<AppState>, h: HeaderMap, Path(id): P
     let d = timesheet_detail(&st, s.tenant_id.unwrap(), id).await?;
     // owner or approver/auditor
     let owner_id = d["owner_id"].as_str().and_then(|x| Uuid::parse_str(x).ok());
-    if owner_id != Some(s.user_id) && !is_approver(&s.role) && s.role != "auditor" {
+    if owner_id != Some(s.user_id) && !is_approver(&s) && s.role != "auditor" {
         return Err(err(StatusCode::FORBIDDEN, "non autorizzato"));
     }
     Ok(Json(d))
@@ -7039,7 +7129,7 @@ pub async fn submit_timesheet(State(st): State<AppState>, h: HeaderMap, Path(id)
 
 pub async fn approve_timesheet(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !is_approver(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo responsabile")); }
+    if !is_approver(&s) { return Err(err(StatusCode::FORBIDDEN, "solo responsabile")); }
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // only from in_revisione -> blocks double approval
@@ -7056,7 +7146,7 @@ pub async fn approve_timesheet(State(st): State<AppState>, h: HeaderMap, Path(id
 pub struct ReqChanges { pub note: String }
 pub async fn request_changes(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<ReqChanges>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !is_approver(&s.role) { return Err(err(StatusCode::FORBIDDEN, "solo responsabile")); }
+    if !is_approver(&s) { return Err(err(StatusCode::FORBIDDEN, "solo responsabile")); }
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("UPDATE app.timesheets SET state='da_correggere',note=$2,updated_at=now() WHERE id=$1 AND state='in_revisione'")
@@ -7072,7 +7162,7 @@ pub async fn export_timesheet_csv(State(st): State<AppState>, h: HeaderMap, Path
     let s = require_tenant(&st, &h).await?;
     let d = timesheet_detail(&st, s.tenant_id.unwrap(), id).await?;
     let owner_id = d["owner_id"].as_str().and_then(|x| Uuid::parse_str(x).ok());
-    if owner_id != Some(s.user_id) && !is_approver(&s.role) && s.role != "auditor" {
+    if owner_id != Some(s.user_id) && !is_approver(&s) && s.role != "auditor" {
         return Err(err(StatusCode::FORBIDDEN, "non autorizzato"));
     }
     let cur = d["currency"].as_str().unwrap_or("EUR").to_string();
@@ -7399,7 +7489,7 @@ pub async fn consuntivo_ai_summary(State(st): State<AppState>, h: HeaderMap, Pat
     let c = ai_gate(&st, tid, "consuntivi_summary").await?;
     let d = timesheet_detail(&st, tid, id).await?;
     let owner_id = d["owner_id"].as_str().and_then(|x| Uuid::parse_str(x).ok());
-    if owner_id != Some(s.user_id) && !is_approver(&s.role) && s.role != "auditor" {
+    if owner_id != Some(s.user_id) && !is_approver(&s) && s.role != "auditor" {
         return Err(err(StatusCode::FORBIDDEN, "non autorizzato"));
     }
     let sys = format!("Sei un amministrativo di YouWorkforce. Riassumi il consuntivo in modo chiaro per un \
@@ -7612,7 +7702,7 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
             Ok(json!({"ok":true,"report_id":id}))
         }
         "create_work_order" => {
-            if !is_planner(&s.role) { return Err("solo pianificatore/admin puo' creare ordini".into()); }
+            if !is_planner(&s) { return Err("solo pianificatore/admin puo' creare ordini".into()); }
             if !module_active(st, tid, "interventi").await { return Err("modulo interventi non abilitato".into()); }
             let title = gs("title").unwrap_or_default(); if title.trim().is_empty() { return Err("titolo richiesto".into()); }
             let pri = gi("priority").unwrap_or(2).clamp(1,3) as i32;

@@ -39,6 +39,7 @@ sicurezza / rollback. L'escalation è condivisa da tutti i moduli che generano a
 - [`docs/traccar-manuale.md`](docs/traccar-manuale.md) — Traccar (badge/GPS)
 - [`docs/thingsboard-manuale.md`](docs/thingsboard-manuale.md) — ThingsBoard (IoT)
 - [`docs/gruppi-condivisi.md`](docs/gruppi-condivisi.md) — Gruppi di persone condivisi (primitiva comune, import nei gruppi allarme)
+- [`docs/capability-layer.md`](docs/capability-layer.md) — Capability layer (permessi per ruolo, override per-tenant)
 - `contracts/` — contratti di progetto (fasi, decisioni, stato)
 
 ## Non implementato (backlog, dichiarato)
