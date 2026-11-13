@@ -627,7 +627,7 @@ async function runAlarmReport(){
           <button class="btn ghost small" onclick="downloadFile('/reports/alarms.txt?${q}','allarmi.txt')">TXT</button>
           <button class="btn small" onclick="pdfAlarms()">PDF</button></div></div>
         <div class="pad"><div class="grid g5" style="gap:14px">
-          ${kpi('alert','Totale',sm.totale)}${kpi('alert','Critici',sm.critici)}${kpi('clipboard','Aperti',sm.aperti)}${kpi('receipt','Presi in carico',sm.presi_in_carico+'/'+sm.totale)}${(()=>{const r=fmtResp(sm.ack_medio_s);return kpi('clock','Tempo medio risposta', r==='—'?'🕐':r);})()}</div>
+          ${kpi('alert','Totale',sm.totale)}${kpi('alert','Critici',sm.critici)}${kpi('clipboard','Aperti',sm.aperti)}${kpi('receipt','Presi in carico',sm.presi_in_carico+'/'+sm.totale)}${kpi('clock','Tempo medio risposta',fmtResp(sm.ack_medio_s))}</div>
           <div class="small mut" style="margin-top:8px">Periodo ${fmtD(d.from)} — ${fmtD(d.to)}</div></div>
         <table class="table"><thead><tr><th>Aperto il</th><th>Tipo</th><th>Stato</th><th>Preso in carico</th><th>Risposta</th><th>Chiuso il</th><th>Sede</th><th>Assegnato a</th><th>Esito</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }catch(e){ out.innerHTML='<div class="card pad" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
