@@ -285,6 +285,7 @@ function bindRows(v){
 }
 
 // ---------------- Centrale ----------------
+let CEN={all:[],tab:'aperti',q:'',page:1,size:25};
 async function vCentrale(v){
   const [I,CK,OC]=await Promise.all([api('/incidents').catch(()=>[]), api('/checkins/list').catch(()=>[]), api('/oncall-now-native').catch(()=>({available:false}))]);
   const scaduti=CK.filter(c=>c.state==='scaduto').length;
@@ -293,13 +294,19 @@ async function vCentrale(v){
   const open = I.filter(i=>i.state!=='chiuso').length;
   const bulk = (canBulk && open>0) ? `<button class="btn ghost small" onclick="incAckAll(this)">Prendi in carico tutti</button>
     <button class="btn ghost small" onclick="incCloseAll(this)">Chiudi tutti</button>` : '';
+  // stato vista: mantiene tab/ricerca tra i re-render; reset pagina se cambia il dataset
+  CEN={all:I, tab:CEN.tab||'aperti', q:CEN.q||'', page:1, size:25};
   v.innerHTML=`<div class="page-h"><div><h1>Centrale allarmi</h1><div class="mut">${I.length} incidenti · ${CK.length} check-in (${scaduti} scaduti) · live</div></div><div class="row" style="gap:8px;align-items:center">${bulk}${onc}</div></div>
-  <div class="card"><table class="table"><thead><tr><th>Tipo</th><th>Sede</th><th>Assegnato</th><th>Stato</th><th>Priorità</th><th>Correlazione</th></tr></thead>
-  <tbody>${I.map(i=>`<tr class="clk" data-inc="${i.id}">
-    <td><b>${esc(i.etype)}</b></td><td>${esc(i.site||'—')}</td><td class="small">${esc(i.assignee||'—')}</td><td>${chip(i.state)}</td>
-    <td class="sev pri${i.priority}">${'●'.repeat(i.priority)}</td>
-    <td class="mono small mut">${esc((i.correlation||'').slice(0,8))}</td></tr>`).join('')
-    ||`<tr><td colspan="6" class="empty">${ICON.check}<div>Nessun incidente aperto</div></td></tr>`}</tbody></table></div>
+  <div class="card" style="padding:12px">
+    <div class="row" style="gap:12px;align-items:center;flex-wrap:wrap">
+      <div class="seg" id="cenTabs"></div>
+      <input id="incSearch" class="grow" placeholder="🔎 Cerca: tipo, sede, assegnato, stato, priorità, correlazione…" value="${esc(CEN.q)}" oninput="CEN.q=this.value;CEN.page=1;cenRender()" style="min-width:220px">
+    </div>
+    <div style="overflow-x:auto;margin-top:10px"><table class="table" id="incTable"><thead><tr><th>Tipo</th><th>Sede</th><th>Assegnato</th><th>Stato</th><th>Priorità</th><th>Correlazione</th></tr></thead>
+    <tbody id="incBody"></tbody></table></div>
+    <div id="incEmpty" class="empty" hidden style="padding:28px 8px">${ICON.check}<div>Nessun incidente in questa vista</div></div>
+    <div id="incPager" class="row" style="justify-content:space-between;align-items:center;margin-top:10px;flex-wrap:wrap;gap:8px"></div>
+  </div>
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Check-in attivi</h2>
     ${AI_FEAT.checkin_anomaly?`<button class="btn ghost small" onclick="aiCheckinAnomaly(this)">✦ Anomalie check-in (AI)</button>`:''}</div>
     <div id="aiCkOut"></div>
@@ -307,7 +314,58 @@ async function vCentrale(v){
     <tbody>${CK.map(c=>`<tr><td>${esc(c.email)}</td><td>${esc(c.site||'—')}</td>
       <td class="small mut">${new Date(c.due_at).toLocaleString('it-IT')}</td><td>${chip(c.state)}</td></tr>`).join('')
       ||`<tr><td colspan="4" class="empty">nessun check-in attivo</td></tr>`}</tbody></table></div>`;
-  bindRows(v);
+  cenRender();
+}
+// Lista filtrata per tab (aperti = non chiusi) + ricerca full-text, ordinata (aperti per priorità desc).
+function cenFiltered(){
+  const toks=(CEN.q||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  let list=CEN.all.filter(i=>{
+    const inTab = CEN.tab==='tutti' ? true : CEN.tab==='chiusi' ? i.state==='chiuso' : i.state!=='chiuso';
+    if(!inTab) return false;
+    if(!toks.length) return true;
+    const hay=incHay(i); return toks.every(t=>hay.includes(t));
+  });
+  if(CEN.tab!=='chiusi') list=list.slice().sort((a,b)=>(b.priority||0)-(a.priority||0));
+  return list;
+}
+function cenCounts(){ const a=CEN.all; return {
+  aperti:a.filter(i=>i.state!=='chiuso').length, chiusi:a.filter(i=>i.state==='chiuso').length, tutti:a.length }; }
+function cenTab(t){ CEN.tab=t; CEN.page=1; cenRender(); }
+function cenPage(d){ CEN.page=Math.max(1,CEN.page+d); cenRender(); }
+function cenRender(){
+  const tabsEl=$('#cenTabs'); if(!tabsEl) return;
+  const c=cenCounts();
+  tabsEl.innerHTML=[['aperti','Aperti',c.aperti],['chiusi','Chiusi',c.chiusi],['tutti','Tutti',c.tutti]]
+    .map(([k,lab,n])=>`<button class="seg-btn${CEN.tab===k?' on':''}" onclick="cenTab('${k}')">${lab} <span class="seg-n">${n}</span></button>`).join('');
+  const list=cenFiltered();
+  const total=list.length, pages=Math.max(1,Math.ceil(total/CEN.size));
+  if(CEN.page>pages)CEN.page=pages;
+  const start=(CEN.page-1)*CEN.size, pageItems=list.slice(start,start+CEN.size);
+  const body=$('#incBody'), empty=$('#incEmpty'), pager=$('#incPager');
+  body.innerHTML=pageItems.map(i=>`<tr class="clk" data-inc="${i.id}">
+    <td><b>${esc(i.etype)}</b></td><td>${esc(i.site||'—')}</td><td class="small">${esc(i.assignee||'—')}</td><td>${chip(i.state)}</td>
+    <td class="sev pri${i.priority}">${'●'.repeat(i.priority||0)}</td>
+    <td class="mono small mut">${esc((i.correlation||'').slice(0,8))}</td></tr>`).join('');
+  empty.hidden = total>0;
+  $$('#incBody [data-inc]').forEach(r=>r.onclick=()=>openIncident(r.dataset.inc));
+  if(total===0){ pager.innerHTML=''; return; }
+  const from=start+1, to=Math.min(start+CEN.size,total);
+  pager.innerHTML=`<span class="small mut">Mostrando ${from}–${to} di ${total}</span>
+    <div class="row" style="gap:6px;align-items:center">
+      <button class="btn ghost small" ${CEN.page<=1?'disabled':''} onclick="cenPage(-1)">‹ Prec</button>
+      <span class="small" style="min-width:74px;text-align:center">Pagina ${CEN.page} / ${pages}</span>
+      <button class="btn ghost small" ${CEN.page>=pages?'disabled':''} onclick="cenPage(1)">Succ ›</button>
+    </div>`;
+}
+// Testo ricercabile (full-text) di un incidente: tipo (+etichetta), sede, assegnato, stato
+// (+sinonimi), priorità (numero + livello) e correlazione (completa e breve).
+function incHay(i){
+  const pri={1:'bassa',2:'media',3:'alta',4:'critica',5:'critica'};
+  const st={aperto:'aperto nuovo',preso_in_carico:'preso in carico ack',chiuso:'chiuso risolto'};
+  const parts=[i.etype, (typeof etLab==='function'?etLab(i.etype):''), i.site, i.assignee,
+    i.state, (st[i.state]||''), ('priorità '+i.priority), (pri[i.priority]||''),
+    i.correlation, (i.correlation||'').slice(0,8)];
+  return parts.filter(Boolean).join(' ').toLowerCase();
 }
 async function incAckAll(btn){ if(!await askConfirm('Prendere in carico TUTTI gli allarmi aperti?'))return;
   try{ const r=await api('/incidents/ack-all',{method:'POST'}); toast(r.acknowledged+' presi in carico','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
@@ -1368,13 +1426,34 @@ async function vDispositivi(v){
   v.innerHTML=`<div class="page-h"><div><h1>Dispositivi</h1><div class="mut">${D.length} dispositivi · catalogo, flotta</div></div>
     <div class="row" style="gap:8px"><button class="btn" onclick="wizardStart()">+ Aggiungi (guidato)</button>
       <button class="btn ghost" onclick="devEdit(null)">manuale</button></div></div>
-  <div class="card"><table class="table"><thead><tr><th>ID esterno</th><th>Modello</th><th>Etichetta</th><th>Assegnato a</th><th>Capacità</th><th>Ultimo contatto</th><th>Onboarding</th></tr></thead>
-  <tbody>${D.map(d=>`<tr class="clk" data-dev='${encodeURIComponent(JSON.stringify(d))}'>
+  <div class="card pad" style="margin-bottom:10px"><div class="row" style="gap:8px;align-items:center">
+    <input id="devSearch" class="grow" placeholder="🔎 Cerca: ID esterno, modello, etichetta, assegnatario, capacità, ultimo contatto, onboarding…" oninput="devFilter(this.value)" style="width:100%">
+    <span id="devCount" class="small mut" style="white-space:nowrap">${D.length} dispositivi</span></div></div>
+  <div class="card"><table class="table" id="devTable"><thead><tr><th>ID esterno</th><th>Modello</th><th>Etichetta</th><th>Assegnato a</th><th>Capacità</th><th>Ultimo contatto</th><th>Onboarding</th></tr></thead>
+  <tbody>${D.map(d=>`<tr class="clk" data-dev='${encodeURIComponent(JSON.stringify(d))}' data-hay="${esc(devHay(d))}">
     <td class="mono">${esc(d.external_id)}</td><td class="small">${model(d)}</td><td>${esc(d.label||'—')}</td>
     <td class="small">${who(d)}</td><td class="small">${(d.capabilities||[]).slice(0,4).map(c=>`<span class="tag">${esc(c)}</span>`).join('')||'—'}</td>
     <td class="small">${seen(d)}</td><td>${prov(d.prov_step)||(d.enabled?'<span class="chip s-attivo">attivo</span>':'<span class="chip">off</span>')}</td></tr>`).join('')
-    ||`<tr><td colspan="7" class="empty">${ICON.shield}<div>Nessun dispositivo. Usa "+ Aggiungi (guidato)".</div></td></tr>`}</tbody></table></div>`;
+    ||`<tr><td colspan="7" class="empty">${ICON.shield}<div>Nessun dispositivo. Usa "+ Aggiungi (guidato)".</div></td></tr>`}</tbody></table>
+    <div id="devEmpty" class="small mut pad" hidden style="text-align:center">Nessun dispositivo corrisponde alla ricerca.</div></div>`;
   $$('[data-dev]',v).forEach(r=>r.onclick=()=>devEdit(JSON.parse(decodeURIComponent(r.dataset.dev))));
+}
+// Testo ricercabile (full-text) di un dispositivo: unisce tutte le colonne mostrate + sinonimi utili.
+function devHay(d){
+  const prov={in_attesa_primo_fix:'attesa primo fix',traccar_registrato:'registrato',configurato:'configurato',attivo:'attivo'};
+  const parts=[d.external_id, d.manufacturer, d.model_name, d.model_code, (!d.model_code?'generico':''),
+    d.label, d.asset_name, d.user_email, (d.capabilities||[]).join(' '), d.last_etype,
+    d.prov_step, (prov[d.prov_step]||''), (d.enabled?'attivo':'off disattivato'),
+    d.last_seen?new Date(d.last_seen).toLocaleString('it-IT'):'mai'];
+  return parts.filter(Boolean).join(' ').toLowerCase();
+}
+// Filtro full-text: ogni token deve comparire (AND). Aggiorna il conteggio e lo stato vuoto.
+function devFilter(q){
+  q=(q||'').trim().toLowerCase(); const toks=q.split(/\s+/).filter(Boolean);
+  let n=0, tot=0;
+  $$('#devTable tbody tr[data-hay]').forEach(r=>{ tot++; const ok=toks.every(t=>r.dataset.hay.includes(t)); r.hidden=!ok; if(ok)n++; });
+  const c=$('#devCount'); if(c) c.textContent = toks.length ? (n+' di '+tot) : (tot+' dispositivi');
+  const e=$('#devEmpty'); if(e) e.hidden = !(tot>0 && n===0);
 }
 // ---- Wizard onboarding dispositivo (Fase A+B+C) ----
 let WZ={q:'',manufacturer:'',category:''};

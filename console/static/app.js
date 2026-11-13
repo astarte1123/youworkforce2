@@ -71,3 +71,77 @@ const ICON = {
   stop:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>',
   logomark:'<img src="/youworkforce.webp" alt="YouWorkforce" style="width:100%;height:100%;object-fit:contain;display:block">',
 };
+
+/* ============ Combo ricercabile su TUTTA la piattaforma (app + superadmin) ============
+   Ogni <select> nativo viene potenziato con una casella di ricerca, mantenendo il <select> come
+   sorgente di verità: value/onchange/change restano invariati. Self-contained (nessuna dipendenza),
+   CSS iniettato via JS (robusto vs cache), auto-applicato via MutationObserver a ogni render. */
+function enhanceSelect(sel){
+  if(!sel || sel.dataset.combo || sel.multiple || sel.hasAttribute('data-nocombo')) return;
+  sel.dataset.combo='1';
+  const wrap=document.createElement('span'); wrap.className='combo '+(sel.className||'');
+  if(sel.style.width) wrap.style.width=sel.style.width;
+  const inp=document.createElement('input'); inp.type='text'; inp.className='combo-input';
+  inp.autocomplete='off'; inp.spellcheck=false; inp.setAttribute('role','combobox');
+  if(sel.disabled)inp.disabled=true; if(sel.title)inp.title=sel.title;
+  const panel=document.createElement('div'); panel.className='combo-panel'; panel.hidden=true;
+  sel.parentNode.insertBefore(wrap, sel);
+  wrap.appendChild(inp); wrap.appendChild(panel); wrap.appendChild(sel);
+  sel.style.display='none';
+  const curLabel=()=>{ const o=sel.options[sel.selectedIndex]; return o?o.text:''; };
+  inp.value=curLabel();
+  let hi=-1, items=[];
+  function render(filter){
+    const toks=(filter||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
+    items=Array.from(sel.options).filter(o=>{ const t=o.text.toLowerCase(); return toks.every(k=>t.includes(k)); });
+    panel.textContent='';
+    if(!items.length){ const e=document.createElement('div'); e.className='combo-empty'; e.textContent='nessun risultato'; panel.appendChild(e); return; }
+    items.forEach((o,i)=>{ const d=document.createElement('div'); d.className='combo-opt'+(o.value===sel.value?' sel':''); d.dataset.i=i;
+      if(o.disabled)d.classList.add('dis'); d.textContent=o.text; panel.appendChild(d); });
+    hi=items.findIndex(o=>o.value===sel.value); if(hi<0)hi=0; paintHi();
+  }
+  function paintHi(){ Array.from(panel.children).forEach((c,i)=>c.classList.toggle('hi', i===hi)); }
+  function scrollHi(){ const el=panel.children[hi]; if(el&&el.scrollIntoView)el.scrollIntoView({block:'nearest'}); }
+  function open(){ if(!panel.hidden||sel.disabled)return; render(''); panel.hidden=false; wrap.classList.add('open'); setTimeout(()=>inp.select(),0); }
+  function close(restore){ panel.hidden=true; wrap.classList.remove('open'); if(restore!==false) inp.value=curLabel(); }
+  function pick(o){ if(!o||o.disabled)return; if(sel.value!==o.value){ sel.value=o.value; sel.dispatchEvent(new Event('change',{bubbles:true})); sel.dispatchEvent(new Event('input',{bubbles:true})); } inp.value=o.text; close(false); }
+  inp.addEventListener('focus',open);
+  inp.addEventListener('mousedown',()=>{ if(panel.hidden) setTimeout(open,0); });
+  inp.addEventListener('input',()=>{ if(panel.hidden){ panel.hidden=false; wrap.classList.add('open'); } render(inp.value); });
+  inp.addEventListener('keydown',e=>{
+    if(e.key==='ArrowDown'){ e.preventDefault(); if(panel.hidden){open();} else { hi=Math.min(hi+1,items.length-1); paintHi(); scrollHi(); } }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); if(!panel.hidden){ hi=Math.max(hi-1,0); paintHi(); scrollHi(); } }
+    else if(e.key==='Enter'){ if(!panel.hidden){ e.preventDefault(); pick(items[hi]); } }
+    else if(e.key==='Escape'){ if(!panel.hidden){ e.preventDefault(); close(true); inp.blur(); } }
+    else if(e.key==='Tab'){ close(true); }
+  });
+  panel.addEventListener('mousedown',e=>{ const d=e.target.closest('.combo-opt'); if(d){ e.preventDefault(); pick(items[+d.dataset.i]); } });
+  document.addEventListener('mousedown',e=>{ if(!wrap.contains(e.target)) close(true); });
+  sel.addEventListener('change',()=>{ if(document.activeElement!==inp) inp.value=curLabel(); });
+}
+function enhanceAllSelects(root){ try{ (root||document).querySelectorAll('select:not([data-combo])').forEach(enhanceSelect); }catch(e){} }
+let _comboT=null;
+function initComboUI(){
+  if(!document.getElementById('comboCss')){
+    const st=document.createElement('style'); st.id='comboCss'; st.textContent=`
+    .combo{position:relative;display:flex;width:100%;min-width:0;max-width:100%;vertical-align:top}
+    .combo.grow{flex:1 1 auto}
+    .combo-input{width:100%;min-width:0;font:inherit;cursor:text;
+      background-image:linear-gradient(45deg,transparent 50%,var(--faint) 50%),linear-gradient(135deg,var(--faint) 50%,transparent 50%);
+      background-position:calc(100% - 16px) 55%,calc(100% - 11px) 55%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:34px}
+    .combo-panel{position:absolute;z-index:1200;top:calc(100% + 2px);left:0;min-width:100%;width:max-content;max-width:min(360px,90vw);
+      max-height:260px;overflow:auto;background:var(--surface,#fff);border:1px solid var(--line);border-radius:8px;
+      box-shadow:var(--sh-lg,0 8px 28px rgba(0,0,0,.22));padding:4px}
+    .combo-opt{padding:6px 9px;border-radius:6px;cursor:pointer;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .combo-opt.hi{background:var(--surface2,#eef2ff)}
+    .combo-opt.sel{font-weight:600}
+    .combo-opt.dis{opacity:.5;cursor:not-allowed}
+    .combo-empty{padding:8px 9px;color:var(--mut,#888);font-size:12px}`;
+    document.head.appendChild(st);
+  }
+  enhanceAllSelects(document);
+  const mo=new MutationObserver(muts=>{ for(const m of muts){ if(m.addedNodes&&m.addedNodes.length){ if(!_comboT)_comboT=setTimeout(()=>{_comboT=null;enhanceAllSelects(document);},40); break; } } });
+  if(document.body) mo.observe(document.body,{childList:true,subtree:true});
+}
+if(document.readyState!=='loading') initComboUI();
+else document.addEventListener('DOMContentLoaded', initComboUI);
