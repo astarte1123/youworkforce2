@@ -51,7 +51,17 @@ La vecchia pagina **Mappa** (con toggle interno) è stata divisa in due voci di 
 
 Su entrambe le mappe (e sulle Piantine) resta attiva la **gestione completa delle aree
 geofence** (disegno ⬡, rinomina, colore, modifica forma, associa device/eventi, elimina) —
-riservata ai `tenant_admin`.
+riservata ai `tenant_admin`. Nella Mappa allarmi il campo **"Colore area Geofence"** è
+allineato agli altri campi della barra (Dal / Al / Tipo).
+
+### Piantine — posizionamento unificato
+
+Nelle Piantine il posizionamento di **beacon** e **dispositivi** usa un **unico campo**
+"Posiziona sulla piantina": un solo selettore (ricercabile) con le voci **raggruppate**
+in *📡 Beacon (zone)* e *📟 Dispositivi*, e un solo pulsante "📍 sulla mappa". Il tipo si
+deduce dalla voce scelta e instrada all'endpoint corretto. Restano due entità distinte:
+il **beacon** è un'ancora fissa che definisce una **zona** (gli allarmi indoor vi si
+agganciano), il **dispositivo** è l'asset tracciato.
 
 ### Selezione allarme dall'elenco
 Nella Mappa allarmi, cliccando una riga dell'elenco a destra:
