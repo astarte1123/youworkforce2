@@ -3,6 +3,7 @@ mod state; mod clock; mod auth; mod db; mod goalert; mod worker; mod api; mod cr
 mod delivery; // #4 FASE 2: adapter di consegna in ombra (sink di prova; GoAlert resta il motore)
 mod modules; // #3 FASE 1: registry manifest moduli (dipendenze + metadata)
 mod teltonika; // edge nativo Teltonika Codec8/8E su TCP (decode-edge senza Traccar)
+mod dashboard; // servizio core: dashboard unica configurabile (widget + layout per-tenant)
 
 use std::sync::Arc;
 use axum::{routing::{get, post, delete}, Router, Json};
@@ -51,7 +52,7 @@ fn tb_parity_routes() -> Router<AppState> {
         // #7 GDPR
         .route("/api/gdpr/export/:uid", get(api::gdpr_export))
         .route("/api/gdpr/anonymize/:uid", post(api::gdpr_anonymize))
-        .route("/api/dashboard/layout", get(api::dashboard_layout_get).put(api::dashboard_layout_set))
+        .route("/api/dashboard/layout", get(dashboard::dashboard_layout_get).put(dashboard::dashboard_layout_set))
         .route("/api/gdpr/retention", get(api::gdpr_retention_info))
         .route("/api/gdpr/users", get(api::gdpr_users_list))
         .route("/api/gdpr/users/export", get(api::gdpr_users_export))

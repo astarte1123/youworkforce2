@@ -8,8 +8,8 @@ use futures::stream::Stream;
 use crate::state::{AppState, Session, TenantEvent};
 use crate::{auth, db, goalert};
 
-type R = Result<Json<Value>, (StatusCode, String)>;
-fn err(c: StatusCode, m: &str) -> (StatusCode, String) { (c, m.to_string()) }
+pub(crate) type R = Result<Json<Value>, (StatusCode, String)>;
+pub(crate) fn err(c: StatusCode, m: &str) -> (StatusCode, String) { (c, m.to_string()) }
 
 const CRITICAL: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin", "sensore_critico",
     "manomissione_badge", "perdita_alimentazione", "jamming", "perdita_contatto", "traccar_conn_down",
@@ -244,7 +244,7 @@ pub async fn publish_event(st: &AppState, ev: TenantEvent) {
     let _ = sqlx::query("SELECT pg_notify('yw_events', $1)").bind(msg).execute(&st.owner_pool).await;
 }
 
-async fn require_tenant(state: &AppState, h: &HeaderMap) -> Result<Session, (StatusCode, String)> {
+pub(crate) async fn require_tenant(state: &AppState, h: &HeaderMap) -> Result<Session, (StatusCode, String)> {
     let s = session_of(state, h).await.ok_or_else(|| err(StatusCode::UNAUTHORIZED, "no session"))?;
     if s.is_super || s.tenant_id.is_none() {
         return Err(err(StatusCode::FORBIDDEN, "tenant session required"));
@@ -2795,21 +2795,6 @@ pub const CAPABILITIES: &[(&str,&str)] = &[
     ("audit.view",           "Audit: lettura del registro attività"),
     ("dashboard.manage",     "Dashboard: organizza i widget del tenant (abilita/ordina/dimensiona)"),
 ];
-
-// ================== Dashboard: catalogo widget (cross-cutting) ==================
-// Single source of truth dei widget disponibili. La dashboard è un CONSUMATORE trasversale: mostra
-// i widget il cui modulo è attivo (modules vuoto = sempre, es. core) e il cui ruolo combacia
-// (roles vuoto = tutti). L'ordine qui è il default quando il tenant non ha un layout salvato.
-// (key, modules-any-of, roles-any-of, size-default)
-pub const DASHBOARD_WIDGETS: &[(&str, &[&str], &[&str], &str)] = &[
-    ("incidents",  &["loneworker","traccar","iot","thingsboard"], &["operatore","tenant_admin","auditor","responsabile"], "half"),
-    ("checkins",   &["loneworker"], &["operatore","tenant_admin","auditor"], "half"),
-    ("orders",     &["interventi"], &["pianificatore","tenant_admin","lavoratore","auditor"], "half"),
-    ("timesheets", &["consuntivi"], &["lavoratore","responsabile","tenant_admin","auditor"], "half"),
-    ("rounds",     &["giri"], &["pianificatore","tenant_admin","lavoratore","auditor"], "half"),
-    ("shifts",     &["workforce"], &["pianificatore","tenant_admin","lavoratore","reperibile","auditor"], "half"),
-    ("role",       &[], &[], "half"),
-];
 /// Mappa di DEFAULT ruolo -> capability (riproduce il comportamento storico; `admin`=super).
 fn default_role_caps(role: &str) -> Vec<&'static str> {
     match role {
@@ -2854,8 +2839,8 @@ pub async fn effective_caps_user(st: &AppState, tid: Uuid, role: &str, user_id: 
     set.into_iter().collect()
 }
 // `admin` è super: implica ogni capability.
-fn has_cap(s: &Session, cap: &str) -> bool { s.caps.iter().any(|c| c == cap || c == "admin") }
-fn require_cap(s: &Session, cap: &str) -> Result<(), (StatusCode, String)> {
+pub(crate) fn has_cap(s: &Session, cap: &str) -> bool { s.caps.iter().any(|c| c == cap || c == "admin") }
+pub(crate) fn require_cap(s: &Session, cap: &str) -> Result<(), (StatusCode, String)> {
     if !has_cap(s, cap) { return Err(err(StatusCode::FORBIDDEN, &format!("permesso richiesto: {cap}"))); }
     Ok(())
 }
@@ -6682,7 +6667,7 @@ pub async fn test_advance(State(st): State<AppState>, Json(b): Json<AdvanceReq>)
 }
 
 // small helpers
-fn ise<E: std::fmt::Display>(e: E) -> (StatusCode, String) { (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()) }
+pub(crate) fn ise<E: std::fmt::Display>(e: E) -> (StatusCode, String) { (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()) }
 fn ise_resp() -> axum::response::Response { (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"db"}))).into_response() }
 
 /// Host -> tenant slug. Control host returns None.
@@ -9970,61 +9955,6 @@ pub async fn gdpr_users_export(State(st): State<AppState>, h: HeaderMap,
     audit(&st, tid, &s.email, "gdpr_users_export", json!({"rows": rows.len()})).await;
     Ok(([(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8"),
          (axum::http::header::CONTENT_DISPOSITION, "attachment; filename=\"gdpr-utenti.csv\"")], out).into_response())
-}
-
-// ================== Dashboard: layout per-tenant dei widget ==================
-/// Layout effettivo per l'utente: catalogo DASHBOARD_WIDGETS filtrato per moduli attivi del tenant
-/// + ruolo, poi merge col layout salvato (enabled/position/size), ordinato per position.
-/// `can_edit` = capability dashboard.manage (solo tenant_admin di default).
-pub async fn dashboard_layout_get(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?;
-    let tid = s.tenant_id.unwrap();
-    let act: std::collections::HashSet<String> = sqlx::query_scalar::<_,String>(
-        "SELECT module_code FROM app.tenant_modules WHERE tenant_id=$1 AND state='attivo'")
-        .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default().into_iter().collect();
-    let saved = sqlx::query("SELECT widget_key,enabled,position,size FROM app.dashboard_layouts WHERE tenant_id=$1")
-        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-    let mut smap: std::collections::HashMap<String,(bool,i32,String)> = std::collections::HashMap::new();
-    for r in &saved { smap.insert(r.get::<String,_>("widget_key"), (r.get("enabled"), r.get("position"), r.get("size"))); }
-    let mut out: Vec<Value> = Vec::new();
-    for (i,(key,mods,roles,size)) in DASHBOARD_WIDGETS.iter().enumerate() {
-        let mod_ok = mods.is_empty() || mods.iter().any(|m| act.contains(*m));
-        let role_ok = roles.is_empty() || roles.contains(&s.role.as_str());
-        if !mod_ok || !role_ok { continue; }
-        let (enabled, position, sz) = match smap.get(*key) {
-            Some((e,p,s2)) => (*e, *p, s2.clone()),
-            None => (true, i as i32, size.to_string()),
-        };
-        out.push(json!({"key":key,"enabled":enabled,"position":position,"size":sz}));
-    }
-    out.sort_by_key(|w| w.get("position").and_then(|v| v.as_i64()).unwrap_or(0));
-    Ok(Json(json!({"widgets":out, "can_edit": has_cap(&s,"dashboard.manage")})))
-}
-
-fn dtrue() -> bool { true }
-#[derive(Deserialize)]
-pub struct WidgetLayout { pub widget_key: String, #[serde(default="dtrue")] pub enabled: bool,
-    #[serde(default)] pub position: i32, #[serde(default)] pub size: Option<String> }
-#[derive(Deserialize)]
-pub struct DashboardLayoutReq { pub widgets: Vec<WidgetLayout> }
-
-/// Salva il layout dashboard del tenant. Solo capability dashboard.manage (tenant_admin di default).
-/// Le chiavi sconosciute al catalogo sono ignorate; size validata (half|full).
-pub async fn dashboard_layout_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DashboardLayoutReq>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s,"dashboard.manage")?;
-    let tid = s.tenant_id.unwrap();
-    let valid: std::collections::HashSet<&str> = DASHBOARD_WIDGETS.iter().map(|w| w.0).collect();
-    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    for w in &b.widgets {
-        if !valid.contains(w.widget_key.as_str()) { continue; }
-        let size = match w.size.as_deref() { Some("full") => "full", _ => "half" };
-        sqlx::query("INSERT INTO app.dashboard_layouts(tenant_id,widget_key,enabled,position,size) VALUES($1,$2,$3,$4,$5)
-            ON CONFLICT (tenant_id,widget_key) DO UPDATE SET enabled=$3,position=$4,size=$5,updated_at=now()")
-            .bind(tid).bind(&w.widget_key).bind(w.enabled).bind(w.position).bind(size).execute(&mut *tx).await.map_err(ise)?;
-    }
-    tx.commit().await.map_err(ise)?;
-    audit(&st, tid, &s.email, "dashboard_layout_set", json!({"n":b.widgets.len()})).await;
-    Ok(Json(json!({"ok":true})))
 }
 
 /// Informazioni sulla policy di ritenzione (sola lettura: configurata via env). Solo tenant_admin.
