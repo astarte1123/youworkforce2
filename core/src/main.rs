@@ -4,6 +4,7 @@ mod delivery; // #4 FASE 2: adapter di consegna in ombra (sink di prova; GoAlert
 mod modules; // #3 FASE 1: registry manifest moduli (dipendenze + metadata)
 mod teltonika; // edge nativo Teltonika Codec8/8E su TCP (decode-edge senza Traccar)
 mod dashboard; // servizio core: dashboard unica configurabile (widget + layout per-tenant)
+mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
 
 use std::sync::Arc;
 use axum::{routing::{get, post, delete}, Router, Json};
@@ -50,14 +51,14 @@ fn tb_parity_routes() -> Router<AppState> {
         .route("/api/thingsboard/devices/:dev/rpc", post(api::tb_device_rpc))
         .route("/api/thingsboard/devices/:dev/history", get(api::tb_device_history))
         // #7 GDPR
-        .route("/api/gdpr/export/:uid", get(api::gdpr_export))
-        .route("/api/gdpr/anonymize/:uid", post(api::gdpr_anonymize))
+        .route("/api/gdpr/export/:uid", get(privacy::gdpr_export))
+        .route("/api/gdpr/anonymize/:uid", post(privacy::gdpr_anonymize))
         .route("/api/dashboard/layout", get(dashboard::dashboard_layout_get).put(dashboard::dashboard_layout_set))
-        .route("/api/gdpr/retention", get(api::gdpr_retention_info))
-        .route("/api/gdpr/users", get(api::gdpr_users_list))
-        .route("/api/gdpr/users/export", get(api::gdpr_users_export))
-        .route("/api/audit-log", get(api::audit_log_list))
-        .route("/api/audit-log/export", get(api::audit_log_export))
+        .route("/api/gdpr/retention", get(privacy::gdpr_retention_info))
+        .route("/api/gdpr/users", get(privacy::gdpr_users_list))
+        .route("/api/gdpr/users/export", get(privacy::gdpr_users_export))
+        .route("/api/audit-log", get(privacy::audit_log_list))
+        .route("/api/audit-log/export", get(privacy::audit_log_export))
         // #4 escalation nativo FASE 1 (shadow): report + trigger manuale (nessuna consegna)
         .route("/api/escalation/shadow", get(api::escalation_shadow_report))
         .route("/api/escalation/shadow/run", post(api::escalation_shadow_run))

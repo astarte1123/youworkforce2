@@ -3,7 +3,7 @@ use sqlx::Row;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use crate::state::{AppState, TenantEvent};
-use crate::{goalert, api};
+use crate::{goalert, api, privacy};
 
 /// Background worker (system scope, owner connection bypasses RLS).
 /// 1) drains the outbox to GoAlert (at-least-once, retry with backoff)
@@ -33,7 +33,7 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     // #5 sync ack/chiusura da GoAlert -> incidenti (~ogni 14s)
     if n % 7 == 0 { Box::pin(api::goalert_ack_sync(st)).await; }
     // #7 ritenzione GDPR (opt-in YW_RETENTION_DAYS): ~ogni ora (1800 tick * 2s)
-    if n % 1800 == 0 { Box::pin(api::purge_retention(st)).await; }
+    if n % 1800 == 0 { Box::pin(privacy::purge_retention(st)).await; }
     // #4 escalation nativo FASE 1 (shadow): confronto nativo vs GoAlert ~ogni 5 min, nessuna consegna
     if n % 150 == 0 { Box::pin(api::escalation_shadow_scan(st)).await; }
     // #4 escalation nativo FASE 2 (consegna in ombra): ~ogni 30s, verso sink di prova, idempotente
