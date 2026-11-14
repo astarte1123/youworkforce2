@@ -91,7 +91,17 @@ const I18N={ en:{
   alarms_n:"Alarms", none_period:"No alarm in the period.",
   // Piantine
   fp_floorplan:"Floor plan", fp_place:"Place on floor plan", fp_place_choose:"— choose beacon or device —",
-  fp_place_btn:"📍 on the map", fp_config:"⚙ Configure indoor floor plan", fp_none:"— none —"
+  fp_place_btn:"📍 on the map", fp_config:"⚙ Configure indoor floor plan", fp_none:"— none —",
+  // nav mancanti
+  "nav_ronde":"Patrols",
+  // titoli pagina (altre viste)
+  ord_title:"Work orders", consun_title:"Timesheets", turni_title:"Shifts", moduli_title:"Modules",
+  report_title:"Reports", connettori_title:"Connectors", trigger_title:"Safety triggers",
+  profili_title:"Protection profiles", escal_title:"Escalation & on-call", anag_title:"Users & sites",
+  ronde_title:"Patrols",
+  // azioni comuni
+  act_save:"Save", act_delete:"Delete", act_cancel:"Cancel", act_new:"New", act_add:"Add",
+  act_edit:"Manage", act_search:"Search", act_close:"Close", act_confirm:"Confirm"
 }};
 let LANG='it';
 try{ LANG=localStorage.getItem('yw_lang')|| (navigator.language||'it').slice(0,2); }catch(e){}
@@ -576,8 +586,8 @@ async function vReport(v){
   const KINDS=REPORT_KINDS.filter(k=>k.need.some(c=>active.has(c)));
   const today=new Date().toISOString().slice(0,10);
   const wago=new Date(Date.now()-7*864e5).toISOString().slice(0,10);
-  if(!KINDS.length){ v.innerHTML=`<div class="page-h"><div><h1>Report</h1></div></div><div class="card pad mut">Nessun modulo che produce report è attivo.</div>`; return; }
-  v.innerHTML=`<div class="page-h"><div><h1>Report</h1><div class="mut">export CSV · TXT · PDF</div></div></div>
+  if(!KINDS.length){ v.innerHTML=`<div class="page-h"><div><h1>${t('report_title','Report')}</h1></div></div><div class="card pad mut">Nessun modulo che produce report è attivo.</div>`; return; }
+  v.innerHTML=`<div class="page-h"><div><h1>${t('report_title','Report')}</h1><div class="mut">export CSV · TXT · PDF</div></div></div>
     <div class="card pad"><div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
       <div class="field"><label>Tipo di report</label><select id="rKind" onchange="reportKindChange()">${KINDS.map(k=>`<option value="${k.key}">${esc(k.label)}</option>`).join('')}</select></div>
       <div class="field"><label>Dal</label><input id="rFrom" type="date" value="${wago}"></div>
@@ -1304,7 +1314,7 @@ async function vRonde(v){
   const sites=await api('/sites').catch(()=>[]);
   const canCfg=can(['pianificatore','tenant_admin']);
   const stChip=s=>`<span class="chip ${s==='completato'?'ok':(s==='incompleto'?'bad':'')}">${esc(s)}</span>`;
-  v.innerHTML=`<div class="page-h"><div><h1>Ronde</h1><div class="mut">giri di controllo · checkpoint QR/NFC/beacon/GPS · punzonature</div></div>${canCfg?'<button class="btn" onclick="ronNew()">+ nuovo giro</button>':''}</div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('ronde_title','Ronde')}</h1><div class="mut">giri di controllo · checkpoint QR/NFC/beacon/GPS · punzonature</div></div>${canCfg?'<button class="btn" onclick="ronNew()">+ nuovo giro</button>':''}</div>
   <div class="grid g2">
     <div class="card pad"><h2>Giri configurati (${routes.length})</h2>
       ${routes.map(r=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:8px">
@@ -1354,7 +1364,7 @@ async function vOrdini(v){
   const sched=O.filter(o=>o.scheduled_start), unsched=O.filter(o=>!o.scheduled_start);
   const row=o=>`<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b></td><td>${esc(o.site||'—')}</td>
     <td>${esc(o.assignee||'—')}</td><td class="small">${schedLabel(o)}</td><td>${priBadge(o.priority)}</td><td>${chip(o.state)}</td></tr>`;
-  v.innerHTML=`<div class="page-h"><div><h1>Ordini di lavoro</h1><div class="mut">${O.length} ordini · ${sched.length} pianificati</div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('ord_title','Ordini di lavoro')}</h1><div class="mut">${O.length} ordini · ${sched.length} pianificati</div></div>
     ${canCreate?`<button class="btn" onclick="newOrder()">+ Nuovo ordine</button>`:''}</div>
   <div class="card"><div class="card-h"><h2>Agenda (pianificati)</h2></div>
     <table class="table"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Quando</th><th>Priorità</th><th>Stato</th></tr></thead>
@@ -1498,7 +1508,7 @@ async function ordCancel(id,v){ const r=await askPrompt('Motivo annullamento?');
 async function vConsuntivi(v){
   const T=await api('/timesheets').catch(()=>[]);
   const canCreate=can(['lavoratore','tenant_admin']);
-  v.innerHTML=`<div class="page-h"><div><h1>Consuntivi</h1><div class="mut">${T.length} consuntivi</div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('consun_title','Consuntivi')}</h1><div class="mut">${T.length} consuntivi</div></div>
     ${canCreate?`<button class="btn" onclick="newTS()">+ Nuovo consuntivo</button>`:''}</div>
   <div class="card"><table class="table"><thead><tr><th>Addetto</th><th>Ordine</th><th>Stato</th></tr></thead>
   <tbody>${T.map(t=>`<tr class="clk" data-ts="${t.id}"><td><b>${esc(t.owner.split('@')[0])}</b></td>
@@ -1564,7 +1574,7 @@ async function tsReqChanges(id){ const n=await askPrompt('Cosa correggere?'); if
 // ---------------- Moduli ----------------
 async function vModuli(v){
   const M=await api('/modules').catch(()=>[]);
-  v.innerHTML=`<div class="page-h"><div><h1>Moduli</h1><div class="mut">Abilitazione commerciale dal superadmin. Qui vedi lo stato e <b>configuri gli strumenti</b> dei moduli attivi.</div></div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('moduli_title','Moduli')}</h1><div class="mut">Abilitazione commerciale dal superadmin. Qui vedi lo stato e <b>configuri gli strumenti</b> dei moduli attivi.</div></div></div>
   <div class="grid g3">${M.map(m=>`<div class="card pad">
     <div class="spread"><b>${esc(m.name)}</b>${chip(m.state)}</div>
     <div class="small mut" style="margin-top:6px">${esc(m.code)} · ${esc(m.kind)}</div>
@@ -1975,7 +1985,7 @@ async function vConnettori(v){
     trOn?api('/traccar/status').catch(()=>null):Promise.resolve(null),api('/devices').catch(()=>[])]);
   const hint={traccar:'OsmAnd → '+location.origin.replace(/:\d+$/,':5055')+' · forwarding → /api/ingress/traccar?token=',
     thingsboard:'Rule Engine REST → /api/ingress/thingsboard?token=',iot:'POST → /api/events (header X-Ingest-Token)',goalert:'chiave per-tenant gestita dal superadmin'};
-  v.innerHTML=`<div class="page-h"><div><h1>Connettori</h1><div class="mut">sorgenti esterne e credenziali macchina del tenant</div></div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('connettori_title','Connettori')}</h1><div class="mut">sorgenti esterne e credenziali macchina del tenant</div></div></div>
   ${traccarHealthCard(TS)}
   <div class="grid g2">${C.map(c=>`<div class="card pad">
     <div class="spread"><b>${esc(c.name)}</b>${chip(c.state)}</div>
@@ -2564,14 +2574,14 @@ async function tokDel(t){ if(!await askConfirm('Eliminare definitivamente la cre
 // Trigger di sicurezza (Worker Safety): catalogo trigger critici + config aggregata del perimetro.
 async function vTrigger(v){
   const d=await api('/safety/triggers').catch(e=>({error:e.message}));
-  if(d.error){ v.innerHTML=`<div class="page-h"><h1>Trigger di sicurezza</h1></div><div class="card pad">${esc(d.error)}</div>`; return; }
+  if(d.error){ v.innerHTML=`<div class="page-h"><h1>${t('trigger_title','Trigger di sicurezza')}</h1></div><div class="card pad">${esc(d.error)}</div>`; return; }
   const c=d.config||{};
   const badge=t=>t?'<span class="tag" style="background:#fee2e2;color:#b91c1c">critico → incidente</span>':'<span class="tag mut">solo registrato</span>';
   const rows=(d.triggers||[]).map(x=>`<tr>
      <td><b>${esc(x.label)}</b><div class="small mut">${esc(x.desc||'')}</div></td>
      <td class="small">${(x.sources||[]).map(s=>`<span class="tag">${esc(s)}</span>`).join(' ')}</td>
      <td>${badge(x.critical)}</td></tr>`).join('');
-  v.innerHTML=`<div class="page-h"><div><h1>Trigger di sicurezza</h1>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('trigger_title','Trigger di sicurezza')}</h1>
       <div class="mut">quali eventi del lavoratore generano un allarme, e come sono configurati</div></div></div>
     <div class="card pad" style="margin-bottom:12px;background:var(--brand-soft)"><div class="small">
       Questo è il <b>perimetro di sicurezza del lavoratore</b>: ogni trigger critico apre un incidente in <b>Centrale allarmi</b>
@@ -2619,7 +2629,7 @@ async function safetyTriggersSave(btn){
 const PROF_TRIGGERS=[['sos','SOS'],['man_down','Uomo a terra'],['immobilita','Immobilità'],['mancato_checkin','Check-in mancato'],['geofence','Fuori area']];
 async function vProfili(v){
   const [D,users]=await Promise.all([api('/safety/profiles').catch(e=>({error:e.message})),api('/users').catch(()=>[])]);
-  if(D.error){ v.innerHTML=`<div class="page-h"><h1>Profili di protezione</h1></div><div class="card pad">${esc(D.error)}</div>`; return; }
+  if(D.error){ v.innerHTML=`<div class="page-h"><h1>${t('profili_title','Profili di protezione')}</h1></div><div class="card pad">${esc(D.error)}</div>`; return; }
   v._users=users; v._groups=D.groups||[];
   const groupOpts=(sel)=>`<option value="">— nessuno (routing globale) —</option>`+(D.groups||[]).map(g=>`<option value="${g.id}" ${g.id===sel?'selected':''}>${esc(g.name)}</option>`).join('');
   const card=(p)=>{
@@ -2650,7 +2660,7 @@ async function vProfili(v){
       <div class="row" style="margin-top:10px"><button class="btn" onclick="profSave('${p.id}',this)">Salva profilo</button>
         <span class="prof-msg small" style="margin-left:10px"></span></div></div>`;
   };
-  v.innerHTML=`<div class="page-h"><div><h1>Profili di protezione</h1>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('profili_title','Profili di protezione')}</h1>
       <div class="mut">il punto unico di configurazione del perimetro: lavoratori + trigger + policy di escalation</div></div>
     <button class="btn" onclick="profNew()">+ Nuovo profilo</button></div>
     <div class="card pad" style="margin-bottom:12px;background:var(--brand-soft)"><div class="small">
@@ -2706,7 +2716,7 @@ async function vGruppi(v){
     'perdita_contatto','manomissione_badge','perdita_alimentazione','jamming','traccar_conn_down',
     'batteria_critica','batteria_bassa'];
   const routeOf=e=>(G.routing.find(r=>r.etype===e)||{}).group_id||'';
-  v.innerHTML=`<div class="page-h"><div><h1>Escalation e reperibilità</h1><div class="mut">destinatari, canali e rotazione per tipo di evento</div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('escal_title','Escalation e reperibilità')}</h1><div class="mut">destinatari, canali e rotazione per tipo di evento</div></div>
     <div class="row" style="gap:8px"><button class="btn ghost" onclick="syncGoalert(this)" title="Rollback: ripristina il motore GoAlert come rete di sicurezza">🔄 Sincronizza con GoAlert (rollback)</button>
       <button class="btn" onclick="grpNew()">+ Nuovo gruppo</button></div></div>
   <div class="seg" id="escTabs" style="margin-bottom:14px;flex-wrap:wrap">
@@ -3295,7 +3305,7 @@ async function vAnagrafiche(v){
   const [users,sites,teams,assets,ugroups,agroups,caps,croles]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),api('/teams').catch(()=>[]),api('/assets').catch(()=>[]),api('/user-groups').catch(()=>[]),api('/groups').catch(()=>[]),api('/capabilities').catch(()=>null),api('/custom-roles').catch(()=>null)]);
   v._caps=caps;
   v._users=users;
-  v.innerHTML=`<div class="page-h"><div><h1>Utenti e sedi</h1><div class="mut">anagrafiche del tenant</div></div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('anag_title','Utenti e sedi')}</h1><div class="mut">anagrafiche del tenant</div></div></div>
   <div class="grid g2">
     <div class="card"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
       <table class="table"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
@@ -3463,7 +3473,7 @@ async function vTurni(v){
     <tbody>${OC.map(o=>`<tr><td>${esc(o.email)}</td><td class="small">${dtLocal(o.starts_at)}</td><td class="small">${dtLocal(o.ends_at)}</td>
       <td class="small mut">${esc(o.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="ocDel('${o.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
       ||`<tr><td colspan="5" class="empty">Nessuna reperibilità</td></tr>`}</tbody></table></div>`;
-  v.innerHTML=`<div class="page-h"><div><h1>Turni</h1><div class="mut">${P.length} turni pianificati${planner?'':' (i tuoi)'}</div></div>${createBtn}</div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('turni_title','Turni')}</h1><div class="mut">${P.length} turni pianificati${planner?'':' (i tuoi)'}</div></div>${createBtn}</div>
   <div class="card"><table class="table"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Quando</th><th>Stato</th><th></th></tr></thead>
     <tbody>${planRows}</tbody></table></div>${oncallCard}`;
 }
