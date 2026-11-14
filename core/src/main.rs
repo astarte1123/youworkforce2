@@ -6,6 +6,7 @@ mod teltonika; // edge nativo Teltonika Codec8/8E su TCP (decode-edge senza Trac
 mod dashboard; // servizio core: dashboard unica configurabile (widget + layout per-tenant)
 mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
 mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
+mod sites; // servizio core: sedi e asset/mezzi condivisi
 
 use std::sync::Arc;
 use axum::{routing::{get, post, delete}, Router, Json};
@@ -213,8 +214,8 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/ui/features", get(api::ui_features).post(api::ui_features_set))
         .route("/api/modules/:code/tools", get(api::list_module_tools))
         .route("/api/modules/:code/tools/:tool", post(api::set_module_tool))
-        .route("/api/sites", get(api::list_sites).post(api::create_site))
-        .route("/api/sites/:id", post(api::update_site).delete(api::delete_site))
+        .route("/api/sites", get(sites::list_sites).post(sites::create_site))
+        .route("/api/sites/:id", post(sites::update_site).delete(sites::delete_site))
         .route("/api/users", get(api::list_users).post(api::create_user))
         .route("/api/users/:id", post(api::update_user).delete(api::delete_user))
         .route("/api/users/:id/sites", get(api::get_user_sites).post(api::set_user_sites))
@@ -250,8 +251,8 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/devices/:id/gprs-command", post(api::device_gprs_command))
         .route("/api/catalog/devices", get(api::list_catalog))
         .route("/api/catalog/facets", get(api::catalog_facets))
-        .route("/api/assets", get(api::list_assets).post(api::create_asset))
-        .route("/api/assets/:id", axum::routing::delete(api::delete_asset))
+        .route("/api/assets", get(sites::list_assets).post(sites::create_asset))
+        .route("/api/assets/:id", axum::routing::delete(sites::delete_asset))
         .route("/api/groups", get(api::list_groups).post(api::create_group))
         .route("/api/groups/:id", axum::routing::delete(api::delete_group))
         .route("/api/groups/:id/members", post(api::add_group_member))
