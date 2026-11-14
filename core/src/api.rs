@@ -4340,6 +4340,28 @@ pub async fn delete_checkpoint(State(st): State<AppState>, h: HeaderMap, Path(id
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "checkpoint inesistente")); }
     Ok(Json(json!({"ok":true})))
 }
+/// Checkpoint riusabili fra giri: copia la definizione di un checkpoint esistente (stesso tenant)
+/// in un altro giro, in coda. Niente schema nuovo: il punto fisico si definisce una volta e si
+/// riusa copiandolo dove serve.
+#[derive(Deserialize)] pub struct ImportCheckpointReq { pub source_checkpoint_id: Uuid }
+pub async fn import_checkpoint(State(st): State<AppState>, h: HeaderMap, Path(rid): Path<Uuid>, Json(b): Json<ImportCheckpointReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.patrol_routes WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"giro inesistente")); }
+    let src = sqlx::query("SELECT name,kind,code,lat,lon,radius_m FROM app.patrol_checkpoints WHERE id=$1")
+        .bind(b.source_checkpoint_id).fetch_optional(&mut *tx).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND,"checkpoint sorgente inesistente"))?;
+    let pos: i32 = sqlx::query_scalar("SELECT COALESCE(MAX(position),0)::int FROM app.patrol_checkpoints WHERE route_id=$1").bind(rid).fetch_one(&mut *tx).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.patrol_checkpoints(tenant_id,route_id,name,position,kind,code,lat,lon,radius_m) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id")
+        .bind(tid).bind(rid).bind(src.get::<String,_>("name")).bind(pos+1).bind(src.get::<String,_>("kind"))
+        .bind(src.try_get::<String,_>("code").ok()).bind(src.try_get::<f64,_>("lat").ok()).bind(src.try_get::<f64,_>("lon").ok())
+        .bind(src.get::<i32,_>("radius_m")).fetch_one(&mut *tx).await.map_err(ise)?;
+    let id = row.get::<Uuid,_>("id");
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":id})))
+}
 
 // ---- Esecuzione (qualunque utente del tenant col modulo attivo) ----
 async fn round_view(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, rid: Uuid) -> Result<Value, (StatusCode,String)> {

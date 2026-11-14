@@ -223,6 +223,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/patrol-routes", get(api::list_patrol_routes).post(api::create_patrol_route))
         .route("/api/patrol-routes/:id", post(api::update_patrol_route).delete(api::delete_patrol_route))
         .route("/api/patrol-routes/:id/checkpoints", post(api::create_checkpoint))
+        .route("/api/patrol-routes/:id/checkpoints/import", post(api::import_checkpoint))
         .route("/api/patrol-routes/:id/rounds", post(api::start_round))
         .route("/api/patrol-checkpoints/:id", post(api::update_checkpoint).delete(api::delete_checkpoint))
         .route("/api/patrol-rounds", get(api::list_rounds))

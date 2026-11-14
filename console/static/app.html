@@ -1333,16 +1333,25 @@ async function vRonde(v){
 async function ronNew(){ const n=await askPrompt('Nome giro?'); if(!n)return; const w=await askPrompt('Finestra max in minuti (opz.)?')||null;
   try{await api('/patrol-routes',{method:'POST',body:JSON.stringify({name:n,window_minutes:w?parseInt(w):null})}); toast('Giro creato','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function ronDel(id){ if(!await askConfirm('Eliminare il giro? (ronde e checkpoint inclusi)'))return; try{await api('/patrol-routes/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
-async function ronCp(rid,rname){ const r=(await api('/patrol-routes').catch(()=>[])).find(x=>x.id===rid); if(!r)return;
+async function ronCp(rid,rname){ const all=await api('/patrol-routes').catch(()=>[]); const r=all.find(x=>x.id===rid); if(!r)return;
+  window._ronRoutes=all;
   drawer('Checkpoint — '+rname, `<div class="col" style="gap:8px">
     ${r.checkpoints.map(c=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:6px"><span>${c.position}. <b>${esc(c.name)}</b> <span class="chip">${c.kind}</span> <span class="small mut">${c.kind==='gps'?((c.lat||'?')+','+(c.lon||'?')+' r'+c.radius_m+'m'):esc(c.code||'')}</span></span><button class="btn-ico btn ghost" onclick="ronCpDel('${c.id}','${rid}','${esc(rname).replace(/'/g,"&#39;")}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">nessun checkpoint</div>'}
+    <hr><div class="small mut">Riusa un checkpoint esistente (altro giro)</div>
+    <div class="row" style="gap:6px"><select id="cpImp" class="grow small"></select><button class="btn ghost small" onclick="ronCpImport('${rid}','${esc(rname).replace(/'/g,"&#39;")}')">↳ importa</button></div>
     <hr><div class="small mut">Nuovo checkpoint</div>
     <label class="small">Nome<input id="cpN"></label>
     <label class="small">Tipo<select id="cpK" onchange="ronCpKind()"><option value="qr">QR</option><option value="nfc">NFC</option><option value="beacon">Beacon</option><option value="gps">GPS</option></select></label>
     <div id="cpCode"><label class="small">Codice atteso (QR/NFC/beacon)<input id="cpC"></label></div>
     <div id="cpGps" style="display:none"><div class="row" style="gap:6px"><label class="small grow">Lat<input id="cpLat"></label><label class="small grow">Lon<input id="cpLon"></label><label class="small" style="width:90px">Raggio m<input id="cpR" value="50"></label></div></div>
     <button class="btn" onclick="ronCpAdd('${rid}','${esc(rname).replace(/'/g,"&#39;")}')">+ aggiungi checkpoint</button></div>`);
+  // popola il selettore di riuso con i checkpoint di TUTTI gli altri giri
+  const sel=$('#cpImp'); if(sel){ const opts=[];
+    (window._ronRoutes||[]).forEach(rt=>{ if(rt.id===rid)return; (rt.checkpoints||[]).forEach(c=>opts.push(`<option value="${c.id}">${esc(rt.name)} · ${esc(c.name)} [${c.kind}]</option>`)); });
+    sel.innerHTML=opts.join('')||'<option value="">nessun checkpoint riusabile</option>'; }
 }
+async function ronCpImport(rid,rname){ const cid=$('#cpImp').value; if(!cid){toast('Nessun checkpoint da importare','warn');return;}
+  try{await api('/patrol-routes/'+rid+'/checkpoints/import',{method:'POST',body:JSON.stringify({source_checkpoint_id:cid})}); toast('Checkpoint importato','ok'); closeDrawer&&closeDrawer(); ronCp(rid,rname);}catch(e){toast(e.message,'bad');} }
 function ronCpKind(){ const k=$('#cpK').value; $('#cpCode').style.display=(k==='gps')?'none':'block'; $('#cpGps').style.display=(k==='gps')?'block':'none'; }
 async function ronCpAdd(rid,rname){ const k=$('#cpK').value; const body={name:$('#cpN').value,kind:k};
   if(k==='gps'){ body.lat=parseFloat($('#cpLat').value); body.lon=parseFloat($('#cpLon').value); body.radius_m=parseInt($('#cpR').value||'50'); } else { body.code=$('#cpC').value; }

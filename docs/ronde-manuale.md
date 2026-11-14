@@ -38,6 +38,7 @@ Configurazione (richiede modulo `giri` + capability `plan`/is_planner):
 | POST | `/api/patrol-routes/:id` | aggiorna `{name, site_id?, window_minutes?, active?}` |
 | DELETE | `/api/patrol-routes/:id` | elimina (cascade) |
 | POST | `/api/patrol-routes/:id/checkpoints` | aggiungi `{name, kind, code?/lat?/lon?/radius_m?}` |
+| POST | `/api/patrol-routes/:id/checkpoints/import` | **riusa** un checkpoint esistente copiandolo `{source_checkpoint_id}` |
 | POST | `/api/patrol-checkpoints/:id` | aggiorna checkpoint |
 | DELETE | `/api/patrol-checkpoints/:id` | elimina checkpoint |
 

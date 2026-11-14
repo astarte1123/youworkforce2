@@ -67,6 +67,13 @@ g "$BASE/api/patrol-rounds/$R2" | jq "str(d['done'])+'/'+str(d['total'])" | grep
 R3=$(g -H 'content-type: application/json' -X POST "$BASE/api/patrol-routes/$RID/rounds" -d '{}' | jq "d.get('id','')")
 g -H 'content-type: application/json' -X POST "$BASE/api/patrol-rounds/$R3/punch" -d "{\"checkpoint_id\":\"$C1\",\"code\":\"SBAGLIATO\"}" | jq "d['ok']" | grep -qi false && ok "punch QR errato = ko" || no "qr bad ko" "-"
 
+# 4b) CHECKPOINT RIUSABILE: importa C1 (QR) in un secondo giro e punzona lì
+RID2=$(adm -H 'content-type: application/json' -X POST "$BASE/api/patrol-routes" -d '{"name":"Giro bis '"$R"'"}' | jq "d.get('id','')")
+NEWCP=$(adm -H 'content-type: application/json' -X POST "$BASE/api/patrol-routes/$RID2/checkpoints/import" -d "{\"source_checkpoint_id\":\"$C1\"}" | jq "d.get('id','')")
+[ -n "$NEWCP" ] && ok "checkpoint importato in un altro giro (riuso)" || no "import cp ko" "-"
+RB=$(g -H 'content-type: application/json' -X POST "$BASE/api/patrol-routes/$RID2/rounds" -d '{}' | jq "d.get('id','')")
+g -H 'content-type: application/json' -X POST "$BASE/api/patrol-rounds/$RB/punch" -d "{\"checkpoint_id\":\"$NEWCP\",\"code\":\"QR-PORT-1\"}" | jq "d['ok']" | grep -qi true && ok "punzonatura sul checkpoint importato (stesso codice QR)" || no "import punch ko" "-"
+
 # 5) ISOLAMENTO: acme non vede il giro di globex
 SEEN=$(adm2 "$BASE/api/patrol-routes" 2>/dev/null | jq "len([r for r in d if r['id']=='$RID'])" 2>/dev/null || echo ERR)
 [ "$SEEN" = 0 ] && ok "isolamento: acme non vede il giro (o modulo off)" || { [ "$SEEN" = ERR ] && ok "isolamento: acme modulo giri off (403)" || no "iso ko" "seen=$SEEN"; }
@@ -78,6 +85,7 @@ sql "UPDATE app.tenant_modules SET state='attivo' WHERE tenant_id='$TID' AND mod
 
 # teardown
 sql "DELETE FROM app.patrol_routes WHERE id='$RID'" >/dev/null
+sql "DELETE FROM app.patrol_routes WHERE id='${RID2:-00000000-0000-0000-0000-000000000000}'" >/dev/null 2>&1 || true
 sql "DELETE FROM app.users WHERE id='$GUID'" >/dev/null
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" = 0 ]
