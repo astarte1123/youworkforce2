@@ -403,9 +403,13 @@ function almClose(){ const m=document.getElementById('almModal'); if(m)m.remove(
 // ---------------- Dashboard ----------------
 async function vDashboard(v){
   const jobs=[];
-  const incs = can(['operatore','tenant_admin','auditor']) ? api('/incidents').catch(()=>[]) : Promise.resolve(null);
-  const ords = can(['pianificatore','tenant_admin','lavoratore','auditor']) ? api('/orders').catch(()=>[]) : Promise.resolve(null);
-  const tss  = can(['lavoratore','responsabile','tenant_admin','auditor']) ? api('/timesheets').catch(()=>[]) : Promise.resolve(null);
+  // P2: i widget dipendono dal RUOLO e dal MODULO attivo. Un modulo spento -> niente fetch e
+  // niente widget (catch->null nasconde anche un eventuale 403), così non si mostrano KPI/card
+  // fuorvianti (es. "Incidenti aperti: 0" su un tenant di solo Lavoro sul campo).
+  const safetyOn = ['loneworker','traccar','iot','thingsboard'].some(m=>ACTIVE_MODS.has(m));
+  const incs = (safetyOn && can(['operatore','tenant_admin','auditor'])) ? api('/incidents').catch(()=>null) : Promise.resolve(null);
+  const ords = (ACTIVE_MODS.has('interventi') && can(['pianificatore','tenant_admin','lavoratore','auditor'])) ? api('/orders').catch(()=>null) : Promise.resolve(null);
+  const tss  = (ACTIVE_MODS.has('consuntivi') && can(['lavoratore','responsabile','tenant_admin','auditor'])) ? api('/timesheets').catch(()=>null) : Promise.resolve(null);
   const [I,O,T] = await Promise.all([incs,ords,tss]);
   const openInc=(I||[]).filter(x=>x.state!=='chiuso').length;
   const inCorso=(O||[]).filter(x=>x.state==='in_corso'||x.state==='assegnato').length;
@@ -3401,7 +3405,11 @@ async function grpHandoffDel(gid,id){ try{ await api('/handoff-notes/'+id,{metho
 
 // ---------------- Anagrafiche: utenti e sedi ----------------
 async function vAnagrafiche(v){
-  const [users,sites,teams,assets]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),api('/teams').catch(()=>[]),api('/assets').catch(()=>[])]);
+  // P3: le Squadre sono una primitiva del modulo "workforce" (turni). Senza workforce attivo la
+  // sezione non viene né caricata né mostrata (prima dava sezione vuota + bottone che andava in 403).
+  const wfOn = ACTIVE_MODS.has('workforce');
+  const [users,sites,teams,assets]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),
+    wfOn?api('/teams').catch(()=>[]):Promise.resolve([]),api('/assets').catch(()=>[])]);
   v._users=users;
   v.innerHTML=`<div class="page-h"><div><h1>${t('anag_title','Utenti e sedi')}</h1><div class="mut">anagrafiche del tenant · <a onclick="location.hash='#/utenti-ruoli'">gruppi e ruoli →</a></div></div></div>
   <div class="grid g2">
@@ -3416,13 +3424,13 @@ async function vAnagrafiche(v){
         <button class="btn-ico btn ghost" onclick="siteDel('${s.id}')">${ICON.x}</button></td></tr>`).join('')
         ||'<tr><td colspan="3" class="empty">nessuna sede</td></tr>'}</tbody></table></div>
   </div>
-  <div class="card pad" style="margin-top:16px"><div class="spread"><h2>Squadre (${teams.length})</h2><a onclick="teamNew()">+ nuova squadra</a></div>
+  ${wfOn?`<div class="card pad" style="margin-top:16px"><div class="spread"><h2>Squadre (${teams.length})</h2><a onclick="teamNew()">+ nuova squadra</a></div>
     <div class="grid g2" style="margin-top:10px">${teams.map(t=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px">
       <div class="spread"><b>${esc(t.name)}</b><button class="btn-ico btn ghost" onclick="teamDel('${t.id}')">${ICON.x}</button></div>
       <div class="small mut" style="margin:6px 0">${t.members.map(m=>`<span class="tag">${esc(m.email)} <a onclick="teamRm('${t.id}','${m.user_id}')">✕</a></span>`).join(' ')||'nessun membro'}</div>
       <div class="row" style="gap:6px"><select id="tm_${t.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
         <button class="btn ghost small" onclick="teamAdd('${t.id}')">+ membro</button></div></div>`).join('')
-      ||'<div class="small mut">Nessuna squadra.</div>'}</div></div>
+      ||'<div class="small mut">Nessuna squadra.</div>'}</div></div>`:''}
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Asset / mezzi (${assets.length})</h2><a onclick="assetNew()">+ nuovo asset</a></div>
     <table class="table"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th></th></tr></thead>
     <tbody>${assets.map(a=>`<tr><td>${esc(a.name)}</td><td><span class="chip">${esc(a.kind)}</span></td><td class="small mut">${esc(a.identifier||'—')}</td>

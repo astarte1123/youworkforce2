@@ -36,9 +36,15 @@
 <div id="root"></div>
 <script src="/app.js"></script>
 <script>
-let ME=null, CI=null, CITimer=null, ORDERS=[], AIVOICE=false, AIAGENT=false;
+let ME=null, CI=null, CITimer=null, ORDERS=[], AIVOICE=false, AIAGENT=false, MODS=new Set();
+async function loadMods(){ try{ const M=await api('/modules'); MODS=new Set((M||[]).filter(m=>m.state==='attivo').map(m=>m.code)); }catch(e){ MODS=new Set(); } }
+// P1/P4: la PWA mostra solo le funzioni dei moduli ATTIVI sul tenant. Senza loneworker non
+// compaiono SOS/check-in/tracking (altrimenti creerebbero allarmi che nessuna Centrale vedrebbe);
+// il diario appare solo con un modulo Campo (workforce/interventi) attivo.
+function safetyWorker(){ return MODS.has('loneworker'); }
+function fieldDiary(){ return MODS.has('workforce')||MODS.has('interventi'); }
 (async function(){ try{ME=await api('/me'); if(ME.is_super||!ME.tenant_id)ME=null;}catch(e){ME=null;}
-  if(ME){ try{ const A=await api('/ai/features'); AIVOICE=!!(A&&A.features&&A.features.voice_diary); AIAGENT=!!(A&&A.features&&A.features.agent); }catch(e){ AIVOICE=false; AIAGENT=false; } }
+  if(ME){ await loadMods(); try{ const A=await api('/ai/features'); AIVOICE=!!(A&&A.features&&A.features.voice_diary); AIAGENT=!!(A&&A.features&&A.features.agent); }catch(e){ AIVOICE=false; AIAGENT=false; } }
   ME?app():login(); })();
 
 function login(){
@@ -54,7 +60,9 @@ function login(){
     </div></div></div>`;
   $('#go').onclick=async()=>{ store.slug=$('#slug').value.trim(); try{
     await api('/login',{method:'POST',body:JSON.stringify({email:$('#email').value.trim(),password:$('#pw').value})});
-    ME=await api('/me'); app(); }catch(e){ $('#msg').textContent='Credenziali non valide'; } };
+    ME=await api('/me'); await loadMods();
+    try{ const A=await api('/ai/features'); AIVOICE=!!(A&&A.features&&A.features.voice_diary); AIAGENT=!!(A&&A.features&&A.features.agent); }catch(e){}
+    app(); }catch(e){ $('#msg').textContent='Credenziali non valide'; } };
 }
 
 function app(){
@@ -64,35 +72,38 @@ function app(){
     <button class="btn-ico btn ghost" onclick="toggleTheme()">${ICON.moon}</button>
     <button class="btn-ico btn ghost" onclick="out()">${ICON.logout}</button></div>
   <div class="wrap col" style="gap:16px">
-    <button class="sosbtn" onclick="sos()">${ICON.sos} SOS</button>
+    ${safetyWorker()?`<button class="sosbtn" onclick="sos()">${ICON.sos} SOS</button>
     <div class="small mut center" style="margin-top:-6px">Il canale SOS è indipendente da dettatura e documenti.</div>
 
     <div class="card"><div class="card-b" id="trackBox"></div></div>
 
-    <div class="card"><div class="card-b" id="ciBox"></div></div>
+    <div class="card"><div class="card-b" id="ciBox"></div></div>`:''}
 
-    <div><h3 style="margin:4px 2px 10px">Turno</h3><div class="card"><div class="card-b" id="shiftBox"></div></div></div>
+    ${MODS.has('workforce')?`<div><h3 style="margin:4px 2px 10px">Turno</h3><div class="card"><div class="card-b" id="shiftBox"></div></div></div>
 
-    <div><h3 style="margin:4px 2px 10px">Turni pianificati</h3><div id="plansBox" class="col"></div></div>
+    <div><h3 style="margin:4px 2px 10px">Turni pianificati</h3><div id="plansBox" class="col"></div></div>`:''}
 
-    <div><h3 style="margin:4px 2px 10px">Oggi · ordini assegnati</h3><div id="orders" class="col"></div></div>
+    ${MODS.has('interventi')?`<div><h3 style="margin:4px 2px 10px">Oggi · ordini assegnati</h3><div id="orders" class="col"></div></div>`:''}
 
     <div id="patrolsSec" style="display:none"><h3 style="margin:4px 2px 10px">Ronde</h3><div id="patrols" class="col"></div></div>
 
-    <div><h3 style="margin:4px 2px 10px">Azioni</h3><div class="col" style="gap:10px">
+    ${fieldDiary()?`<div><h3 style="margin:4px 2px 10px">Azioni</h3><div class="col" style="gap:10px">
       <button class="act" onclick="openNote()"><span class="ic">${ICON.mic}</span>
         <span class="grow">Detta una nota di lavoro</span><span class="tag" id="noteBadge"></span></button>
       ${AIAGENT?`<button class="act" onclick="openAgent()"><span class="ic">✦</span>
         <span class="grow">Assistente AI sul campo</span><span class="tag">agente</span></button>`:''}
     </div>
     <div class="small mut center" style="margin-top:8px">Input manuale sempre disponibile. La dettatura usa il riconoscimento vocale del browser; se assente o negato, scrivi a mano.</div>
-    <div id="diaryList" class="col" style="gap:8px;margin-top:10px"></div></div>
+    <div id="diaryList" class="col" style="gap:8px;margin-top:10px"></div></div>`:''}
   </div>`;
-  renderCheckin(); loadOrders(); renderShift(); loadPlans(); loadDiary(); flushNotes(); loadPatrols();
-  renderTracking();
-  // ripristina la condivisione posizione se era attiva (o se è in corso un turno)
-  let want=false; try{ want=localStorage.getItem('yw_track')==='1'; }catch(e){}
-  if(want) startTracking(true);
+  if(safetyWorker()){ renderCheckin(); renderTracking(); }
+  if(MODS.has('interventi')) loadOrders();
+  if(MODS.has('workforce')){ renderShift(); loadPlans(); }
+  if(fieldDiary()){ loadDiary(); flushNotes(); }
+  loadPatrols();
+  // ripristina la condivisione posizione se era attiva (solo se safety attivo)
+  if(safetyWorker()){ let want=false; try{ want=localStorage.getItem('yw_track')==='1'; }catch(e){}
+    if(want) startTracking(true); }
 }
 async function loadPlans(){
   const b=$('#plansBox'); if(!b)return;

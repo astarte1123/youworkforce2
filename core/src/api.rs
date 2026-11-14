@@ -6493,6 +6493,9 @@ pub struct CheckinReq { pub minutes: i64 }
 pub async fn create_checkin(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CheckinReq>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
+    // P1: il check-in è una primitiva di Sicurezza lavoratore. Senza loneworker attivo la Centrale
+    // non esiste → un check-in creato non sarebbe mai sorvegliato. Gate esplicito (no black-hole).
+    require_module(&st, tid, "loneworker").await?;
     // Per-tenant check-in policy (loneworker/checkin_timer): default when unset, clamp to max.
     let cfg = tool_config(&st, tid, "loneworker", "checkin_timer").await;
     let def_min = cfg.get("default_minutes").and_then(|v| v.as_i64()).unwrap_or(30);
@@ -6508,6 +6511,7 @@ pub async fn create_checkin(State(st): State<AppState>, h: HeaderMap, Json(b): J
 
 pub async fn confirm_checkin(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
+    require_module(&st, s.tenant_id.unwrap(), "loneworker").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     // SICUREZZA: solo il proprietario puo' confermare il proprio check-in. Altrimenti un
     // altro utente potrebbe sopprimere l'allarme di mancato check-in di un collega isolato.
@@ -6594,7 +6598,9 @@ pub struct DiaryReq { pub body: String, pub work_order_id: Option<Uuid>, pub sou
 pub async fn diary_create(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DiaryReq>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
-    if !module_active(&st, tid, "workforce").await { return Err(err(StatusCode::FORBIDDEN, "modulo workforce non abilitato")); }
+    // P4: il diario di lavoro appartiene al perimetro Campo. Disponibile con workforce (turni) O
+    // interventi (ordini) attivi, così non dipende da un singolo modulo Campo.
+    require_any_module(&st, tid, &["workforce","interventi"]).await?;
     let body = b.body.trim();
     if body.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nota vuota")); }
     let source = match b.source.as_deref() { Some("voce") => "voce", _ => "manuale" };
@@ -6616,6 +6622,7 @@ pub async fn diary_create(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
 
 pub async fn diary_list(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), &["workforce","interventi"]).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let all = matches!(s.role.as_str(), "operatore"|"responsabile"|"tenant_admin"|"auditor");
     let sql = if all {
@@ -8141,6 +8148,7 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
                 "device":r.try_get::<String,_>("external_id").ok(),"ts":r.get::<Dt,_>("origin_ts").to_rfc3339()})).collect::<Vec<_>>()}))
         }
         "query_work_orders" => {
+            if !module_active(st, tid, "interventi").await { return Err("modulo interventi non abilitato".into()); }
             let mut t = tx!();
             let rows = if let Some(stt)=gs("state") {
                 sqlx::query("SELECT o.id,o.title,o.state,o.priority FROM app.work_orders o WHERE o.state=$1 ORDER BY o.updated_at DESC LIMIT 50").bind(stt).fetch_all(&mut *t).await
@@ -8152,11 +8160,13 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
                 "stato":r.get::<String,_>("state"),"priorita":r.get::<i32,_>("priority")})).collect::<Vec<_>>()))
         }
         "get_consuntivo" => {
+            if !module_active(st, tid, "consuntivi").await { return Err("modulo consuntivi non abilitato".into()); }
             let id = gu("timesheet_id").ok_or("timesheet_id non valido")?;
             timesheet_detail(st, tid, id).await.map_err(|e| e.1)
         }
         "add_diary_entry" => {
-            if !module_active(st, tid, "workforce").await { return Err("modulo workforce non abilitato".into()); }
+            if !module_active(st, tid, "workforce").await && !module_active(st, tid, "interventi").await {
+                return Err("diario non disponibile: nessun modulo Campo (workforce/interventi) attivo".into()); }
             let body = gs("body").unwrap_or_default(); let body=body.trim();
             if body.is_empty() { return Err("nota vuota".into()); }
             let mut t = tx!();
