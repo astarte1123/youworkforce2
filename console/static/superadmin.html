@@ -72,7 +72,6 @@ async function load(){
   TENANTS=await api('/superadmin/tenants').catch(()=>[]);
   const mods=await Promise.all(TENANTS.map(t=>api('/superadmin/tenants/'+t.id+'/modules').catch(()=>[])));
   $('#list').innerHTML=TENANTS.map((t,i)=>tenantCard(t,mods[i])).join('')||'<div class="empty">nessun tenant</div>';
-  TENANTS.forEach(t=>loadInteg(t.id));
 }
 async function loadInteg(tid){
   const box=document.getElementById('integ_'+tid); if(!box)return;
@@ -92,12 +91,11 @@ function tenantCard(t,mods){
       <div><b>${esc(t.name)}</b><div class="small mut mono">${esc(t.slug)}.loneworker.eu</div></div></div>
     <div class="row" style="gap:6px">${licChip('App mobile',t.mobile_used,t.mobile_app_licenses)} ${licChip('IoT',t.iot_used,t.iot_device_licenses)}</div>
     </div><div class="card-b"><div class="grid g3">
-    ${mods.map(m=>`<div class="row" style="justify-content:space-between;padding:8px 10px;border:1px solid var(--line);border-radius:10px">
+    ${mods.filter(m=>m.available).map(m=>`<div class="row" style="justify-content:space-between;padding:8px 10px;border:1px solid var(--line);border-radius:10px">
       <div style="min-width:0"><div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis">${esc(m.name)}</div>
-        <div class="small faint">${chip(m.state)}</div></div>
-      ${m.available?`<label class="switch"><input type="checkbox" ${m.state==='attivo'?'checked':''}
-        onchange="toggle('${t.id}','${m.code}',this)"><span class="sl"></span></label>`
-        :'<span class="tag">N/D</span>'}
+        <div class="small faint">${chip(m.state)}${m.mkind?` · <span class="mut">${esc(m.mkind)}</span>`:''}</div></div>
+      <label class="switch"><input type="checkbox" ${m.state==='attivo'?'checked':''}
+        onchange="toggle('${t.id}','${m.code}',this)"><span class="sl"></span></label>
     </div>`).join('')}
     </div>
     <div style="margin-top:12px">
@@ -107,19 +105,9 @@ function tenantCard(t,mods){
         <button class="btn ghost" onclick="openTools('${t.id}',this)">Strumenti disponibili</button>
         <button class="btn ghost cfgbtn" onclick="scnOpen('${t.id}',this)">Ambienti (casi d'uso)</button>
         <button class="btn ghost cfgbtn" onclick="mapVisOpen('${t.id}',this)">Menu mappa</button></div>
-      <div class="spread" style="margin:12px 0 5px"><div class="small mut" style="text-transform:uppercase;letter-spacing:.5px">Connessioni &amp; integrazioni</div><div id="integ_${t.id}" class="small mut">semaforo…</div></div>
-      <div class="small mut" style="margin-bottom:6px">I motori integrati (GoAlert/Traccar/ThingsBoard) si configurano da soli dai default del prodotto. I pulsanti sotto servono solo per override o diagnosi. I provider AI sono esterni: richiedono la chiave del cliente.</div>
-      <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn ghost" onclick="gaProvision('${t.id}',this)">Provisiona GoAlert</button>
-        <button class="btn ghost cfgbtn" onclick="gaConfig('${t.id}',this)">Trasporto notifiche</button>
-        <button class="btn ghost cfgbtn" onclick="trConn('${t.id}',this)">Connessione Traccar</button>
-        <button class="btn ghost cfgbtn" onclick="trConfig('${t.id}',this)">Config Traccar</button>
-        <button class="btn ghost cfgbtn" onclick="tbConn('${t.id}',this)">Connessione ThingsBoard</button>
-        <button class="btn ghost cfgbtn" onclick="aiConn('${t.id}',this)">Connessione AI</button></div>
-      <div class="row" style="gap:8px;align-items:center;margin-top:8px"><span class="small mut">Motore escalation:</span>
-        <select class="small" onchange="setEngine('${t.id}',this.value,this)">
-          <option value="native">nativo (strada nuova, default)</option>
-          <option value="goalert">GoAlert (rollback)</option></select>
-        <span id="eng_${t.id}" class="small mut"></span></div>
+      <div class="small mut" style="margin:12px 0 5px;text-transform:uppercase;letter-spacing:.5px">Integrazioni</div>
+      <div class="small mut" style="margin-bottom:6px">YouWorkforce è <b>self-contained</b>: escalation, tracking (edge Teltonika/OsmAnd) e IoT sono motori <b>nativi</b>, nessuna connessione a servizi esterni. I provider AI sono l'unica integrazione esterna, opzionale: richiedono la chiave del cliente.</div>
+      <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn ghost cfgbtn" onclick="aiConn('${t.id}',this)">Connessione AI</button></div>
     </div>
     <div id="admin_${t.id}" style="margin-top:8px"></div>
     <div id="tools_${t.id}" style="margin-top:8px"></div>

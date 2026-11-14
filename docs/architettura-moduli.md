@@ -38,16 +38,25 @@ Endpoint core NON chiamano `require_module`; usano solo `require_tenant` + `requ
 | Assistente YouWorker.ai | `assistant` | Trasversale (AI attore) | — |
 | Qualifiche / Prevenzione | `qualifiche`,`prevenzione` | (non ancora disponibili) | — |
 
-### 3. Connector — integrazioni esterne (attivabili dal superadmin)
+### 3. Connector — RITIRATI (suite self-contained)
 
-`kind="connector"`. Gated da `require_module(code)`.
+YouWorkforce **non si connette mai a servizi esterni**. I connettori-ponte verso server esterni
+(`goalert`, `traccar`, `thingsboard`) sono **ritirati dal prodotto** (mig 0078: `available=false`,
+disattivati). Ogni loro funzione ha un equivalente **nativo**:
 
-| Connettore | code | Dipende da | Note |
-|------------|------|-----------|------|
-| GoAlert (escalation) | `goalert` | loneworker | motore on-call; il nativo funziona anche senza |
-| Traccar (badge/GPS) | `traccar` | loneworker | posizioni/eventi → incidenti |
-| IoT generico | `iot` | — | telemetria + regole sensori |
-| ThingsBoard | `thingsboard` | — | pull telemetria/allarmi nativi |
+| Ex connettore | Sostituito da (nativo) |
+|---------------|------------------------|
+| GoAlert (on-call/escalation) | **escalation nativa** (default, mig 0057) |
+| Traccar (badge/GPS, server esterno) | **edge nativo** Teltonika Codec8/8E + ingest OsmAnd/HTTP |
+| ThingsBoard (pull telemetria esterna) | **IoT nativo**: `iot` (sensor rules) + scenari "IoT Use Cases" |
+
+**Ingest INBOUND resta nativo**: gli endpoint `/api/ingress/osmand|traccar|thingsboard` RICEVONO
+telemetria (device che spingono verso YW, non YW che chiama fuori) e sono gated dal modulo **`iot`**
+(native) via `DEVICE_MODS = [loneworker, iot]`. Il formato del payload (OsmAnd/Traccar/ThingsBoard)
+è solo un'etichetta di sorgente; il motore è YW.
+
+L'unica integrazione esterna rimasta, **opzionale**, sono i **provider AI** (richiedono la chiave del
+cliente): vedi modulo `assistant`.
 
 ## Chi attiva cosa (separazione dei poteri)
 

@@ -14,6 +14,8 @@ sql(){ docker exec -i ywdb psql -U postgres -d youworkforce -tAc "$1"; }
 one(){ sql "$1"|head -1|tr -d '[:space:]'; }
 TID=$(one "SELECT id FROM app.tenants WHERE slug='$SLUG'")
 sql "DELETE FROM app.role_capabilities WHERE tenant_id='$TID'" >/dev/null
+# /connectors (campione iot.manage) richiede il modulo IoT nativo attivo: garantiscilo sul tenant.
+sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','iot','attivo') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
 R=$RANDOM; HASH=$(one "SELECT pass_hash FROM app.users WHERE tenant_id='$TID' AND email='$ADMIN'")
 OPM="op-sp-$R@globex.loneworker.eu"
 OPU=$(one "INSERT INTO app.users(tenant_id,email,pass_hash,role) VALUES('$TID','$OPM','$HASH','operatore') RETURNING id")
@@ -55,5 +57,7 @@ relog
 sql "DELETE FROM app.custom_roles WHERE id='${CRID:-00000000-0000-0000-0000-000000000000}'" >/dev/null 2>&1 || true
 sql "DELETE FROM app.role_capabilities WHERE tenant_id='$TID'" >/dev/null
 sql "DELETE FROM app.users WHERE id='$OPU'" >/dev/null
+# ripristina baseline globex (iot off): non lasciare il modulo attivo per le altre suite
+sql "UPDATE app.tenant_modules SET state='non_abilitato' WHERE tenant_id='$TID' AND module_code='iot'" >/dev/null
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" = 0 ]

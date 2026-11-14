@@ -1444,7 +1444,7 @@ fn scenario_catalog() -> Vec<Scenario> {
     let crit = "sensore_critico"; let tele = "telemetria";
     vec![
       Scenario{ code:"smart_energy", name:"Smart Energy", sector:"Energia", desc:"Consumo elettrico per piano con uno smart meter per piano: tensione, corrente, frequenza, energia; allarmi su sovra/sotto-tensione e calo di frequenza.",
-        modules:vec!["iot","thingsboard"],
+        modules:vec!["iot"],
         rules:vec![ r("voltage",">=",Some(253.0),crit), r("voltage","<=",Some(207.0),crit), r("frequency","<=",Some(49.5),crit), r("current",">=",Some(32.0),tele), r("energy_total",">=",Some(1000.0),tele) ],
         devices:vec![ d("meter-a","Smart Meter A (Piano 1)"), d("meter-b","Smart Meter B (Piano 2)"), d("meter-c","Smart Meter C (Piano 3)") ] },
       Scenario{ code:"environment_monitoring", name:"Environment Monitoring", sector:"Ambiente", desc:"Monitoraggio ambientale indoor/outdoor con sensori multipli.",
@@ -1456,7 +1456,7 @@ fn scenario_catalog() -> Vec<Scenario> {
         rules:vec![ r("co2",">=",Some(1200.0),crit), r("temperature",">=",Some(30.0),tele), r("smoke","is_true",None,crit) ],
         devices:vec![ d("office-1","Sensore ufficio 1") ] },
       Scenario{ code:"water_metering", name:"Water Metering", sector:"Utility", desc:"Consumo acqua dai contatori con rilevazione perdite/frodi.",
-        modules:vec!["iot","thingsboard"],
+        modules:vec!["iot"],
         rules:vec![ r("leak","is_true",None,crit), r("flow",">=",Some(100.0),tele), r("fraud","is_true",None,crit) ],
         devices:vec![ d("water-1","Contatore acqua 1") ] },
       Scenario{ code:"smart_retail", name:"Smart Retail (catena freddo)", sector:"Retail", desc:"Frigo/freezer e asset di supermercato: qualita' alimentare e disponibilita'.",
@@ -1464,19 +1464,19 @@ fn scenario_catalog() -> Vec<Scenario> {
         rules:vec![ r("temperature",">=",Some(8.0),crit), r("temperature","<=",Some(-25.0),crit), r("door_open","is_true",None,tele) ],
         devices:vec![ d("chiller-1","Frigo 1"), d("freezer-1","Freezer 1") ] },
       Scenario{ code:"smart_farming", name:"Smart Farming", sector:"Agricoltura", desc:"Stoccaggio cereali in silos: livello, temperatura, umidità grano, aerazione. Allarmi su surriscaldamento, grano umido (muffa) e scorta bassa.",
-        modules:vec!["iot","thingsboard"],
+        modules:vec!["iot"],
         rules:vec![ r("temperature",">=",Some(30.0),crit), r("moisture",">=",Some(25.0),crit), r("humidity",">=",Some(80.0),crit), r("crop_level","<=",Some(15.0),tele) ],
         devices:vec![ d("silo-a","Silo A"), d("silo-b","Silo B"), d("silo-c","Silo C") ] },
       Scenario{ code:"site_fleet_tracking", name:"Site Fleet Tracking", sector:"Mezzi", desc:"Escavatori, camion e mezzi in cantiere/miniera: posizione e carburante.",
-        modules:vec!["traccar","loneworker","iot"],
+        modules:vec!["loneworker","iot"],
         rules:vec![ r("fuel","<=",Some(10.0),crit), r("engine_temp",">=",Some(110.0),crit) ],
         devices:vec![ d("vehicle-1","Mezzo 1") ] },
       Scenario{ code:"smart_metering", name:"Smart Metering", sector:"Utility", desc:"Dati smart meter per consumo risorse: perdite, anomalie, frodi.",
-        modules:vec!["iot","thingsboard"],
+        modules:vec!["iot"],
         rules:vec![ r("leak","is_true",None,crit), r("fraud","is_true",None,crit), r("consumption",">=",Some(1000.0),tele) ],
         devices:vec![ d("smartmeter-1","Smart meter 1") ] },
       Scenario{ code:"health_care", name:"Health Care (assisted living)", sector:"Sanita'", desc:"Metriche salute paziente da device connessi, allerta su variazioni critiche.",
-        modules:vec!["loneworker","iot","goalert"],
+        modules:vec!["loneworker","iot"],
         rules:vec![ r("heart_rate",">=",Some(120.0),crit), r("heart_rate","<=",Some(40.0),crit), r("fall","is_true",None,"man_down") ],
         devices:vec![ d("wearable-1","Wearable paziente 1") ] },
       Scenario{ code:"air_quality", name:"Air Quality Monitoring", sector:"Ambiente", desc:"Qualita' dell'aria su piu' sedi: PM2.5, CO2, umidita', temperatura.",
@@ -1492,19 +1492,19 @@ fn scenario_catalog() -> Vec<Scenario> {
         rules:vec![ r("fill_level",">=",Some(90.0),crit), r("fill_level",">=",Some(70.0),tele) ],
         devices:vec![ d("bin-1","Cassonetto 1") ] },
       Scenario{ code:"tank_level", name:"Tank Level Monitoring", sector:"Industria", desc:"Serbatoi carburante/acqua/chimici: livelli e trend di consumo.",
-        modules:vec!["iot","thingsboard"],
+        modules:vec!["iot"],
         rules:vec![ r("level","<=",Some(10.0),crit), r("level",">=",Some(95.0),crit) ],
         devices:vec![ d("tank-1","Serbatoio 1") ] },
       Scenario{ code:"scada_pool", name:"SCADA Swimming Pool", sector:"SCADA", desc:"Sistemi piscina e processi industriali in tempo reale.",
-        modules:vec!["iot","thingsboard"],
+        modules:vec!["iot"],
         rules:vec![ r("ph","<=",Some(6.8),crit), r("ph",">=",Some(7.8),crit), r("chlorine","<=",Some(0.5),crit), r("temperature",">=",Some(32.0),tele) ],
         devices:vec![ d("pool-1","Centralina piscina 1") ] },
       Scenario{ code:"scada_oil_gas", name:"SCADA Oil & Gas Drilling", sector:"SCADA", desc:"Perforazione: parametri chiave (rig, pompe, BOP) con focus sicurezza.",
-        modules:vec!["iot","thingsboard","goalert"],
+        modules:vec!["iot"],
         rules:vec![ r("pressure",">=",Some(350.0),crit), r("gas",">=",Some(20.0),crit), r("vibration",">=",Some(80.0),crit) ],
         devices:vec![ d("rig-1","Rig 1") ] },
       Scenario{ code:"scada_energy", name:"SCADA Energy Management", sector:"SCADA", desc:"Flussi energetici e infrastruttura: efficienza, picchi di domanda, costi.",
-        modules:vec!["iot","thingsboard"],
+        modules:vec!["iot"],
         rules:vec![ r("demand_kw",">=",Some(500.0),crit), r("power_factor","<=",Some(0.8),tele) ],
         devices:vec![ d("grid-1","Nodo rete 1") ] },
     ]
@@ -3028,7 +3028,7 @@ pub async fn list_connectors(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, CONNECTOR_MODS).await?;
-    let defs = [("traccar","Traccar (badge)",5055usize),("thingsboard","ThingsBoard (IoT)",0),("goalert","GoAlert (escalation)",0),("iot","IoT generico",0)];
+    let defs = [("iot","IoT nativo",0usize)]; // suite self-contained: solo motore IoT nativo
     let has_key: i64 = sqlx::query_scalar("SELECT count(*) FROM app.goalert_services WHERE tenant_id=$1")
         .bind(tid).fetch_one(&st.owner_pool).await.map_err(ise)?;
     let mut out = Vec::new();
@@ -4689,8 +4689,8 @@ pub async fn ingest_traccar(
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
     let tid = cred.tenant_id;
     let source = cred.source.clone();
-    if !module_active(&st, tid, "traccar").await {
-        return Err(err(StatusCode::FORBIDDEN, "modulo traccar non abilitato"));
+    if !module_active(&st, tid, "iot").await {
+        return Err(err(StatusCode::FORBIDDEN, "modulo IoT non abilitato"));
     }
     let bound_ext = match cred.device_id { Some(did) => bound_device_external(&st, did).await, None => None };
 
@@ -5582,8 +5582,8 @@ pub async fn ingest_traccar_position(
     let cred = resolve_ingest_token(&st, &token).await
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
     let tid = cred.tenant_id;
-    if !module_active(&st, tid, "traccar").await {
-        return Err(err(StatusCode::FORBIDDEN, "modulo traccar non abilitato"));
+    if !module_active(&st, tid, "iot").await {
+        return Err(err(StatusCode::FORBIDDEN, "modulo IoT non abilitato"));
     }
     let pos = b.get("position").or(Some(&b)).unwrap();
     let dev = b.get("device");
@@ -5920,8 +5920,8 @@ pub async fn ingest_thingsboard(
     let cred = resolve_ingest_token(&st, &token).await
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
     let tid = cred.tenant_id;
-    if !module_active(&st, tid, "thingsboard").await {
-        return Err(err(StatusCode::FORBIDDEN, "modulo thingsboard non abilitato"));
+    if !module_active(&st, tid, "iot").await {
+        return Err(err(StatusCode::FORBIDDEN, "modulo IoT non abilitato"));
     }
     // Fase A: token device-bound -> device forzato (anti-spoof del nome device dalla querystring).
     let bound_ext = match cred.device_id { Some(did) => bound_device_external(&st, did).await, None => None };
@@ -6375,13 +6375,13 @@ async fn require_any_module(st: &AppState, tid: Uuid, codes: &[&str]) -> Result<
     for c in codes { if module_active(st, tid, c).await { return Ok(()); } }
     Err(err(StatusCode::FORBIDDEN, "nessun modulo abilitato per questa funzione"))
 }
-const DEVICE_MODS: &[&str] = &["loneworker","traccar","iot","thingsboard"];
-const CONNECTOR_MODS: &[&str] = &["traccar","thingsboard","goalert","iot"];
+const DEVICE_MODS: &[&str] = &["loneworker","iot"]; // suite self-contained: niente connettori esterni
+const CONNECTOR_MODS: &[&str] = &["iot"]; // solo IoT nativo (connettori esterni ritirati)
 /// Moduli che possono PRODURRE incidenti → l'escalation/centrale è condivisa fra tutti.
 /// La configurazione e la visibilità escalation (gruppi, routing, on-call, recapiti,
 /// override, maintenance, centrale allarmi) non devono sparire se "Sicurezza lavoratore"
 /// (loneworker) è spento ma resta attivo un altro modulo che genera allarmi.
-const ESCALATION_MODS: &[&str] = &["loneworker","traccar","iot","thingsboard"];
+const ESCALATION_MODS: &[&str] = &["loneworker","iot"]; // moduli nativi che producono allarmi
 
 // ================== Per-module tool configuration (schema-driven) ==================
 // Effective config for a tool = catalog default_config overlaid with the tenant's

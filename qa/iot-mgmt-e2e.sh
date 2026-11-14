@@ -18,11 +18,11 @@ A(){ curl -s -b "$JA" -H 'x-tenant-slug: acme' -H "x-csrf-token: $CA" -H 'conten
 O(){ curl -s -b "$JO" -H 'x-tenant-slug: acme' -H "x-csrf-token: $CO" -H 'content-type: application/json' "$@"; }
 
 # 1) riepilogo connettori
-A "$BASE/api/connectors" | python -c "import sys,json;d=json.load(sys.stdin);t=next(c for c in d if c['code']=='traccar');assert t['state']=='attivo',t;assert t['tokens']>=1,t;print('ok')" >/dev/null 2>&1 \
-  && ok "connettori: traccar attivo con token" || no "connectors" "$(A "$BASE/api/connectors"|head -c 160)"
+A "$BASE/api/connectors" | python -c "import sys,json;d=json.load(sys.stdin);t=next(c for c in d if c['code']=='iot');assert t['state']=='attivo',t;print('ok')" >/dev/null 2>&1 \
+  && ok "connettori: IoT nativo attivo" || no "connectors" "$(A "$BASE/api/connectors"|head -c 160)"
 
-# 2) crea ingest-token per thingsboard (secret mostrato una volta; handle non segreto in lista)
-CREATED=$(A -X POST "$BASE/api/ingest-tokens" -d '{"source":"thingsboard"}')
+# 2) crea ingest-token IoT nativo (secret mostrato una volta; handle non segreto in lista)
+CREATED=$(A -X POST "$BASE/api/ingest-tokens" -d '{"source":"iot"}')
 TOK=$(echo "$CREATED" | jget 'd["token"]')      # secret: autentica l'ingest
 HANDLE=$(echo "$CREATED" | jget 'd["handle"]')   # handle: compare in lista e serve per delete/revoke
 [ -n "$TOK" ] && ok "ingest-token thingsboard creato" || no "create token" "$TOK"
