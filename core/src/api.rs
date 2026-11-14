@@ -576,7 +576,7 @@ async fn goalert_session(st: &AppState, tid: Uuid) -> Option<(String, String, Op
 // P2: stato reale dell'alert GoAlert di un incidente (ack/close/escalation).
 pub async fn goalert_status(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let tid = s.tenant_id.unwrap();
     let aid: Option<i32> = sqlx::query_scalar("SELECT goalert_alert_id FROM app.incidents WHERE id=$1 AND tenant_id=$2")
         .bind(iid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.flatten();
@@ -596,7 +596,7 @@ pub async fn goalert_status(State(st): State<AppState>, h: HeaderMap, Path(iid):
 // (c) ack / escalate dell'alert GoAlert dalla nostra console.
 async fn goalert_alert_action(st: &AppState, h: &HeaderMap, iid: Uuid, mutation: impl Fn(i64)->String) -> R {
     let s = require_tenant(st, h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"incidents.handle") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let tid = s.tenant_id.unwrap();
     let aid: Option<i32> = sqlx::query_scalar("SELECT goalert_alert_id FROM app.incidents WHERE id=$1 AND tenant_id=$2")
         .bind(iid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.flatten();
@@ -622,7 +622,7 @@ pub async fn goalert_escalate(State(st): State<AppState>, h: HeaderMap, Path(iid
 // P2: chi è reperibile adesso sul servizio del tenant.
 pub async fn goalert_oncall(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor"|"responsabile") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let tid = s.tenant_id.unwrap();
     let Some((base, cookie, sid)) = goalert_session(&st, tid).await else {
         return Ok(Json(json!({"available":false,"reason":"GoAlert non configurato"}))); };
@@ -2004,7 +2004,7 @@ pub async fn scenario_dashboard(State(st): State<AppState>, h: HeaderMap, Path(c
 /// mappato su ThingsBoard, inoltra il comando via RPC. operatore/tenant_admin.
 pub async fn scenario_aeration_set(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>, Json(b): Json<AerationReq>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"devices.manage") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let tid = s.tenant_id.unwrap();
     let cat = scenario_catalog();
     let _scn = scenario_applied(&st, tid, &code, &cat).await?;
@@ -2282,7 +2282,7 @@ pub async fn traccar_status(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "traccar").await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor") {
+    if !has_cap(&s,"incidents.view") {
         return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato"));
     }
     let configured = traccar_conn(&st, tid).await.is_some();
@@ -2769,19 +2769,28 @@ pub async fn list_users(State(st): State<AppState>, h: HeaderMap) -> R {
 // ============================ Gestione (Fase 1) ============================
 // Anagrafiche e operazioni che mancavano: dispositivi, sedi, utenti, gruppi di
 // allarme + routing, assegnazione/note incidenti, check-in in centrale.
-// ---- Fase 2: capability layer -------------------------------------------------
-// Catalogo capability (coarse, allineato ai controlli concentrati di oggi).
+// ---- Fase 2/4: capability layer (granulare, module-neutral) --------------------
+// Catalogo capability. `admin` è SUPER: implica tutte le altre (vedi has_cap).
+// Fase 4 (Tappa 1): split per-modulo dei controlli basati su ruolo.
 pub const CAPABILITIES: &[(&str,&str)] = &[
-    ("admin",   "Amministrazione: impostazioni, utenti, dispositivi, gruppi, configurazione escalation"),
-    ("plan",    "Pianificazione: ordini/interventi, turni"),
-    ("approve", "Approvazione consuntivi"),
+    ("admin",                "Amministrazione completa (super): implica tutte le capability"),
+    ("incidents.view",       "Sicurezza: lettura centrale, mappe, dispositivi, report"),
+    ("incidents.handle",     "Sicurezza: gestione allarmi (presa in carico, chiusura, note, test)"),
+    ("devices.manage",       "Dispositivi: invio comandi e controllo"),
+    ("plan",                 "Pianificazione: ordini/interventi, ronde, turni"),
+    ("approve",              "Consuntivi: approvazione/rifiuto"),
+    ("timesheets.view_all",  "Consuntivi: lettura di tutti (non solo i propri)"),
+    ("config.view",          "Lettura configurazione e diagnostica"),
 ];
-/// Mappa di DEFAULT ruolo -> capability (riproduce ESATTAMENTE il comportamento storico).
+/// Mappa di DEFAULT ruolo -> capability (riproduce il comportamento storico; `admin`=super).
 fn default_role_caps(role: &str) -> Vec<&'static str> {
     match role {
-        "tenant_admin" => vec!["admin","plan","approve"],
+        "tenant_admin"  => vec!["admin"],
+        "operatore"     => vec!["incidents.view","incidents.handle","devices.manage"],
         "pianificatore" => vec!["plan"],
-        "responsabile" => vec!["approve"],
+        "responsabile"  => vec!["approve","incidents.view","incidents.handle","timesheets.view_all"],
+        "auditor"       => vec!["incidents.view","timesheets.view_all","config.view"],
+        "reperibile"    => vec!["incidents.handle"],
         _ => vec![],
     }
 }
@@ -2816,7 +2825,12 @@ pub async fn effective_caps_user(st: &AppState, tid: Uuid, role: &str, user_id: 
     }
     set.into_iter().collect()
 }
-fn has_cap(s: &Session, cap: &str) -> bool { s.caps.iter().any(|c| c == cap) }
+// `admin` è super: implica ogni capability.
+fn has_cap(s: &Session, cap: &str) -> bool { s.caps.iter().any(|c| c == cap || c == "admin") }
+fn require_cap(s: &Session, cap: &str) -> Result<(), (StatusCode, String)> {
+    if !has_cap(s, cap) { return Err(err(StatusCode::FORBIDDEN, &format!("permesso richiesto: {cap}"))); }
+    Ok(())
+}
 
 fn admin_only(s: &Session) -> Result<(), (StatusCode, String)> {
     if !has_cap(s, "admin") { return Err(err(StatusCode::FORBIDDEN, "riservato all'admin del tenant")); }
@@ -3832,7 +3846,7 @@ pub async fn handoff_notes_list(State(st): State<AppState>, h: HeaderMap, Path(g
 #[derive(Deserialize)] pub struct HandoffReq { pub body: String }
 pub async fn handoff_note_add(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<HandoffReq>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"reperibile"|"responsabile") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"incidents.handle") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let body = b.body.trim();
@@ -4021,7 +4035,7 @@ pub async fn set_routing(State(st): State<AppState>, h: HeaderMap, Json(b): Json
 pub struct AssignReq { pub user_id: Option<Uuid> }
 pub async fn assign_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>, Json(b): Json<AssignReq>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"incidents.handle") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     guard_incident_site(&st, &s, iid).await?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -4039,7 +4053,7 @@ pub async fn assign_incident(State(st): State<AppState>, h: HeaderMap, Path(iid)
 pub struct NoteReq { pub body: String }
 pub async fn add_incident_note(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>, Json(b): Json<NoteReq>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"incidents.handle") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     guard_incident_site(&st, &s, iid).await?;
     let tid = s.tenant_id.unwrap();
     let body = b.body.trim();
@@ -4056,7 +4070,7 @@ pub async fn add_incident_note(State(st): State<AppState>, h: HeaderMap, Path(ii
 // ---------------- Check-in in centrale ----------------
 pub async fn list_checkins(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     require_module(&st, s.tenant_id.unwrap(), "loneworker").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = sqlx::query(
@@ -5022,7 +5036,7 @@ pub struct DeviceCmd { #[serde(rename="type")] pub kind: String, pub data: Optio
 /// Risolve uniqueId -> id numerico Traccar, poi POST /api/commands/send. operatore/admin.
 pub async fn device_command(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<DeviceCmd>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"devices.manage") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let tid = s.tenant_id.unwrap();
     // device (deve essere sorgente traccar)
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -5068,7 +5082,7 @@ pub async fn list_device_commands(State(st): State<AppState>, h: HeaderMap, Path
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "traccar").await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let rows = sqlx::query("SELECT ctype,actor,traccar_status,result,created_at FROM app.device_commands
          WHERE tenant_id=$1 AND device_id=$2 ORDER BY created_at DESC LIMIT 50")
         .bind(tid).bind(id).fetch_all(&st.owner_pool).await.map_err(ise)?;
@@ -5087,7 +5101,7 @@ pub async fn device_command_types(State(st): State<AppState>, h: HeaderMap, Path
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "traccar").await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"devices.manage") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let ext: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND tenant_id=$2 AND source='traccar'")
         .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
     let ext = ext.ok_or_else(|| err(StatusCode::NOT_FOUND, "device traccar inesistente"))?;
@@ -5269,7 +5283,7 @@ pub async fn set_geofence_events(State(st): State<AppState>, h: HeaderMap, Path(
 /// Presenza corrente: chi e' dentro quale geofence adesso.
 pub async fn list_presence(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     require_module(&st, s.tenant_id.unwrap(), "traccar").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = sqlx::query(
@@ -5293,7 +5307,7 @@ fn rep_dates(q: &std::collections::HashMap<String,String>) -> Result<(chrono::Da
     Ok((from, to))
 }
 fn report_role(s: &Session) -> Result<(), (StatusCode,String)> {
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor"|"responsabile") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     Ok(())
 }
 /// Report percorso: posizioni in intervallo -> distanza totale, durata, soste.
@@ -5616,7 +5630,7 @@ pub struct BeaconReq {
 }
 pub async fn list_beacons(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor"|"responsabile") {
+    if !has_cap(&s,"incidents.view") {
         return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato"));
     }
     let tid = s.tenant_id.unwrap();
@@ -5677,7 +5691,7 @@ pub async fn delete_beacon(State(st): State<AppState>, h: HeaderMap, Path(id): P
 // ============ Piantine indoor — upload immagine + CRUD ============
 pub async fn list_floorplans(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor"|"responsabile") {
+    if !has_cap(&s,"incidents.view") {
         return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato"));
     }
     let tid = s.tenant_id.unwrap();
@@ -6091,7 +6105,7 @@ pub async fn list_device_positions(State(st): State<AppState>, h: HeaderMap, Pat
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
     let s = require_tenant(&st, &h).await?;
     require_module(&st, s.tenant_id.unwrap(), "traccar").await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let limit: i64 = q.get("limit").and_then(|x| x.parse().ok()).unwrap_or(50).clamp(1,500);
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = sqlx::query("SELECT lat,lon,speed,course,battery,attributes,fixed_at FROM app.device_positions
@@ -6286,7 +6300,7 @@ pub async fn incident_timeline(State(st): State<AppState>, h: HeaderMap, Path(ii
 pub async fn ack_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
     // il reperibile è il destinatario dell'escalation: deve poter prendere in carico.
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"reperibile") {
+    if !has_cap(&s,"incidents.handle") {
         return Err(err(StatusCode::FORBIDDEN, "role cannot ack"));
     }
     guard_incident_site(&st, &s, iid).await?;
@@ -6307,7 +6321,7 @@ pub async fn ack_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): P
 pub struct CloseReq { pub outcome: String }
 pub async fn close_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>, Json(b): Json<CloseReq>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"reperibile") {
+    if !has_cap(&s,"incidents.handle") {
         return Err(err(StatusCode::FORBIDDEN, "role cannot close"));
     }
     guard_incident_site(&st, &s, iid).await?;
@@ -7059,7 +7073,7 @@ fn validate_config(schema: &Value, input: &Value) -> Result<Value, String> {
 // ---- tenant_admin: read tools of a module (schema + effective config) ----
 pub async fn list_module_tools(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "tenant_admin"|"auditor") {
+    if !has_cap(&s,"config.view") {
         return Err(err(StatusCode::FORBIDDEN, "configurazione moduli riservata all'admin del tenant"));
     }
     let tid = s.tenant_id.unwrap();
@@ -7442,7 +7456,7 @@ pub async fn list_timesheets(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     require_module(&st, s.tenant_id.unwrap(), "consuntivi").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
-    let rows = if is_approver(&s) || s.role=="auditor" {
+    let rows = if has_cap(&s,"timesheets.view_all") {
         sqlx::query("SELECT t.id,t.state,t.created_at,u.email AS owner,o.title AS order_title
             FROM app.timesheets t JOIN app.users u ON u.id=t.user_id LEFT JOIN app.work_orders o ON o.id=t.work_order_id
             ORDER BY t.updated_at DESC").fetch_all(&mut *tx).await
@@ -7503,7 +7517,7 @@ pub async fn get_timesheet(State(st): State<AppState>, h: HeaderMap, Path(id): P
     let d = timesheet_detail(&st, s.tenant_id.unwrap(), id).await?;
     // owner or approver/auditor
     let owner_id = d["owner_id"].as_str().and_then(|x| Uuid::parse_str(x).ok());
-    if owner_id != Some(s.user_id) && !is_approver(&s) && s.role != "auditor" {
+    if owner_id != Some(s.user_id) && !has_cap(&s,"timesheets.view_all") {
         return Err(err(StatusCode::FORBIDDEN, "non autorizzato"));
     }
     Ok(Json(d))
@@ -7601,7 +7615,7 @@ pub async fn export_timesheet_csv(State(st): State<AppState>, h: HeaderMap, Path
     let s = require_tenant(&st, &h).await?;
     let d = timesheet_detail(&st, s.tenant_id.unwrap(), id).await?;
     let owner_id = d["owner_id"].as_str().and_then(|x| Uuid::parse_str(x).ok());
-    if owner_id != Some(s.user_id) && !is_approver(&s) && s.role != "auditor" {
+    if owner_id != Some(s.user_id) && !has_cap(&s,"timesheets.view_all") {
         return Err(err(StatusCode::FORBIDDEN, "non autorizzato"));
     }
     let cur = d["currency"].as_str().unwrap_or("EUR").to_string();
@@ -7746,7 +7760,7 @@ async fn assistant_plan(st: &AppState, s: &Session, q: &str) -> Result<Value, (S
     }
 
     if has(&["modul","degrad"]) {
-        if !matches!(s.role.as_str(), "tenant_admin"|"auditor") {
+        if !has_cap(&s,"config.view") {
             return Err(err(StatusCode::FORBIDDEN, "metadati moduli non consentiti a questo ruolo"));
         }
         let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -7928,7 +7942,7 @@ pub async fn consuntivo_ai_summary(State(st): State<AppState>, h: HeaderMap, Pat
     let c = ai_gate(&st, tid, "consuntivi_summary").await?;
     let d = timesheet_detail(&st, tid, id).await?;
     let owner_id = d["owner_id"].as_str().and_then(|x| Uuid::parse_str(x).ok());
-    if owner_id != Some(s.user_id) && !is_approver(&s) && s.role != "auditor" {
+    if owner_id != Some(s.user_id) && !has_cap(&s,"timesheets.view_all") {
         return Err(err(StatusCode::FORBIDDEN, "non autorizzato"));
     }
     let sys = format!("Sei un amministrativo di YouWorkforce. Riassumi il consuntivo in modo chiaro per un \
@@ -8092,7 +8106,7 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
             Ok(json!({"ok":true,"diary_id":row.get::<Uuid,_>("id")}))
         }
         "add_incident_note" => {
-            if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err("ruolo non abilitato alle note incidente".into()); }
+            if !has_cap(&s,"incidents.handle") { return Err("ruolo non abilitato alle note incidente".into()); }
             let iid = gu("incident_id").ok_or("incident_id non valido")?;
             let text = gs("text").unwrap_or_default(); let text=text.trim();
             if text.is_empty() { return Err("nota vuota".into()); }
@@ -9235,7 +9249,7 @@ async fn tc_report(st: &AppState, tid: Uuid, kind: &str, q: &TcReportQuery) -> R
 pub async fn traccar_report(State(st): State<AppState>, h: HeaderMap, Path(kind): Path<String>, axum::extract::Query(q): axum::extract::Query<TcReportQuery>) -> impl axum::response::IntoResponse {
     use axum::response::IntoResponse;
     let s = match require_tenant(&st, &h).await { Ok(s) => s, Err(e) => return e.into_response() };
-    if !matches!(s.role.as_str(), "tenant_admin"|"operatore"|"auditor") { return err(StatusCode::FORBIDDEN, "ruolo non abilitato").into_response(); }
+    if !has_cap(&s,"incidents.view") { return err(StatusCode::FORBIDDEN, "ruolo non abilitato").into_response(); }
     let tid = s.tenant_id.unwrap();
     if let Err(e) = require_module(&st, tid, "traccar").await { return e.into_response(); }
     match tc_report(&st, tid, &kind, &q).await {
@@ -9536,7 +9550,7 @@ pub async fn tb_shared_attr_set(State(st): State<AppState>, h: HeaderMap, Path(d
 #[derive(Deserialize)] pub struct TbRpcReq { pub method: String, pub params: Option<Value>, pub oneway: Option<bool> }
 pub async fn tb_device_rpc(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>, Json(b): Json<TbRpcReq>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"devices.manage") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "thingsboard").await?;
     if b.method.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "method richiesto")); }
     let (base, hdr) = tb_session_or_err(&st, tid).await?;
@@ -9557,7 +9571,7 @@ pub async fn tb_device_rpc(State(st): State<AppState>, h: HeaderMap, Path(dev): 
 #[derive(Deserialize)] pub struct TbHistoryQuery { pub keys: String, pub from: i64, pub to: i64, pub interval: Option<i64>, pub agg: Option<String> }
 pub async fn tb_device_history(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>, axum::extract::Query(q): axum::extract::Query<TbHistoryQuery>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin"|"auditor") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "thingsboard").await?;
     let (base, hdr) = tb_session_or_err(&st, tid).await?;
     let (tbid, _) = tb_resolve_tbid(&st, tid, dev).await?;
@@ -10977,7 +10991,7 @@ pub async fn email_inbox_del(State(st): State<AppState>, h: HeaderMap, Path(id):
 // ---- S3: bulk acknowledge / close ----
 pub async fn incidents_ack_all(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"incidents.handle") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let tid = s.tenant_id.unwrap();
     let acl: Option<Vec<Uuid>> = allowed_sites(&st, &s).await.map(|h| h.into_iter().collect());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -11002,7 +11016,7 @@ pub async fn incidents_ack_all(State(st): State<AppState>, h: HeaderMap) -> R {
 }
 pub async fn incidents_close_all(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CloseReq>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !matches!(s.role.as_str(), "operatore"|"tenant_admin") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    if !has_cap(&s,"incidents.handle") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let tid = s.tenant_id.unwrap();
     let acl: Option<Vec<Uuid>> = allowed_sites(&st, &s).await.map(|h| h.into_iter().collect());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;

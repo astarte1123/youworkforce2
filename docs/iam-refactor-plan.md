@@ -111,8 +111,12 @@ Oggi i gruppi condivisi servono solo l'import nei gruppi allarme. Estensione pro
 
 ## Stima a tappe
 
-1. **Tappa 1**: catalogo + `require_cap` + migrazione dei 36 `matches!` (NON splitta ancora `admin`).
-   Sblocca subito la flessibilità su sicurezza/campo/iot letture-scritture. Basso rischio.
+1. **Tappa 1 — FATTA** (catalogo granulare + `require_cap`/`has_cap` super-admin + migrazione di ~27
+   `matches!(s.role)` e dei read-consuntivi a capability). Catalogo a 8 cap (admin super +
+   incidents.view/handle, devices.manage, plan, approve, timesheets.view_all, config.view). Default
+   = comportamento storico (regressione `MODE=core` verde 37/39, i 2 noti ambientali). Nuova
+   granularità provata da `qa/capabilities-granular-e2e.sh` 7/7. `admin_only` (~130) e i controlli di
+   scope owner/sede restano invariati.
 2. **Tappa 2**: split di `admin` nei `*.manage` per-area sui ~130 call-site.
 3. **Tappa 3 (opz. B)**: gruppi consumatori in Campo + ACL per gruppo.
 4. **Tappa 4 (compliance)**: pannello GDPR + viewer audit log (capability `gdpr.manage`/`audit.view`).

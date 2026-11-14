@@ -4,22 +4,38 @@ Le autorizzazioni diventano **capability** mappate di **default sui 7 ruoli fiss
 **identico** a prima). Un tenant può poi **aggiungere o togliere** capability a un ruolo, senza
 toccare il codice. Additivo e non distruttivo; i ruoli restano, le capability li raffinano.
 
-## Catalogo capability
+## Catalogo capability (Fase 4 Tappa 1 — granulare, module-neutral)
+
+`admin` è **super**: implica tutte le altre (`has_cap` ritorna true se l'utente ha la cap richiesta
+**oppure** `admin`).
 
 | Capability | Significato | Controlli coinvolti |
 |---|---|---|
-| `admin`   | amministrazione (impostazioni, utenti, dispositivi, gruppi, config escalation) | `admin_only` (≈130 endpoint) |
-| `plan`    | pianificazione (ordini/interventi, turni) | `is_planner` |
-| `approve` | approvazione consuntivi | `is_approver` |
+| `admin`              | amministrazione completa (super) | `admin_only` (~130 endpoint, split per-area in Tappa 2) |
+| `incidents.view`     | lettura centrale/mappe/dispositivi/report | ~11 endpoint (prima `operatore/auditor/responsabile` cablati) |
+| `incidents.handle`   | gestione allarmi (ack/chiusura/note/test) | ack/close/assign/note/alert-action/ack-all |
+| `devices.manage`     | comandi/controllo dispositivi | device_command, RPC, scenario set |
+| `plan`               | pianificazione (ordini, ronde, turni) | `is_planner` |
+| `approve`            | approvazione consuntivi | `is_approver` |
+| `timesheets.view_all`| lettura di tutti i consuntivi | list/get/export/summary consuntivi |
+| `config.view`        | lettura configurazione/diagnostica | module-tools, assistant plan |
 
-## Mappa di default (= comportamento storico)
+## Mappa di default (= comportamento storico, `admin`=super)
 
 | Ruolo | capability di default |
 |---|---|
-| tenant_admin | admin, plan, approve |
+| tenant_admin | **admin** (⇒ tutte) |
+| operatore | incidents.view, incidents.handle, devices.manage |
 | pianificatore | plan |
-| responsabile | approve |
-| operatore / lavoratore / reperibile / auditor | — |
+| responsabile | approve, incidents.view, incidents.handle, timesheets.view_all |
+| auditor | incidents.view, timesheets.view_all, config.view |
+| reperibile | incidents.handle |
+| lavoratore | — (accesso ai propri dati via controlli "owner", non capability) |
+
+> I ~36 controlli prima cablati su stringhe-ruolo ora passano da `require_cap`/`has_cap`: i **ruoli
+> custom** e gli **override** per-tenant li controllano davvero, su ogni modulo. Restano role-based i
+> soli controlli di **scope sui propri dati** (owner/sede) e gli endpoint `admin_only` (Tappa 2).
+> Prova granularità: `qa/capabilities-granular-e2e.sh`. Piano completo: [iam-refactor-plan.md](iam-refactor-plan.md).
 
 ## Come funziona
 

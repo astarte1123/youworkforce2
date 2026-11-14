@@ -3457,7 +3457,8 @@ async function teamDel(id){ if(!await askConfirm('Eliminare squadra?'))return; t
 async function teamAdd(tid){ const uid=$('#tm_'+tid).value; if(!uid)return; try{await api('/teams/'+tid+'/members',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Aggiunto','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function teamRm(tid,uid){ try{await api('/teams/'+tid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function crCapsPrompt(cur){
-  const pick=await askPrompt('Capability (separate da virgola) tra: admin, plan, approve',(cur||[]).join(',')); if(pick===null)return null;
+  const list='admin, incidents.view, incidents.handle, devices.manage, plan, approve, timesheets.view_all, config.view';
+  const pick=await askPrompt('Capability (separate da virgola) tra: '+list,(cur||[]).join(',')); if(pick===null)return null;
   return pick.split(',').map(s=>s.trim()).filter(Boolean); }
 async function crNew(){ const n=await askPrompt('Nome ruolo?'); if(!n)return; const d=await askPrompt('Descrizione (opz.)?')||null; const caps=await crCapsPrompt([]); if(caps===null)return;
   try{await api('/custom-roles',{method:'POST',body:JSON.stringify({name:n,description:d,capabilities:caps})}); toast('Ruolo creato','ok'); route();}catch(e){toast(e.message,'bad');} }

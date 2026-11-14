@@ -33,7 +33,7 @@ CORE="smoke.sh loneworker-e2e.sh acl-e2e.sh crypto-e2e.sh \
  ai-e2e.sh ai-agent-e2e.sh reports-e2e.sh workforce-e2e.sh interventi-e2e.sh \
  iot-mgmt-e2e.sh mgmt-e2e.sh outbox-resilience-e2e.sh prompt8-e2e.sh sse-scale.sh \
  field-intervention-e2e.sh field-intervention-slice1-e2e.sh patrols-e2e.sh \
- user-groups-e2e.sh capabilities-e2e.sh custom-roles-e2e.sh teltonika-e2e.sh teltonika-gprs-e2e.sh"
+ user-groups-e2e.sh capabilities-e2e.sh custom-roles-e2e.sh capabilities-granular-e2e.sh teltonika-e2e.sh teltonika-gprs-e2e.sh"
 GOALERT_OK="goalert-config-e2e.sh goalert-p123-e2e.sh goalert-parity-e2e.sh"
 TRACCAR_OK="traccar-e2e.sh traccar-config-e2e.sh traccar-p2-e2e.sh traccar-poll-e2e.sh \
  traccar-sync-e2e.sh traccar-cmd-e2e.sh traccar-battery-policy-e2e.sh traccar-degraded-e2e.sh traccar-parity-e2e.sh"
