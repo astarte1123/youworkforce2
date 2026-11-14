@@ -94,6 +94,26 @@ Aggiungere un modulo = una voce nel REGISTRY + (se attivabile) una riga in `app.
 i suoi endpoint gated `require_module`. Aggiungere un servizio core = una voce `kind="core"` (nessun
 gating di modulo).
 
+## Stato estrazione codice (moduli Rust)
+
+Modularizzazione per-feature dello strato core (Fase B): i servizi core hanno ciascuno il proprio
+file sotto `core/src/`, invece di stare tutti in `api.rs`. Gli helper trasversali di `api.rs`
+(`R`, `err`, `ise`, `require_tenant`, `require_cap`, `has_cap`, `is_planner`, `audit`,
+`CAPABILITIES`, `USER_ROLES`, `default_role_caps`, `effective_caps`) sono `pub(crate)` e riusati dai
+moduli-feature.
+
+| Servizio core | File | Stato |
+|---------------|------|-------|
+| Dashboard | `core/src/dashboard.rs` | estratto |
+| Privacy e audit | `core/src/privacy.rs` | estratto |
+| Gruppi di persone | `core/src/groups.rs` | estratto (l'import→gruppo allarme resta in api.rs = bridge escalation) |
+| Sedi e asset | `core/src/sites.rs` | estratto (le squadre restano in api.rs = primitiva workforce) |
+| Permessi e ruoli (IAM) | `core/src/iam.rs` | estratto (fondamenta login/sessione restano in api.rs) |
+| Identità/utenti | `api.rs` | da estrarre (deps login/sessione) |
+
+I moduli product/connector e il resto dei servizi vivono ancora in `api.rs` e migreranno con lo
+stesso pattern quando utile. ThingsBoard è il prossimo candidato (vedi sotto).
+
 ## Nota per ThingsBoard (prossimo lavoro)
 
 Il codice TB vive oggi in `api.rs` (~102 funzioni, cluster ~1162–1413 e ~9513–9680). Fase B3 lo
