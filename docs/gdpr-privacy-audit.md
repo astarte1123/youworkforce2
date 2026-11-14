@@ -36,13 +36,22 @@ La UI mostra solo lo stato (non modifica la policy: è una scelta di deployment)
 
 ## Registro attività (audit log)
 
-`GET /api/audit-log` (tenant-scoped, `admin_only`). Parametri query opzionali:
+`GET /api/audit-log` (tenant-scoped, capability `audit.view`). Parametri query opzionali:
 - `action` — filtro esatto sull'azione;
 - `actor` — sottostringa (ILIKE) sull'attore (es. email);
-- `limit` — 1..1000, default 200.
+- `q` — ricerca testo libero su attore + azione + dettaglio (`detail::text` ILIKE);
+- `since` / `until` — intervallo di date ISO sul campo `at`;
+- `limit` — 1..500, default 100; `offset` — paginazione (≥0).
 
-Risposta: `{rows:[{id,at,actor,action,detail}], actions:[...], count}` ordinata per data
-discendente. `actions` è l'elenco distinto per popolare il filtro a tendina. La tabella
+Risposta: `{rows:[{id,at,actor,action,detail}], actions:[...], count, total, limit, offset}`
+ordinata per data discendente. `total` è il numero di righe che soddisfano il filtro (per la
+paginazione); `actions` è l'elenco distinto per popolare il filtro a tendina.
+
+**Export CSV**: `GET /api/audit-log/export` applica gli stessi filtri (senza paginazione, max
+50000 righe) e restituisce un CSV (RFC4180) con colonne `quando,attore,azione,dettaglio`;
+l'export stesso è tracciato (`audit_export`).
+
+La tabella
 `app.audit_log` (colonne `tenant_id, actor, action, detail jsonb, at`) è scritta in tutta
 l'applicazione (login/impersonate, set modulo/connettore, config tool, operazioni GDPR,
 ecc.); questa è la **prima** interfaccia di lettura.
@@ -56,7 +65,8 @@ richiede **`audit.view`** (split di `admin`, Tappa 2). Di default le ha solo `te
 
 ## Prove
 
-`qa/gdpr-audit-e2e.sh` — **12/12**: audit-log admin 200 (rows+actions) e non-admin 403;
+`qa/gdpr-audit-e2e.sh` — **17/17**: audit-log admin 200 (rows+actions) e non-admin 403;
 retention admin 200 / non-admin 403; export profilo e non-admin 403; anonymize self→400,
-esecuzione→200, PII rimossa, login bloccato; audit traccia filtrabile per azione e attore.
-In CORE di `qa/run-all.sh`.
+esecuzione→200, PII rimossa, login bloccato; audit filtrabile per azione/attore; **paginazione
+(total+offset), ricerca testo libero `q`, filtro date, export CSV (header+content-type) e
+export non-admin→403**. In CORE di `qa/run-all.sh`.

@@ -9791,23 +9791,37 @@ pub async fn gdpr_anonymize(State(st): State<AppState>, h: HeaderMap, Path(uid):
     Ok(Json(json!({"ok":true,"anonymized_email":anon_email})))
 }
 
-/// Viewer del registro attività (audit log) del tenant. Solo tenant_admin.
-/// Filtri opzionali: action (esatto), actor (sottostringa), limit (1..1000, def 200).
-/// Espone anche l'elenco distinto delle azioni per popolare il filtro.
+/// Costruisce la clausola WHERE (dopo `tenant_id=$1`) dai filtri della query e i relativi bind
+/// (stringhe, legate in ordine a partire da $2). Filtri: action (esatto), actor (sottostringa),
+/// q (testo libero su attore/azione/dettaglio), since/until (ISO, su `at`).
+fn audit_filters(q: &std::collections::HashMap<String,String>) -> (String, Vec<String>) {
+    let mut conds: Vec<String> = Vec::new();
+    let mut binds: Vec<String> = Vec::new();
+    let mut p = 2;
+    let get = |k: &str| q.get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    if let Some(a) = get("action") { conds.push(format!("action=${p}")); binds.push(a); p+=1; }
+    if let Some(a) = get("actor")  { conds.push(format!("actor ILIKE ${p}")); binds.push(format!("%{a}%")); p+=1; }
+    if let Some(t) = get("q")      { conds.push(format!("(actor ILIKE ${p} OR action ILIKE ${p} OR detail::text ILIKE ${p})")); binds.push(format!("%{t}%")); p+=1; }
+    if let Some(d) = get("since")  { conds.push(format!("at >= ${p}::timestamptz")); binds.push(d); p+=1; }
+    if let Some(d) = get("until")  { conds.push(format!("at <= ${p}::timestamptz")); binds.push(d); p+=1; }
+    let where_extra = if conds.is_empty() { String::new() } else { format!(" AND {}", conds.join(" AND ")) };
+    (where_extra, binds)
+}
+
+/// Viewer del registro attività (audit log) del tenant. Capability `audit.view`.
+/// Filtri: action/actor/q/since/until; paginazione limit (1..500, def 100) + offset.
+/// Ritorna righe pagina, total (righe totali col filtro), elenco azioni distinte, limit/offset.
 pub async fn audit_log_list(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "audit.view")?;
     let tid = s.tenant_id.unwrap();
-    let limit: i64 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(200).clamp(1, 1000);
-    let action = q.get("action").cloned().filter(|v| !v.is_empty());
-    let actor  = q.get("actor").cloned().filter(|v| !v.is_empty());
-    let mut sql = String::from("SELECT id,at,actor,action,detail FROM app.audit_log WHERE tenant_id=$1");
-    if action.is_some() { sql.push_str(&format!(" AND action=${}", if actor.is_some() {3} else {2})); }
-    if actor.is_some()  { sql.push_str(" AND actor ILIKE $2"); }
-    sql.push_str(&format!(" ORDER BY at DESC LIMIT {limit}"));
+    let limit: i64 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100).clamp(1, 500);
+    let offset: i64 = q.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0).max(0);
+    let (where_extra, binds) = audit_filters(&q);
+    // pagina
+    let sql = format!("SELECT id,at,actor,action,detail FROM app.audit_log WHERE tenant_id=$1{where_extra} ORDER BY at DESC LIMIT {limit} OFFSET {offset}");
     let mut qy = sqlx::query(&sql).bind(tid);
-    if let Some(a) = &actor  { qy = qy.bind(format!("%{a}%")); }
-    if let Some(a) = &action { qy = qy.bind(a.clone()); }
+    for b in &binds { qy = qy.bind(b.clone()); }
     let rows = qy.fetch_all(&st.owner_pool).await.map_err(ise)?;
     let items: Vec<Value> = rows.iter().map(|r| json!({
         "id": r.get::<Uuid,_>("id"),
@@ -9816,10 +9830,40 @@ pub async fn audit_log_list(State(st): State<AppState>, h: HeaderMap,
         "action": r.get::<String,_>("action"),
         "detail": r.try_get::<Option<Value>,_>("detail").ok().flatten(),
     })).collect();
+    // totale col filtro (per la paginazione)
+    let csql = format!("SELECT count(*) FROM app.audit_log WHERE tenant_id=$1{where_extra}");
+    let mut cq = sqlx::query_scalar::<_,i64>(&csql).bind(tid);
+    for b in &binds { cq = cq.bind(b.clone()); }
+    let total: i64 = cq.fetch_one(&st.owner_pool).await.unwrap_or(0);
     let acts = sqlx::query("SELECT DISTINCT action FROM app.audit_log WHERE tenant_id=$1 ORDER BY action")
         .bind(tid).fetch_all(&st.owner_pool).await.ok().unwrap_or_default();
     let actions: Vec<String> = acts.iter().map(|r| r.get::<String,_>("action")).collect();
-    Ok(Json(json!({"rows": items, "actions": actions, "count": items.len()})))
+    Ok(Json(json!({"rows": items, "actions": actions, "count": items.len(), "total": total, "limit": limit, "offset": offset})))
+}
+
+/// Export CSV del registro attività con gli stessi filtri del viewer (senza paginazione, max 50000).
+pub async fn audit_log_export(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> Result<Response,(StatusCode,String)> {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "audit.view")?;
+    let tid = s.tenant_id.unwrap();
+    let (where_extra, binds) = audit_filters(&q);
+    let sql = format!("SELECT at,actor,action,detail FROM app.audit_log WHERE tenant_id=$1{where_extra} ORDER BY at DESC LIMIT 50000");
+    let mut qy = sqlx::query(&sql).bind(tid);
+    for b in &binds { qy = qy.bind(b.clone()); }
+    let rows = qy.fetch_all(&st.owner_pool).await.map_err(ise)?;
+    // CSV RFC4180: racchiude ogni campo tra virgolette, raddoppia le virgolette interne.
+    let csv_field = |v: &str| format!("\"{}\"", v.replace('"', "\"\""));
+    let mut out = String::from("quando,attore,azione,dettaglio\n");
+    for r in &rows {
+        let at = r.get::<chrono::DateTime<chrono::Utc>,_>("at").to_rfc3339();
+        let actor = r.get::<String,_>("actor");
+        let action = r.get::<String,_>("action");
+        let detail = r.try_get::<Option<Value>,_>("detail").ok().flatten().map(|v| v.to_string()).unwrap_or_default();
+        out.push_str(&format!("{},{},{},{}\n", csv_field(&at), csv_field(&actor), csv_field(&action), csv_field(&detail)));
+    }
+    audit(&st, tid, &s.email, "audit_export", json!({"rows": rows.len()})).await;
+    Ok(([(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+         (axum::http::header::CONTENT_DISPOSITION, "attachment; filename=\"audit-log.csv\"")], out).into_response())
 }
 
 /// Informazioni sulla policy di ritenzione (sola lettura: configurata via env). Solo tenant_admin.

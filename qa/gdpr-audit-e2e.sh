@@ -51,6 +51,20 @@ AF=$(adm "$BASE/api/audit-log?action=gdpr_anonymize&limit=10"); echo "$AF" | jge
 # 12) audit filtro actor (admin email) ha voci
 AA=$(adm "$BASE/api/audit-log?actor=admin@globex&limit=10"); echo "$AA" | jget "len(d['rows'])>=1" | grep -q True && ok "audit filtro actor" || no "audit actor" "$AA"
 
+# 13) paginazione: total presente; limit=1 -> 1 riga; offset cambia riga
+P1=$(adm "$BASE/api/audit-log?limit=1&offset=0"); P2=$(adm "$BASE/api/audit-log?limit=1&offset=1")
+T=$(echo "$P1" | jget "d['total']"); N1=$(echo "$P1" | jget "len(d['rows'])")
+ID1=$(echo "$P1" | jget "d['rows'][0]['id'] if d['rows'] else ''"); ID2=$(echo "$P2" | jget "d['rows'][0]['id'] if d['rows'] else ''")
+[ "$N1" = 1 ] && [ "$T" -ge 2 ] 2>/dev/null && [ "$ID1" != "$ID2" ] && ok "paginazione: total=$T, limit=1, offset cambia riga" || no "pagination" "n1=$N1 total=$T id1=$ID1 id2=$ID2"
+# 14) ricerca testo libero q -> trova gdpr_anonymize (match su azione)
+QF=$(adm "$BASE/api/audit-log?q=anonymize&limit=50"); echo "$QF" | jget "len(d['rows'])>=1 and all('anonymize' in (r['action']+r['actor']+str(r['detail'])) for r in d['rows'])" | grep -q True && ok "ricerca testo libero q=anonymize" || no "q search" "$QF"
+# 15) filtro date: since nel futuro -> 0 righe
+FUT=$(adm "$BASE/api/audit-log?since=2999-01-01T00:00:00Z"); echo "$FUT" | jget "d['total']==0 and len(d['rows'])==0" | grep -q True && ok "filtro since futuro -> 0 righe" || no "since filter" "$FUT"
+# 16) export CSV: content-type csv + header colonne + >=1 riga dati; non-admin 403
+CT=$(curl -s -b "$AJ" -H "x-tenant-slug: $SLUG" -H "x-csrf-token: $ACS" -o /tmp/au.csv -w '%{content_type}' "$BASE/api/audit-log/export?limit=10")
+head -1 /tmp/au.csv | grep -q "quando,attore,azione,dettaglio" && echo "$CT" | grep -q "text/csv" && [ "$(wc -l < /tmp/au.csv)" -ge 2 ] && ok "export CSV (header + righe + content-type)" || no "csv export" "ct=$CT"
+[ "$(code pl "$BASE/api/audit-log/export")" = 403 ] && ok "export CSV pianificatore -> 403" || no "csv 403" "-"
+
 # teardown
 sql "DELETE FROM app.users WHERE email IN ('$PLM') OR id='$VIC'" >/dev/null
 echo "== $PASS passed, $FAIL failed =="

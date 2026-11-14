@@ -130,7 +130,7 @@ const I18N_PH = {
   "GDPR (accesso e oblio), ritenzione e registro attività del tenant":"GDPR (access & erasure), retention and tenant activity log",
   "GDPR · dati personali":"GDPR · personal data","Ritenzione dati":"Data retention","Registro attività (audit log)":"Activity log (audit log)",
   "Stato":"Status","attivo":"active","anonimizzato":"anonymized","disattivata":"disabled",
-  "tutte le azioni":"all actions","Quando":"When","Attore":"Actor","Azione":"Action","Dettaglio":"Detail","filtra":"filter",
+  "tutte le azioni":"all actions","Quando":"When","Attore":"Actor","Azione":"Action","Dettaglio":"Detail","filtra":"filter","azzera":"clear","⬇ esporta CSV":"⬇ export CSV","🔎 cerca (attore/azione/dettaglio)":"🔎 search (actor/action/detail)","attore (contiene)":"actor (contains)",
   // campo: assegnazione a gruppo
   "Assegna a (persona)":"Assign to (person)","Assegna a (gruppo di persone)":"Assign to (people group)","Nuovo giro":"New patrol","Crea giro":"Create patrol","Assegna a gruppo di persone (opz.)":"Assign to people group (opt.)",
   // intestazioni / sezioni
@@ -3468,11 +3468,13 @@ async function vUtentiRuoli(v){
       ${ugroups.length?`<div class="row" style="gap:6px;margin-top:4px"><select id="crg_${r.id}" class="grow small">${ugroups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select><button class="btn ghost small" onclick="crAddGroup('${r.id}')">+ gruppo</button></div>`:''}
       </div>`).join('')||'<div class="small mut">Nessun ruolo personalizzato.</div>'}</div></div>`:''}`;
 }
+const AU_STATE={offset:0,limit:100};
 async function vPrivacyAudit(v){
+  AU_STATE.offset=0; AU_STATE.limit=100;
   const [users,ret,audit]=await Promise.all([
     api('/users').catch(()=>[]),
     api('/gdpr/retention').catch(()=>null),
-    api('/audit-log?limit=200').catch(()=>null)]);
+    api('/audit-log?limit=100').catch(()=>null)]);
   v._audit=audit; v._users=users;
   const err = (!audit) ? '<div class="card pad" style="margin-top:12px;border-color:var(--bad)"><b>Audit/GDPR non disponibili.</b> <span class="small mut">Richiede ruolo tenant_admin e core aggiornato.</span></div>' : '';
   const retTxt = ret ? (ret.enabled
@@ -3494,28 +3496,70 @@ async function vPrivacyAudit(v){
   <div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Ritenzione dati</h2><div class="small mut">cancellazione automatica dei dati vecchi.</div></div></div>
     <div style="margin-top:8px">${retTxt}</div></div>
 
-  <div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Registro attività (audit log)</h2><div class="small mut">azioni tracciate nel tenant. Sola lettura.</div></div></div>
+  <div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Registro attività (audit log)</h2><div class="small mut">azioni tracciate nel tenant. Sola lettura.</div></div>
+    <button class="btn ghost small" onclick="auditExport()">⬇ esporta CSV</button></div>
     <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+      <input id="auQ" class="small" placeholder="🔎 cerca (attore/azione/dettaglio)" onkeydown="if(event.key==='Enter')auditReload()">
       <select id="auAction" class="small" onchange="auditReload()"><option value="">tutte le azioni</option>${actions.map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join('')}</select>
-      <input id="auActor" class="small" placeholder="attore (email/contiene)" onkeydown="if(event.key==='Enter')auditReload()">
-      <select id="auLimit" class="small" onchange="auditReload()"><option>200</option><option>500</option><option>1000</option></select>
+      <input id="auActor" class="small" placeholder="attore (contiene)" onkeydown="if(event.key==='Enter')auditReload()">
+      <input id="auSince" class="small" type="date" title="da" onchange="auditReload()">
+      <input id="auUntil" class="small" type="date" title="a" onchange="auditReload()">
+      <select id="auLimit" class="small" onchange="auditReload()"><option>50</option><option selected>100</option><option>200</option><option>500</option></select>
       <button class="btn ghost small" onclick="auditReload()">filtra</button>
+      <button class="btn ghost small" onclick="auditClear()">azzera</button>
     </div>
-    <div id="auBox" style="overflow-x:auto;margin-top:10px">${renderAudit(audit)}</div></div>`;
+    <div id="auBox" style="overflow-x:auto;margin-top:10px">${renderAudit(audit)}</div>
+    <div id="auPager" class="row" style="gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap">${renderAuPager(audit)}</div></div>`;
+}
+function auQuery(extra){
+  const qs=new URLSearchParams();
+  const q=$('#auQ')?.value.trim(), act=$('#auAction')?.value, actor=$('#auActor')?.value.trim();
+  const since=$('#auSince')?.value, until=$('#auUntil')?.value, lim=$('#auLimit')?.value||AU_STATE.limit;
+  AU_STATE.limit=parseInt(lim);
+  if(q)qs.set('q',q); if(act)qs.set('action',act); if(actor)qs.set('actor',actor);
+  if(since)qs.set('since',since+'T00:00:00Z'); if(until)qs.set('until',until+'T23:59:59Z');
+  qs.set('limit',AU_STATE.limit); qs.set('offset',AU_STATE.offset);
+  return qs;
+}
+function renderAuPager(a){
+  if(!a||!a.total) return '';
+  const from=a.total?a.offset+1:0, to=a.offset+a.count;
+  const prevD=a.offset<=0?'disabled':'', nextD=(a.offset+a.count>=a.total)?'disabled':'';
+  return `<button class="btn ghost small" ${prevD} onclick="auditPage(-1)">← prec</button>
+    <span class="small mut">${from}–${to} di ${a.total}</span>
+    <button class="btn ghost small" ${nextD} onclick="auditPage(1)">succ →</button>`;
 }
 function renderAudit(a){
   if(!a) return '<div class="small mut">non disponibile</div>';
   const rows=a.rows||[];
-  return `<div class="small mut" style="margin-bottom:6px">${rows.length} voci${a.count>=1000?' (limite raggiunto)':''}</div>
-  <table class="table"><thead><tr><th>Quando</th><th>Attore</th><th>Azione</th><th>Dettaglio</th></tr></thead>
+  return `<table class="table"><thead><tr><th>Quando</th><th>Attore</th><th>Azione</th><th>Dettaglio</th></tr></thead>
   <tbody>${rows.map(r=>`<tr><td class="small">${fmtTime(r.at)}</td><td class="small">${esc(r.actor)}</td>
     <td><span class="chip">${esc(r.action)}</span></td>
     <td class="small mut" style="max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(JSON.stringify(r.detail||{}))}">${esc(JSON.stringify(r.detail||{}))}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessuna voce</td></tr>'}</tbody></table>`;
 }
-async function auditReload(){
-  const act=$('#auAction').value, actor=$('#auActor').value.trim(), lim=$('#auLimit').value;
-  const qs=new URLSearchParams(); qs.set('limit',lim); if(act)qs.set('action',act); if(actor)qs.set('actor',actor);
-  try{ const a=await api('/audit-log?'+qs.toString()); $('#auBox').innerHTML=renderAudit(a); }catch(e){ toast(e.message,'bad'); }
+async function auditReload(resetOffset=true){
+  if(resetOffset) AU_STATE.offset=0;
+  try{ const a=await api('/audit-log?'+auQuery().toString());
+    $('#auBox').innerHTML=renderAudit(a); const p=$('#auPager'); if(p)p.innerHTML=renderAuPager(a);
+  }catch(e){ toast(e.message,'bad'); }
+}
+function auditPage(dir){
+  const next=AU_STATE.offset+dir*AU_STATE.limit;
+  AU_STATE.offset=Math.max(0,next); auditReload(false);
+}
+function auditClear(){
+  ['auQ','auActor','auSince','auUntil'].forEach(id=>{const e=$('#'+id);if(e)e.value='';});
+  const a=$('#auAction'); if(a)a.value=''; AU_STATE.offset=0; auditReload();
+}
+async function auditExport(){
+  try{
+    const qs=auQuery(); qs.delete('limit'); qs.delete('offset');
+    const r=await fetch('/api/audit-log/export?'+qs.toString(),{credentials:'include',headers:{'x-tenant-slug':store.slug}});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const blob=await r.blob(); const url=URL.createObjectURL(blob); const a=document.createElement('a');
+    a.href=url; a.download='audit-log.csv'; document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
+    toast('CSV scaricato','ok');
+  }catch(e){ toast(e.message,'bad'); }
 }
 async function gdprExport(uid,email){
   try{

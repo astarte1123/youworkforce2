@@ -53,6 +53,7 @@ fn tb_parity_routes() -> Router<AppState> {
         .route("/api/gdpr/anonymize/:uid", post(api::gdpr_anonymize))
         .route("/api/gdpr/retention", get(api::gdpr_retention_info))
         .route("/api/audit-log", get(api::audit_log_list))
+        .route("/api/audit-log/export", get(api::audit_log_export))
         // #4 escalation nativo FASE 1 (shadow): report + trigger manuale (nessuna consegna)
         .route("/api/escalation/shadow", get(api::escalation_shadow_report))
         .route("/api/escalation/shadow/run", post(api::escalation_shadow_run))
