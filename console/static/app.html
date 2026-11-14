@@ -131,6 +131,8 @@ const I18N_PH = {
   "GDPR · dati personali":"GDPR · personal data","Ritenzione dati":"Data retention","Registro attività (audit log)":"Activity log (audit log)",
   "Stato":"Status","attivo":"active","anonimizzato":"anonymized","disattivata":"disabled",
   "tutte le azioni":"all actions","Quando":"When","Attore":"Actor","Azione":"Action","Dettaglio":"Detail","filtra":"filter",
+  // campo: assegnazione a gruppo
+  "Assegna a (persona)":"Assign to (person)","Assegna a (gruppo di persone)":"Assign to (people group)","Nuovo giro":"New patrol","Crea giro":"Create patrol","Assegna a gruppo di persone (opz.)":"Assign to people group (opt.)",
   // intestazioni / sezioni
   "anagrafiche del tenant":"tenant directory","Utenti":"Users","Sedi":"Sites","Squadre":"Teams","Asset / mezzi":"Assets / vehicles",
   "Gruppi di persone":"People groups","Gruppi di persone (condivisi)":"People groups (shared)","Permessi (capability)":"Permissions (capabilities)",
@@ -1393,7 +1395,7 @@ async function vRonde(v){
       ${routes.map(r=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:8px">
         <div class="spread"><b>${esc(r.name)} ${r.active?'':'<span class="chip bad">inattivo</span>'}</b>
           <span>${canCfg?`<button class="btn ghost small" onclick="ronCp('${r.id}','${esc(r.name).replace(/'/g,"&#39;")}')">checkpoint (${r.checkpoints.length})</button><button class="btn-ico btn ghost" onclick="ronDel('${r.id}')">${ICON.x}</button>`:`<span class="small mut">${r.checkpoints.length} checkpoint</span>`}</span></div>
-        <div class="small mut" style="margin-top:4px">${r.site_name?('📍 '+esc(r.site_name)+' · '):''}${r.window_minutes?('finestra '+r.window_minutes+' min · '):''}${r.checkpoints.map(c=>esc(c.name)+' ['+c.kind+']').join(' → ')||'nessun checkpoint'}</div>
+        <div class="small mut" style="margin-top:4px">${r.site_name?('📍 '+esc(r.site_name)+' · '):''}${r.group_name?('👥 '+esc(r.group_name)+' · '):''}${r.window_minutes?('finestra '+r.window_minutes+' min · '):''}${r.checkpoints.map(c=>esc(c.name)+' ['+c.kind+']').join(' → ')||'nessun checkpoint'}</div>
       </div>`).join('')||'<div class="small mut" style="margin-top:8px">Nessun giro. Crea un giro e aggiungi i checkpoint.</div>'}
     </div>
     <div class="card pad"><h2>Ronde eseguite (${rounds.length})</h2>
@@ -1403,8 +1405,16 @@ async function vRonde(v){
   </div>`;
   v._sites=sites;
 }
-async function ronNew(){ const n=await askPrompt('Nome giro?'); if(!n)return; const w=await askPrompt('Finestra max in minuti (opz.)?')||null;
-  try{await api('/patrol-routes',{method:'POST',body:JSON.stringify({name:n,window_minutes:w?parseInt(w):null})}); toast('Giro creato','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function ronNew(){
+  const groups=await api('/user-groups').catch(()=>[]);
+  drawer('Nuovo giro', `<div class="col" style="gap:10px">
+    <label class="small mut">Nome giro<input id="rn_name"></label>
+    <label class="small mut">Finestra max (minuti, opz.)<input id="rn_win" type="number" min="1"></label>
+    <label class="small mut">Assegna a gruppo di persone (opz.)<select id="rn_grp"><option value="">— aperto a tutti —</option>${groups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select><div class="small mut">se impostato, solo i membri vedono e avviano il giro</div></label>
+    <button class="btn" id="rn_save">Crea giro</button><div class="cfg-msg small"></div></div>`);
+  $('#rn_save').onclick=async()=>{ const m=$('.cfg-msg'); const n=$('#rn_name').value.trim(); if(!n){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
+    const w=$('#rn_win').value; const b={name:n,window_minutes:w?parseInt(w):null,assigned_group:$('#rn_grp').value||null};
+    try{await api('/patrol-routes',{method:'POST',body:JSON.stringify(b)}); toast('Giro creato','ok'); closeDrawer(); route();}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }; }
 async function ronDel(id){ if(!await askConfirm('Eliminare il giro? (ronde e checkpoint inclusi)'))return; try{await api('/patrol-routes/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function ronCp(rid,rname){ const all=await api('/patrol-routes').catch(()=>[]); const r=all.find(x=>x.id===rid); if(!r)return;
   window._ronRoutes=all;
@@ -1444,8 +1454,9 @@ async function vOrdini(v){
   const canCreate=can(['pianificatore','tenant_admin']);
   // agenda: pianificati (con finestra) separati dai non pianificati
   const sched=O.filter(o=>o.scheduled_start), unsched=O.filter(o=>!o.scheduled_start);
+  const asgLabel=o=>o.assignee?esc(o.assignee):(o.group_name?('👥 '+esc(o.group_name)):'—');
   const row=o=>`<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b></td><td>${esc(o.site||'—')}</td>
-    <td>${esc(o.assignee||'—')}</td><td class="small">${schedLabel(o)}</td><td>${priBadge(o.priority)}</td><td>${chip(o.state)}</td></tr>`;
+    <td>${asgLabel(o)}</td><td class="small">${schedLabel(o)}</td><td>${priBadge(o.priority)}</td><td>${chip(o.state)}</td></tr>`;
   v.innerHTML=`<div class="page-h"><div><h1>${t('ord_title','Ordini di lavoro')}</h1><div class="mut">${O.length} ordini · ${sched.length} pianificati</div></div>
     ${canCreate?`<button class="btn" onclick="newOrder()">+ Nuovo ordine</button>`:''}</div>
   <div class="card"><div class="card-h"><h2>Agenda (pianificati)</h2></div>
@@ -1456,24 +1467,25 @@ async function vOrdini(v){
     <tbody>${unsched.map(row).join('')||`<tr><td colspan="6" class="empty">${ICON.clipboard}<div>Nessun ordine</div></td></tr>`}</tbody></table></div>`;
   bindRows(v);
 }
-function orderFormFields(o,sites,workers){ o=o||{}; return `
+function orderFormFields(o,sites,workers,groups){ o=o||{}; groups=groups||[]; return `
   <div class="field"><label>Titolo</label><input id="o_title" value="${esc(o.title||'')}" placeholder="Manutenzione quadro elettrico"></div>
   <div class="field"><label>Sede</label><select id="o_site"><option value="">—</option>${sites.map(s=>`<option value="${s.id}" ${s.id===o.site_id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>
-  <div class="field"><label>Assegna a</label><select id="o_asg"><option value="">—</option>${workers.map(w=>`<option value="${w.id}" ${w.id===o.assigned_user?'selected':''}>${esc(w.email)}</option>`).join('')}</select></div>
+  <div class="field"><label>Assegna a (persona)</label><select id="o_asg"><option value="">—</option>${workers.map(w=>`<option value="${w.id}" ${w.id===o.assigned_user?'selected':''}>${esc(w.email)}</option>`).join('')}</select></div>
+  <div class="field"><label>Assegna a (gruppo di persone)</label><select id="o_grp"><option value="">—</option>${groups.map(g=>`<option value="${g.id}" ${g.id===o.assigned_group?'selected':''}>${esc(g.name)}</option>`).join('')}</select><div class="small mut">i membri del gruppo vedono ed eseguono l'ordine</div></div>
   <div class="row"><div class="field grow"><label>Inizio</label><input id="o_ss" type="datetime-local" value="${o.scheduled_start?new Date(o.scheduled_start).toISOString().slice(0,16):''}"></div>
     <div class="field grow"><label>Fine</label><input id="o_se" type="datetime-local" value="${o.scheduled_end?new Date(o.scheduled_end).toISOString().slice(0,16):''}"></div></div>
   <div class="field"><label>Priorità</label><select id="o_pri">${[1,2,3].map(p=>`<option value="${p}" ${p===(o.priority||2)?'selected':''}>${PRI_LAB[p]}</option>`).join('')}</select></div>
   <div class="field"><label>Istruzioni</label><textarea id="o_instr">${esc(o.instructions||'')}</textarea></div>`; }
 async function newOrder(){
-  const [sites,users]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[])]);
+  const [sites,users,groups]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[]),api('/user-groups').catch(()=>[])]);
   const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
-  drawer('Nuovo ordine', `<div class="col">${orderFormFields(null,sites,workers)}
+  drawer('Nuovo ordine', `<div class="col">${orderFormFields(null,sites,workers,groups)}
       <label class="small mut">Checklist (una voce per riga)<textarea id="o_cl" style="width:100%;height:60px" placeholder="Verifica impianto&#10;Sostituisci pezzo&#10;Test finale"></textarea></label>
       <button class="btn block" id="o_save">Crea ordine</button><div class="cfg-msg small"></div></div>`);
   $('#o_save').onclick=async()=>{
     const m=$('.cfg-msg');
     const checklist=($('#o_cl').value||'').split('\n').map(x=>x.trim()).filter(Boolean);
-    const b={title:$('#o_title').value,site_id:$('#o_site').value||null,assigned_user:$('#o_asg').value||null,
+    const b={title:$('#o_title').value,site_id:$('#o_site').value||null,assigned_user:$('#o_asg').value||null,assigned_group:$('#o_grp').value||null,
       instructions:$('#o_instr').value||null,scheduled_start:toISO($('#o_ss').value),scheduled_end:toISO($('#o_se').value),priority:+$('#o_pri').value,checklist};
     if(!b.title){m.textContent='titolo richiesto';m.style.color='var(--bad)';return;}
     try{ await api('/orders',{method:'POST',body:JSON.stringify(b)});
@@ -1565,14 +1577,16 @@ async function aiOrderBrief(id,btn){ const box=$('#aiOrdOut'); if(!box)return; b
   try{ const r=await api('/orders/'+id+'/ai-assist'); box.innerHTML=`<div class="card pad" style="margin-top:6px;background:var(--brand-soft)"><div class="small mut">✦ youworker.ai — proposta d'aiuto</div><div style="white-space:pre-wrap;margin-top:4px">${esc(r.brief)}</div></div>`; }
   catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad);margin-top:6px">${esc(e.message)}</div>`; } finally{ btn.disabled=false; } }
 async function editOrder(o){
-  const [sites,users]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[])]);
+  const [sites,users,groups]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[]),api('/user-groups').catch(()=>[])]);
   const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
-  drawer('Modifica ordine', `<div class="col">${orderFormFields(o,sites,workers)}
+  drawer('Modifica ordine', `<div class="col">${orderFormFields(o,sites,workers,groups)}
     <label class="row small" style="gap:8px"><input type="checkbox" id="o_clear"> Rimuovi pianificazione</label>
     <button class="btn block" id="o_edit">Salva modifiche</button><div class="cfg-msg small"></div></div>`);
   $('#o_edit').onclick=async()=>{
     const m=$('.cfg-msg');
+    const grp=$('#o_grp').value||null;
     const b={version:o.version,title:$('#o_title').value||null,site_id:$('#o_site').value||null,assigned_user:$('#o_asg').value||null,
+      assigned_group:grp, clear_group:(!grp && !!o.assigned_group),
       instructions:$('#o_instr').value||null,scheduled_start:toISO($('#o_ss').value),scheduled_end:toISO($('#o_se').value),
       priority:+$('#o_pri').value,clear_schedule:$('#o_clear').checked};
     try{ await api('/orders/'+o.id+'/edit',{method:'POST',body:JSON.stringify(b)});

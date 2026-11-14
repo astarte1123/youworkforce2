@@ -160,6 +160,7 @@ Vedi [gdpr-privacy-audit](gdpr-privacy-audit.md).
 | Permessi (capability) | [capability-layer.md](capability-layer.md) |
 | Ruoli personalizzati | [custom-roles.md](custom-roles.md) |
 | Ronde e punzonature | [ronde-manuale.md](ronde-manuale.md) |
+| Assegnazione Campo a gruppi (ordini/giri) | [campo-gruppi.md](campo-gruppi.md) |
 | Privacy e audit (GDPR, retention, audit log) | [gdpr-privacy-audit.md](gdpr-privacy-audit.md) |
 
 > Questo manuale è l'indice operativo unico; ogni manuale di dettaglio resta la fonte autorevole

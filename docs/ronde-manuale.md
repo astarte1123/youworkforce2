@@ -81,5 +81,9 @@ ronda, punch QR ok/ko, punch GPS dentro/fuori raggio, chiusura completato/incomp
 
 Ronde = **Lavoro sul campo**, non Sicurezza: niente escalation/SOS/reperibilità. Riusa `sites`
 (facoltativo) e i geofence come riferimento d'area; indipendente dagli altri moduli campo.
-Prossimo possibile: scanner QR/NFC nativo in-app, checkpoint riusabili fra giri, finestra per
-fascia oraria/turno.
+
+**Assegnazione a gruppo (Tappa 3):** un giro può essere assegnato a un **gruppo di persone**
+condiviso (`assigned_group`). In tal caso solo i membri (o il pianificatore) lo vedono e possono
+avviare la ronda; i giri senza gruppo restano aperti a tutti. Dettaglio: `campo-gruppi.md`.
+
+Prossimo possibile: finestra per fascia oraria/turno.

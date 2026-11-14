@@ -380,6 +380,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/orders", post(api::create_order).get(api::list_orders))
         .route("/api/orders/:id/edit", post(api::edit_order))
         .route("/api/orders/:id/assign", post(api::order_assign))
+        .route("/api/orders/:id/assign-group", post(api::order_assign_group))
         .route("/api/orders/:id/arrive", post(api::order_arrive))
         .route("/api/orders/:id/start", post(api::order_start))
         .route("/api/orders/:id/complete", post(api::order_complete))

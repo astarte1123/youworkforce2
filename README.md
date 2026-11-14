@@ -45,6 +45,7 @@ sicurezza / rollback. L'escalation è condivisa da tutti i moduli che generano a
 - [`docs/ronde-manuale.md`](docs/ronde-manuale.md) — Ronde e punzonature (modulo giri: checkpoint QR/NFC/beacon/GPS)
 - [`docs/teltonika-edge.md`](docs/teltonika-edge.md) — Edge nativo Teltonika (TCP Codec8/8E, senza Traccar)
 - [`docs/gdpr-privacy-audit.md`](docs/gdpr-privacy-audit.md) — Privacy e audit (GDPR export/anonimizza, retention, audit log)
+- [`docs/campo-gruppi.md`](docs/campo-gruppi.md) — Assegnazione di ordini e giri a gruppi di persone (ACL per gruppo)
 - `contracts/` — contratti di progetto (fasi, decisioni, stato)
 
 ## Non implementato (backlog, dichiarato)

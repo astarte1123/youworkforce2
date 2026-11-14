@@ -4272,7 +4272,15 @@ pub async fn list_patrol_routes(State(st): State<AppState>, h: HeaderMap) -> R {
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "giri").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let routes = sqlx::query("SELECT r.id,r.name,r.site_id,r.window_minutes,r.active,s.name as site_name FROM app.patrol_routes r LEFT JOIN app.sites s ON s.id=r.site_id ORDER BY r.name").fetch_all(&mut *tx).await.map_err(ise)?;
+    // ACL per gruppo: il pianificatore vede tutti i giri; gli altri vedono i giri senza gruppo
+    // (aperti, comportamento storico) + quelli assegnati a un gruppo di cui sono membri.
+    let base = "SELECT r.id,r.name,r.site_id,r.window_minutes,r.active,r.assigned_group,s.name as site_name,g.name as group_name \
+        FROM app.patrol_routes r LEFT JOIN app.sites s ON s.id=r.site_id LEFT JOIN app.user_groups g ON g.id=r.assigned_group";
+    let routes = if is_planner(&s) {
+        sqlx::query(&format!("{base} ORDER BY r.name")).fetch_all(&mut *tx).await
+    } else {
+        sqlx::query(&format!("{base} WHERE r.assigned_group IS NULL OR r.assigned_group IN (SELECT group_id FROM app.user_group_members WHERE user_id=$1) ORDER BY r.name")).bind(s.user_id).fetch_all(&mut *tx).await
+    }.map_err(ise)?;
     let cps = sqlx::query("SELECT id,route_id,name,position,kind,code,lat,lon,radius_m FROM app.patrol_checkpoints ORDER BY position,name").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = routes.iter().map(|r| {
@@ -4283,19 +4291,20 @@ pub async fn list_patrol_routes(State(st): State<AppState>, h: HeaderMap) -> R {
             "lat":c.try_get::<f64,_>("lat").ok(),"lon":c.try_get::<f64,_>("lon").ok(),"radius_m":c.get::<i32,_>("radius_m")})).collect();
         json!({"id":rid,"name":r.get::<String,_>("name"),"site_id":r.try_get::<Uuid,_>("site_id").ok(),
             "site_name":r.try_get::<String,_>("site_name").ok(),"window_minutes":r.try_get::<i32,_>("window_minutes").ok(),
-            "active":r.get::<bool,_>("active"),"checkpoints":checkpoints})
+            "active":r.get::<bool,_>("active"),"assigned_group":r.try_get::<Uuid,_>("assigned_group").ok(),
+            "group_name":r.try_get::<String,_>("group_name").ok(),"checkpoints":checkpoints})
     }).collect();
     Ok(Json(json!(out)))
 }
-#[derive(Deserialize)] pub struct PatrolRouteReq { pub name: String, #[serde(default)] pub site_id: Option<Uuid>, #[serde(default)] pub window_minutes: Option<i32>, #[serde(default)] pub active: Option<bool> }
+#[derive(Deserialize)] pub struct PatrolRouteReq { pub name: String, #[serde(default)] pub site_id: Option<Uuid>, #[serde(default)] pub window_minutes: Option<i32>, #[serde(default)] pub active: Option<bool>, #[serde(default)] pub assigned_group: Option<Uuid>, #[serde(default)] pub clear_group: Option<bool> }
 pub async fn create_patrol_route(State(st): State<AppState>, h: HeaderMap, Json(b): Json<PatrolRouteReq>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "giri").await?;
     if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let row = sqlx::query("INSERT INTO app.patrol_routes(tenant_id,name,site_id,window_minutes) VALUES($1,$2,$3,$4) RETURNING id")
-        .bind(tid).bind(b.name.trim()).bind(b.site_id).bind(b.window_minutes)
+    let row = sqlx::query("INSERT INTO app.patrol_routes(tenant_id,name,site_id,window_minutes,assigned_group) VALUES($1,$2,$3,$4,$5) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(b.site_id).bind(b.window_minutes).bind(b.assigned_group)
         .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "giro già esistente (nome)"))?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT,"già esistente"))?.get::<Uuid,_>("id");
     tx.commit().await.map_err(ise)?;
@@ -4307,8 +4316,9 @@ pub async fn update_patrol_route(State(st): State<AppState>, h: HeaderMap, Path(
     require_module(&st, tid, "giri").await?;
     if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.patrol_routes SET name=$2, site_id=$3, window_minutes=$4, active=COALESCE($5,active) WHERE id=$1")
-        .bind(id).bind(b.name.trim()).bind(b.site_id).bind(b.window_minutes).bind(b.active).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    let clear_g = b.clear_group.unwrap_or(false);
+    let n = sqlx::query("UPDATE app.patrol_routes SET name=$2, site_id=$3, window_minutes=$4, active=COALESCE($5,active), assigned_group=CASE WHEN $6 THEN NULL ELSE COALESCE($7,assigned_group) END WHERE id=$1")
+        .bind(id).bind(b.name.trim()).bind(b.site_id).bind(b.window_minutes).bind(b.active).bind(clear_g).bind(b.assigned_group).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "giro inesistente")); }
     Ok(Json(json!({"ok":true})))
@@ -4414,8 +4424,15 @@ pub async fn start_round(State(st): State<AppState>, h: HeaderMap, Path(rid): Pa
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "giri").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let act = sqlx::query_scalar::<_,bool>("SELECT active FROM app.patrol_routes WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?;
-    match act { None => return Err(err(StatusCode::NOT_FOUND,"giro inesistente")), Some(false) => return Err(err(StatusCode::BAD_REQUEST,"giro non attivo")), _ => {} }
+    let rr = sqlx::query("SELECT active, assigned_group FROM app.patrol_routes WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND,"giro inesistente"))?;
+    if !rr.get::<bool,_>("active") { return Err(err(StatusCode::BAD_REQUEST,"giro non attivo")); }
+    // ACL per gruppo: se il giro è assegnato a un gruppo, solo i membri (o il pianificatore) avviano ronde
+    if let Some(g) = rr.try_get::<Option<Uuid>,_>("assigned_group").ok().flatten() {
+        if !is_planner(&s) && !user_in_group(&st, s.user_id, g).await {
+            return Err(err(StatusCode::FORBIDDEN, "giro riservato a un altro gruppo"));
+        }
+    }
     let row = sqlx::query("INSERT INTO app.patrol_rounds(tenant_id,route_id,user_id) VALUES($1,$2,$3) RETURNING id")
         .bind(tid).bind(rid).bind(s.user_id).fetch_one(&mut *tx).await.map_err(ise)?;
     let round_id = row.get::<Uuid,_>("id");
@@ -7181,8 +7198,15 @@ pub async fn super_set_tool(State(st): State<AppState>, h: HeaderMap, Path(tid):
 
 #[derive(Deserialize)]
 pub struct NewOrder { pub title: String, pub site_id: Option<Uuid>, pub instructions: Option<String>, pub assigned_user: Option<Uuid>,
+    #[serde(default)] pub assigned_group: Option<Uuid>,
     pub scheduled_start: Option<String>, pub scheduled_end: Option<String>, pub priority: Option<i32>,
     #[serde(default)] pub checklist: Option<Vec<String>> }
+
+/// Tappa 3: l'utente è membro del gruppo di persone condiviso? (owner_pool: check additivo di ACL).
+async fn user_in_group(st: &AppState, user_id: Uuid, group_id: Uuid) -> bool {
+    sqlx::query_scalar::<_,i64>("SELECT count(*) FROM app.user_group_members WHERE user_id=$1 AND group_id=$2")
+        .bind(user_id).bind(group_id).fetch_one(&st.owner_pool).await.unwrap_or(0) > 0
+}
 pub async fn create_order(State(st): State<AppState>, h: HeaderMap, Json(b): Json<NewOrder>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
@@ -7192,14 +7216,15 @@ pub async fn create_order(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     let se = b.scheduled_end.as_deref().map(parse_ts).transpose()?;
     if let (Some(a),Some(z))=(ss,se) { if z<=a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); } }
     let pri = b.priority.unwrap_or(2).clamp(1,3);
-    let state = if b.assigned_user.is_some() { "assegnato" } else { "bozza" };
+    // assegnato se c'è un assegnatario (utente o gruppo)
+    let state = if b.assigned_user.is_some() || b.assigned_group.is_some() { "assegnato" } else { "bozza" };
     // checklist: array di etichette -> [{label,done:false}]
     let checklist = json!(b.checklist.clone().unwrap_or_default().into_iter().map(|l| json!({"label":l,"done":false})).collect::<Vec<_>>());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query(
-        "INSERT INTO app.work_orders(tenant_id,site_id,title,instructions,assigned_user,state,created_by,scheduled_start,scheduled_end,priority,checklist)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id")
-        .bind(tid).bind(b.site_id).bind(&b.title).bind(&b.instructions).bind(b.assigned_user).bind(state).bind(s.user_id)
+        "INSERT INTO app.work_orders(tenant_id,site_id,title,instructions,assigned_user,assigned_group,state,created_by,scheduled_start,scheduled_end,priority,checklist)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id")
+        .bind(tid).bind(b.site_id).bind(&b.title).bind(&b.instructions).bind(b.assigned_user).bind(b.assigned_group).bind(state).bind(s.user_id)
         .bind(ss).bind(se).bind(pri).bind(&checklist)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
@@ -7208,7 +7233,8 @@ pub async fn create_order(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
 
 #[derive(Deserialize)]
 pub struct EditOrder { pub version: i32, pub title: Option<String>, pub site_id: Option<Uuid>, pub instructions: Option<String>,
-    pub assigned_user: Option<Uuid>, pub scheduled_start: Option<String>, pub scheduled_end: Option<String>, pub priority: Option<i32>,
+    pub assigned_user: Option<Uuid>, #[serde(default)] pub assigned_group: Option<Uuid>, #[serde(default)] pub clear_group: Option<bool>,
+    pub scheduled_start: Option<String>, pub scheduled_end: Option<String>, pub priority: Option<i32>,
     pub clear_schedule: Option<bool> }
 /// Modifica dell'ordine (pianificatore) con concorrenza ottimistica. Non cambia lo stato
 /// (eccetto bozza->assegnato se si assegna). Finestra, priorita', sede, istruzioni modificabili.
@@ -7220,23 +7246,25 @@ pub async fn edit_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path
     let se = b.scheduled_end.as_deref().filter(|x| !x.is_empty()).map(parse_ts).transpose()?;
     if let (Some(a),Some(z))=(ss,se) { if z<=a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); } }
     let clear = b.clear_schedule.unwrap_or(false);
+    let clear_g = b.clear_group.unwrap_or(false);
     let pri = b.priority.map(|p| p.clamp(1,3));
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    // COALESCE mantiene i valori esistenti quando il campo non è passato; clear_schedule azzera la finestra.
+    // COALESCE mantiene i valori esistenti quando il campo non è passato; clear_schedule/clear_group azzerano.
     let n = sqlx::query(
         "UPDATE app.work_orders SET
            title=COALESCE($3,title),
            instructions=COALESCE($4,instructions),
            site_id=COALESCE($5,site_id),
            assigned_user=COALESCE($6,assigned_user),
+           assigned_group=CASE WHEN $11 THEN NULL ELSE COALESCE($12,assigned_group) END,
            scheduled_start=CASE WHEN $7 THEN NULL ELSE COALESCE($8,scheduled_start) END,
            scheduled_end=CASE WHEN $7 THEN NULL ELSE COALESCE($9,scheduled_end) END,
            priority=COALESCE($10,priority),
-           state=CASE WHEN state='bozza' AND $6 IS NOT NULL THEN 'assegnato' ELSE state END,
+           state=CASE WHEN state='bozza' AND ($6 IS NOT NULL OR $12 IS NOT NULL) THEN 'assegnato' ELSE state END,
            version=version+1, updated_at=now()
          WHERE id=$1 AND version=$2")
         .bind(id).bind(b.version).bind(&b.title).bind(&b.instructions).bind(b.site_id).bind(b.assigned_user)
-        .bind(clear).bind(ss).bind(se).bind(pri)
+        .bind(clear).bind(ss).bind(se).bind(pri).bind(clear_g).bind(b.assigned_group)
         .execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::CONFLICT, "versione superata o ordine inesistente")); }
@@ -7249,16 +7277,17 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
     require_module(&st, s.tenant_id.unwrap(), "interventi").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     // technician sees only own; planner/admin/auditor see all (RLS already scopes to tenant)
-    let cols="o.id,o.title,o.state,o.version,o.outcome,o.instructions,o.site_id,o.assigned_user,o.scheduled_start,o.scheduled_end,o.priority,s.name AS site,u.email AS assignee,\
+    let cols="o.id,o.title,o.state,o.version,o.outcome,o.instructions,o.site_id,o.assigned_user,o.assigned_group,o.scheduled_start,o.scheduled_end,o.priority,s.name AS site,u.email AS assignee,g.name AS group_name,\
         o.arrived_at,o.work_started_at,o.work_minutes,o.materials,o.checklist,o.outcome_kind,o.report,o.signed_by,o.signed_at,\
         s.address AS site_address,s.lat AS site_lat,s.lon AS site_lon,s.access_notes AS site_access";
+    let joins="FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user LEFT JOIN app.user_groups g ON g.id=o.assigned_group";
     let rows = if s.role == "lavoratore" {
-        sqlx::query(&format!("SELECT {cols}
-            FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user
-            WHERE o.assigned_user=$1 ORDER BY o.scheduled_start NULLS LAST, o.updated_at DESC")).bind(s.user_id).fetch_all(&mut *tx).await
+        // tecnico: i propri ordini + quelli assegnati a un gruppo di persone di cui è membro
+        sqlx::query(&format!("SELECT {cols} {joins}
+            WHERE o.assigned_user=$1 OR o.assigned_group IN (SELECT group_id FROM app.user_group_members WHERE user_id=$1)
+            ORDER BY o.scheduled_start NULLS LAST, o.updated_at DESC")).bind(s.user_id).fetch_all(&mut *tx).await
     } else {
-        sqlx::query(&format!("SELECT {cols}
-            FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user
+        sqlx::query(&format!("SELECT {cols} {joins}
             ORDER BY o.scheduled_start NULLS LAST, o.updated_at DESC")).fetch_all(&mut *tx).await
     }.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
@@ -7266,6 +7295,7 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
         "id": r.get::<Uuid,_>("id"), "title": r.get::<String,_>("title"), "state": r.get::<String,_>("state"),
         "version": r.get::<i32,_>("version"), "site": r.try_get::<String,_>("site").ok(),
         "site_id": r.try_get::<Uuid,_>("site_id").ok(), "assigned_user": r.try_get::<Uuid,_>("assigned_user").ok(),
+        "assigned_group": r.try_get::<Uuid,_>("assigned_group").ok(), "group_name": r.try_get::<String,_>("group_name").ok(),
         "assignee": r.try_get::<String,_>("assignee").ok(), "outcome": r.try_get::<String,_>("outcome").ok(),
         "scheduled_start": r.try_get::<chrono::DateTime<chrono::Utc>,_>("scheduled_start").ok(),
         "scheduled_end": r.try_get::<chrono::DateTime<chrono::Utc>,_>("scheduled_end").ok(),
@@ -7289,7 +7319,7 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
 }
 
 #[derive(Deserialize)]
-pub struct OrderAction { pub version: i32, pub user_id: Option<Uuid>, pub outcome: Option<String>, pub reason: Option<String> }
+pub struct OrderAction { pub version: i32, pub user_id: Option<Uuid>, #[serde(default)] pub group_id: Option<Uuid>, pub outcome: Option<String>, pub reason: Option<String> }
 
 /// Valore (controllato dall'utente) per il campo SET della transizione: sempre BINDATO, mai interpolato.
 enum SetVal { Txt(String), Id(Uuid) }
@@ -7317,6 +7347,22 @@ pub async fn order_assign(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     let uid = b.user_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "user_id richiesto"))?;
     order_transition(&st, &s, id, &b, "assegnato",
         Some("assigned_user"), Some(SetVal::Id(uid)), &["bozza","assegnato"]).await
+}
+
+/// Tappa 3: assegna l'ordine a un GRUPPO di persone condiviso. I membri del gruppo lo vedono
+/// nei propri ordini e possono eseguirlo (ACL per gruppo in order_edit_allowed).
+pub async fn order_assign_group(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+    let gid = b.group_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "group_id richiesto"))?;
+    let tid = s.tenant_id.unwrap();
+    // il gruppo deve esistere nel tenant (RLS su user_groups)
+    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.user_groups WHERE id=$1 AND tenant_id=$2").bind(gid).bind(tid)
+        .fetch_optional(&st.owner_pool).await.map_err(ise)?.is_none() {
+        return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente"));
+    }
+    order_transition(&st, &s, id, &b, "assegnato",
+        Some("assigned_group"), Some(SetVal::Id(gid)), &["bozza","assegnato"]).await
 }
 pub async fn order_start(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
     let s = require_tenant(&st, &h).await?;
@@ -7350,10 +7396,15 @@ pub async fn order_cancel(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
 async fn order_edit_allowed(st: &AppState, s: &Session, oid: Uuid) -> Result<Uuid,(StatusCode,String)> {
     let tid = s.tenant_id.unwrap();
     if !module_active(st, tid, "interventi").await { return Err(err(StatusCode::FORBIDDEN, "modulo interventi non abilitato")); }
-    let au: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.work_orders WHERE id=$1 AND tenant_id=$2")
+    let row = sqlx::query("SELECT assigned_user, assigned_group FROM app.work_orders WHERE id=$1 AND tenant_id=$2")
         .bind(oid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "ordine inesistente"))?;
-    if is_planner(&s) || au == Some(s.user_id) { Ok(tid) } else { Err(err(StatusCode::FORBIDDEN, "non autorizzato su questo ordine")) }
+    let au: Option<Uuid> = row.try_get("assigned_user").ok().flatten();
+    let ag: Option<Uuid> = row.try_get("assigned_group").ok().flatten();
+    if is_planner(&s) || au == Some(s.user_id) { return Ok(tid); }
+    // ACL per gruppo: membro del gruppo di persone assegnato
+    if let Some(g) = ag { if user_in_group(st, s.user_id, g).await { return Ok(tid); } }
+    Err(err(StatusCode::FORBIDDEN, "non autorizzato su questo ordine"))
 }
 #[derive(Deserialize)] pub struct OrderReport {
     pub report: Option<String>, pub signed_by: Option<String>,

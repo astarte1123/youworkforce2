@@ -129,7 +129,17 @@ Oggi i gruppi condivisi servono solo l'import nei gruppi allarme. Estensione pro
    delegabili a ruoli custom/override per area. `admin_only` resta (dead_code allow) per estensioni.
    Prove: `qa/capabilities-admin-split-e2e.sh` 7/7 (default-preserving + delega isolata per area);
    regressione `MODE=core` 40/40 (2 noti ambientali crypto/outbox).
-3. **Tappa 3 (opz. B)**: gruppi consumatori in Campo + ACL per gruppo.
+3. **Tappa 3 (opz. B) — FATTA** (2026-11-14): i gruppi di persone condivisi (Fase 1) diventano
+   **consumatori** in Campo. mig `0076`: colonna nullable `assigned_group` (→`user_groups`, ON DELETE
+   SET NULL) su `work_orders` e `patrol_routes` (additiva, default NULL = comportamento storico).
+   **Ordini**: create/edit accettano `assigned_group`; nuovo `POST /orders/:id/assign-group`
+   (pianificatore); `order_edit_allowed` concede l'esecuzione a planner O assegnatario O **membro del
+   gruppo**; `list_orders` per `lavoratore` include gli ordini del proprio gruppo. **Giri**:
+   route con `assigned_group`; `list_patrol_routes` mostra ai non-planner solo i giri aperti (NULL) o
+   del proprio gruppo; `start_round` blocca i non-membri (403). Helper `user_in_group`. UI console:
+   select gruppo nei form ordine/giro + badge 👥 in lista; PWA eredita (list filtrano per gruppo).
+   Prove: `qa/field-group-e2e.sh` 13/13; regressione `MODE=core` 41/41 (2 noti ambientali).
+   Dettaglio: `docs/campo-gruppi.md`.
 4. **Tappa 4 (compliance) — FATTA** (2026-11-14): voce menu dedicata **«Privacy e audit»**
    (`vPrivacyAudit`, grp cfg, tenant_admin). Backend aggiunto: `GET /api/audit-log`
    (tenant-scoped, filtri `action`/`actor`/`limit` 1..1000, + elenco azioni distinte) e
