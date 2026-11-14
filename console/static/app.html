@@ -48,6 +48,7 @@ const NAV = [
   {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'work'},
   // --- Configurazione generale (non specifica del perimetro sicurezza) ---
   {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','thingsboard','goalert','iot'], grp:'cfg'},
+  {k:'utenti-ruoli',t:'Utenti e ruoli', ico:'shield', roles:['tenant_admin'], grp:'cfg'},
   {k:'anagrafiche',t:'Utenti e sedi', ico:'receipt', roles:['tenant_admin'], grp:'cfg'},
   {k:'ai',        t:'AI · youworker.ai', ico:'sliders', roles:['tenant_admin'], mod:['assistant'], grp:'cfg'},
   {k:'moduli',    t:'Moduli', ico:'sliders', roles:['tenant_admin'], grp:'cfg'},
@@ -93,7 +94,7 @@ const I18N={ en:{
   fp_floorplan:"Floor plan", fp_place:"Place on floor plan", fp_place_choose:"— choose beacon or device —",
   fp_place_btn:"📍 on the map", fp_config:"⚙ Configure indoor floor plan", fp_none:"— none —",
   // nav mancanti
-  "nav_ronde":"Patrols",
+  "nav_ronde":"Patrols","nav_utenti-ruoli":"Users & roles",
   // titoli pagina (altre viste)
   ord_title:"Work orders", consun_title:"Timesheets", turni_title:"Shifts", moduli_title:"Modules",
   report_title:"Reports", connettori_title:"Connectors", trigger_title:"Safety triggers",
@@ -126,7 +127,7 @@ const I18N_PH = {
   // intestazioni / sezioni
   "anagrafiche del tenant":"tenant directory","Utenti":"Users","Sedi":"Sites","Squadre":"Teams","Asset / mezzi":"Assets / vehicles",
   "Gruppi di persone":"People groups","Gruppi di persone (condivisi)":"People groups (shared)","Permessi (capability)":"Permissions (capabilities)",
-  "Ruoli personalizzati":"Custom roles","Giri configurati":"Configured patrols","Ronde eseguite":"Completed patrols","Checkpoint":"Checkpoints",
+  "Ruoli personalizzati":"Custom roles","Utenti e ruoli":"Users & roles","identità, gruppi condivisi, permessi e ruoli del tenant":"tenant identity, shared groups, permissions and roles","Giri configurati":"Configured patrols","Ronde eseguite":"Completed patrols","Checkpoint":"Checkpoints",
   "Telemetria IO (ultimo fix)":"IO telemetry (last fix)","Comando GPRS diretto (Teltonika)":"Direct GPRS command (Teltonika)",
   "Report tracciamento":"Tracking report","Contatori (odometro / ore)":"Counters (odometer / hours)",
   // azioni / bottoni / link
@@ -331,7 +332,7 @@ function route(){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,turni:vTurni,ronde:vRonde,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,turni:vTurni,ronde:vRonde,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -3379,10 +3380,9 @@ async function grpHandoffDel(gid,id){ try{ await api('/handoff-notes/'+id,{metho
 
 // ---------------- Anagrafiche: utenti e sedi ----------------
 async function vAnagrafiche(v){
-  const [users,sites,teams,assets,ugroups,agroups,caps,croles]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),api('/teams').catch(()=>[]),api('/assets').catch(()=>[]),api('/user-groups').catch(()=>[]),api('/groups').catch(()=>[]),api('/capabilities').catch(()=>null),api('/custom-roles').catch(()=>null)]);
-  v._caps=caps;
+  const [users,sites,teams,assets]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),api('/teams').catch(()=>[]),api('/assets').catch(()=>[])]);
   v._users=users;
-  v.innerHTML=`<div class="page-h"><div><h1>${t('anag_title','Utenti e sedi')}</h1><div class="mut">anagrafiche del tenant</div></div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('anag_title','Utenti e sedi')}</h1><div class="mut">anagrafiche del tenant · <a onclick="location.hash='#/utenti-ruoli'">gruppi e ruoli →</a></div></div></div>
   <div class="grid g2">
     <div class="card"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
       <table class="table"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
@@ -3402,6 +3402,24 @@ async function vAnagrafiche(v){
       <div class="row" style="gap:6px"><select id="tm_${t.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
         <button class="btn ghost small" onclick="teamAdd('${t.id}')">+ membro</button></div></div>`).join('')
       ||'<div class="small mut">Nessuna squadra.</div>'}</div></div>
+  <div class="card" style="margin-top:16px"><div class="card-h"><h2>Asset / mezzi (${assets.length})</h2><a onclick="assetNew()">+ nuovo asset</a></div>
+    <table class="table"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th></th></tr></thead>
+    <tbody>${assets.map(a=>`<tr><td>${esc(a.name)}</td><td><span class="chip">${esc(a.kind)}</span></td><td class="small mut">${esc(a.identifier||'—')}</td>
+      <td style="text-align:right"><button class="btn-ico btn ghost" onclick="assetDel('${a.id}')">${ICON.x}</button></td></tr>`).join('')
+      ||'<tr><td colspan="4" class="empty">nessun asset</td></tr>'}</tbody></table></div>`;
+}
+
+// Hub IAM: identità, gruppi condivisi, permessi (capability), ruoli personalizzati.
+async function vUtentiRuoli(v){
+  const [users,ugroups,agroups,caps,croles]=await Promise.all([api('/users').catch(()=>[]),api('/user-groups').catch(()=>[]),api('/groups').catch(()=>[]),api('/capabilities').catch(()=>null),api('/custom-roles').catch(()=>null)]);
+  v._caps=caps; v._users=users;
+  const err = (!caps&&!croles) ? '<div class="card pad" style="margin-top:12px;border-color:var(--bad)"><b>Permessi/Ruoli non disponibili.</b> <span class="small mut">Richiede ruolo tenant_admin e i moduli core aggiornati.</span></div>' : '';
+  v.innerHTML=`<div class="page-h"><div><h1>Utenti e ruoli</h1><div class="mut">identità, gruppi condivisi, permessi e ruoli del tenant</div></div></div>
+  ${err}
+  <div class="card" style="margin-top:0"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
+    <table class="table"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
+    <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip">${esc(u.role)}</span></td>
+      <td style="text-align:right"><button class="btn ghost small" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'>gestisci</button></td></tr>`).join('')||'<tr><td colspan="3" class="empty">nessun utente</td></tr>'}</tbody></table></div>
   <div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Gruppi di persone (${ugroups.length})</h2><div class="small mut">insiemi di persone condivisi, riusabili da qualunque modulo (es. importabili nei gruppi di allarme)</div></div><a onclick="ugNew()">+ nuovo gruppo</a></div>
     <div class="grid g2" style="margin-top:10px">${ugroups.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px">
       <div class="spread"><b>${esc(g.name)} <span class="chip">${esc(g.kind)}</span></b>
@@ -3427,12 +3445,7 @@ async function vAnagrafiche(v){
       <div class="row" style="gap:6px;margin-top:4px"><select id="cru_${r.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select><button class="btn ghost small" onclick="crAddUser('${r.id}')">+ utente</button></div>
       <div class="small" style="margin-top:6px"><b>Gruppi:</b> ${r.groups.map(g=>`<span class="tag">${esc(g.name)} <a onclick="crRmGroup('${r.id}','${g.group_id}')">✕</a></span>`).join(' ')||'<span class="mut">—</span>'}</div>
       ${ugroups.length?`<div class="row" style="gap:6px;margin-top:4px"><select id="crg_${r.id}" class="grow small">${ugroups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select><button class="btn ghost small" onclick="crAddGroup('${r.id}')">+ gruppo</button></div>`:''}
-      </div>`).join('')||'<div class="small mut">Nessun ruolo personalizzato.</div>'}</div></div>`:''}
-  <div class="card" style="margin-top:16px"><div class="card-h"><h2>Asset / mezzi (${assets.length})</h2><a onclick="assetNew()">+ nuovo asset</a></div>
-    <table class="table"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th></th></tr></thead>
-    <tbody>${assets.map(a=>`<tr><td>${esc(a.name)}</td><td><span class="chip">${esc(a.kind)}</span></td><td class="small mut">${esc(a.identifier||'—')}</td>
-      <td style="text-align:right"><button class="btn-ico btn ghost" onclick="assetDel('${a.id}')">${ICON.x}</button></td></tr>`).join('')
-      ||'<tr><td colspan="4" class="empty">nessun asset</td></tr>'}</tbody></table></div>`;
+      </div>`).join('')||'<div class="small mut">Nessun ruolo personalizzato.</div>'}</div></div>`:''}`;
 }
 async function assetNew(){ const n=await askPrompt('Nome asset/mezzo?'); if(!n)return;
   const k=await askPrompt('Tipo (veicolo/attrezzatura/varco/altro)?','veicolo')||'attrezzatura';

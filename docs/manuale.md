@@ -31,12 +31,11 @@ tecnici di ogni area ci sono i manuali specifici, richiamati di volta in volta.
 
 ## 3. Utenti, gruppi e permessi
 
-Pagina **Utenti e sedi** (amministratore):
+Due pagine distinte (amministratore):
 
-- **Utenti**: invito, ruolo, recapiti.
-- **Sedi**: nome e, facoltativi, indirizzo/coordinate/indicazioni d'accesso (queste ultime visibili
-  solo agli autorizzati).
-- **Squadre**: raggruppamenti operativi (Workforce).
+**Utenti e ruoli** (hub identità & accessi):
+
+- **Utenti**: invito, ruolo base, password, telefono, sedi visibili.
 - **Gruppi di persone (condivisi)**: insiemi di persone riusabili da qualunque modulo; si possono
   **importare** nei gruppi di allarme. Vedi [gruppi-condivisi](gruppi-condivisi.md).
 - **Permessi (capability)**: matrice ruolo × capability (`admin`/`plan`/`approve`). Il default
@@ -44,6 +43,11 @@ Pagina **Utenti e sedi** (amministratore):
   [capability-layer](capability-layer.md).
 - **Ruoli personalizzati**: bundle di capability definiti dal tenant, assegnabili a utenti e/o
   gruppi (additivi). Vedi [custom-roles](custom-roles.md).
+
+**Utenti e sedi** (anagrafica operativa):
+
+- **Utenti** (stessa lista), **Sedi** (nome + indirizzo/coordinate/indicazioni d'accesso, queste
+  ultime visibili solo agli autorizzati), **Squadre** (Workforce), **Asset / mezzi**.
 
 ## 4. Sicurezza lavoratore — centrale allarmi
 
