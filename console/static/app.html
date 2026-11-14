@@ -112,6 +112,69 @@ function fmtD(d){ try{ return new Date(d).toLocaleDateString(LANG==='en'?'en-GB'
 function setLang(l){ LANG=(l==='en')?'en':'it'; try{localStorage.setItem('yw_lang',LANG);}catch(e){} try{document.documentElement.lang=LANG;}catch(e){} location.reload(); }
 function langSelect(){ return `<select class="small" onchange="setLang(this.value)" title="${t('lang','Lingua')}" style="width:auto">
   <option value="it" ${LANG==='it'?'selected':''}>IT</option><option value="en" ${LANG==='en'?'selected':''}>EN</option></select>`; }
+
+// ---- Traduttore runtime IT->EN: traduce l'intera UI a ogni render (dizionario frasi) ----
+// Copre il testo statico (titoli, intestazioni, bottoni, etichette, colonne, placeholder, title).
+// I dati dinamici (valori, numeri) non combaciano col dizionario e restano invariati.
+const I18N_PH = {
+  // nav / gruppi
+  "Operatività":"Operations","Sicurezza Lavoratore":"Worker Safety","IoT Dashboard":"IoT Dashboard","Lavoro sul campo":"Field work","Configurazione":"Configuration",
+  "Dashboard":"Dashboard","Centrale allarmi":"Alarm center","Mappa allarmi":"Alarm map","Mappa dispositivi":"Device map","Piantine":"Floor plans","Report":"Reports",
+  "Ordini di lavoro":"Work orders","Consuntivi":"Timesheets","Turni":"Shifts","Ronde":"Patrols","Agente AI":"AI agent",
+  "Dispositivi e app":"Devices & Apps","Dispositivi & app":"Devices & Apps","Trigger di sicurezza":"Safety triggers","Profili di protezione":"Protection profiles",
+  "Connettori":"Connectors","Escalation e reperibilità":"Escalation & on-call","Utenti e sedi":"Users & sites","Moduli":"Modules","I miei allarmi":"My alarms",
+  // intestazioni / sezioni
+  "anagrafiche del tenant":"tenant directory","Utenti":"Users","Sedi":"Sites","Squadre":"Teams","Asset / mezzi":"Assets / vehicles",
+  "Gruppi di persone":"People groups","Gruppi di persone (condivisi)":"People groups (shared)","Permessi (capability)":"Permissions (capabilities)",
+  "Ruoli personalizzati":"Custom roles","Giri configurati":"Configured patrols","Ronde eseguite":"Completed patrols","Checkpoint":"Checkpoints",
+  "Telemetria IO (ultimo fix)":"IO telemetry (last fix)","Comando GPRS diretto (Teltonika)":"Direct GPRS command (Teltonika)",
+  "Report tracciamento":"Tracking report","Contatori (odometro / ore)":"Counters (odometer / hours)",
+  // azioni / bottoni / link
+  "salva":"save","Salva":"Save","elimina":"delete","Elimina":"Delete","gestisci":"manage","modifica":"edit","rinomina":"rename",
+  "+ invita":"+ invite","+ nuova squadra":"+ new team","+ nuovo gruppo":"+ new group","+ nuovo ruolo":"+ new role","+ nuovo giro":"+ new patrol",
+  "+ aggiungi":"+ add","+ nuovo asset":"+ new asset","+ membro":"+ member","+ utente":"+ user","+ gruppo":"+ group","+ aggiungi checkpoint":"+ add checkpoint",
+  "mostra":"show","invia":"send","importa":"import","↳ importa":"↳ import","azzera":"reset","↺ ripristina default":"↺ reset to default",
+  "ripristina default":"reset to default","+ membro":"+ member","+ nuovo ordine":"+ new order","+ nuovo":"+ new","Nuovo ordine":"New order",
+  "→ importa in gruppo allarme":"→ import into alarm group","checkpoint":"checkpoints","Annulla":"Cancel","Chiudi":"Close","Conferma":"Confirm","Avvia ronda":"Start patrol",
+  "Riusa un checkpoint esistente (altro giro)":"Reuse an existing checkpoint (other patrol)","Nuovo checkpoint":"New checkpoint",
+  // colonne / etichette comuni
+  "Email":"Email","Ruolo":"Role","Nome":"Name","Indirizzo":"Address","Tipo":"Type","Stato":"Status","Sede":"Site","Assegnato a":"Assignee",
+  "Priorità":"Priority","Correlazione":"Correlation","Modello":"Model","Etichetta":"Label","Capacità":"Capabilities","Operatore":"Operator",
+  "Giro":"Patrol","Avvio":"Start","Matricola/targa":"Serial/plate","Descrizione":"Description","Nome ruolo?":"Role name?",
+  "Utenti:":"Users:","Gruppi:":"Groups:","nessun membro":"no members","nessun checkpoint":"no checkpoints","nessuna ronda":"no patrols",
+  "nessun asset":"no assets","nessuna sede":"no sites","nessuna telemetria registrata":"no telemetry recorded","comando libero":"free command",
+  // subtitle comuni
+  "export CSV · TXT · PDF":"export CSV · TXT · PDF","catalogo, flotta":"catalog, fleet",
+  "giri di controllo · checkpoint QR/NFC/beacon/GPS · punzonature":"control patrols · QR/NFC/beacon/GPS checkpoints · punches",
+  "Esci":"Sign out","Menu":"Menu","Tema":"Theme","Lingua":"Language",
+};
+function _trOne(s){ if(s==null) return s; const k=s.trim(); if(!k) return s;
+  if(I18N_PH[k]!=null) return s.replace(k, I18N_PH[k]);
+  const m=k.match(/^(.+?)\s*\((\d+)\)$/); // "Etichetta (12)" -> traduci la parte testuale
+  if(m && I18N_PH[m[1]]!=null) return s.replace(m[1], I18N_PH[m[1]]);
+  return s; }
+function applyI18n(root){ if(LANG!=='en'||!root) return;
+  try{
+    const w=document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode(n){
+      const p=n.parentNode; if(!p) return NodeFilter.FILTER_REJECT;
+      const tag=p.nodeName; if(tag==='SCRIPT'||tag==='STYLE'||tag==='TEXTAREA') return NodeFilter.FILTER_REJECT;
+      return n.nodeValue && n.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT; }});
+    const nodes=[]; while(w.nextNode()) nodes.push(w.currentNode);
+    nodes.forEach(n=>{ const v=_trOne(n.nodeValue); if(v!==n.nodeValue) n.nodeValue=v; });
+    const el = root.nodeType===1 ? root : document;
+    el.querySelectorAll && el.querySelectorAll('[placeholder]').forEach(e=>{ const v=_trOne(e.getAttribute('placeholder')); if(v!==e.getAttribute('placeholder')) e.setAttribute('placeholder',v); });
+    el.querySelectorAll && el.querySelectorAll('[title]').forEach(e=>{ const v=_trOne(e.getAttribute('title')); if(v!==e.getAttribute('title')) e.setAttribute('title',v); });
+  }catch(e){}
+}
+let _i18nStarted=false;
+function startI18n(){ if(_i18nStarted||LANG!=='en') return; _i18nStarted=true;
+  applyI18n(document.body);
+  const obs=new MutationObserver(muts=>{ for(const m of muts){ m.addedNodes.forEach(nd=>{
+    if(nd.nodeType===1) applyI18n(nd);
+    else if(nd.nodeType===3){ const v=_trOne(nd.nodeValue); if(v!==nd.nodeValue) nd.nodeValue=v; }
+  }); } });
+  obs.observe(document.body,{childList:true,subtree:true});
+}
 try{ document.documentElement.lang=LANG; }catch(e){}
 function navLabel(n){ return t('nav_'+n.k, n.t); }
 function navHtml(){ const items=visibleNav(); let h='';
@@ -184,6 +247,7 @@ function renderLogin(){
   </div>`;
   $('#go').onclick=doLogin;
   $('#pw').onkeydown=e=>{if(e.key==='Enter')doLogin();};
+  startI18n();
 }
 function quick(u){ $('#email').value = u+'@acme.loneworker.eu'; $('#pw').value='demo'; doLogin(); }
 async function doLogin(){
@@ -248,6 +312,7 @@ function renderShell(){
   window.onhashchange=route;
   if(can(['operatore','tenant_admin','auditor'])) connectSSE();
   route();
+  startI18n();
 }
 // Nav mobile: la barra laterale diventa un drawer a scomparsa sotto 820px.
 function toggleNav(force){

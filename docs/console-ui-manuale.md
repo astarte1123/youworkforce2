@@ -162,13 +162,20 @@ scuro** (si aggiorna anche se il sistema cambia tema da solo).
 
 ## 7. Lingua (i18n IT/EN)
 
-La console ha un selettore **IT/EN** (in alto a destra; la scelta è salvata e ricaricata).
-L'infrastruttura è `t('chiave','testo IT')`: con lingua EN usa la traduzione se presente,
-altrimenti mostra il testo italiano (fallback sicuro). Sono tradotte le **schermate chiave**
-(login, menu/gruppi, **Centrale allarmi** con tab/ricerca/paginazione/colonne, **Dispositivi**,
-**Mappa allarmi/dispositivi**, **Piantine**); le altre viste restano in italiano finché non
-vengono migrate. Per aggiungere una lingua/stringa: inserire la chiave in `I18N.en` (in
-`app.html`) e avvolgere il testo con `t('chiave','testo IT')`.
+La console ha un selettore **IT/EN** in alto a destra (topbar) e nel login; la scelta è salvata e
+ricaricata. Due meccanismi, complementari:
+
+1. **`t('chiave','testo IT')`** per le schermate chiave (login, menu, Centrale, Dispositivi, Mappe,
+   Piantine, titoli pagina): con EN usa la traduzione, altrimenti l'italiano (fallback sicuro).
+2. **Traduttore runtime** (`applyI18n` + `MutationObserver` + dizionario `I18N_PH`): quando la
+   lingua è EN, traduce automaticamente il **testo statico dell'intera UI** a ogni render (titoli,
+   intestazioni di card, bottoni/link, colonne, etichette, `placeholder`, `title`), comprese le viste
+   non ancora migrate a `t()` e i pannelli/drawer aperti dopo. I **dati dinamici** (valori, numeri)
+   non combaciano col dizionario e restano invariati; gestisce anche le intestazioni con contatore
+   (es. *Teams (3)*).
+
+Per tradurre una nuova frase: aggiungere una riga `"Testo IT":"English"` in `I18N_PH` (in
+`app.html`). Nessuna modifica ai template necessaria.
 
 ## 8. Report
 
