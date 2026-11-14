@@ -92,7 +92,7 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,va
 @media(max-width:1000px){.g5{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:900px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:620px){.g2,.g3,.g4,.g5{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:420px){.g5{grid-template-columns:1fr}}
+@media(max-width:480px){.g2,.g3,.g4,.g5{grid-template-columns:1fr}}
 
 /* ---- mappa / piantine: layout responsive (map + pannello laterale) ---- */
 .map-grid{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;align-items:stretch}
@@ -192,8 +192,9 @@ tr.inc-live b{color:var(--bad)}
 }
 /* tabelle: su schermi stretti scorrono in orizzontale dentro la card invece di sforare */
 @media(max-width:640px){
-  .card>.table{display:block;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch}
+  .card>.table,.card .table{display:block;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch}
   .page-h h1{font-size:22px}
+  .page-h{flex-wrap:wrap;gap:8px}
 }
 
 /* ---- logo mark ---- */

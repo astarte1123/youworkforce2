@@ -153,8 +153,12 @@ scuro** (si aggiorna anche se il sistema cambia tema da solo).
   (Prima la barra veniva **nascosta** su mobile, rendendo l'app non navigabile da telefono.)
 - **Tabelle**: su schermi stretti (≤640px) le tabelle **scorrono in orizzontale** dentro la
   loro card invece di sforare la pagina.
-- **Griglie e barre**: KPI e colonne si impilano progressivamente; le mappe passano a una
-  sola colonna (mappa sopra, dettaglio sotto); le barre strumenti vanno a capo.
+- **Griglie e barre**: KPI e colonne si impilano progressivamente; **sotto 480px le griglie a
+  schede passano a una sola colonna** (es. Permessi, Ruoli personalizzati, Gruppi, Ronde); le mappe
+  passano a una sola colonna (mappa sopra, dettaglio sotto); le barre strumenti e l'intestazione di
+  pagina (titolo + azioni) vanno a capo.
+- **Tabelle**: tutte le tabelle dentro le card (anche annidate) scorrono in orizzontale su schermi
+  stretti, senza sforare la pagina.
 
 ## 7. Lingua (i18n IT/EN)
 
