@@ -48,6 +48,26 @@ interrogato e non mostra né KPI né card (prima un 403 veniva mascherato in lis
 colonna è nullable, `ON DELETE SET NULL` e **mai letta/scritta** dagli handler `giri`. Nessun impatto
 sull'autonomia di `giri`; lasciata com'è (rimuoverla richiederebbe una migrazione non necessaria).
 
+## Stabilità runtime (stack worker)
+
+Il worker di background `tick()` (worker.rs) awaita in sequenza molti sub-worker, ognuno una
+`async fn` con future profondo. In build **debug** i future non ottimizzati vengono annidati come
+campi del padre: il future di `tick` diventa la **somma** di tutti i sotto-alberi (poller Traccar/
+ThingsBoard, drain outbox, motore escalation con le sue consegne per-step/per-utente). Sotto carico
+concorrente il frame di poll cresceva fino allo **stack-overflow** del worker tokio (`thread
+'tokio-rt-worker' has overflowed its stack`), anche col worker-stack a 16 MB.
+
+Fix: `Box::pin(...)` sui call pesanti per spostare ciascun future sullo **heap**, così il padre
+tiene solo puntatori e la profondità di stack resta limitata. Applicato in:
+`worker.rs::tick` (tutti i sub-worker), `worker.rs::drain_outbox` (consegna nativa immediata),
+`api.rs::escalation_delivery_shadow_scan` (per-tenant) e i call per-incidente in
+`escalation_delivery_shadow_tenant` (`esc_group_policy`, `esc_step_recipients`,
+`esc_deliver_step_rungs`).
+
+Verifica: la regressione completa `MODE=core` che prima faceva crashare il core a **16 MB** ora
+gira **senza overflow con lo stack ridotto a 4 MB** (`YW_WORKER_STACK_MB=4`) — stack usato tagliato
+oltre 4×. Il default resta 16 MB (`YW_WORKER_STACK_MB`) come margine.
+
 ## Prove
 
 `qa/module-autonomy-e2e.sh` — **18/18**. Tenant throwaway, tre scenari su un unico insieme

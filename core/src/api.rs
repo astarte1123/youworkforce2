@@ -10849,7 +10849,7 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
         seen += 1;
 
         // policy di consegna del GRUPPO instradato (step personalizzati o ladder derivata)
-        let (policy, specs) = esc_group_policy(st, tid, gid, voice_on, voice_min, repeat).await;
+        let (policy, specs) = Box::pin(esc_group_policy(st, tid, gid, voice_on, voice_min, repeat)).await;
         let last_step = policy.steps.len().saturating_sub(1) as i32;
 
         // stato macchina (seed step=-1 = usize::MAX lato Rust)
@@ -10875,10 +10875,10 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
                 use crate::delivery::Channel;
                 if cur_step >= 0 && !matches!(state.status, crate::escalation::EscStatus::Acked | crate::escalation::EscStatus::Closed) {
                     let spec = specs.get(cur_step as usize).cloned().unwrap_or(EscStepTarget{ channel:Channel::Sms, kind:"oncall".into(), group:None, user:None, slack:None });
-                    let (oncall, slack_ch) = esc_step_recipients(st, tid, gid, &spec, ga_opt, now).await;
+                    let (oncall, slack_ch) = Box::pin(esc_step_recipients(st, tid, gid, &spec, ga_opt, now)).await;
                     let sstr = iid.to_string(); let short = &sstr[..8];
                     let text = format!("Allarme {etype} (incidente {short})");
-                    delivered += esc_deliver_step_rungs(st, tid, iid, cur_step, fired_at, rc, spec.channel, &oncall, now, &text, &tr).await;
+                    delivered += Box::pin(esc_deliver_step_rungs(st, tid, iid, cur_step, fired_at, rc, spec.channel, &oncall, now, &text, &tr)).await;
                     if let Some(sc) = slack_ch { delivered += esc_deliver_slack_rung(st, tid, iid, cur_step, rc, &sc, &text, &tr).await; }
                 }
             }
@@ -10889,11 +10889,11 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
                 let new_rc = if is_repeat_restart { rc + 1 } else { rc };
                 let attempt = new_rc; // il giro di repeat fa parte della chiave di idempotenza
                 let spec = specs.get(idx).cloned().unwrap_or(EscStepTarget{ channel:Channel::Sms, kind:"oncall".into(), group:None, user:None, slack:None });
-                let (oncall, slack_ch) = esc_step_recipients(st, tid, gid, &spec, ga_opt, now).await;
+                let (oncall, slack_ch) = Box::pin(esc_step_recipients(st, tid, gid, &spec, ga_opt, now)).await;
                 let sstr = iid.to_string(); let short = &sstr[..8];
                 let text = format!("Allarme {etype} (incidente {short})");
                 // rung per-utente (regole di notifica o fallback al canale dello step), ritardi inclusi.
-                delivered += esc_deliver_step_rungs(st, tid, iid, idx as i32, now, attempt, spec.channel, &oncall, now, &text, &tr).await;
+                delivered += Box::pin(esc_deliver_step_rungs(st, tid, iid, idx as i32, now, attempt, spec.channel, &oncall, now, &text, &tr)).await;
                 // step con target Slack: posta sul canale dello step.
                 if let Some(sc) = slack_ch { delivered += esc_deliver_slack_rung(st, tid, iid, idx as i32, attempt, &sc, &text, &tr).await; }
                 // Slack per-gruppo (canale del gruppo) sul PRIMO step 'oncall' se configurato.
@@ -10972,7 +10972,7 @@ pub async fn escalation_delivery_shadow_scan(st: &AppState) {
          UNION
          SELECT tenant_id FROM app.goalert_services")
         .fetch_all(&st.owner_pool).await.unwrap_or_default();
-    for tid in tids { let _ = escalation_delivery_shadow_tenant(st, tid).await; }
+    for tid in tids { let _ = Box::pin(escalation_delivery_shadow_tenant(st, tid)).await; }
 }
 
 /// Riepilogo consegne in ombra (admin): conteggi per stato + ultime consegne.

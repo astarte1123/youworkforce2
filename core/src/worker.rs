@@ -16,28 +16,32 @@ pub async fn run(st: AppState) {
 }
 
 async fn tick(st: &AppState) -> anyhow::Result<()> {
-    drain_outbox(st).await?;
-    sweep_checkins(st).await?;
-    heartbeats(st).await?;
-    traccar_poll(st).await?;
-    thingsboard_poll(st).await?;
+    // STACK: ogni sub-worker è una `async fn` con future profondo (debug: frame grandi). Se awaitati
+    // direttamente, il future di `tick` conterrebbe TUTTI i loro stati come campi annidati (somma dei
+    // sotto-alberi) -> il frame di poll cresce fino allo stack-overflow sotto carico. `Box::pin` sposta
+    // ciascun future sullo heap: `tick` tiene solo puntatori e la profondità di stack resta limitata.
+    Box::pin(drain_outbox(st)).await?;
+    Box::pin(sweep_checkins(st)).await?;
+    Box::pin(heartbeats(st)).await?;
+    Box::pin(traccar_poll(st)).await?;
+    Box::pin(thingsboard_poll(st)).await?;
     // auto-integrazioni: configura da sola i moduli integrati attivi (idempotente), ~ogni 60s
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
-    if n % 30 == 0 { api::reconcile_integrations(st).await; }
+    if n % 30 == 0 { Box::pin(api::reconcile_integrations(st)).await; }
     // #5 sync ack/chiusura da GoAlert -> incidenti (~ogni 14s)
-    if n % 7 == 0 { api::goalert_ack_sync(st).await; }
+    if n % 7 == 0 { Box::pin(api::goalert_ack_sync(st)).await; }
     // #7 ritenzione GDPR (opt-in YW_RETENTION_DAYS): ~ogni ora (1800 tick * 2s)
-    if n % 1800 == 0 { api::purge_retention(st).await; }
+    if n % 1800 == 0 { Box::pin(api::purge_retention(st)).await; }
     // #4 escalation nativo FASE 1 (shadow): confronto nativo vs GoAlert ~ogni 5 min, nessuna consegna
-    if n % 150 == 0 { api::escalation_shadow_scan(st).await; }
+    if n % 150 == 0 { Box::pin(api::escalation_shadow_scan(st)).await; }
     // #4 escalation nativo FASE 2 (consegna in ombra): ~ogni 30s, verso sink di prova, idempotente
-    if n % 15 == 7 { api::escalation_delivery_shadow_scan(st).await; }
+    if n % 15 == 7 { Box::pin(api::escalation_delivery_shadow_scan(st)).await; }
     // F3 annunci Slack on-call (onchange/schedulati): ~ogni minuto, best-effort
-    if n % 30 == 11 { api::slack_announce_scan(st).await; }
+    if n % 30 == 11 { Box::pin(api::slack_announce_scan(st)).await; }
     // S1 heartbeat monitor nativo: ~ogni 30s controlla i monitor scaduti
-    if n % 15 == 3 { api::heartbeat_watchdog(st).await; }
+    if n % 15 == 3 { Box::pin(api::heartbeat_watchdog(st)).await; }
     Ok(())
 }
 
@@ -461,7 +465,7 @@ async fn drain_outbox(st: &AppState) -> anyhow::Result<()> {
                     .bind(tid).bind(iid).bind(json!({"outbox_kind":kind.clone()})).execute(&st.owner_pool).await;
             }
             if kind == "goalert_notify" {
-                let _ = crate::api::escalation_delivery_shadow_tenant(st, tid).await; // consegna nativa immediata (idempotente)
+                let _ = Box::pin(crate::api::escalation_delivery_shadow_tenant(st, tid)).await; // consegna nativa immediata (idempotente)
             }
             continue;
         }
