@@ -49,9 +49,10 @@ ecc.); questa è la **prima** interfaccia di lettura.
 
 ## Permessi
 
-Tutti gli endpoint sono `admin_only` (capability `admin`). Le capability dedicate
-`gdpr.manage` / `audit.view` sono rimandate alla **Tappa 2** dello split di `admin`
-(vedi `iam-refactor-plan.md`).
+Export/anonimizza/retention richiedono la capability **`gdpr.manage`**; il viewer audit
+richiede **`audit.view`** (split di `admin`, Tappa 2). Di default le ha solo `tenant_admin`
+(via `admin` super), ma ora sono **delegabili** a un ruolo custom o via override per-tenant
+(es. un DPO con solo `gdpr.manage`+`audit.view`). Vedi `capability-layer.md`.
 
 ## Prove
 

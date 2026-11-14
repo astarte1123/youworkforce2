@@ -11,7 +11,7 @@ toccare il codice. Additivo e non distruttivo; i ruoli restano, le capability li
 
 | Capability | Significato | Controlli coinvolti |
 |---|---|---|
-| `admin`              | amministrazione completa (super) | `admin_only` (~130 endpoint, split per-area in Tappa 2) |
+| `admin`              | amministrazione completa (super): implica tutte | — (resta assegnata a `tenant_admin`) |
 | `incidents.view`     | lettura centrale/mappe/dispositivi/report | ~11 endpoint (prima `operatore/auditor/responsabile` cablati) |
 | `incidents.handle`   | gestione allarmi (ack/chiusura/note/test) | ack/close/assign/note/alert-action/ack-all |
 | `devices.manage`     | comandi/controllo dispositivi | device_command, RPC, scenario set |
@@ -19,6 +19,19 @@ toccare il codice. Additivo e non distruttivo; i ruoli restano, le capability li
 | `approve`            | approvazione consuntivi | `is_approver` |
 | `timesheets.view_all`| lettura di tutti i consuntivi | list/get/export/summary consuntivi |
 | `config.view`        | lettura configurazione/diagnostica | module-tools, assistant plan |
+| `users.manage`       | utenti/gruppi/permessi/ruoli custom/sedi/squadre/asset | ~32 endpoint (Tappa 2) |
+| `devices.admin`      | censimento/token/onboarding/geofence/provisioning | ~20 endpoint (Tappa 2) |
+| `iot.manage`         | Traccar/ThingsBoard/GoAlert/regole sensori/email ingest | ~31 endpoint (Tappa 2) |
+| `escalation.manage`  | gruppi allarme/on-call/override/profili/trigger/recapiti | ~60 endpoint (Tappa 2) |
+| `settings.manage`    | impostazioni tenant (UI/feature) | ui_features_set (Tappa 2) |
+| `gdpr.manage`        | export/anonimizzazione dati personali | gdpr_export/anonymize/retention |
+| `audit.view`         | lettura registro attività | audit_log_list |
+
+> Le 7 capability sotto `config.view` sono le **aree amministrative** (Tappa 2): split dei 149
+> endpoint prima `admin_only`. **Nessun ruolo le ha di default** (solo `tenant_admin` via `admin`
+> super) ⇒ comportamento invariato; diventano delegabili a ruoli custom/override per area.
+> `devices.admin` (amministrazione flotta) è **distinta** da `devices.manage` (invio comandi, che
+> l'operatore ha di default). Prova: `qa/capabilities-admin-split-e2e.sh`.
 
 ## Mappa di default (= comportamento storico, `admin`=super)
 
@@ -34,7 +47,8 @@ toccare il codice. Additivo e non distruttivo; i ruoli restano, le capability li
 
 > I ~36 controlli prima cablati su stringhe-ruolo ora passano da `require_cap`/`has_cap`: i **ruoli
 > custom** e gli **override** per-tenant li controllano davvero, su ogni modulo. Restano role-based i
-> soli controlli di **scope sui propri dati** (owner/sede) e gli endpoint `admin_only` (Tappa 2).
+> soli controlli di **scope sui propri dati** (owner/sede). Gli endpoint prima `admin_only` sono
+> stati spezzati nelle 7 capability d'area (Tappa 2 FATTA).
 > Prova granularità: `qa/capabilities-granular-e2e.sh`. Piano completo: [iam-refactor-plan.md](iam-refactor-plan.md).
 
 ## Come funziona

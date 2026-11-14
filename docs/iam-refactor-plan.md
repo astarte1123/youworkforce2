@@ -117,7 +117,18 @@ Oggi i gruppi condivisi servono solo l'import nei gruppi allarme. Estensione pro
    = comportamento storico (regressione `MODE=core` verde 37/39, i 2 noti ambientali). Nuova
    granularità provata da `qa/capabilities-granular-e2e.sh` 7/7. `admin_only` (~130) e i controlli di
    scope owner/sede restano invariati.
-2. **Tappa 2**: split di `admin` nei `*.manage` per-area sui ~130 call-site.
+2. **Tappa 2 — FATTA** (2026-11-14): split di `admin` nelle capability d'area sui **149** call-site
+   `admin_only` di `api.rs`. 7 nuove capability nel catalogo: `users.manage` (utenti/gruppi/permessi/
+   ruoli custom/sedi/squadre/asset), `devices.admin` (censimento/token/onboarding/geofence/
+   provisioning — distinta da `devices.manage`=comandi, assegnata a operatore), `iot.manage`
+   (Traccar/ThingsBoard/GoAlert/regole sensori/email ingest), `escalation.manage` (gruppi allarme/
+   on-call/override/profili/trigger/recapiti), `settings.manage` (UI/impostazioni), `gdpr.manage`,
+   `audit.view`. Ogni `admin_only(&s)?` → `require_cap(&s,"<area>")?` (script per funzione; i 3 site
+   dentro `ag_run` mappati per riga). **Nessun** ruolo le ha di default (solo `tenant_admin` via
+   `admin` super) ⇒ default-preserving: admin 200 ovunque, non-admin 403 ovunque come prima; ora
+   delegabili a ruoli custom/override per area. `admin_only` resta (dead_code allow) per estensioni.
+   Prove: `qa/capabilities-admin-split-e2e.sh` 7/7 (default-preserving + delega isolata per area);
+   regressione `MODE=core` 40/40 (2 noti ambientali crypto/outbox).
 3. **Tappa 3 (opz. B)**: gruppi consumatori in Campo + ACL per gruppo.
 4. **Tappa 4 (compliance) — FATTA** (2026-11-14): voce menu dedicata **«Privacy e audit»**
    (`vPrivacyAudit`, grp cfg, tenant_admin). Backend aggiunto: `GET /api/audit-log`

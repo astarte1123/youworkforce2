@@ -2366,7 +2366,7 @@ pub struct TraccarSettings {
 /// Sono parametri di SICUREZZA: l'admin decide quando un badge silente o un
 /// Traccar irraggiungibile diventano allarme.
 pub async fn traccar_settings_get(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "traccar").await?;
     let row = sqlx::query("SELECT poll_enabled,poll_interval_s,silence_after_s,conn_down_after_s FROM app.traccar_connections WHERE tenant_id=$1")
@@ -2383,7 +2383,7 @@ pub async fn traccar_settings_get(State(st): State<AppState>, h: HeaderMap) -> R
     }
 }
 pub async fn traccar_settings_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<TraccarSettings>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "traccar").await?;
     if traccar_conn(&st, tid).await.is_none() {
@@ -2413,7 +2413,7 @@ pub async fn traccar_settings_set(State(st): State<AppState>, h: HeaderMap, Json
 /// Il pull non richiede config lato Traccar oltre alle credenziali: quindi il
 /// collegamento e' "nostro" anche senza toccare la UI di Traccar.
 pub async fn traccar_verify(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "traccar").await?;
     if traccar_conn(&st, tid).await.is_none() {
@@ -2557,7 +2557,7 @@ pub async fn goalert_set_config(State(st): State<AppState>, h: HeaderMap, Path(t
 #[derive(Deserialize)]
 pub struct GoalertRoute { pub etype: String, pub integration_key: Option<String> }
 pub async fn goalert_set_routing(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GoalertRoute>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     match &b.integration_key {
         Some(k) if !k.is_empty() => { sqlx::query("INSERT INTO app.goalert_routing(tenant_id,etype,integration_key) VALUES($1,$2,$3)
@@ -2662,7 +2662,7 @@ pub async fn list_sites(State(st): State<AppState>, h: HeaderMap) -> R {
 
 // ---- Gruppi di persone CONDIVISI (primitiva comune, riusabile da tutti i moduli) ----
 pub async fn list_user_groups(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let groups = sqlx::query("SELECT id,name,kind,labels FROM app.user_groups ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
@@ -2680,7 +2680,7 @@ pub async fn list_user_groups(State(st): State<AppState>, h: HeaderMap) -> R {
 }
 #[derive(Deserialize)] pub struct UserGroupReq { pub name: String, #[serde(default)] pub kind: Option<String>, #[serde(default)] pub labels: Option<Value> }
 pub async fn create_user_group(State(st): State<AppState>, h: HeaderMap, Json(b): Json<UserGroupReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -2693,7 +2693,7 @@ pub async fn create_user_group(State(st): State<AppState>, h: HeaderMap, Json(b)
     Ok(Json(json!({"id":id})))
 }
 pub async fn update_user_group(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<UserGroupReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("UPDATE app.user_groups SET name=$2, kind=COALESCE($3,kind), labels=COALESCE($4,labels) WHERE id=$1")
@@ -2704,7 +2704,7 @@ pub async fn update_user_group(State(st): State<AppState>, h: HeaderMap, Path(id
     Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_user_group(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.user_groups WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
@@ -2714,7 +2714,7 @@ pub async fn delete_user_group(State(st): State<AppState>, h: HeaderMap, Path(id
     Ok(Json(json!({"ok":true})))
 }
 pub async fn user_group_member_add(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<MemberReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // verifica appartenenza al tenant del gruppo e dell'utente (RLS già scopa, ma espliciti i 404)
@@ -2725,7 +2725,7 @@ pub async fn user_group_member_add(State(st): State<AppState>, h: HeaderMap, Pat
     Ok(Json(json!({"ok":true})))
 }
 pub async fn user_group_member_del(State(st): State<AppState>, h: HeaderMap, Path((id,uid)): Path<(Uuid,Uuid)>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.user_group_members WHERE group_id=$1 AND user_id=$2").bind(id).bind(uid).execute(&mut *tx).await.map_err(ise)?;
@@ -2736,7 +2736,7 @@ pub async fn user_group_member_del(State(st): State<AppState>, h: HeaderMap, Pat
 /// (escalation). Dimostra il riuso senza accoppiare i modelli. Richiede il modulo escalation.
 #[derive(Deserialize)] pub struct ImportGroupReq { pub user_group_id: Uuid }
 pub async fn alarm_group_import_members(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<ImportGroupReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -2781,6 +2781,15 @@ pub const CAPABILITIES: &[(&str,&str)] = &[
     ("approve",              "Consuntivi: approvazione/rifiuto"),
     ("timesheets.view_all",  "Consuntivi: lettura di tutti (non solo i propri)"),
     ("config.view",          "Lettura configurazione e diagnostica"),
+    // Fase 4 (Tappa 2): aree amministrative, split di `admin`. Nessun ruolo le ha di default
+    // (solo `tenant_admin` via `admin` super); assegnabili a ruoli custom per delega mirata.
+    ("users.manage",         "Amministrazione: utenti, gruppi di persone, permessi, ruoli custom, sedi/squadre/asset"),
+    ("devices.admin",        "Amministrazione dispositivi: censimento, token/onboarding, geofence, provisioning"),
+    ("iot.manage",           "IoT e connettori: Traccar/ThingsBoard/GoAlert, regole sensori, email ingest"),
+    ("escalation.manage",    "Escalation e reperibilità: gruppi allarme, turni on-call, override, profili, trigger"),
+    ("settings.manage",      "Impostazioni tenant: funzionalità UI e configurazione generale"),
+    ("gdpr.manage",          "Privacy GDPR: export e anonimizzazione dati personali"),
+    ("audit.view",           "Audit: lettura del registro attività"),
 ];
 /// Mappa di DEFAULT ruolo -> capability (riproduce il comportamento storico; `admin`=super).
 fn default_role_caps(role: &str) -> Vec<&'static str> {
@@ -2832,6 +2841,8 @@ fn require_cap(s: &Session, cap: &str) -> Result<(), (StatusCode, String)> {
     Ok(())
 }
 
+/// Conservato per retrocompatibilità/estensioni; i call-site usano ora `require_cap` per-area (Tappa 2).
+#[allow(dead_code)]
 fn admin_only(s: &Session) -> Result<(), (StatusCode, String)> {
     if !has_cap(s, "admin") { return Err(err(StatusCode::FORBIDDEN, "riservato all'admin del tenant")); }
     Ok(())
@@ -2863,7 +2874,7 @@ async fn guard_incident_site(st: &AppState, s: &Session, iid: Uuid) -> Result<()
 #[derive(Deserialize)]
 pub struct UserSitesReq { pub site_ids: Vec<Uuid> }
 pub async fn get_user_sites(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = sqlx::query_scalar::<_, Uuid>("SELECT site_id FROM app.operator_sites WHERE user_id=$1")
         .bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
@@ -2871,7 +2882,7 @@ pub async fn get_user_sites(State(st): State<AppState>, h: HeaderMap, Path(id): 
     Ok(Json(json!({"site_ids": rows})))
 }
 pub async fn set_user_sites(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<UserSitesReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.operator_sites WHERE user_id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
@@ -2935,7 +2946,7 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
 pub struct DeviceReq { pub external_id: String, pub source: String, pub label: Option<String>,
     pub site_id: Option<Uuid>, pub assigned_user: Option<Uuid>, pub enabled: Option<bool>, pub config: Option<Value> }
 pub async fn create_device(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DeviceReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     if b.external_id.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "external_id richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -2952,7 +2963,7 @@ pub async fn create_device(State(st): State<AppState>, h: HeaderMap, Json(b): Js
     Ok(Json(json!({"id":id})))
 }
 pub async fn update_device(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<DeviceReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let old: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.devices WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.flatten();
@@ -2968,7 +2979,7 @@ pub async fn update_device(State(st): State<AppState>, h: HeaderMap, Path(id): P
     Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_device(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.devices WHERE id=$1").bind(id).execute(&mut *tx).await
@@ -3016,7 +3027,7 @@ pub async fn bound_device_external(st: &AppState, device_id: Uuid) -> Option<Str
 }
 
 pub async fn list_ingest_tokens(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, CONNECTOR_MODS).await?;
     let rows = sqlx::query(
@@ -3052,7 +3063,7 @@ pub struct TokenReq {
     #[serde(default)] pub expires_days: Option<i64>,
 }
 pub async fn create_ingest_token(State(st): State<AppState>, h: HeaderMap, Json(b): Json<TokenReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     const SRC: &[&str] = &["traccar","thingsboard","iot"];
     if !SRC.contains(&b.source.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "sorgente non valida")); }
@@ -3076,7 +3087,7 @@ pub async fn create_ingest_token(State(st): State<AppState>, h: HeaderMap, Json(
 }
 /// Rotazione/revoca: revoca per handle (token column) del tenant.
 pub async fn revoke_ingest_token(State(st): State<AppState>, h: HeaderMap, Path(tok): Path<String>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     let n = sqlx::query("UPDATE app.ingest_tokens SET revoked_at=now() WHERE token=$1 AND tenant_id=$2 AND revoked_at IS NULL")
         .bind(&tok).bind(tid).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
@@ -3085,7 +3096,7 @@ pub async fn revoke_ingest_token(State(st): State<AppState>, h: HeaderMap, Path(
     Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_ingest_token(State(st): State<AppState>, h: HeaderMap, Path(tok): Path<String>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     // il filtro per tenant_id impedisce di toccare token di altri tenant
     let n = sqlx::query("DELETE FROM app.ingest_tokens WHERE token=$1 AND tenant_id=$2")
@@ -3097,7 +3108,7 @@ pub async fn delete_ingest_token(State(st): State<AppState>, h: HeaderMap, Path(
 
 // ---------------- Connettori (riepilogo) ----------------
 pub async fn list_connectors(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, CONNECTOR_MODS).await?;
     let defs = [("traccar","Traccar (badge)",5055usize),("thingsboard","ThingsBoard (IoT)",0),("goalert","GoAlert (escalation)",0),("iot","IoT generico",0)];
@@ -3165,7 +3176,7 @@ pub async fn list_assets(State(st): State<AppState>, h: HeaderMap) -> R {
 #[derive(Deserialize)]
 pub struct AssetReq { pub name: String, pub kind: Option<String>, pub identifier: Option<String>, pub site_id: Option<Uuid>, pub note: Option<String> }
 pub async fn create_asset(State(st): State<AppState>, h: HeaderMap, Json(b): Json<AssetReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let kind = b.kind.clone().unwrap_or("attrezzatura".into());
@@ -3177,7 +3188,7 @@ pub async fn create_asset(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     Ok(Json(json!({"id":row.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id")})))
 }
 pub async fn delete_asset(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.assets WHERE id=$1").bind(id).execute(&mut *tx).await
         .map_err(|_| err(StatusCode::CONFLICT, "asset con dispositivi collegati"))?.rows_affected();
@@ -3188,7 +3199,7 @@ pub async fn delete_asset(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
 #[derive(Deserialize)]
 pub struct AssignReq2 { pub user_id: Option<Uuid>, pub asset_id: Option<Uuid> }
 pub async fn assign_device(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<AssignReq2>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     if b.user_id.is_some() && b.asset_id.is_some() { return Err(err(StatusCode::BAD_REQUEST, "assegna a utente OPPURE asset, non entrambi")); }
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -3241,7 +3252,7 @@ pub struct DokReq {
     pub make_profile: Option<bool>,  // crea/attacca un profilo di protezione (device personali)
 }
 pub async fn device_onboarding_kit(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DokReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     dok_build(&st, tid, &s.email, b).await.map(Json)
 }
@@ -3263,7 +3274,7 @@ pub struct DokBulkReq {
     pub rows: Vec<DokBulkRow>,
 }
 pub async fn device_onboarding_kit_bulk(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DokBulkReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, DEVICE_MODS).await?;
     if b.rows.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nessuna riga")); }
@@ -3392,7 +3403,7 @@ pub async fn dok_build(st: &AppState, tid: Uuid, actor: &str, b: DokReq) -> Resu
 /// Readiness/idoneità del device per i suoi segnali: dichiarato (dalle capacità del modello) vs
 /// verificato (abbiamo mai ricevuto quel segnale). Stati: registrazione · assegnazione · connessione · protezione.
 pub async fn device_readiness(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     device_readiness_value(&st, tid, id).await.map(Json)
 }
@@ -3439,7 +3450,7 @@ pub async fn device_readiness_value(st: &AppState, tid: Uuid, id: Uuid) -> Resul
 /// SOS di prova dalla console: inietta un SOS attraverso il PERCORSO REALE (ingress->incidente->
 /// escalation), marcato come test. Serve a validare il profilo end-to-end (spec §3.4).
 pub async fn device_test_sos(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     let ext: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND tenant_id=$2")
         .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
@@ -3462,7 +3473,7 @@ pub struct ProvisionReq {
     pub model_code: String, pub external_id: String, pub label: Option<String>, pub site_id: Option<Uuid>,
     pub user_id: Option<Uuid>, pub asset_id: Option<Uuid>, pub register_traccar: Option<bool> }
 pub async fn provision_device(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ProvisionReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, DEVICE_MODS).await?;
     if b.external_id.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "IMEI/uniqueId richiesto")); }
@@ -3528,7 +3539,7 @@ pub async fn provision_device(State(st): State<AppState>, h: HeaderMap, Json(b):
 #[derive(Deserialize)]
 pub struct SiteReq { pub name: String, #[serde(default)] pub address: Option<String>, #[serde(default)] pub lat: Option<f64>, #[serde(default)] pub lon: Option<f64>, #[serde(default)] pub access_notes: Option<String> }
 pub async fn create_site(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SiteReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -3540,7 +3551,7 @@ pub async fn create_site(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     Ok(Json(json!({"id":row.get::<Uuid,_>("id")})))
 }
 pub async fn update_site(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<SiteReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // COALESCE: aggiorna solo i campi passati; address/access_notes vuoti ("") azzerano.
@@ -3554,7 +3565,7 @@ pub async fn update_site(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_site(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.sites WHERE id=$1").bind(id).execute(&mut *tx).await
@@ -3568,7 +3579,7 @@ pub async fn delete_site(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
 #[derive(Deserialize)]
 pub struct NewUser { pub email: String, pub role: String, pub password: String }
 pub async fn create_user(State(st): State<AppState>, h: HeaderMap, Json(b): Json<NewUser>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     if !USER_ROLES.contains(&b.role.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "ruolo non valido")); }
     if b.password.len() < 4 { return Err(err(StatusCode::BAD_REQUEST, "password troppo corta")); }
@@ -3585,7 +3596,7 @@ pub async fn create_user(State(st): State<AppState>, h: HeaderMap, Json(b): Json
 #[derive(Deserialize)]
 pub struct UpdateUser { pub role: Option<String>, pub password: Option<String>, pub phone: Option<String> }
 pub async fn update_user(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<UpdateUser>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     if let Some(r) = &b.role {
         if !USER_ROLES.contains(&r.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "ruolo non valido")); }
@@ -3618,7 +3629,7 @@ pub async fn update_user(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_user(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     if id == s.user_id { return Err(err(StatusCode::CONFLICT, "non puoi eliminare te stesso")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -3667,7 +3678,7 @@ pub async fn list_groups(State(st): State<AppState>, h: HeaderMap) -> R {
 #[derive(Deserialize)]
 pub struct GroupReq { pub name: String }
 pub async fn create_group(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GroupReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
@@ -3689,7 +3700,7 @@ pub struct GroupOncallReq {
 fn valid_hhmm(s: &str) -> bool { parse_hhmm(s).is_some() }
 // Turni + copertura + slack del gruppo (effetto alla prossima Sincronizza con GoAlert).
 pub async fn set_group_oncall(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GroupOncallReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     if !matches!(b.mode.as_str(), "tutti"|"turni") { return Err(err(StatusCode::BAD_REQUEST, "mode: 'tutti' o 'turni'")); }
@@ -3722,7 +3733,7 @@ pub async fn set_group_oncall(State(st): State<AppState>, h: HeaderMap, Path(id)
 }
 // ---- F3: policy di escalation multi-step del gruppo (parità GoAlert) ----
 pub async fn group_policy_get(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -3746,7 +3757,7 @@ pub async fn group_policy_get(State(st): State<AppState>, h: HeaderMap, Path(gid
 /// Sostituisce (replace-all) gli step della policy del gruppo + il repeat. steps vuoto = torna alla
 /// ladder derivata (default). L'ordine dell'array è l'ordine degli step (reorder lato client).
 pub async fn group_policy_set(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<PolicySetReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     if b.steps.len() > 20 { return Err(err(StatusCode::BAD_REQUEST, "massimo 20 step")); }
@@ -3791,7 +3802,7 @@ pub async fn group_policy_set(State(st): State<AppState>, h: HeaderMap, Path(gid
 // ---- F3: label/metadata sui gruppi (parità GoAlert labels) + ricerca ----
 #[derive(Deserialize)] pub struct LabelsReq { pub labels: std::collections::HashMap<String,String> }
 pub async fn group_labels_set(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<LabelsReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     if b.labels.len() > 30 { return Err(err(StatusCode::BAD_REQUEST, "massimo 30 label")); }
@@ -3809,7 +3820,7 @@ pub async fn group_labels_set(State(st): State<AppState>, h: HeaderMap, Path(gid
 #[derive(Deserialize)] pub struct LabelSearchQuery { pub key: Option<String>, pub value: Option<String>, pub q: Option<String> }
 /// Ricerca gruppi per label (key, key+value) o testo nel nome. Parità GoAlert search.
 pub async fn group_search(State(st): State<AppState>, h: HeaderMap, axum::extract::Query(q): axum::extract::Query<LabelSearchQuery>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -3860,7 +3871,7 @@ pub async fn handoff_note_add(State(st): State<AppState>, h: HeaderMap, Path(gid
     Ok(Json(json!({"ok":true,"id":row.get::<Uuid,_>("id")})))
 }
 pub async fn handoff_note_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -3871,7 +3882,7 @@ pub async fn handoff_note_del(State(st): State<AppState>, h: HeaderMap, Path(id)
 }
 #[derive(Deserialize)] pub struct PlaybookReq { pub playbook: String }
 pub async fn group_playbook_set(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<PlaybookReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     if b.playbook.len() > 8000 { return Err(err(StatusCode::BAD_REQUEST, "playbook troppo lungo (max 8000)")); }
@@ -3885,7 +3896,7 @@ pub async fn group_playbook_set(State(st): State<AppState>, h: HeaderMap, Path(g
 // ---- R1: Set Active (parità Rotations GoAlert) — imposta SUBITO il reperibile di turno ----
 #[derive(Deserialize)] pub struct SetActiveReq { pub user_id: Uuid }
 pub async fn rotation_set_active(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<SetActiveReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     // indice del membro nell'ordine della rotation (ORDER BY position)
@@ -3904,7 +3915,7 @@ pub async fn rotation_set_active(State(st): State<AppState>, h: HeaderMap, Path(
 
 // ---- G-A: assegnazioni multiple del gruppo (coperture aggiuntive con finestra per-assegnazione) ----
 pub async fn assignments_list(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let rows = sqlx::query("SELECT id,label,cov_days,cov_start,cov_end FROM app.esc_assignments WHERE tenant_id=$1 AND group_id=$2 ORDER BY created_at")
@@ -3929,7 +3940,7 @@ pub async fn assignments_list(State(st): State<AppState>, h: HeaderMap, Path(gid
     #[serde(default)] pub mode: Option<String>, #[serde(default)] pub oncall_type: Option<String>, #[serde(default)] pub oncall_shift: Option<i32>,
     #[serde(default)] pub handoff_time: Option<String>, #[serde(default)] pub handoff_day: Option<i32> }
 pub async fn assignment_create(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<AssignmentReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2").bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
@@ -3952,7 +3963,7 @@ pub async fn assignment_create(State(st): State<AppState>, h: HeaderMap, Path(gi
     Ok(Json(json!({"ok":true,"id":row.get::<Uuid,_>("id")})))
 }
 pub async fn assignment_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -3962,7 +3973,7 @@ pub async fn assignment_del(State(st): State<AppState>, h: HeaderMap, Path(id): 
     Ok(Json(json!({"ok":true})))
 }
 pub async fn assignment_member_add(State(st): State<AppState>, h: HeaderMap, Path(aid): Path<Uuid>, Json(b): Json<MemberReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.esc_assignments WHERE id=$1 AND tenant_id=$2").bind(aid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND, "assegnazione inesistente")); }
@@ -3974,7 +3985,7 @@ pub async fn assignment_member_add(State(st): State<AppState>, h: HeaderMap, Pat
     Ok(Json(json!({"ok":true})))
 }
 pub async fn assignment_member_del(State(st): State<AppState>, h: HeaderMap, Path((aid,uid)): Path<(Uuid,Uuid)>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -3984,7 +3995,7 @@ pub async fn assignment_member_del(State(st): State<AppState>, h: HeaderMap, Pat
 }
 
 pub async fn delete_group(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     require_any_module(&st, s.tenant_id.unwrap(), ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.alarm_groups WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
@@ -3995,7 +4006,7 @@ pub async fn delete_group(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
 #[derive(Deserialize)]
 pub struct MemberReq { pub user_id: Uuid, pub position: Option<i32> }
 pub async fn add_group_member(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<MemberReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -4006,7 +4017,7 @@ pub async fn add_group_member(State(st): State<AppState>, h: HeaderMap, Path(gid
     Ok(Json(json!({"ok":true})))
 }
 pub async fn remove_group_member(State(st): State<AppState>, h: HeaderMap, Path((gid,uid)): Path<(Uuid,Uuid)>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     require_any_module(&st, s.tenant_id.unwrap(), ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.alarm_group_members WHERE group_id=$1 AND user_id=$2").bind(gid).bind(uid).execute(&mut *tx).await.map_err(ise)?;
@@ -4016,7 +4027,7 @@ pub async fn remove_group_member(State(st): State<AppState>, h: HeaderMap, Path(
 #[derive(Deserialize)]
 pub struct RouteReq { pub etype: String, pub group_id: Option<Uuid> }
 pub async fn set_routing(State(st): State<AppState>, h: HeaderMap, Json(b): Json<RouteReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -4091,7 +4102,7 @@ pub(crate) async fn audit(st: &AppState, tid: Uuid, actor: &str, action: &str, d
 
 // ---- Fase 2: gestione capability per ruolo (override per-tenant) ----
 pub async fn list_capabilities(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let catalog: Vec<Value> = CAPABILITIES.iter().map(|(c,d)| json!({"code":c,"desc":d})).collect();
     // matrice effettiva ruolo x capability + flag "override" (diverso dal default)
@@ -4110,7 +4121,7 @@ pub async fn list_capabilities(State(st): State<AppState>, h: HeaderMap) -> R {
 }
 #[derive(Deserialize)] pub struct CapReq { pub role: String, pub capability: String, pub granted: bool }
 pub async fn set_capability(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CapReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     if !USER_ROLES.contains(&b.role.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "ruolo sconosciuto")); }
     if !CAPABILITIES.iter().any(|(c,_)| *c==b.capability) { return Err(err(StatusCode::BAD_REQUEST, "capability sconosciuta")); }
@@ -4134,7 +4145,7 @@ pub async fn set_capability(State(st): State<AppState>, h: HeaderMap, Json(b): J
     Ok(Json(json!({"ok":true})))
 }
 pub async fn reset_capabilities(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.role_capabilities WHERE tenant_id=$1").bind(tid).execute(&mut *tx).await.map_err(ise)?;
@@ -4145,7 +4156,7 @@ pub async fn reset_capabilities(State(st): State<AppState>, h: HeaderMap) -> R {
 
 // ---- Fase 3: ruoli personalizzati per tenant (bundle di capability, assegnabili) ----
 pub async fn list_custom_roles(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let roles = sqlx::query("SELECT id,name,description FROM app.custom_roles ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
@@ -4177,7 +4188,7 @@ async fn set_role_caps(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, tid: Uuid
     Ok(())
 }
 pub async fn create_custom_role(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CustomRoleReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     validate_caps(&b.capabilities)?;
@@ -4192,7 +4203,7 @@ pub async fn create_custom_role(State(st): State<AppState>, h: HeaderMap, Json(b
     Ok(Json(json!({"id":rid})))
 }
 pub async fn update_custom_role(State(st): State<AppState>, h: HeaderMap, Path(rid): Path<Uuid>, Json(b): Json<CustomRoleReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     validate_caps(&b.capabilities)?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -4204,7 +4215,7 @@ pub async fn update_custom_role(State(st): State<AppState>, h: HeaderMap, Path(r
     Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_custom_role(State(st): State<AppState>, h: HeaderMap, Path(rid): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.custom_roles WHERE id=$1").bind(rid).execute(&mut *tx).await.map_err(ise)?.rows_affected();
@@ -4215,7 +4226,7 @@ pub async fn delete_custom_role(State(st): State<AppState>, h: HeaderMap, Path(r
 }
 #[derive(Deserialize)] pub struct AssignUserReq { pub user_id: Uuid }
 pub async fn custom_role_assign_user(State(st): State<AppState>, h: HeaderMap, Path(rid): Path<Uuid>, Json(b): Json<AssignUserReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.custom_roles WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"ruolo inesistente")); }
@@ -4225,7 +4236,7 @@ pub async fn custom_role_assign_user(State(st): State<AppState>, h: HeaderMap, P
     Ok(Json(json!({"ok":true})))
 }
 pub async fn custom_role_unassign_user(State(st): State<AppState>, h: HeaderMap, Path((rid,uid)): Path<(Uuid,Uuid)>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.user_custom_roles WHERE role_id=$1 AND user_id=$2").bind(rid).bind(uid).execute(&mut *tx).await.map_err(ise)?;
@@ -4234,7 +4245,7 @@ pub async fn custom_role_unassign_user(State(st): State<AppState>, h: HeaderMap,
 }
 #[derive(Deserialize)] pub struct AssignGroupReq { pub group_id: Uuid }
 pub async fn custom_role_assign_group(State(st): State<AppState>, h: HeaderMap, Path(rid): Path<Uuid>, Json(b): Json<AssignGroupReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.custom_roles WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"ruolo inesistente")); }
@@ -4244,7 +4255,7 @@ pub async fn custom_role_assign_group(State(st): State<AppState>, h: HeaderMap, 
     Ok(Json(json!({"ok":true})))
 }
 pub async fn custom_role_unassign_group(State(st): State<AppState>, h: HeaderMap, Path((rid,gid)): Path<(Uuid,Uuid)>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.user_group_custom_roles WHERE role_id=$1 AND group_id=$2").bind(rid).bind(gid).execute(&mut *tx).await.map_err(ise)?;
@@ -4536,7 +4547,7 @@ pub async fn list_teams(State(st): State<AppState>, h: HeaderMap) -> R {
     Ok(Json(json!(out)))
 }
 pub async fn create_team(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GroupReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -4546,7 +4557,7 @@ pub async fn create_team(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     Ok(Json(json!({"id":row.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id")})))
 }
 pub async fn delete_team(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.teams WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
@@ -4554,7 +4565,7 @@ pub async fn delete_team(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     Ok(Json(json!({"ok":true})))
 }
 pub async fn add_team_member(State(st): State<AppState>, h: HeaderMap, Path(tid_p): Path<Uuid>, Json(b): Json<MemberReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.team_members(tenant_id,team_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
@@ -4563,7 +4574,7 @@ pub async fn add_team_member(State(st): State<AppState>, h: HeaderMap, Path(tid_
     Ok(Json(json!({"ok":true})))
 }
 pub async fn remove_team_member(State(st): State<AppState>, h: HeaderMap, Path((team,uid)): Path<(Uuid,Uuid)>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.team_members WHERE team_id=$1 AND user_id=$2").bind(team).bind(uid).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
@@ -5184,7 +5195,7 @@ fn clean_hex_color(c: Option<&str>) -> String {
 #[derive(Deserialize)]
 pub struct GeofenceReq { pub name: String, pub kind: String, pub geom: Value, pub site_id: Option<Uuid>, pub floorplan_id: Option<Uuid>, pub color: Option<String> }
 pub async fn create_geofence(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GeofenceReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     // indoor (geom in coordinate immagine): cerchio={cx,cy,radius}, poligono={points}
@@ -5209,7 +5220,7 @@ pub async fn create_geofence(State(st): State<AppState>, h: HeaderMap, Json(b): 
     Ok(Json(json!({"id":id})))
 }
 pub async fn delete_geofence(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.geofences WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
@@ -5227,7 +5238,7 @@ pub const ASSOC_ETYPES: &[&str] = &["sos","man_down","immobilita","mancato_check
 pub struct GeofenceUpdate { pub name: Option<String>, pub geom: Option<Value>, pub color: Option<String> }
 /// Modifica nome, geometria e/o colore di una geofence (rinomina, sposta, ridimensiona, colore).
 pub async fn update_geofence(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GeofenceUpdate>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     let name = b.name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
     let color = b.color.as_deref().map(|c| clean_hex_color(Some(c)));
@@ -5245,7 +5256,7 @@ pub async fn update_geofence(State(st): State<AppState>, h: HeaderMap, Path(id):
 pub struct GeofenceDevicesReq { pub device_ids: Vec<Uuid> }
 /// Associa (sostituisce) i dispositivi IoT appartenenti all'area.
 pub async fn set_geofence_devices(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GeofenceDevicesReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // la geofence deve esistere (RLS la limita al tenant)
@@ -5265,7 +5276,7 @@ pub async fn set_geofence_devices(State(st): State<AppState>, h: HeaderMap, Path
 pub struct GeofenceEventsReq { pub etypes: Vec<String> }
 /// Associa (sostituisce) i tipi di evento rilevanti per l'area.
 pub async fn set_geofence_events(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GeofenceEventsReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     for e in &b.etypes { if !ASSOC_ETYPES.contains(&e.as_str()) { return Err(err(StatusCode::BAD_REQUEST, &format!("etype non ammesso: {e}"))); } }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -5962,7 +5973,7 @@ pub async fn ingest_osmand(
 // ---- Teltonika: comando GPRS (codec12) verso un device connesso ----
 #[derive(Deserialize)] pub struct GprsCmdReq { pub command: String }
 pub async fn device_gprs_command(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GprsCmdReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     if b.command.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "comando vuoto")); }
     let imei: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND tenant_id=$2")
@@ -6176,7 +6187,7 @@ pub async fn list_sensor_rules(State(st): State<AppState>, h: HeaderMap) -> R {
     Ok(Json(json!(out)))
 }
 pub async fn create_sensor_rule(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SensorRuleReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     if b.metric.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "metrica richiesta")); }
     if !RULE_OPS.contains(&b.op.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "operatore non valido")); }
@@ -6192,7 +6203,7 @@ pub async fn create_sensor_rule(State(st): State<AppState>, h: HeaderMap, Json(b
     Ok(Json(json!({"id": row.get::<Uuid,_>("id")})))
 }
 pub async fn delete_sensor_rule(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.sensor_rules WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
@@ -6708,7 +6719,7 @@ pub async fn ui_features(State(st): State<AppState>, h: HeaderMap) -> R {
 /// Attiva/disattiva (tenant_admin) la gestione geofence su Mappa allarmi + Piantine.
 #[derive(Deserialize)] pub struct GeofenceAlarmsFlag { pub geofence_alarms: bool }
 pub async fn ui_features_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GeofenceAlarmsFlag>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "settings.manage")?;
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
     let existing: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='traccar' AND tool_code='alarm_map'")
         .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
@@ -6751,7 +6762,7 @@ pub async fn super_map_visibility_set(State(st): State<AppState>, h: HeaderMap, 
 /// e della loro configurazione per-tenant. Aggrega config già esistenti (traccar/alarm_map,
 /// loneworker/sos_escalation, loneworker/checkin_timer). Solo tenant_admin, richiede loneworker.
 pub async fn safety_triggers_get(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
     require_module(&st, tid, "loneworker").await?;
     let amap = tool_config(&st, tid, "traccar", "alarm_map").await;
@@ -6790,7 +6801,7 @@ pub async fn safety_triggers_get(State(st): State<AppState>, h: HeaderMap) -> R 
 }
 /// Scrive la config dei trigger di sicurezza mergiando nei tool esistenti (nessuna tabella nuova).
 pub async fn safety_triggers_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SafetyTriggersReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
     require_module(&st, tid, "loneworker").await?;
     if b.sos_as != "sos" && b.sos_as != "man_down" {
@@ -6835,7 +6846,7 @@ pub async fn safety_triggers_set(State(st): State<AppState>, h: HeaderMap, Json(
 
 /// Elenco profili con gruppo escalation, membri (email) e n. device coperti (via assigned_user).
 pub async fn protection_profiles_list(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
     require_module(&st, tid, "loneworker").await?;
     let rows = sqlx::query(
@@ -6900,7 +6911,7 @@ async fn group_belongs(st: &AppState, tid: Uuid, gid: Option<Uuid>) -> Result<()
 }
 
 pub async fn protection_profile_create(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ProfileReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
     require_module(&st, tid, "loneworker").await?;
     let name = b.name.trim();
@@ -6920,7 +6931,7 @@ pub async fn protection_profile_create(State(st): State<AppState>, h: HeaderMap,
 }
 
 pub async fn protection_profile_update(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<ProfileReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
     require_module(&st, tid, "loneworker").await?;
     let name = b.name.trim();
@@ -6941,7 +6952,7 @@ pub async fn protection_profile_update(State(st): State<AppState>, h: HeaderMap,
 }
 
 pub async fn protection_profile_delete(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
     require_module(&st, tid, "loneworker").await?;
     let n = sqlx::query("DELETE FROM app.protection_profiles WHERE id=$1 AND tenant_id=$2")
@@ -6954,7 +6965,7 @@ pub async fn protection_profile_delete(State(st): State<AppState>, h: HeaderMap,
 #[derive(Deserialize)] pub struct ProfileMemberReq { pub user_id: Uuid }
 /// Aggiunge un lavoratore al profilo. Un worker è in al massimo un profilo: se già altrove, lo sposta.
 pub async fn protection_profile_member_add(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<ProfileMemberReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
     require_module(&st, tid, "loneworker").await?;
     // profilo e utente devono appartenere al tenant
@@ -6974,7 +6985,7 @@ pub async fn protection_profile_member_add(State(st): State<AppState>, h: Header
 }
 
 pub async fn protection_profile_member_del(State(st): State<AppState>, h: HeaderMap, Path((id,uid)): Path<(Uuid,Uuid)>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
     require_module(&st, tid, "loneworker").await?;
     let n = sqlx::query("DELETE FROM app.protection_profile_members WHERE tenant_id=$1 AND profile_id=$2 AND user_id=$3")
@@ -8168,7 +8179,7 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
             Ok(json!({"ok":true,"order_id":row.get::<Uuid,_>("id"),"state":"bozza"}))
         }
         "create_sensor_rule" => {
-            admin_only(s).map_err(|e| e.1)?;
+            require_cap(s, "iot.manage").map_err(|e| e.1)?;
             let metric = gs("metric").unwrap_or_default(); if metric.trim().is_empty() { return Err("metrica richiesta".into()); }
             let op = gs("op").unwrap_or_default(); if !RULE_OPS.contains(&op.as_str()) { return Err("operatore non valido".into()); }
             let etype = gs("etype").unwrap_or_default(); if !RULE_ETYPES.contains(&etype.as_str()) { return Err("etype non ammesso".into()); }
@@ -8199,7 +8210,7 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
             Ok(json!({"device":name,"telemetria":tele}))
         }
         "tb_sync_devices" => {
-            admin_only(s).map_err(|e| e.1)?;
+            require_cap(s, "iot.manage").map_err(|e| e.1)?;
             if !module_active(st, tid, "thingsboard").await { return Err("modulo thingsboard non abilitato".into()); }
             let (d,a) = tb_poll_now(st, tid).await?;
             audit(st, tid, &s.email, "ai_agent_tb_sync", json!({"devices":d,"alarms":a})).await;
@@ -8235,7 +8246,7 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
             device_readiness_value(st, tid, did).await.map_err(|e| e.1)
         }
         "onboard_device" => {
-            admin_only(s).map_err(|e| e.1)?;
+            require_cap(s, "devices.admin").map_err(|e| e.1)?;
             let model_code = gs("model_code").ok_or("model_code richiesto")?;
             let external_id = gs("external_id").ok_or("external_id richiesto")?;
             // risolvi lavoratore e gruppo per nome/email (comodo per l'AI)
@@ -8496,7 +8507,7 @@ async fn ga_session_or_err(st: &AppState, tid: Uuid) -> Result<(String,String,Op
 
 // ---- Impostazioni reperibilita' (ladder vocale + status updates) ----
 pub async fn oncall_settings_get(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let c = oncall_cfg(&st, tid).await;
@@ -8512,7 +8523,7 @@ pub async fn oncall_settings_get(State(st): State<AppState>, h: HeaderMap) -> R 
 pub struct OncallSettingsReq { pub voice_fallback_on: Option<bool>, pub voice_fallback_min: Option<i32>, pub status_updates_on: Option<bool>,
     #[serde(default)] pub default_group_id: Option<Uuid>, #[serde(default)] pub clear_default_group: bool }
 pub async fn oncall_settings_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OncallSettingsReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let cur = oncall_cfg(&st, tid).await;
@@ -8539,7 +8550,7 @@ pub async fn oncall_settings_set(State(st): State<AppState>, h: HeaderMap, Json(
 
 /// FASE 3 — motore di escalation del tenant (lettura, admin). 'goalert' = shadow; 'native' = cutover.
 pub async fn escalation_engine_get(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     let engine = sqlx::query_scalar::<_, String>("SELECT escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_else(|| "native".into());
@@ -8576,7 +8587,7 @@ pub async fn escalation_engine_set(State(st): State<AppState>, h: HeaderMap, Pat
 
 // ---- Recapiti GoAlert dei membri (stato verifica) ----
 pub async fn oncall_contacts(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     // NATIVO: recapiti = telefono/email dell'utente + stato verifica (users.phone_verified_at).
@@ -8598,7 +8609,7 @@ pub async fn oncall_contacts(State(st): State<AppState>, h: HeaderMap) -> R {
 #[derive(Deserialize)] pub struct CmId { pub user_id: Uuid }
 /// Invia un codice OTP al telefono dell'utente e lo memorizza (scadenza 10 min). Nativo.
 pub async fn oncall_contact_verify(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CmId>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let phone: Option<String> = sqlx::query_scalar("SELECT phone FROM app.users WHERE id=$1 AND tenant_id=$2")
@@ -8616,7 +8627,7 @@ pub async fn oncall_contact_verify(State(st): State<AppState>, h: HeaderMap, Jso
 #[derive(Deserialize)] pub struct CmVerify { pub user_id: Uuid, pub code: String }
 /// Conferma l'OTP e marca il recapito come verificato. Nativo.
 pub async fn oncall_contact_code(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CmVerify>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let row = sqlx::query("SELECT phone_verify_code,phone_verify_expires FROM app.users WHERE id=$1 AND tenant_id=$2")
@@ -8634,7 +8645,7 @@ pub async fn oncall_contact_code(State(st): State<AppState>, h: HeaderMap, Json(
 }
 /// Invia un SMS di prova al recapito dell'utente. Nativo.
 pub async fn oncall_contact_test(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CmId>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let phone: Option<String> = sqlx::query_scalar("SELECT phone FROM app.users WHERE id=$1 AND tenant_id=$2")
@@ -8646,7 +8657,7 @@ pub async fn oncall_contact_test(State(st): State<AppState>, h: HeaderMap, Json(
 
 // ---- F3: multi-recapito + regole di notifica per-utente (ladder a 2 livelli, parità GoAlert) ----
 pub async fn user_cm_list(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let cms = sqlx::query("SELECT id,kind,value,label,verified_at,disabled_at FROM app.user_contact_methods WHERE tenant_id=$1 AND user_id=$2 ORDER BY created_at")
@@ -8667,7 +8678,7 @@ pub async fn user_cm_list(State(st): State<AppState>, h: HeaderMap, Path(uid): P
 }
 #[derive(Deserialize)] pub struct CmAddReq { pub kind: String, pub value: String, #[serde(default)] pub label: String }
 pub async fn user_cm_add(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>, Json(b): Json<CmAddReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     if !matches!(b.kind.as_str(), "sms"|"voice"|"email") { return Err(err(StatusCode::BAD_REQUEST, "kind: sms|voice|email")); }
@@ -8682,7 +8693,7 @@ pub async fn user_cm_add(State(st): State<AppState>, h: HeaderMap, Path(uid): Pa
     Ok(Json(json!({"ok":true,"id":row.get::<Uuid,_>("id")})))
 }
 pub async fn user_cm_del(State(st): State<AppState>, h: HeaderMap, Path(cmid): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -8693,7 +8704,7 @@ pub async fn user_cm_del(State(st): State<AppState>, h: HeaderMap, Path(cmid): P
 }
 #[derive(Deserialize)] pub struct RuleAddReq { pub cm_id: Uuid, pub delay_min: Option<i32> }
 pub async fn user_rule_add(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>, Json(b): Json<RuleAddReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let dm = b.delay_min.unwrap_or(0).clamp(0, 1440);
@@ -8708,7 +8719,7 @@ pub async fn user_rule_add(State(st): State<AppState>, h: HeaderMap, Path(uid): 
     Ok(Json(json!({"ok":true,"id":row.get::<Uuid,_>("id")})))
 }
 pub async fn user_rule_del(State(st): State<AppState>, h: HeaderMap, Path(rid): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -8720,7 +8731,7 @@ pub async fn user_rule_del(State(st): State<AppState>, h: HeaderMap, Path(rid): 
 /// G1 — riabilita (admin) i recapiti di un utente in opt-out: toglie dal DNC telefono primario e
 /// contact method; i recapiti vanno poi ri-verificati (OTP). Compliance: azione tracciata.
 pub async fn user_reactivate(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     // raccogli i valori dell'utente (telefono + CM) e togli ciascuno dal DNC globale
@@ -8754,7 +8765,7 @@ async fn esc_send_code_native(st: &AppState, kind: &str, value: &str, text: &str
     esc_dispatch(st, ch, value, text, &body, live_cfg.is_some(), live_cfg.as_ref(), &slack_token, &relay, &sink, &public_base).await
 }
 pub async fn user_cm_verify(State(st): State<AppState>, h: HeaderMap, Path(cmid): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let (kind, value) = cm_fetch(&st, tid, cmid).await.ok_or_else(|| err(StatusCode::NOT_FOUND, "recapito inesistente"))?;
@@ -8768,7 +8779,7 @@ pub async fn user_cm_verify(State(st): State<AppState>, h: HeaderMap, Path(cmid)
 }
 #[derive(Deserialize)] pub struct CmCodeReq { pub code: String }
 pub async fn user_cm_code(State(st): State<AppState>, h: HeaderMap, Path(cmid): Path<Uuid>, Json(b): Json<CmCodeReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let row = sqlx::query("SELECT verify_code,verify_expires FROM app.user_contact_methods WHERE id=$1 AND tenant_id=$2")
@@ -8784,7 +8795,7 @@ pub async fn user_cm_code(State(st): State<AppState>, h: HeaderMap, Path(cmid): 
     Ok(Json(json!({"ok":true,"note":"recapito verificato"})))
 }
 pub async fn user_cm_test(State(st): State<AppState>, h: HeaderMap, Path(cmid): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let (kind, value) = cm_fetch(&st, tid, cmid).await.ok_or_else(|| err(StatusCode::NOT_FOUND, "recapito inesistente"))?;
@@ -8794,7 +8805,7 @@ pub async fn user_cm_test(State(st): State<AppState>, h: HeaderMap, Path(cmid): 
 // ---- G3: preferenza status-update per-utente (override del default tenant; null = eredita) ----
 #[derive(Deserialize)] pub struct StatusPrefReq { pub on: Option<bool> }
 pub async fn user_status_pref_set(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>, Json(b): Json<StatusPrefReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -8816,7 +8827,7 @@ async fn ga_user_id(st: &AppState, tid: Uuid, uid: Uuid) -> Option<String> {
 }
 #[derive(Deserialize)] pub struct OverrideQuery { pub group_id: Uuid }
 pub async fn oncall_overrides_list(State(st): State<AppState>, h: HeaderMap, axum::extract::Query(q): axum::extract::Query<OverrideQuery>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     // Sorgente NATIVA (app.esc_overrides); nomi utente risolti localmente. GoAlert non richiesto.
@@ -8842,7 +8853,7 @@ pub async fn oncall_overrides_list(State(st): State<AppState>, h: HeaderMap, axu
 #[derive(Deserialize)]
 pub struct OverrideReq { pub group_id: Uuid, pub start: String, pub end: String, pub add_user_id: Option<Uuid>, pub remove_user_id: Option<Uuid> }
 pub async fn oncall_override_add(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OverrideReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     if b.add_user_id.is_none() && b.remove_user_id.is_none() {
@@ -8876,7 +8887,7 @@ pub async fn oncall_override_add(State(st): State<AppState>, h: HeaderMap, Json(
 }
 #[derive(Deserialize)] pub struct OverrideDel { pub id: Uuid }
 pub async fn oncall_override_del(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OverrideDel>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -8888,7 +8899,7 @@ pub async fn oncall_override_del(State(st): State<AppState>, h: HeaderMap, Json(
 #[derive(Deserialize)] pub struct OverrideUpdate { pub id: Uuid, pub start: String, pub end: String, pub add_user_id: Option<Uuid>, pub remove_user_id: Option<Uuid> }
 /// Modifica un override esistente (edit in-place, parità GoAlert).
 pub async fn oncall_override_update(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OverrideUpdate>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     if b.add_user_id.is_none() && b.remove_user_id.is_none() { return Err(err(StatusCode::BAD_REQUEST, "indica sostituto e/o assente")); }
@@ -8908,7 +8919,7 @@ pub async fn oncall_override_update(State(st): State<AppState>, h: HeaderMap, Js
 
 // ---- F3: Temporary schedule (sostituzione a tempo, parità GoAlert) ----
 pub async fn temp_schedule_list(State(st): State<AppState>, h: HeaderMap, axum::extract::Query(q): axum::extract::Query<OverrideQuery>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let rows = sqlx::query("SELECT id,start_at,end_at,blocks FROM app.esc_temp_schedules WHERE tenant_id=$1 AND group_id=$2 AND end_at>now() ORDER BY start_at")
@@ -8921,7 +8932,7 @@ pub async fn temp_schedule_list(State(st): State<AppState>, h: HeaderMap, axum::
 #[derive(Deserialize)] pub struct TempBlock { pub user_id: Uuid, pub hours: f64 }
 #[derive(Deserialize)] pub struct TempSchedReq { pub group_id: Uuid, pub start: String, pub end: String, pub blocks: Vec<TempBlock>, #[serde(default)] pub allow_gaps: bool }
 pub async fn temp_schedule_add(State(st): State<AppState>, h: HeaderMap, Json(b): Json<TempSchedReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let start = chrono::DateTime::parse_from_rfc3339(&b.start).map_err(|_| err(StatusCode::BAD_REQUEST, "start: RFC3339"))?.with_timezone(&chrono::Utc);
@@ -8952,7 +8963,7 @@ pub async fn temp_schedule_add(State(st): State<AppState>, h: HeaderMap, Json(b)
     Ok(Json(json!({"ok":true,"id":id})))
 }
 pub async fn temp_schedule_del(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OverrideDel>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -8965,7 +8976,7 @@ pub async fn temp_schedule_del(State(st): State<AppState>, h: HeaderMap, Json(b)
 // ---- Maintenance Mode: sospende escalation dei servizi del tenant ----
 #[derive(Deserialize)] pub struct MaintReq { pub hours: Option<i64> }
 pub async fn oncall_maintenance(State(st): State<AppState>, h: HeaderMap, Json(b): Json<MaintReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let hours = b.hours.unwrap_or(0).clamp(0, 24);
@@ -9026,7 +9037,7 @@ pub async fn oncall_calendar_revoke(State(st): State<AppState>, h: HeaderMap) ->
 }
 /// Abbonamento iCal PER-GRUPPO. `?rotate=1` rigenera il token.
 pub async fn group_calendar_url(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2").bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
@@ -9045,7 +9056,7 @@ pub async fn group_calendar_url(State(st): State<AppState>, h: HeaderMap, Path(g
 }
 /// Revoca il feed del gruppo.
 pub async fn group_calendar_revoke(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     sqlx::query("DELETE FROM app.esc_group_ical_tokens WHERE tenant_id=$1 AND group_id=$2").bind(tid).bind(gid).execute(&st.owner_pool).await.map_err(ise)?;
@@ -9188,7 +9199,7 @@ async fn tc_device_num(st: &AppState, base: &str, user: &str, pass: &str, tid: U
 
 // ---- Event policy (ignora|registra|critico per tipo evento Traccar) ----
 pub async fn traccar_event_policy_get(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "traccar").await?;
     let amap = tool_config(&st, tid, "traccar", "alarm_map").await;
@@ -9204,7 +9215,7 @@ pub async fn traccar_event_policy_get(State(st): State<AppState>, h: HeaderMap) 
 }
 #[derive(Deserialize)] pub struct EventPolicyReq { pub events: std::collections::HashMap<String,String> }
 pub async fn traccar_event_policy_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<EventPolicyReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "traccar").await?;
     // valida chiavi/valori
@@ -9261,7 +9272,7 @@ pub async fn traccar_report(State(st): State<AppState>, h: HeaderMap, Path(kind)
 
 // ---- Drivers (proxy Traccar + link device) ----
 pub async fn traccar_drivers_list(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
     let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
     let r = st.http.get(traccar_url(&base, "/api/drivers?all=true")).basic_auth(&user, Some(&pass)).send().await
@@ -9271,7 +9282,7 @@ pub async fn traccar_drivers_list(State(st): State<AppState>, h: HeaderMap) -> R
 }
 #[derive(Deserialize)] pub struct DriverReq { pub name: String, pub unique_id: String, pub device_id: Option<Uuid> }
 pub async fn traccar_driver_add(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DriverReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
     if b.name.trim().is_empty() || b.unique_id.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome e identificativo richiesti")); }
     let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
@@ -9291,7 +9302,7 @@ pub async fn traccar_driver_add(State(st): State<AppState>, h: HeaderMap, Json(b
     Ok(Json(created))
 }
 pub async fn traccar_driver_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<i64>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
     let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
     let _ = st.http.delete(traccar_url(&base, &format!("/api/drivers/{id}"))).basic_auth(&user, Some(&pass)).send().await;
@@ -9300,7 +9311,7 @@ pub async fn traccar_driver_del(State(st): State<AppState>, h: HeaderMap, Path(i
 
 // ---- Maintenance (proxy Traccar + link device) ----
 pub async fn traccar_maint_list(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
     let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
     let r = st.http.get(traccar_url(&base, "/api/maintenance?all=true")).basic_auth(&user, Some(&pass)).send().await
@@ -9310,7 +9321,7 @@ pub async fn traccar_maint_list(State(st): State<AppState>, h: HeaderMap) -> R {
 }
 #[derive(Deserialize)] pub struct MaintReqT { pub name: String, #[serde(rename="type")] pub kind: String, pub start: f64, pub period: f64, pub device_id: Option<Uuid> }
 pub async fn traccar_maint_add(State(st): State<AppState>, h: HeaderMap, Json(b): Json<MaintReqT>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     if !matches!(b.kind.as_str(), "totalDistance"|"hours"|"fixTime"|"odometer") { return Err(err(StatusCode::BAD_REQUEST, "tipo: totalDistance|hours|fixTime|odometer")); }
@@ -9332,7 +9343,7 @@ pub async fn traccar_maint_add(State(st): State<AppState>, h: HeaderMap, Json(b)
     Ok(Json(created))
 }
 pub async fn traccar_maint_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<i64>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
     let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
     let _ = st.http.delete(traccar_url(&base, &format!("/api/maintenance/{id}"))).basic_auth(&user, Some(&pass)).send().await;
@@ -9341,7 +9352,7 @@ pub async fn traccar_maint_del(State(st): State<AppState>, h: HeaderMap, Path(id
 
 // ---- Computed attributes (proxy Traccar + link device) ----
 pub async fn traccar_computed_list(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
     let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
     let r = st.http.get(traccar_url(&base, "/api/attributes/computed?all=true")).basic_auth(&user, Some(&pass)).send().await
@@ -9351,7 +9362,7 @@ pub async fn traccar_computed_list(State(st): State<AppState>, h: HeaderMap) -> 
 }
 #[derive(Deserialize)] pub struct ComputedReq { pub description: String, pub attribute: String, pub expression: String, #[serde(rename="type")] pub kind: String, pub device_id: Option<Uuid> }
 pub async fn traccar_computed_add(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ComputedReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
     if b.attribute.trim().is_empty() || b.expression.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "attributo ed espressione richiesti")); }
     if !matches!(b.kind.as_str(), "number"|"boolean"|"string") { return Err(err(StatusCode::BAD_REQUEST, "tipo: number|boolean|string")); }
@@ -9372,7 +9383,7 @@ pub async fn traccar_computed_add(State(st): State<AppState>, h: HeaderMap, Json
     Ok(Json(created))
 }
 pub async fn traccar_computed_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<i64>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
     let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
     let _ = st.http.delete(traccar_url(&base, &format!("/api/attributes/computed/{id}"))).basic_auth(&user, Some(&pass)).send().await;
@@ -9381,7 +9392,7 @@ pub async fn traccar_computed_del(State(st): State<AppState>, h: HeaderMap, Path
 
 // ---- Accumulators (lettura ultima posizione + reset) ----
 pub async fn traccar_accumulators_get(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
     let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
     let num = tc_device_num(&st, &base, &user, &pass, tid, dev).await?;
@@ -9404,7 +9415,7 @@ pub async fn traccar_accumulators_get(State(st): State<AppState>, h: HeaderMap, 
 }
 #[derive(Deserialize)] pub struct AccumSet { pub total_distance: Option<f64>, pub hours: Option<f64> }
 pub async fn traccar_accumulators_set(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>, Json(b): Json<AccumSet>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
     let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
     let num = tc_device_num(&st, &base, &user, &pass, tid, dev).await?;
@@ -9443,7 +9454,7 @@ async fn tb_resolve_tbid(st: &AppState, tid: Uuid, dev: Uuid) -> Result<(String,
 
 // ---- Inventario device TB (tenant admin) ----
 pub async fn tb_devices_list(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "thingsboard").await?;
     let rows = sqlx::query("SELECT id,external_id,label,config,updated_at FROM app.devices WHERE tenant_id=$1 AND source='thingsboard' ORDER BY external_id")
@@ -9468,7 +9479,7 @@ pub async fn tb_devices_list(State(st): State<AppState>, h: HeaderMap) -> R {
 
 // ---- Sync manuale (tenant admin) ----
 pub async fn tb_sync_tenant(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "thingsboard").await?;
     match tb_poll_now(&st, tid).await {
@@ -9481,7 +9492,7 @@ pub async fn tb_sync_tenant(State(st): State<AppState>, h: HeaderMap) -> R {
 // ---- Alarm policy (severità -> ignora|registra|critico) ----
 const TB_SEVERITIES: &[&str] = &["CRITICAL","MAJOR","MINOR","WARNING","INDETERMINATE"];
 pub async fn tb_alarm_policy_get(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "thingsboard").await?;
     let pol = tb_alarm_policy(&st, tid).await;
@@ -9494,7 +9505,7 @@ pub async fn tb_alarm_policy_get(State(st): State<AppState>, h: HeaderMap) -> R 
 }
 #[derive(Deserialize)] pub struct TbAlarmPolicyReq { pub severity: std::collections::HashMap<String,String> }
 pub async fn tb_alarm_policy_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<TbAlarmPolicyReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "thingsboard").await?;
     for (k,v) in &b.severity {
@@ -9518,7 +9529,7 @@ pub async fn tb_alarm_policy_set(State(st): State<AppState>, h: HeaderMap, Json(
 
 // ---- Attributi del device (tutte le scope) ----
 pub async fn tb_device_attributes(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "thingsboard").await?;
     let (base, hdr) = tb_session_or_err(&st, tid).await?;
     let (tbid, _) = tb_resolve_tbid(&st, tid, dev).await?;
@@ -9531,7 +9542,7 @@ pub async fn tb_device_attributes(State(st): State<AppState>, h: HeaderMap, Path
 // ---- Config remota: scrive shared attributes ----
 #[derive(Deserialize)] pub struct SharedAttrReq { pub attributes: Value }
 pub async fn tb_shared_attr_set(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>, Json(b): Json<SharedAttrReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap(); require_module(&st, tid, "thingsboard").await?;
     if !b.attributes.is_object() || b.attributes.as_object().map(|o| o.is_empty()).unwrap_or(true) {
         return Err(err(StatusCode::BAD_REQUEST, "attributes: oggetto non vuoto richiesto"));
@@ -9662,7 +9673,7 @@ yw_checkins_active {ck_active}
 
 /// Export dei dati personali di un utente del tenant (JSON). Diritto d'accesso.
 pub async fn gdpr_export(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "gdpr.manage")?;
     let tid = s.tenant_id.unwrap();
     let u = sqlx::query("SELECT id,email,role,phone,created_at,anonymized_at FROM app.users WHERE id=$1 AND tenant_id=$2")
         .bind(uid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
@@ -9704,7 +9715,7 @@ pub async fn gdpr_export(State(st): State<AppState>, h: HeaderMap, Path(uid): Pa
 /// Anonimizza un utente (diritto all'oblio). Non elimina la riga per non rompere
 /// l'integrità storica degli incidenti: scrubba la PII e blocca il login.
 pub async fn gdpr_anonymize(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "gdpr.manage")?;
     let tid = s.tenant_id.unwrap();
     if uid == s.user_id { return Err(err(StatusCode::BAD_REQUEST, "non puoi anonimizzare te stesso")); }
     let role: Option<String> = sqlx::query_scalar("SELECT role FROM app.users WHERE id=$1 AND tenant_id=$2")
@@ -9734,7 +9745,7 @@ pub async fn gdpr_anonymize(State(st): State<AppState>, h: HeaderMap, Path(uid):
 /// Espone anche l'elenco distinto delle azioni per popolare il filtro.
 pub async fn audit_log_list(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "audit.view")?;
     let tid = s.tenant_id.unwrap();
     let limit: i64 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(200).clamp(1, 1000);
     let action = q.get("action").cloned().filter(|v| !v.is_empty());
@@ -9762,7 +9773,7 @@ pub async fn audit_log_list(State(st): State<AppState>, h: HeaderMap,
 
 /// Informazioni sulla policy di ritenzione (sola lettura: configurata via env). Solo tenant_admin.
 pub async fn gdpr_retention_info(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "gdpr.manage")?;
     let days: i64 = std::env::var("YW_RETENTION_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     Ok(Json(json!({
         "days": days,
@@ -10004,7 +10015,7 @@ pub async fn escalation_shadow_scan(st: &AppState) {
 
 /// Riepilogo shadow (tenant_admin/superadmin): match-rate recente + ultime divergenze.
 pub async fn escalation_shadow_report(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     let agg = sqlx::query("SELECT count(*) AS tot, count(*) FILTER (WHERE match) AS ok FROM app.esc_shadow_log WHERE tenant_id=$1 AND at > now() - interval '7 days'")
         .bind(tid).fetch_one(&st.owner_pool).await.map_err(ise)?;
@@ -10024,7 +10035,7 @@ pub async fn escalation_shadow_report(State(st): State<AppState>, h: HeaderMap) 
 
 /// Trigger manuale (superadmin/admin) di un giro shadow sul proprio tenant.
 pub async fn escalation_shadow_run(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     let (n, m) = escalation_shadow_tenant(&st, tid).await;
     Ok(Json(json!({"ok":true,"groups":n,"matches":m})))
@@ -10208,7 +10219,7 @@ async fn esc_group_shifts(st: &AppState, tid: Uuid, gid: Uuid, now: chrono::Date
     out
 }
 pub async fn group_shifts(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let days: i64 = q.get("days").and_then(|d| d.parse().ok()).unwrap_or(30);
@@ -10784,7 +10795,7 @@ pub async fn escalation_delivery_shadow_scan(st: &AppState) {
 
 /// Riepilogo consegne in ombra (admin): conteggi per stato + ultime consegne.
 pub async fn escalation_delivery_report(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     let counts = sqlx::query("SELECT state, count(*) AS n FROM app.esc_delivery_log WHERE tenant_id=$1 AND at > now() - interval '7 days' GROUP BY state")
         .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
@@ -10805,7 +10816,7 @@ pub async fn escalation_delivery_report(State(st): State<AppState>, h: HeaderMap
 
 /// Trigger manuale (admin) di un giro di consegna in ombra sul proprio tenant.
 pub async fn escalation_delivery_run(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     let (seen, delivered) = escalation_delivery_shadow_tenant(&st, tid).await;
     Ok(Json(json!({"ok":true,"incidents":seen,"deliveries":delivered})))
@@ -10925,7 +10936,7 @@ pub async fn heartbeat_watchdog(st: &AppState) {
     }
 }
 pub async fn heartbeat_list(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let base = std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_default();
@@ -10943,7 +10954,7 @@ pub async fn heartbeat_list(State(st): State<AppState>, h: HeaderMap) -> R {
 }
 #[derive(Deserialize)] pub struct HbReq { pub name: String, pub timeout_min: Option<i32>, #[serde(default)] pub group_id: Option<Uuid> }
 pub async fn heartbeat_create(State(st): State<AppState>, h: HeaderMap, Json(b): Json<HbReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
@@ -10958,7 +10969,7 @@ pub async fn heartbeat_create(State(st): State<AppState>, h: HeaderMap, Json(b):
     Ok(Json(json!({"ok":true,"id":row.get::<Uuid,_>("id")})))
 }
 pub async fn heartbeat_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -10993,7 +11004,7 @@ pub async fn ingest_email(State(st): State<AppState>, Json(b): Json<EmailIn>) ->
     (StatusCode::OK, "ok").into_response()
 }
 pub async fn email_inbox_list(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let domain = std::env::var("YW_EMAIL_DOMAIN").unwrap_or_else(|_| "alerts.youworkforce.local".into());
@@ -11008,7 +11019,7 @@ pub async fn email_inbox_list(State(st): State<AppState>, h: HeaderMap) -> R {
 }
 #[derive(Deserialize)] pub struct InboxReq { #[serde(default)] pub group_id: Option<Uuid> }
 pub async fn email_inbox_create(State(st): State<AppState>, h: HeaderMap, Json(b): Json<InboxReq>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     group_belongs(&st, tid, b.group_id).await?;
@@ -11020,7 +11031,7 @@ pub async fn email_inbox_create(State(st): State<AppState>, h: HeaderMap, Json(b
     Ok(Json(json!({"ok":true,"id":row.get::<Uuid,_>("id")})))
 }
 pub async fn email_inbox_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
