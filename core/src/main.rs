@@ -51,6 +51,7 @@ fn tb_parity_routes() -> Router<AppState> {
         // #7 GDPR
         .route("/api/gdpr/export/:uid", get(api::gdpr_export))
         .route("/api/gdpr/anonymize/:uid", post(api::gdpr_anonymize))
+        .route("/api/dashboard/layout", get(api::dashboard_layout_get).put(api::dashboard_layout_set))
         .route("/api/gdpr/retention", get(api::gdpr_retention_info))
         .route("/api/gdpr/users", get(api::gdpr_users_list))
         .route("/api/gdpr/users/export", get(api::gdpr_users_export))

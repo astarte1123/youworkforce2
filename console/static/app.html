@@ -401,30 +401,87 @@ function incidentAlert(d){
 function almClose(){ const m=document.getElementById('almModal'); if(m)m.remove(); }
 
 // ---------------- Dashboard ----------------
+// ===== Dashboard unica configurabile =====
+// Widget data-driven: il backend (/dashboard/layout) decide QUALI widget sono visibili (modulo
+// attivo + ruolo) e in che ordine/stato/dimensione (layout salvato dal tenant_admin). Qui ogni
+// widget dichiara solo COME caricarsi e renderizzarsi. Pattern riusabile da ogni modulo.
+const DASH_WIDGETS={
+  incidents:{ title:'Incidenti', goto:'centrale', load:()=>api('/incidents').catch(()=>null),
+    body:I=>{ if(!I)return dMut(); const open=I.filter(x=>x.state!=='chiuso').length;
+      return dKpi('alert','Aperti',open,open?'pri3':'')+dTbl(I.slice(0,6).map(incRow).join('')||emptyRow('Nessun incidente')); } },
+  checkins:{ title:'Check-in attivi', goto:'centrale', load:()=>api('/checkins/list').catch(()=>null),
+    body:C=>{ if(!C)return dMut(); const sc=C.filter(c=>c.state==='scaduto').length;
+      return dKpi('shield','Attivi',C.length,sc?'pri3':'')+dTbl(C.slice(0,6).map(c=>`<tr><td><b>${esc(c.email)}</b><div class="small mut">${esc(c.site||'—')}</div></td><td>${chip(c.state)}</td></tr>`).join('')||emptyRow('Nessun check-in')); } },
+  orders:{ title:'Ordini di lavoro', goto:'ordini', load:()=>api('/orders').catch(()=>null),
+    body:O=>{ if(!O)return dMut(); const a=O.filter(x=>x.state==='in_corso'||x.state==='assegnato').length;
+      return dKpi('clipboard','Attivi',a)+dTbl(O.slice(0,6).map(ordRow).join('')||emptyRow('Nessun ordine')); } },
+  timesheets:{ title:'Consuntivi', goto:'consuntivi', load:()=>api('/timesheets').catch(()=>null),
+    body:T=>{ if(!T)return dMut(); const r=T.filter(x=>x.state==='in_revisione').length;
+      return dKpi('receipt','In revisione',r)+dTbl(T.slice(0,6).map(t=>`<tr class="clk" data-ts="${t.id}"><td><b>${esc(t.owner||'—')}</b><div class="small mut">${esc(t.order_title||'')}</div></td><td>${chip(t.state)}</td></tr>`).join('')||emptyRow('Nessun consuntivo')); } },
+  rounds:{ title:'Ronde', goto:'ronde', load:()=>api('/patrol-routes').catch(()=>null),
+    body:R=>{ if(!R)return dMut(); const act=(R||[]).filter(x=>x.active!==false).length;
+      return dKpi('route','Giri attivi',act)+dTbl((R||[]).slice(0,6).map(r=>`<tr><td><b>${esc(r.name)}</b><div class="small mut">${esc(r.site||'—')}</div></td><td>${r.assigned_group?('👥 '+esc(r.group_name||'')):''}</td></tr>`).join('')||emptyRow('Nessun giro')); } },
+  shifts:{ title:'Turni', goto:'turni', load:()=>api('/shift-plans').catch(()=>null),
+    body:P=>{ if(!P)return dMut(); const fut=(P||[]).filter(p=>p.state!=='annullato');
+      return dKpi('clipboard','Pianificati',fut.length)+dTbl(fut.slice(0,6).map(p=>`<tr><td><b>${new Date(p.starts_at).toLocaleString(LANG==='en'?'en-GB':'it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</b><div class="small mut">${esc(p.site||'—')}</div></td><td>${chip(p.state)}</td></tr>`).join('')||emptyRow('Nessun turno')); } },
+  role:{ title:'Il tuo ruolo', load:()=>Promise.resolve(ME),
+    body:m=>`<div class="center" style="padding:16px"><div class="n" style="font-size:22px">${esc(m.role)}</div><div class="small mut">${esc(m.email)}</div></div>` },
+};
+function dMut(){return '<div class="small mut" style="padding:12px">non disponibile</div>';}
+function dTbl(inner){return `<table class="table"><tbody>${inner}</tbody></table>`;}
+function dKpi(ico,label,n,cls=''){return `<div class="row" style="align-items:center;gap:10px;padding:2px 2px 10px"><div class="ico">${ICON[ico]}</div><div class="n ${cls}" style="font-size:22px">${esc(n)}</div><div class="l mut">${label}</div></div>`;}
+
+let DASH_EDIT=false, DASH_LAYOUT=[], DASH_CANEDIT=false, DASH_DRAG=null;
 async function vDashboard(v){
-  const jobs=[];
-  // P2: i widget dipendono dal RUOLO e dal MODULO attivo. Un modulo spento -> niente fetch e
-  // niente widget (catch->null nasconde anche un eventuale 403), così non si mostrano KPI/card
-  // fuorvianti (es. "Incidenti aperti: 0" su un tenant di solo Lavoro sul campo).
-  const safetyOn = ['loneworker','traccar','iot','thingsboard'].some(m=>ACTIVE_MODS.has(m));
-  const incs = (safetyOn && can(['operatore','tenant_admin','auditor'])) ? api('/incidents').catch(()=>null) : Promise.resolve(null);
-  const ords = (ACTIVE_MODS.has('interventi') && can(['pianificatore','tenant_admin','lavoratore','auditor'])) ? api('/orders').catch(()=>null) : Promise.resolve(null);
-  const tss  = (ACTIVE_MODS.has('consuntivi') && can(['lavoratore','responsabile','tenant_admin','auditor'])) ? api('/timesheets').catch(()=>null) : Promise.resolve(null);
-  const [I,O,T] = await Promise.all([incs,ords,tss]);
-  const openInc=(I||[]).filter(x=>x.state!=='chiuso').length;
-  const inCorso=(O||[]).filter(x=>x.state==='in_corso'||x.state==='assegnato').length;
-  const inRev=(T||[]).filter(x=>x.state==='in_revisione').length;
-  const kpis=[];
-  if(I)kpis.push(kpi('alert','Incidenti aperti',openInc,openInc?'pri3':''));
-  if(O)kpis.push(kpi('clipboard','Ordini attivi',inCorso));
-  if(T)kpis.push(kpi('receipt','Consuntivi in revisione',inRev));
-  kpis.push(kpi('shield','Ruolo',ME.role,'', true));
-  v.innerHTML=`<div class="grid g4" style="margin-bottom:18px">${kpis.join('')}</div>
-    <div class="grid g2">
-      ${I?card('Incidenti recenti', (I.slice(0,6).map(incRow).join('')||emptyRow('Nessun incidente')), 'centrale'):''}
-      ${O?card('Ordini recenti', (O.slice(0,6).map(ordRow).join('')||emptyRow('Nessun ordine')), 'ordini'):''}
-    </div>`;
+  let lay; try{ lay=await api('/dashboard/layout'); }catch(e){ lay={widgets:[],can_edit:false}; }
+  DASH_LAYOUT=(lay.widgets||[]).map(w=>({...w})); DASH_CANEDIT=!!lay.can_edit; DASH_EDIT=false;
+  await renderDash(v);
+}
+async function renderDash(v){
+  const edit=DASH_EDIT;
+  const hdr=`<div class="page-h"><div><h1>Dashboard</h1><div class="mut">${edit?'Trascina ⠿ per riordinare · attiva/nascondi · dimensione':'Panoramica dei moduli attivi'}</div></div>
+    ${DASH_CANEDIT?`<div class="row" style="gap:8px">${edit
+      ?`<button class="btn ghost" onclick="dashCancel()">Annulla</button><button class="btn" onclick="dashSave()">Salva layout</button>`
+      :`<button class="btn ghost" onclick="dashOrganize()">⚙ Organizza</button>`}</div>`:''}</div>`;
+  if(edit){
+    v.innerHTML=hdr+`<div class="grid g2" id="dashGrid">${DASH_LAYOUT.map((w,i)=>dashEditTile(w,i)).join('')||'<div class="small mut">Nessun widget.</div>'}</div>`;
+    bindDashDnD(v); return;
+  }
+  const vis=DASH_LAYOUT.filter(w=>w.enabled!==false && DASH_WIDGETS[w.key]);
+  const data=await Promise.all(vis.map(w=>DASH_WIDGETS[w.key].load().catch(()=>null)));
+  const cards=vis.map((w,i)=>{ const def=DASH_WIDGETS[w.key]; const span=w.size==='full'?'grid-column:1/-1':'';
+    return `<div class="card" style="${span}"><div class="card-h"><h2>${esc(def.title)}</h2>${def.goto?`<a onclick="location.hash='#/${def.goto}'">apri →</a>`:''}</div><div class="card-b">${def.body(data[i])}</div></div>`;
+  }).join('');
+  v.innerHTML=hdr+`<div class="grid g2">${cards||'<div class="card pad"><div class="small mut">Nessun widget per i moduli attualmente attivi.</div></div>'}</div>`;
   bindRows(v);
+}
+function dashEditTile(w,i){ const def=DASH_WIDGETS[w.key]; if(!def)return '';
+  const span=w.size==='full'?'grid-column:1/-1':''; const on=w.enabled!==false;
+  return `<div class="card dash-tile" draggable="true" data-i="${i}" style="${span};opacity:${on?1:.55};cursor:grab">
+    <div class="card-h"><h2 style="cursor:grab">⠿ ${esc(def.title)}</h2>
+      <div class="row" style="gap:6px">
+        <button class="btn ghost small" onclick="dashToggleSize(${i})">${w.size==='full'?'▭ intera':'◫ metà'}</button>
+        <button class="btn ghost small" onclick="dashToggleOn(${i})">${on?'● attivo':'○ nascosto'}</button>
+      </div></div>
+    <div class="card-b"><div class="small mut">${def.goto?('modulo → '+def.goto):'widget core (sempre)'}</div></div></div>`;
+}
+function dashOrganize(){ DASH_EDIT=true; renderDash($('#view')); }
+function dashCancel(){ route(); }
+function dashToggleOn(i){ DASH_LAYOUT[i].enabled=!(DASH_LAYOUT[i].enabled!==false); renderDash($('#view')); }
+function dashToggleSize(i){ DASH_LAYOUT[i].size=DASH_LAYOUT[i].size==='full'?'half':'full'; renderDash($('#view')); }
+async function dashSave(){
+  const payload={widgets:DASH_LAYOUT.map((w,i)=>({widget_key:w.key,enabled:w.enabled!==false,position:i,size:w.size||'half'}))};
+  try{ await api('/dashboard/layout',{method:'PUT',body:JSON.stringify(payload)}); toast('Layout salvato','ok'); route(); }
+  catch(e){ toast(e.message,'bad'); }
+}
+function bindDashDnD(v){
+  $$('.dash-tile',v).forEach(el=>{
+    el.ondragstart=()=>{ DASH_DRAG=+el.dataset.i; };
+    el.ondragover=e=>e.preventDefault();
+    el.ondrop=e=>{ e.preventDefault(); const to=+el.dataset.i;
+      if(DASH_DRAG===null||DASH_DRAG===to)return;
+      const [m]=DASH_LAYOUT.splice(DASH_DRAG,1); DASH_LAYOUT.splice(to,0,m); DASH_DRAG=null; renderDash($('#view')); };
+  });
 }
 function kpi(ico,label,n,cls='',small){return `<div class="kpi"><div class="ico">${ICON[ico]}</div>
   <div class="n ${cls}" style="${small?'font-size:18px':''}">${esc(n)}</div><div class="l">${label}</div></div>`;}

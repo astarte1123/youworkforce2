@@ -45,13 +45,16 @@ E=$(mario -X POST "$BASE/api/shifts/end")
 E2=$(curl -s -o /dev/null -w "%{http_code}" -b "$M" -H 'x-tenant-slug: acme' -H "x-csrf-token: $(csrfh "$M")" -X POST "$BASE/api/shifts/end")
 [ "$E2" = "409" ] && ok "fine turno senza turno aperto -> 409" || no "double end" "$E2"
 
-echo "== gating modulo (globex: workforce non attivo) =="
+echo "== gating modulo (globex: workforce OFF, interventi ON) =="
 curl -s -c "$G" -X POST "$BASE/api/login" -H 'content-type: application/json' -H 'x-tenant-slug: globex' \
   -d '{"email":"admin@globex.loneworker.eu","password":"demo"}' >/dev/null
+# P4: il diario appartiene al Campo = require_any_module(workforce|interventi). globex ha interventi
+# attivo -> diario DISPONIBILE (200). Il caso "nessun modulo Campo -> 403" è coperto da
+# module-autonomy-e2e.sh (scenario solo-Sicurezza).
 GC=$(curl -s -o /dev/null -w "%{http_code}" -b "$G" -H 'x-tenant-slug: globex' -H "x-csrf-token: $(csrfh "$G")" -X POST "$BASE/api/diary" -H 'content-type: application/json' -d '{"body":"x"}')
-[ "$GC" = "403" ] && ok "diario bloccato su globex (modulo off) -> 403" || no "module gating" "$GC"
+[ "$GC" = "200" ] && ok "diario disponibile su globex (interventi attivo) -> 200" || no "module gating" "$GC"
 GS=$(curl -s -o /dev/null -w "%{http_code}" -b "$G" -H 'x-tenant-slug: globex' -H "x-csrf-token: $(csrfh "$G")" -X POST "$BASE/api/shifts/start" -H 'content-type: application/json' -d '{}')
-[ "$GS" = "403" ] && ok "turni bloccati su globex (modulo off) -> 403" || no "shift gating" "$GS"
+[ "$GS" = "403" ] && ok "turni bloccati su globex (workforce off) -> 403" || no "shift gating" "$GS"
 
 echo "== $PASS passed, $FAIL failed =="
 exit $FAIL
