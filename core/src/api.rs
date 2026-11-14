@@ -9866,6 +9866,83 @@ pub async fn audit_log_export(State(st): State<AppState>, h: HeaderMap,
          (axum::http::header::CONTENT_DISPOSITION, "attachment; filename=\"audit-log.csv\"")], out).into_response())
 }
 
+/// Filtri condivisi tra elenco GDPR utenti e relativo export CSV.
+/// q→email ILIKE; role→esatto; status→active (anonymized_at NULL) / anonymized (NOT NULL).
+/// Parametri posizionali da $2 (il $1 è sempre tenant_id).
+fn gdpr_user_filters(q: &std::collections::HashMap<String,String>) -> (String, Vec<String>) {
+    let mut conds: Vec<String> = Vec::new();
+    let mut binds: Vec<String> = Vec::new();
+    let mut p = 2;
+    let get = |k: &str| q.get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    if let Some(t) = get("q")    { conds.push(format!("email ILIKE ${p}")); binds.push(format!("%{t}%")); p+=1; }
+    if let Some(r) = get("role") { conds.push(format!("role=${p}")); binds.push(r); p+=1; }
+    match get("status").as_deref() {
+        Some("active")     => conds.push("anonymized_at IS NULL".into()),
+        Some("anonymized") => conds.push("anonymized_at IS NOT NULL".into()),
+        _ => {}
+    }
+    let where_extra = if conds.is_empty() { String::new() } else { format!(" AND {}", conds.join(" AND ")) };
+    (where_extra, binds)
+}
+
+/// Elenco GDPR utenti del tenant con ricerca/filtri + paginazione. Capability `gdpr.manage`.
+/// Filtri: q (email), role, status (active/anonymized); limit (1..500, def 100) + offset.
+/// Ritorna righe pagina, total (col filtro), elenco ruoli distinti, limit/offset.
+pub async fn gdpr_users_list(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "gdpr.manage")?;
+    let tid = s.tenant_id.unwrap();
+    let limit: i64 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100).clamp(1, 500);
+    let offset: i64 = q.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0).max(0);
+    let (where_extra, binds) = gdpr_user_filters(&q);
+    let sql = format!("SELECT id,email,role,phone,created_at,anonymized_at FROM app.users WHERE tenant_id=$1{where_extra} ORDER BY role,email LIMIT {limit} OFFSET {offset}");
+    let mut qy = sqlx::query(&sql).bind(tid);
+    for b in &binds { qy = qy.bind(b.clone()); }
+    let rows = qy.fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let items: Vec<Value> = rows.iter().map(|r| json!({
+        "id": r.get::<Uuid,_>("id"), "email": r.get::<String,_>("email"), "role": r.get::<String,_>("role"),
+        "phone": r.try_get::<Option<String>,_>("phone").ok().flatten(),
+        "created_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("created_at").ok().flatten(),
+        "anonymized_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("anonymized_at").ok().flatten(),
+    })).collect();
+    let csql = format!("SELECT count(*) FROM app.users WHERE tenant_id=$1{where_extra}");
+    let mut cq = sqlx::query_scalar::<_,i64>(&csql).bind(tid);
+    for b in &binds { cq = cq.bind(b.clone()); }
+    let total: i64 = cq.fetch_one(&st.owner_pool).await.unwrap_or(0);
+    let rls = sqlx::query("SELECT DISTINCT role FROM app.users WHERE tenant_id=$1 ORDER BY role")
+        .bind(tid).fetch_all(&st.owner_pool).await.ok().unwrap_or_default();
+    let roles: Vec<String> = rls.iter().map(|r| r.get::<String,_>("role")).collect();
+    Ok(Json(json!({"rows": items, "roles": roles, "count": items.len(), "total": total, "limit": limit, "offset": offset})))
+}
+
+/// Export CSV dell'elenco GDPR utenti con gli stessi filtri (senza paginazione, max 50000).
+pub async fn gdpr_users_export(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> Result<Response,(StatusCode,String)> {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "gdpr.manage")?;
+    let tid = s.tenant_id.unwrap();
+    let (where_extra, binds) = gdpr_user_filters(&q);
+    let sql = format!("SELECT email,role,phone,created_at,anonymized_at FROM app.users WHERE tenant_id=$1{where_extra} ORDER BY role,email LIMIT 50000");
+    let mut qy = sqlx::query(&sql).bind(tid);
+    for b in &binds { qy = qy.bind(b.clone()); }
+    let rows = qy.fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let csv_field = |v: &str| format!("\"{}\"", v.replace('"', "\"\""));
+    let mut out = String::from("email,ruolo,telefono,creato,stato,anonimizzato_il\n");
+    for r in &rows {
+        let email = r.get::<String,_>("email");
+        let role = r.get::<String,_>("role");
+        let phone = r.try_get::<Option<String>,_>("phone").ok().flatten().unwrap_or_default();
+        let created = r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("created_at").ok().flatten().map(|v| v.to_rfc3339()).unwrap_or_default();
+        let anon = r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("anonymized_at").ok().flatten();
+        let status = if anon.is_some() { "anonimizzato" } else { "attivo" };
+        let anon_s = anon.map(|v| v.to_rfc3339()).unwrap_or_default();
+        out.push_str(&format!("{},{},{},{},{},{}\n",
+            csv_field(&email), csv_field(&role), csv_field(&phone), csv_field(&created), csv_field(status), csv_field(&anon_s)));
+    }
+    audit(&st, tid, &s.email, "gdpr_users_export", json!({"rows": rows.len()})).await;
+    Ok(([(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+         (axum::http::header::CONTENT_DISPOSITION, "attachment; filename=\"gdpr-utenti.csv\"")], out).into_response())
+}
+
 /// Informazioni sulla policy di ritenzione (sola lettura: configurata via env). Solo tenant_admin.
 pub async fn gdpr_retention_info(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "gdpr.manage")?;

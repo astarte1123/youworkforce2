@@ -3469,29 +3469,35 @@ async function vUtentiRuoli(v){
       </div>`).join('')||'<div class="small mut">Nessun ruolo personalizzato.</div>'}</div></div>`:''}`;
 }
 const AU_STATE={offset:0,limit:100};
+const GD_STATE={offset:0,limit:100};
 async function vPrivacyAudit(v){
-  AU_STATE.offset=0; AU_STATE.limit=100;
-  const [users,ret,audit]=await Promise.all([
-    api('/users').catch(()=>[]),
+  AU_STATE.offset=0; AU_STATE.limit=100; GD_STATE.offset=0; GD_STATE.limit=100;
+  const [gusers,ret,audit]=await Promise.all([
+    api('/gdpr/users?limit=100').catch(()=>null),
     api('/gdpr/retention').catch(()=>null),
     api('/audit-log?limit=100').catch(()=>null)]);
-  v._audit=audit; v._users=users;
+  v._audit=audit; v._gusers=gusers;
   const err = (!audit) ? '<div class="card pad" style="margin-top:12px;border-color:var(--bad)"><b>Audit/GDPR non disponibili.</b> <span class="small mut">Richiede ruolo tenant_admin e core aggiornato.</span></div>' : '';
   const retTxt = ret ? (ret.enabled
       ? `<span class="chip s-ok">attiva · ${ret.days} giorni</span> <span class="small mut">${esc(ret.note)}</span>`
       : `<span class="chip">disattivata</span> <span class="small mut">nessuna purga automatica. ${esc(ret.note)}</span>`)
     : '<span class="small mut">n/d</span>';
   const actions = (audit&&audit.actions)||[];
+  const roles = (gusers&&gusers.roles)||[];
   v.innerHTML=`<div class="page-h"><div><h1>${t('priv_title','Privacy e audit')}</h1><div class="mut">GDPR (accesso e oblio), ritenzione e registro attività del tenant</div></div></div>
   ${err}
-  <div class="card pad" style="margin-top:0"><div class="spread"><div><h2>GDPR · dati personali</h2><div class="small mut">esporta i dati di una persona (diritto d'accesso) o anonimizzala (diritto all'oblio, preserva lo storico).</div></div></div>
-    <table class="table" style="margin-top:10px"><thead><tr><th>Email</th><th>Ruolo</th><th>Stato</th><th></th></tr></thead>
-    <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip">${esc(u.role)}</span></td>
-      <td>${u.anonymized_at?'<span class="chip s-bad">anonimizzato</span>':'<span class="chip s-ok">attivo</span>'}</td>
-      <td style="text-align:right">
-        <button class="btn ghost small" onclick="gdprExport('${u.id}','${esc(u.email)}')">↓ esporta</button>
-        ${u.anonymized_at?'':`<button class="btn ghost small" onclick="gdprAnon('${u.id}','${esc(u.email)}')">anonimizza</button>`}
-      </td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessun utente</td></tr>'}</tbody></table></div>
+  <div class="card pad" style="margin-top:0"><div class="spread"><div><h2>GDPR · dati personali</h2><div class="small mut">esporta i dati di una persona (diritto d'accesso) o anonimizzala (diritto all'oblio, preserva lo storico).</div></div>
+    <button class="btn ghost small" onclick="gdUsersExport()">⬇ esporta CSV</button></div>
+    <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+      <input id="gdQ" class="small" placeholder="🔎 cerca email" onkeydown="if(event.key==='Enter')gdReload()">
+      <select id="gdRole" class="small" onchange="gdReload()"><option value="">tutti i ruoli</option>${roles.map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join('')}</select>
+      <select id="gdStatus" class="small" onchange="gdReload()"><option value="">tutti gli stati</option><option value="active">attivi</option><option value="anonymized">anonimizzati</option></select>
+      <select id="gdLimit" class="small" onchange="gdReload()"><option>50</option><option selected>100</option><option>200</option><option>500</option></select>
+      <button class="btn ghost small" onclick="gdReload()">filtra</button>
+      <button class="btn ghost small" onclick="gdClear()">azzera</button>
+    </div>
+    <div id="gdBox" style="overflow-x:auto;margin-top:10px">${renderGdUsers(gusers)}</div>
+    <div id="gdPager" class="row" style="gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap">${renderGdPager(gusers)}</div></div>
 
   <div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Ritenzione dati</h2><div class="small mut">cancellazione automatica dei dati vecchi.</div></div></div>
     <div style="margin-top:8px">${retTxt}</div></div>
@@ -3561,6 +3567,58 @@ async function auditExport(){
     toast('CSV scaricato','ok');
   }catch(e){ toast(e.message,'bad'); }
 }
+function gdQuery(){
+  const qs=new URLSearchParams();
+  const q=$('#gdQ')?.value.trim(), role=$('#gdRole')?.value, status=$('#gdStatus')?.value, lim=$('#gdLimit')?.value||GD_STATE.limit;
+  GD_STATE.limit=parseInt(lim);
+  if(q)qs.set('q',q); if(role)qs.set('role',role); if(status)qs.set('status',status);
+  qs.set('limit',GD_STATE.limit); qs.set('offset',GD_STATE.offset);
+  return qs;
+}
+function renderGdPager(a){
+  if(!a||!a.total) return '';
+  const from=a.total?a.offset+1:0, to=a.offset+a.count;
+  const prevD=a.offset<=0?'disabled':'', nextD=(a.offset+a.count>=a.total)?'disabled':'';
+  return `<button class="btn ghost small" ${prevD} onclick="gdPage(-1)">← prec</button>
+    <span class="small mut">${from}–${to} di ${a.total}</span>
+    <button class="btn ghost small" ${nextD} onclick="gdPage(1)">succ →</button>`;
+}
+function renderGdUsers(a){
+  if(!a) return '<div class="small mut">non disponibile</div>';
+  const rows=a.rows||[];
+  return `<table class="table"><thead><tr><th>Email</th><th>Ruolo</th><th>Stato</th><th></th></tr></thead>
+  <tbody>${rows.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip">${esc(u.role)}</span></td>
+    <td>${u.anonymized_at?'<span class="chip s-bad">anonimizzato</span>':'<span class="chip s-ok">attivo</span>'}</td>
+    <td style="text-align:right">
+      <button class="btn ghost small" onclick="gdprExport('${u.id}','${esc(u.email)}')">↓ esporta</button>
+      ${u.anonymized_at?'':`<button class="btn ghost small" onclick="gdprAnon('${u.id}','${esc(u.email)}')">anonimizza</button>`}
+    </td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessun utente</td></tr>'}</tbody></table>`;
+}
+async function gdReload(resetOffset=true){
+  if(resetOffset) GD_STATE.offset=0;
+  try{ const a=await api('/gdpr/users?'+gdQuery().toString());
+    $('#gdBox').innerHTML=renderGdUsers(a); const p=$('#gdPager'); if(p)p.innerHTML=renderGdPager(a);
+  }catch(e){ toast(e.message,'bad'); }
+}
+function gdPage(dir){
+  const next=GD_STATE.offset+dir*GD_STATE.limit;
+  GD_STATE.offset=Math.max(0,next); gdReload(false);
+}
+function gdClear(){
+  const q=$('#gdQ'); if(q)q.value='';
+  ['gdRole','gdStatus'].forEach(id=>{const e=$('#'+id);if(e)e.value='';});
+  GD_STATE.offset=0; gdReload();
+}
+async function gdUsersExport(){
+  try{
+    const qs=gdQuery(); qs.delete('limit'); qs.delete('offset');
+    const r=await fetch('/api/gdpr/users/export?'+qs.toString(),{credentials:'include',headers:{'x-tenant-slug':store.slug}});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const blob=await r.blob(); const url=URL.createObjectURL(blob); const a=document.createElement('a');
+    a.href=url; a.download='gdpr-utenti.csv'; document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
+    toast('CSV scaricato','ok');
+  }catch(e){ toast(e.message,'bad'); }
+}
 async function gdprExport(uid,email){
   try{
     const data=await api('/gdpr/export/'+uid);
@@ -3573,7 +3631,7 @@ async function gdprExport(uid,email){
 }
 async function gdprAnon(uid,email){
   if(!await askConfirm('Anonimizzare '+email+'?\nRimuove PII (email, telefono, diario), blocca il login. Irreversibile. Lo storico incidenti resta integro.'))return;
-  try{ await api('/gdpr/anonymize/'+uid,{method:'POST'}); toast('Utente anonimizzato','ok'); route(); }catch(e){ toast(e.message,'bad'); }
+  try{ await api('/gdpr/anonymize/'+uid,{method:'POST'}); toast('Utente anonimizzato','ok'); gdReload(false); }catch(e){ toast(e.message,'bad'); }
 }
 async function assetNew(){ const n=await askPrompt('Nome asset/mezzo?'); if(!n)return;
   const k=await askPrompt('Tipo (veicolo/attrezzatura/varco/altro)?','veicolo')||'attrezzatura';

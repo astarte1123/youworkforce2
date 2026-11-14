@@ -65,6 +65,25 @@ CT=$(curl -s -b "$AJ" -H "x-tenant-slug: $SLUG" -H "x-csrf-token: $ACS" -o /tmp/
 head -1 /tmp/au.csv | grep -q "quando,attore,azione,dettaglio" && echo "$CT" | grep -q "text/csv" && [ "$(wc -l < /tmp/au.csv)" -ge 2 ] && ok "export CSV (header + righe + content-type)" || no "csv export" "ct=$CT"
 [ "$(code pl "$BASE/api/audit-log/export")" = 403 ] && ok "export CSV pianificatore -> 403" || no "csv 403" "-"
 
+# 17) gdpr/users: admin 200 con rows+total+roles; non-admin 403
+GU=$(adm "$BASE/api/gdpr/users?limit=10"); echo "$GU" | jget "isinstance(d['rows'],list) and 'total' in d and isinstance(d['roles'],list) and d['total']>=1" | grep -q True && ok "gdpr/users admin -> 200 (rows+total+roles)" || no "gdpr users" "$GU"
+[ "$(code pl "$BASE/api/gdpr/users")" = 403 ] && ok "gdpr/users pianificatore -> 403" || no "gusers 403" "-"
+# 18) filtro status=anonymized -> solo anonimizzati (cavia inclusa)
+GA=$(adm "$BASE/api/gdpr/users?status=anonymized&limit=50"); echo "$GA" | jget "len(d['rows'])>=1 and all(r['anonymized_at'] is not None for r in d['rows'])" | grep -q True && ok "gdpr/users filtro status=anonymized" || no "gusers status" "$GA"
+# 19) filtro status=active -> nessuno anonimizzato
+GAC=$(adm "$BASE/api/gdpr/users?status=active&limit=50"); echo "$GAC" | jget "all(r['anonymized_at'] is None for r in d['rows'])" | grep -q True && ok "gdpr/users filtro status=active" || no "gusers active" "$GAC"
+# 20) filtro role=pianificatore -> trova il planner creato
+GR=$(adm "$BASE/api/gdpr/users?role=pianificatore&limit=50"); echo "$GR" | jget "len(d['rows'])>=1 and all(r['role']=='pianificatore' for r in d['rows'])" | grep -q True && ok "gdpr/users filtro role" || no "gusers role" "$GR"
+# 21) paginazione: limit=1 -> 1 riga, total>=2
+GP=$(adm "$BASE/api/gdpr/users?limit=1&offset=0"); GPT=$(echo "$GP" | jget "d['total']"); GPN=$(echo "$GP" | jget "len(d['rows'])")
+[ "$GPN" = 1 ] && [ "$GPT" -ge 2 ] 2>/dev/null && ok "gdpr/users paginazione (limit=1, total=$GPT)" || no "gusers pagination" "n=$GPN total=$GPT"
+# 22) export CSV: header colonne + content-type + >=1 riga; non-admin 403
+GCT=$(curl -s -b "$AJ" -H "x-tenant-slug: $SLUG" -H "x-csrf-token: $ACS" -o /tmp/gu.csv -w '%{content_type}' "$BASE/api/gdpr/users/export")
+head -1 /tmp/gu.csv | grep -q "email,ruolo,telefono,creato,stato,anonimizzato_il" && echo "$GCT" | grep -q "text/csv" && [ "$(wc -l < /tmp/gu.csv)" -ge 2 ] && ok "gdpr/users export CSV (header+righe+content-type)" || no "gusers csv" "ct=$GCT"
+[ "$(code pl "$BASE/api/gdpr/users/export")" = 403 ] && ok "gdpr/users export pianificatore -> 403" || no "gusers csv 403" "-"
+# 23) export CSV tracciato in audit (gdpr_users_export)
+GEA=$(adm "$BASE/api/audit-log?action=gdpr_users_export&limit=5"); echo "$GEA" | jget "len(d['rows'])>=1" | grep -q True && ok "audit traccia gdpr_users_export" || no "gusers audit" "$GEA"
+
 # teardown
 sql "DELETE FROM app.users WHERE email IN ('$PLM') OR id='$VIC'" >/dev/null
 echo "== $PASS passed, $FAIL failed =="

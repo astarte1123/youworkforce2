@@ -6,7 +6,21 @@ all'oblio (anonimizzazione), policy di ritenzione e il registro delle attività 
 
 ## GDPR · dati personali
 
-Tabella di tutti gli utenti del tenant con stato (attivo / anonimizzato) e due azioni.
+Elenco paginato degli utenti del tenant con stato (attivo / anonimizzato) e due azioni.
+
+`GET /api/gdpr/users` (capability `gdpr.manage`). Parametri query opzionali:
+- `q` — sottostringa (ILIKE) sull'email;
+- `role` — filtro esatto sul ruolo;
+- `status` — `active` (non anonimizzati) / `anonymized` (anonimizzati);
+- `limit` — 1..500, default 100; `offset` — paginazione (≥0).
+
+Risposta: `{rows:[{id,email,role,phone,created_at,anonymized_at}], roles:[...], count, total, limit, offset}`
+ordinata per ruolo+email. `total` è il numero di righe che soddisfano il filtro (per la paginazione);
+`roles` è l'elenco distinto per popolare il filtro a tendina.
+
+**Export CSV**: `GET /api/gdpr/users/export` applica gli stessi filtri (senza paginazione, max 50000
+righe) e restituisce un CSV (RFC4180) con colonne `email,ruolo,telefono,creato,stato,anonimizzato_il`;
+l'export stesso è tracciato (`gdpr_users_export`).
 
 ### Export (diritto d'accesso)
 `GET /api/gdpr/export/:uid` → JSON con i dati personali della persona nel tenant:
@@ -65,8 +79,10 @@ richiede **`audit.view`** (split di `admin`, Tappa 2). Di default le ha solo `te
 
 ## Prove
 
-`qa/gdpr-audit-e2e.sh` — **17/17**: audit-log admin 200 (rows+actions) e non-admin 403;
+`qa/gdpr-audit-e2e.sh` — **26/26**: audit-log admin 200 (rows+actions) e non-admin 403;
 retention admin 200 / non-admin 403; export profilo e non-admin 403; anonymize self→400,
-esecuzione→200, PII rimossa, login bloccato; audit filtrabile per azione/attore; **paginazione
+esecuzione→200, PII rimossa, login bloccato; audit filtrabile per azione/attore; paginazione
 (total+offset), ricerca testo libero `q`, filtro date, export CSV (header+content-type) e
-export non-admin→403**. In CORE di `qa/run-all.sh`.
+export non-admin→403; **elenco GDPR utenti admin 200 (rows+total+roles) e non-admin 403, filtri
+status/role, paginazione, export CSV utenti (header+content-type) e non-admin→403, traccia audit
+`gdpr_users_export`**. In CORE di `qa/run-all.sh`.
