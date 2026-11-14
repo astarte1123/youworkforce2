@@ -5,6 +5,7 @@ mod modules; // #3 FASE 1: registry manifest moduli (dipendenze + metadata)
 mod teltonika; // edge nativo Teltonika Codec8/8E su TCP (decode-edge senza Traccar)
 mod dashboard; // servizio core: dashboard unica configurabile (widget + layout per-tenant)
 mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
+mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
 
 use std::sync::Arc;
 use axum::{routing::{get, post, delete}, Router, Json};
@@ -217,10 +218,10 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/users", get(api::list_users).post(api::create_user))
         .route("/api/users/:id", post(api::update_user).delete(api::delete_user))
         .route("/api/users/:id/sites", get(api::get_user_sites).post(api::set_user_sites))
-        .route("/api/user-groups", get(api::list_user_groups).post(api::create_user_group))
-        .route("/api/user-groups/:id", post(api::update_user_group).delete(api::delete_user_group))
-        .route("/api/user-groups/:id/members", post(api::user_group_member_add))
-        .route("/api/user-groups/:id/members/:uid", axum::routing::delete(api::user_group_member_del))
+        .route("/api/user-groups", get(groups::list_user_groups).post(groups::create_user_group))
+        .route("/api/user-groups/:id", post(groups::update_user_group).delete(groups::delete_user_group))
+        .route("/api/user-groups/:id/members", post(groups::user_group_member_add))
+        .route("/api/user-groups/:id/members/:uid", axum::routing::delete(groups::user_group_member_del))
         .route("/api/capabilities", get(api::list_capabilities).post(api::set_capability).delete(api::reset_capabilities))
         .route("/api/custom-roles", get(api::list_custom_roles).post(api::create_custom_role))
         .route("/api/custom-roles/:id", post(api::update_custom_role).delete(api::delete_custom_role))
