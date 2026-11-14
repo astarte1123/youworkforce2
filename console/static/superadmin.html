@@ -73,38 +73,43 @@ async function load(){
   const mods=await Promise.all(TENANTS.map(t=>api('/superadmin/tenants/'+t.id+'/modules').catch(()=>[])));
   $('#list').innerHTML=TENANTS.map((t,i)=>tenantCard(t,mods[i])).join('')||'<div class="empty">nessun tenant</div>';
 }
-async function loadInteg(tid){
-  const box=document.getElementById('integ_'+tid); if(!box)return;
-  let d; try{ d=await api('/superadmin/tenants/'+tid+'/integrations'); }catch(e){ box.textContent=''; return; }
-  const LAB={goalert:'GoAlert',traccar:'Traccar',thingsboard:'ThingsBoard'};
-  const on=['goalert','traccar','thingsboard'].filter(k=>d[k]&&d[k].module); // solo i motori che servono
-  if(!on.length){ box.innerHTML='<span class="mut">nessun motore integrato attivo</span>'; return; }
-  const dot=s=>s.status==='ok'?'🟢':(s.status==='anomalia'?'🔴':'⚪');
-  const chip=k=>`<span title="${esc(d[k].detail||d[k].status)}" style="margin-left:10px">${dot(d[k])} ${LAB[k]}</span>`;
-  const anomalies=on.filter(k=>d[k].status==='anomalia');
-  box.innerHTML=on.map(chip).join('')
-    + (anomalies.length?`<span style="color:var(--bad);margin-left:10px">⚠ ${anomalies.map(k=>esc(d[k].detail||k)).join(' · ')}</span>`:'<span class="s-attivo" style="margin-left:10px">tutto ok</span>');
+// Moduli raggruppati per PERIMETRO di prodotto (distingue nettamente le aree funzionali).
+const PERIMETRI=[
+  ['Sicurezza lavoratore',['loneworker']],
+  ['Lavoro sul campo',['interventi','giri','consuntivi','workforce']],
+  ['IoT',['iot']],
+  ['Assistente AI',['assistant']],
+];
+function modTile(tid,m){ return `<div class="row" style="justify-content:space-between;padding:8px 10px;border:1px solid var(--line);border-radius:10px">
+  <div style="min-width:0"><div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis">${esc(m.name)}</div>
+    <div class="small faint">${chip(m.state)}</div></div>
+  <label class="switch"><input type="checkbox" ${m.state==='attivo'?'checked':''}
+    onchange="toggle('${tid}','${m.code}',this)"><span class="sl"></span></label></div>`; }
+function modGroupsHtml(tid,mods){
+  const av=(mods||[]).filter(m=>m.available); const used=new Set(); let h='';
+  for(const [label,codes] of PERIMETRI){
+    const g=av.filter(m=>codes.includes(m.code)); if(!g.length)continue;
+    g.forEach(m=>used.add(m.code));
+    h+=`<div class="small mut" style="margin:8px 0 4px;text-transform:uppercase;letter-spacing:.5px">${label}</div><div class="grid g3">${g.map(m=>modTile(tid,m)).join('')}</div>`;
+  }
+  const other=av.filter(m=>!used.has(m.code));
+  if(other.length) h+=`<div class="small mut" style="margin:8px 0 4px;text-transform:uppercase;letter-spacing:.5px">Altro</div><div class="grid g3">${other.map(m=>modTile(tid,m)).join('')}</div>`;
+  return h||'<div class="small mut">nessun modulo disponibile</div>';
 }
 function tenantCard(t,mods){
   return `<div class="card"><div class="card-h">
     <div class="row" style="gap:10px"><div class="ava" ${t.has_logo?`style="background:#fff;padding:3px"`:''}>${t.has_logo?`<img src="/api/superadmin/tenants/${t.id}/logo" style="width:100%;height:100%;object-fit:contain">`:initials(t.name)}</div>
       <div><b>${esc(t.name)}</b><div class="small mut mono">${esc(t.slug)}.loneworker.eu</div></div></div>
     <div class="row" style="gap:6px">${licChip('App mobile',t.mobile_used,t.mobile_app_licenses)} ${licChip('IoT',t.iot_used,t.iot_device_licenses)}</div>
-    </div><div class="card-b"><div class="grid g3">
-    ${mods.filter(m=>m.available).map(m=>`<div class="row" style="justify-content:space-between;padding:8px 10px;border:1px solid var(--line);border-radius:10px">
-      <div style="min-width:0"><div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis">${esc(m.name)}</div>
-        <div class="small faint">${chip(m.state)}${m.mkind?` · <span class="mut">${esc(m.mkind)}</span>`:''}</div></div>
-      <label class="switch"><input type="checkbox" ${m.state==='attivo'?'checked':''}
-        onchange="toggle('${t.id}','${m.code}',this)"><span class="sl"></span></label>
-    </div>`).join('')}
-    </div>
+    </div><div class="card-b">
+    ${modGroupsHtml(t.id,mods)}
     <div style="margin-top:12px">
       <div class="small mut" style="margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px">Gestione</div>
       <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn" onclick="openAdmin('${t.id}',this)">⚙ Amministrazione</button>
         <button class="btn ghost" onclick="impersonate('${t.id}')">👤 Impersona admin</button>
-        <button class="btn ghost" onclick="openTools('${t.id}',this)">Strumenti disponibili</button>
-        <button class="btn ghost cfgbtn" onclick="scnOpen('${t.id}',this)">Ambienti (casi d'uso)</button>
-        <button class="btn ghost cfgbtn" onclick="mapVisOpen('${t.id}',this)">Menu mappa</button></div>
+        <button class="btn ghost" onclick="openTools('${t.id}',this)">Strumenti per modulo</button>
+        <button class="btn ghost cfgbtn" onclick="scnOpen('${t.id}',this)">Scenari IoT (casi d'uso)</button>
+        <button class="btn ghost cfgbtn" onclick="mapVisOpen('${t.id}',this)">Visibilità mappe</button></div>
       <div class="small mut" style="margin:12px 0 5px;text-transform:uppercase;letter-spacing:.5px">Integrazioni</div>
       <div class="small mut" style="margin-bottom:6px">YouWorkforce è <b>self-contained</b>: escalation, tracking (edge Teltonika/OsmAnd) e IoT sono motori <b>nativi</b>, nessuna connessione a servizi esterni. I provider AI sono l'unica integrazione esterna, opzionale: richiedono la chiave del cliente.</div>
       <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn ghost cfgbtn" onclick="aiConn('${t.id}',this)">Connessione AI</button></div>
@@ -217,62 +222,6 @@ async function openTools(tid,btn){
         onchange="toggleTool('${tid}','${esc(t.module_code)}','${esc(t.tool_code)}',this)"><span class="sl"></span></label>
     </div>`).join('')}</div>`).join('')||'<div class="small mut">nessuno strumento</div>';
 }
-const CFG_GROUPS={
-  'SMS / Voce (Twilio)':['Twilio.Enable','Twilio.AccountSID','Twilio.AuthToken','Twilio.FromNumber','Twilio.MessagingServiceSID'],
-  'Email (SMTP)':['SMTP.Enable','SMTP.From','SMTP.Address','SMTP.Username','SMTP.Password'],
-  'Slack':['Slack.Enable','Slack.ClientID','Slack.ClientSecret','Slack.AccessToken','Slack.SigningSecret'],
-  'Email (Mailgun)':['Mailgun.Enable','Mailgun.APIKey','Mailgun.EmailDomain'],
-  'Webhook (es. Teams)':['Webhook.Enable','Webhook.AllowedURLs'],
-  'Generale':['General.PublicURL'],
-};
-async function trConn(tid,btn){
-  const box=document.getElementById('cfg_'+tid);
-  if(box.dataset.open==='trconn'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
-  box.dataset.open='trconn'; cfgExclusive(btn); btnOn(btn,true); box.innerHTML='<div class="small mut">carico…</div>';
-  let c; try{ c=await api('/superadmin/tenants/'+tid+'/traccar'); }catch(e){ c={configured:false}; }
-  box.innerHTML=`<div class="card" style="padding:12px">
-    <div class="small mut" style="margin-bottom:8px">Connessione al server Traccar del tenant (base URL + credenziali). È il prerequisito di tutto il modulo: polling, comandi, sync, verifica.</div>
-    <label class="small mut" style="display:block;margin:4px 0">Base URL<input id="tc_url_${tid}" placeholder="http://host:8082" value="${esc(c.base_url||'')}"></label>
-    <label class="small mut" style="display:block;margin:4px 0">Utente<input id="tc_user_${tid}" placeholder="op@tenant.test" value="${esc(c.username||'')}"></label>
-    <label class="small mut" style="display:block;margin:4px 0">Password${c.has_password?' <span class="small">(impostata — lascia vuoto per non cambiarla)</span>':''}<input id="tc_pw_${tid}" type="password" placeholder="${c.has_password?'•••••• invariata':'password'}"></label>
-    <div class="row" style="gap:8px;margin-top:6px"><button class="btn" onclick="trConnSave('${tid}')">Salva e verifica</button>
-      ${c.configured?'<span class="chip s-attivo">configurata</span>':'<span class="chip">assente</span>'}</div>
-    <div id="tc_msg_${tid}" class="small mut" style="margin-top:6px"></div></div>`;
-}
-async function trConnSave(tid){
-  const url=document.getElementById('tc_url_'+tid).value.trim();
-  const user=document.getElementById('tc_user_'+tid).value.trim();
-  const pw=document.getElementById('tc_pw_'+tid).value;
-  const msg=document.getElementById('tc_msg_'+tid);
-  if(!url||!user){ toast('Base URL e utente obbligatori','bad'); return; }
-  try{
-    const body={base_url:url,username:user}; if(pw) body.password=pw;
-    await api('/superadmin/tenants/'+tid+'/traccar',{method:'POST',body:JSON.stringify(body)});
-    toast('Connessione salvata','ok');
-    if(msg){ msg.innerHTML='<span class="s-attivo">salvata</span> — ora l\'admin del tenant può usare “Verifica collegamento” nella pagina Connettori.'; }
-  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
-}
-async function tbConn(tid,btn){
-  const box=document.getElementById('cfg_'+tid);
-  if(box.dataset.open==='tb'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
-  box.dataset.open='tb'; cfgExclusive(btn); btnOn(btn,true); box.innerHTML='<div class="small mut">carico…</div>';
-  let c; try{ c=await api('/superadmin/tenants/'+tid+'/thingsboard'); }catch(e){ c={configured:false}; }
-  box.innerHTML=`<div class="card" style="padding:12px">
-    <div class="small mut" style="margin-bottom:8px">Connessione al server ThingsBoard del tenant (base URL + credenziali). Abilita la verifica del collegamento e lo specchio dei device. Il push via Rule Engine resta il percorso di ingestione.</div>
-    <label class="small mut" style="display:block;margin:4px 0">Base URL<input id="tb_url_${tid}" placeholder="http://host:8080" value="${esc(c.base_url||'')}"></label>
-    <label class="small mut" style="display:block;margin:4px 0">Utente<input id="tb_user_${tid}" placeholder="tenant@tb.test" value="${esc(c.username||'')}"></label>
-    <label class="small mut" style="display:block;margin:4px 0">Password${c.has_password?' <span class="small">(impostata — lascia vuoto per non cambiarla)</span>':''}<input id="tb_pw_${tid}" type="password" placeholder="${c.has_password?'•••••• invariata':'password'}"></label>
-    <div class="row" style="gap:8px;margin-top:6px"><button class="btn" onclick="tbConnSave('${tid}')">Salva</button>
-      <button class="btn ghost" onclick="tbVerify('${tid}')">Verifica collegamento</button>
-      ${c.configured?'<span class="chip s-attivo">configurata</span>':'<span class="chip">assente</span>'}</div>
-    <div class="divider" style="margin:10px 0"></div>
-    <div class="small mut" style="margin-bottom:6px">Pull (specchio device + telemetria → regole): oltre al push Rule Engine, YouWorkforce pulla i device e l'ultima telemetria alla cadenza impostata.</div>
-    <div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap">
-      <label class="small mut"><input type="checkbox" id="tb_poll_${tid}" ${c.poll_enabled?'checked':''}> Poll automatico</label>
-      <label class="small mut">Cadenza (s)<input id="tb_int_${tid}" type="number" min="15" max="3600" value="${c.poll_interval_s||60}" style="width:90px"></label>
-      <button class="btn ghost" onclick="tbSync('${tid}')">⟳ Sincronizza ora</button></div>
-    <div id="tb_msg_${tid}" class="small mut" style="margin-top:6px"></div></div>`;
-}
 async function tbSync(tid){
   const msg=document.getElementById('tb_msg_'+tid); if(msg)msg.textContent='Sincronizzo…';
   const body={poll_enabled:document.getElementById('tb_poll_'+tid).checked, poll_interval_s:+document.getElementById('tb_int_'+tid).value};
@@ -280,17 +229,6 @@ async function tbSync(tid){
     if(msg) msg.innerHTML=r.reachable?`<span class="s-attivo">✓ ${r.device_count} device · ${r.alarm_count} allarmi</span>`:`<span style="color:var(--bad)">✗ ${esc(r.verdict||'irraggiungibile')}</span>`;
     toast(r.reachable?'ThingsBoard sincronizzato':'ThingsBoard irraggiungibile', r.reachable?'ok':'bad');
   }catch(e){ if(msg)msg.textContent=e.message; toast(e.message,'bad'); }
-}
-async function tbConnSave(tid){
-  const url=document.getElementById('tb_url_'+tid).value.trim();
-  const user=document.getElementById('tb_user_'+tid).value.trim();
-  const pw=document.getElementById('tb_pw_'+tid).value;
-  const msg=document.getElementById('tb_msg_'+tid);
-  if(!url||!user){ toast('Base URL e utente obbligatori','bad'); return; }
-  try{ const body={base_url:url,username:user}; if(pw) body.password=pw;
-    await api('/superadmin/tenants/'+tid+'/thingsboard',{method:'POST',body:JSON.stringify(body)});
-    toast('Connessione salvata','ok'); if(msg)msg.innerHTML='<span class="s-attivo">salvata</span>';
-  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
 }
 async function tbVerify(tid){
   const msg=document.getElementById('tb_msg_'+tid); if(msg)msg.textContent='Verifico…';
@@ -451,71 +389,6 @@ async function scnRemove(tid,code,btn){
   try{ const r=await api('/superadmin/tenants/'+tid+'/scenarios/'+code,{method:'DELETE'});
     toast('Scenario rimosso ('+r.rules_removed+' regole, '+r.devices_removed+' device demo)','ok'); scnRender(tid);
   }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
-}
-async function trConfig(tid,btn){
-  const box=document.getElementById('cfg_'+tid);
-  if(box.dataset.open==='tr'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
-  box.dataset.open='tr'; cfgExclusive(btn); btnOn(btn,true); box.innerHTML='<div class="small mut">carico…</div>';
-  let cfg; try{ cfg=await api('/superadmin/tenants/'+tid+'/traccar/config'); }
-  catch(e){ box.innerHTML='<div class="small" style="color:var(--bad)">'+e.message+'</div>'; return; }
-  const field=c=> c.type==='boolean'
-    ? `<label class="small" style="display:flex;gap:8px;align-items:center;margin:4px 0"><input type="checkbox" data-id="${c.id}" ${c.value?'checked':''}> ${c.id}</label>`
-    : `<label class="small mut" style="display:block;margin:4px 0">${c.id}<input data-id="${c.id}" data-num="${c.type==='number'}" value="${String(c.value).replace(/"/g,'&quot;')}"></label>`;
-  box.innerHTML=`<div class="card" style="padding:12px">
-    <div class="small mut" style="margin-bottom:8px">Impostazioni server Traccar (runtime). Porte/forwarding = config d'avvio (compose); i filtri posizione sono in Moduli → Traccar.</div>
-    ${cfg.map(field).join('')}
-    <button class="btn" onclick="trConfigSave('${tid}')">Salva Traccar</button></div>`;
-}
-async function trConfigSave(tid){
-  const box=document.getElementById('cfg_'+tid); const entries=[];
-  box.querySelectorAll('[data-id]').forEach(el=>{ let v=el.type==='checkbox'?(el.checked?'true':'false'):el.value; entries.push({id:el.dataset.id,value:v}); });
-  try{ await api('/superadmin/tenants/'+tid+'/traccar/config',{method:'POST',body:JSON.stringify({entries})}); toast('Config Traccar salvata','ok'); }
-  catch(e){ toast(e.message,'bad'); }
-}
-async function gaConfig(tid,btn){
-  const box=document.getElementById('cfg_'+tid);
-  if(box.dataset.open==='ga'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
-  box.dataset.open='ga'; cfgExclusive(btn); btnOn(btn,true); box.innerHTML='<div class="small mut">carico…</div>';
-  let cfg; try{ cfg=await api('/superadmin/tenants/'+tid+'/goalert/config'); }
-  catch(e){ box.innerHTML='<div class="small" style="color:var(--bad)">'+e.message+'</div>'; return; }
-  const byId={}; cfg.forEach(c=>byId[c.id]=c);
-  const field=c=>{ if(!c)return'';
-    if(c.type==='boolean') return `<label class="small" style="display:flex;gap:8px;align-items:center;margin:4px 0"><input type="checkbox" data-id="${c.id}" ${c.value==='true'?'checked':''}> ${c.id}</label>`;
-    if(c.secret) return `<label class="small mut" style="display:block;margin:4px 0">${c.id} ${c.set?'<span class="tag">impostato</span>':''}<input type="password" data-id="${c.id}" placeholder="${c.set?'•••• (lascia vuoto per non cambiare)':'non impostato'}"></label>`;
-    return `<label class="small mut" style="display:block;margin:4px 0">${c.id}<input data-id="${c.id}" value="${(c.value||'').replace(/"/g,'&quot;')}"></label>`; };
-  box.innerHTML=`<div class="card" style="padding:12px">
-    <div class="small mut" style="margin-bottom:8px">Config trasporto GoAlert (istanza). I segreti sono write-only.</div>
-    ${Object.entries(CFG_GROUPS).map(([g,ids])=>`<div style="border:1px solid var(--line);border-radius:10px;padding:8px;margin-bottom:8px">
-      <b class="small">${g}</b>${ids.map(id=>field(byId[id])).join('')}</div>`).join('')}
-    <button class="btn" onclick="gaConfigSave('${tid}')">Salva trasporto</button></div>`;
-}
-async function gaConfigSave(tid){
-  const box=document.getElementById('cfg_'+tid); const entries=[];
-  box.querySelectorAll('[data-id]').forEach(el=>{
-    let val; if(el.type==='checkbox') val=el.checked?'true':'false';
-    else { if(el.type==='password' && !el.value) return; val=el.value; }
-    entries.push({id:el.dataset.id,value:val});
-  });
-  try{ const r=await api('/superadmin/tenants/'+tid+'/goalert/config',{method:'POST',body:JSON.stringify({entries})});
-    toast('Trasporto aggiornato ('+r.updated+' campi)','ok');
-  }catch(e){ toast(e.message,'bad'); }
-}
-async function gaProvision(tid,btn){
-  btnOn(btn,true);
-  // Auto: il motore GoAlert è integrato nel prodotto -> usa le credenziali di default (nessun prompt)
-  try{ const r=await api('/superadmin/tenants/'+tid+'/goalert/provision',{method:'POST',body:JSON.stringify({})});
-    toast('GoAlert provisionato: service '+(r.service_id||'').slice(0,8),'ok');
-  }catch(e){ toast('GoAlert: '+e.message,'bad'); } finally{ btnOn(btn,false); } }
-async function setEngine(tid,engine,sel){
-  const out=document.getElementById('eng_'+tid);
-  try{ await api('/superadmin/tenants/'+tid+'/escalation-engine',{method:'POST',body:JSON.stringify({engine})});
-    if(out){ out.textContent = engine==='native'?'✓ nativo (GoAlert resta rete di sicurezza)':'✓ GoAlert (rollback)'; }
-    toast('Motore → '+engine,'ok');
-  }catch(e){ toast(e.message,'bad'); } }
-async function toggleTool(tid,mc,tc,cb){
-  try{ await api('/superadmin/tenants/'+tid+'/tools',{method:'POST',body:JSON.stringify({module_code:mc,tool_code:tc,enabled:cb.checked})});
-    toast(tc+' → '+(cb.checked?'disponibile':'nascosto'),'ok');
-  }catch(e){ cb.checked=!cb.checked; toast(e.message,'bad'); }
 }
 </script>
 </body></html>
