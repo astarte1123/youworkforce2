@@ -7,6 +7,7 @@ mod dashboard; // servizio core: dashboard unica configurabile (widget + layout 
 mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
 mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
 mod sites; // servizio core: sedi e asset/mezzi condivisi
+mod iam; // servizio core: permessi (capability) e ruoli personalizzati
 
 use std::sync::Arc;
 use axum::{routing::{get, post, delete}, Router, Json};
@@ -223,13 +224,13 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/user-groups/:id", post(groups::update_user_group).delete(groups::delete_user_group))
         .route("/api/user-groups/:id/members", post(groups::user_group_member_add))
         .route("/api/user-groups/:id/members/:uid", axum::routing::delete(groups::user_group_member_del))
-        .route("/api/capabilities", get(api::list_capabilities).post(api::set_capability).delete(api::reset_capabilities))
-        .route("/api/custom-roles", get(api::list_custom_roles).post(api::create_custom_role))
-        .route("/api/custom-roles/:id", post(api::update_custom_role).delete(api::delete_custom_role))
-        .route("/api/custom-roles/:id/users", post(api::custom_role_assign_user))
-        .route("/api/custom-roles/:id/users/:uid", axum::routing::delete(api::custom_role_unassign_user))
-        .route("/api/custom-roles/:id/groups", post(api::custom_role_assign_group))
-        .route("/api/custom-roles/:id/groups/:gid", axum::routing::delete(api::custom_role_unassign_group))
+        .route("/api/capabilities", get(iam::list_capabilities).post(iam::set_capability).delete(iam::reset_capabilities))
+        .route("/api/custom-roles", get(iam::list_custom_roles).post(iam::create_custom_role))
+        .route("/api/custom-roles/:id", post(iam::update_custom_role).delete(iam::delete_custom_role))
+        .route("/api/custom-roles/:id/users", post(iam::custom_role_assign_user))
+        .route("/api/custom-roles/:id/users/:uid", axum::routing::delete(iam::custom_role_unassign_user))
+        .route("/api/custom-roles/:id/groups", post(iam::custom_role_assign_group))
+        .route("/api/custom-roles/:id/groups/:gid", axum::routing::delete(iam::custom_role_unassign_group))
         .route("/api/patrol-routes", get(api::list_patrol_routes).post(api::create_patrol_route))
         .route("/api/patrol-routes/:id", post(api::update_patrol_route).delete(api::delete_patrol_route))
         .route("/api/patrol-routes/:id/checkpoints", post(api::create_checkpoint))
