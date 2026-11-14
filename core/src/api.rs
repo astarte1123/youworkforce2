@@ -9729,6 +9729,48 @@ pub async fn gdpr_anonymize(State(st): State<AppState>, h: HeaderMap, Path(uid):
     Ok(Json(json!({"ok":true,"anonymized_email":anon_email})))
 }
 
+/// Viewer del registro attività (audit log) del tenant. Solo tenant_admin.
+/// Filtri opzionali: action (esatto), actor (sottostringa), limit (1..1000, def 200).
+/// Espone anche l'elenco distinto delle azioni per popolare il filtro.
+pub async fn audit_log_list(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let tid = s.tenant_id.unwrap();
+    let limit: i64 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(200).clamp(1, 1000);
+    let action = q.get("action").cloned().filter(|v| !v.is_empty());
+    let actor  = q.get("actor").cloned().filter(|v| !v.is_empty());
+    let mut sql = String::from("SELECT id,at,actor,action,detail FROM app.audit_log WHERE tenant_id=$1");
+    if action.is_some() { sql.push_str(&format!(" AND action=${}", if actor.is_some() {3} else {2})); }
+    if actor.is_some()  { sql.push_str(" AND actor ILIKE $2"); }
+    sql.push_str(&format!(" ORDER BY at DESC LIMIT {limit}"));
+    let mut qy = sqlx::query(&sql).bind(tid);
+    if let Some(a) = &actor  { qy = qy.bind(format!("%{a}%")); }
+    if let Some(a) = &action { qy = qy.bind(a.clone()); }
+    let rows = qy.fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let items: Vec<Value> = rows.iter().map(|r| json!({
+        "id": r.get::<Uuid,_>("id"),
+        "at": r.get::<chrono::DateTime<chrono::Utc>,_>("at"),
+        "actor": r.get::<String,_>("actor"),
+        "action": r.get::<String,_>("action"),
+        "detail": r.try_get::<Option<Value>,_>("detail").ok().flatten(),
+    })).collect();
+    let acts = sqlx::query("SELECT DISTINCT action FROM app.audit_log WHERE tenant_id=$1 ORDER BY action")
+        .bind(tid).fetch_all(&st.owner_pool).await.ok().unwrap_or_default();
+    let actions: Vec<String> = acts.iter().map(|r| r.get::<String,_>("action")).collect();
+    Ok(Json(json!({"rows": items, "actions": actions, "count": items.len()})))
+}
+
+/// Informazioni sulla policy di ritenzione (sola lettura: configurata via env). Solo tenant_admin.
+pub async fn gdpr_retention_info(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; admin_only(&s)?;
+    let days: i64 = std::env::var("YW_RETENTION_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    Ok(Json(json!({
+        "days": days,
+        "enabled": days > 0,
+        "note": "purga conservativa: incidenti chiusi + eventi non referenziati + audit log oltre N giorni. Configurata da amministratore di sistema (YW_RETENTION_DAYS)."
+    })))
+}
+
 /// #7 Ritenzione: purga dati vecchi. Opt-in via YW_RETENTION_DAYS (0=off, default).
 /// Conservativa: elimina incidenti CHIUSI + eventi non referenziati + audit_log oltre N giorni.
 pub async fn purge_retention(st: &AppState) {

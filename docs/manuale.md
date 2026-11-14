@@ -139,6 +139,14 @@ Licenze e branding (logo, palette), attivazione moduli e scenari per tenant, imp
 tenant per assistenza. Le integrazioni (GoAlert/Traccar/ThingsBoard) si **auto-configurano** dai
 default di prodotto.
 
+## 13-bis. Privacy e audit (GDPR + registro attività)
+
+Voce menu **«Privacy e audit»** (Configurazione, solo `tenant_admin`): export dei dati personali
+di una persona (diritto d'accesso, download JSON), anonimizzazione (diritto all'oblio: scrubba la
+PII e blocca il login, preservando lo storico incidenti), stato della policy di ritenzione
+(`YW_RETENTION_DAYS`) e **registro attività** (audit log) filtrabile per azione e attore.
+Vedi [gdpr-privacy-audit](gdpr-privacy-audit.md).
+
 ## 14. Riferimenti rapidi (manuali di dettaglio)
 
 | Area | Manuale |
@@ -152,6 +160,7 @@ default di prodotto.
 | Permessi (capability) | [capability-layer.md](capability-layer.md) |
 | Ruoli personalizzati | [custom-roles.md](custom-roles.md) |
 | Ronde e punzonature | [ronde-manuale.md](ronde-manuale.md) |
+| Privacy e audit (GDPR, retention, audit log) | [gdpr-privacy-audit.md](gdpr-privacy-audit.md) |
 
 > Questo manuale è l'indice operativo unico; ogni manuale di dettaglio resta la fonte autorevole
 > per la sua area e viene aggiornato insieme al codice.

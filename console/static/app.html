@@ -50,6 +50,7 @@ const NAV = [
   {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','thingsboard','goalert','iot'], grp:'cfg'},
   {k:'utenti-ruoli',t:'Utenti e ruoli', ico:'shield', roles:['tenant_admin'], grp:'cfg'},
   {k:'anagrafiche',t:'Utenti e sedi', ico:'receipt', roles:['tenant_admin'], grp:'cfg'},
+  {k:'privacy-audit',t:'Privacy e audit', ico:'shield', roles:['tenant_admin'], grp:'cfg'},
   {k:'ai',        t:'AI · youworker.ai', ico:'sliders', roles:['tenant_admin'], mod:['assistant'], grp:'cfg'},
   {k:'moduli',    t:'Moduli', ico:'sliders', roles:['tenant_admin'], grp:'cfg'},
 ];
@@ -94,7 +95,8 @@ const I18N={ en:{
   fp_floorplan:"Floor plan", fp_place:"Place on floor plan", fp_place_choose:"— choose beacon or device —",
   fp_place_btn:"📍 on the map", fp_config:"⚙ Configure indoor floor plan", fp_none:"— none —",
   // nav mancanti
-  "nav_ronde":"Patrols","nav_utenti-ruoli":"Users & roles",
+  "nav_ronde":"Patrols","nav_utenti-ruoli":"Users & roles","nav_privacy-audit":"Privacy & audit",
+  priv_title:"Privacy & audit",
   // titoli pagina (altre viste)
   ord_title:"Work orders", consun_title:"Timesheets", turni_title:"Shifts", moduli_title:"Modules",
   report_title:"Reports", connettori_title:"Connectors", trigger_title:"Safety triggers",
@@ -123,7 +125,12 @@ const I18N_PH = {
   "Dashboard":"Dashboard","Centrale allarmi":"Alarm center","Mappa allarmi":"Alarm map","Mappa dispositivi":"Device map","Piantine":"Floor plans","Report":"Reports",
   "Ordini di lavoro":"Work orders","Consuntivi":"Timesheets","Turni":"Shifts","Ronde":"Patrols","Agente AI":"AI agent",
   "Dispositivi e app":"Devices & Apps","Dispositivi & app":"Devices & Apps","Trigger di sicurezza":"Safety triggers","Profili di protezione":"Protection profiles",
-  "Connettori":"Connectors","Escalation e reperibilità":"Escalation & on-call","Utenti e sedi":"Users & sites","Moduli":"Modules","I miei allarmi":"My alarms",
+  "Connettori":"Connectors","Escalation e reperibilità":"Escalation & on-call","Utenti e sedi":"Users & sites","Moduli":"Modules","I miei allarmi":"My alarms","Privacy e audit":"Privacy & audit",
+  // privacy / audit
+  "GDPR (accesso e oblio), ritenzione e registro attività del tenant":"GDPR (access & erasure), retention and tenant activity log",
+  "GDPR · dati personali":"GDPR · personal data","Ritenzione dati":"Data retention","Registro attività (audit log)":"Activity log (audit log)",
+  "Stato":"Status","attivo":"active","anonimizzato":"anonymized","disattivata":"disabled",
+  "tutte le azioni":"all actions","Quando":"When","Attore":"Actor","Azione":"Action","Dettaglio":"Detail","filtra":"filter",
   // intestazioni / sezioni
   "anagrafiche del tenant":"tenant directory","Utenti":"Users","Sedi":"Sites","Squadre":"Teams","Asset / mezzi":"Assets / vehicles",
   "Gruppi di persone":"People groups","Gruppi di persone (condivisi)":"People groups (shared)","Permessi (capability)":"Permissions (capabilities)",
@@ -332,7 +339,7 @@ function route(){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,turni:vTurni,ronde:vRonde,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -3446,6 +3453,69 @@ async function vUtentiRuoli(v){
       <div class="small" style="margin-top:6px"><b>Gruppi:</b> ${r.groups.map(g=>`<span class="tag">${esc(g.name)} <a onclick="crRmGroup('${r.id}','${g.group_id}')">✕</a></span>`).join(' ')||'<span class="mut">—</span>'}</div>
       ${ugroups.length?`<div class="row" style="gap:6px;margin-top:4px"><select id="crg_${r.id}" class="grow small">${ugroups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select><button class="btn ghost small" onclick="crAddGroup('${r.id}')">+ gruppo</button></div>`:''}
       </div>`).join('')||'<div class="small mut">Nessun ruolo personalizzato.</div>'}</div></div>`:''}`;
+}
+async function vPrivacyAudit(v){
+  const [users,ret,audit]=await Promise.all([
+    api('/users').catch(()=>[]),
+    api('/gdpr/retention').catch(()=>null),
+    api('/audit-log?limit=200').catch(()=>null)]);
+  v._audit=audit; v._users=users;
+  const err = (!audit) ? '<div class="card pad" style="margin-top:12px;border-color:var(--bad)"><b>Audit/GDPR non disponibili.</b> <span class="small mut">Richiede ruolo tenant_admin e core aggiornato.</span></div>' : '';
+  const retTxt = ret ? (ret.enabled
+      ? `<span class="chip s-ok">attiva · ${ret.days} giorni</span> <span class="small mut">${esc(ret.note)}</span>`
+      : `<span class="chip">disattivata</span> <span class="small mut">nessuna purga automatica. ${esc(ret.note)}</span>`)
+    : '<span class="small mut">n/d</span>';
+  const actions = (audit&&audit.actions)||[];
+  v.innerHTML=`<div class="page-h"><div><h1>${t('priv_title','Privacy e audit')}</h1><div class="mut">GDPR (accesso e oblio), ritenzione e registro attività del tenant</div></div></div>
+  ${err}
+  <div class="card pad" style="margin-top:0"><div class="spread"><div><h2>GDPR · dati personali</h2><div class="small mut">esporta i dati di una persona (diritto d'accesso) o anonimizzala (diritto all'oblio, preserva lo storico).</div></div></div>
+    <table class="table" style="margin-top:10px"><thead><tr><th>Email</th><th>Ruolo</th><th>Stato</th><th></th></tr></thead>
+    <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip">${esc(u.role)}</span></td>
+      <td>${u.anonymized_at?'<span class="chip s-bad">anonimizzato</span>':'<span class="chip s-ok">attivo</span>'}</td>
+      <td style="text-align:right">
+        <button class="btn ghost small" onclick="gdprExport('${u.id}','${esc(u.email)}')">↓ esporta</button>
+        ${u.anonymized_at?'':`<button class="btn ghost small" onclick="gdprAnon('${u.id}','${esc(u.email)}')">anonimizza</button>`}
+      </td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessun utente</td></tr>'}</tbody></table></div>
+
+  <div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Ritenzione dati</h2><div class="small mut">cancellazione automatica dei dati vecchi.</div></div></div>
+    <div style="margin-top:8px">${retTxt}</div></div>
+
+  <div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Registro attività (audit log)</h2><div class="small mut">azioni tracciate nel tenant. Sola lettura.</div></div></div>
+    <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+      <select id="auAction" class="small" onchange="auditReload()"><option value="">tutte le azioni</option>${actions.map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join('')}</select>
+      <input id="auActor" class="small" placeholder="attore (email/contiene)" onkeydown="if(event.key==='Enter')auditReload()">
+      <select id="auLimit" class="small" onchange="auditReload()"><option>200</option><option>500</option><option>1000</option></select>
+      <button class="btn ghost small" onclick="auditReload()">filtra</button>
+    </div>
+    <div id="auBox" style="overflow-x:auto;margin-top:10px">${renderAudit(audit)}</div></div>`;
+}
+function renderAudit(a){
+  if(!a) return '<div class="small mut">non disponibile</div>';
+  const rows=a.rows||[];
+  return `<div class="small mut" style="margin-bottom:6px">${rows.length} voci${a.count>=1000?' (limite raggiunto)':''}</div>
+  <table class="table"><thead><tr><th>Quando</th><th>Attore</th><th>Azione</th><th>Dettaglio</th></tr></thead>
+  <tbody>${rows.map(r=>`<tr><td class="small">${fmtTime(r.at)}</td><td class="small">${esc(r.actor)}</td>
+    <td><span class="chip">${esc(r.action)}</span></td>
+    <td class="small mut" style="max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(JSON.stringify(r.detail||{}))}">${esc(JSON.stringify(r.detail||{}))}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessuna voce</td></tr>'}</tbody></table>`;
+}
+async function auditReload(){
+  const act=$('#auAction').value, actor=$('#auActor').value.trim(), lim=$('#auLimit').value;
+  const qs=new URLSearchParams(); qs.set('limit',lim); if(act)qs.set('action',act); if(actor)qs.set('actor',actor);
+  try{ const a=await api('/audit-log?'+qs.toString()); $('#auBox').innerHTML=renderAudit(a); }catch(e){ toast(e.message,'bad'); }
+}
+async function gdprExport(uid,email){
+  try{
+    const data=await api('/gdpr/export/'+uid);
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob); const a=document.createElement('a');
+    a.href=url; a.download='gdpr-'+(email||uid).replace(/[^a-z0-9]/gi,'_')+'.json';
+    document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
+    toast('Export scaricato','ok');
+  }catch(e){ toast(e.message,'bad'); }
+}
+async function gdprAnon(uid,email){
+  if(!await askConfirm('Anonimizzare '+email+'?\nRimuove PII (email, telefono, diario), blocca il login. Irreversibile. Lo storico incidenti resta integro.'))return;
+  try{ await api('/gdpr/anonymize/'+uid,{method:'POST'}); toast('Utente anonimizzato','ok'); route(); }catch(e){ toast(e.message,'bad'); }
 }
 async function assetNew(){ const n=await askPrompt('Nome asset/mezzo?'); if(!n)return;
   const k=await askPrompt('Tipo (veicolo/attrezzatura/varco/altro)?','veicolo')||'attrezzatura';

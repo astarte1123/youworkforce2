@@ -119,4 +119,11 @@ Oggi i gruppi condivisi servono solo l'import nei gruppi allarme. Estensione pro
    scope owner/sede restano invariati.
 2. **Tappa 2**: split di `admin` nei `*.manage` per-area sui ~130 call-site.
 3. **Tappa 3 (opz. B)**: gruppi consumatori in Campo + ACL per gruppo.
-4. **Tappa 4 (compliance)**: pannello GDPR + viewer audit log (capability `gdpr.manage`/`audit.view`).
+4. **Tappa 4 (compliance) — FATTA** (2026-11-14): voce menu dedicata **«Privacy e audit»**
+   (`vPrivacyAudit`, grp cfg, tenant_admin). Backend aggiunto: `GET /api/audit-log`
+   (tenant-scoped, filtri `action`/`actor`/`limit` 1..1000, + elenco azioni distinte) e
+   `GET /api/gdpr/retention` (policy sola lettura da `YW_RETENTION_DAYS`). Riusa gli endpoint
+   GDPR già esistenti `GET /api/gdpr/export/:uid` (download JSON lato UI) e
+   `POST /api/gdpr/anonymize/:uid`. Tutti `admin_only`. Provato da `qa/gdpr-audit-e2e.sh` 12/12.
+   Dettaglio: vedi `docs/gdpr-privacy-audit.md`. NB: capability dedicate `gdpr.manage`/`audit.view`
+   rimandate alla Tappa 2 (dove `admin` verrà spezzato nei `*.manage`); per ora gate = `admin_only`.
