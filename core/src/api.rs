@@ -481,9 +481,12 @@ pub async fn super_list_modules(State(st): State<AppState>, h: HeaderMap, Path(t
         json!({
         "code": code, "name": r.get::<String,_>("name"), "kind": r.get::<String,_>("kind"),
         "available": r.get::<bool,_>("available"), "state": r.try_get::<String,_>("state").ok().unwrap_or("non_abilitato".into()),
-        // #3 manifest: dipendenze + descrizione (single source of truth in core::modules)
+        // #3 manifest: dipendenze + descrizione + metadata (single source of truth in core::modules)
         "requires": man.map(|m| m.requires).unwrap_or(&[]),
         "provides": man.map(|m| m.provides).unwrap_or(&[]),
+        "mkind": man.map(|m| m.kind),
+        "capabilities": man.map(|m| m.capabilities).unwrap_or(&[]),
+        "widgets": man.map(|m| m.widgets).unwrap_or(&[]),
         "description": man.map(|m| m.description) }) }).collect();
     Ok(Json(json!(out)))
 }
