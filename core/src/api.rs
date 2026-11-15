@@ -7110,33 +7110,50 @@ pub async fn create_timesheet(State(st): State<AppState>, h: HeaderMap, Json(b):
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("INSERT INTO app.timesheets(tenant_id,work_order_id,user_id,note) VALUES($1,$2,$3,$4) RETURNING id")
         .bind(tid).bind(b.work_order_id).bind(s.user_id).bind(&b.note).fetch_one(&mut *tx).await.map_err(ise)?;
+    let id: Uuid = row.get("id");
+    // Storico completo: anche la creazione lascia traccia (Slice 1).
+    sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'create',$3)")
+        .bind(tid).bind(id).bind(json!({"by":s.email,"work_order_id":b.work_order_id})).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    Ok(Json(json!({"id":row.get::<Uuid,_>("id"),"state":"bozza"})))
+    Ok(Json(json!({"id":id,"state":"bozza","version":1})))
 }
 
 pub async fn list_timesheets(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     require_module(&st, s.tenant_id.unwrap(), "consuntivi").await?;
+    // ACL di sede (coerente con incidenti): i ruoli ristretti (operatore/lavoratore/reperibile,
+    // anche con view_all via ruolo custom) vedono SOLO i propri consuntivi + quelli di ordini
+    // nelle loro sedi. I ruoli non ristretti (responsabile/auditor/admin) con view_all vedono tutto.
+    let allowed = allowed_sites(&st, &s).await;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = if has_cap(&s,"timesheets.view_all") {
-        sqlx::query("SELECT t.id,t.state,t.created_at,u.email AS owner,o.title AS order_title
-            FROM app.timesheets t JOIN app.users u ON u.id=t.user_id LEFT JOIN app.work_orders o ON o.id=t.work_order_id
-            ORDER BY t.updated_at DESC").fetch_all(&mut *tx).await
+        match &allowed {
+            None => sqlx::query("SELECT t.id,t.state,t.version,t.created_at,u.email AS owner,o.title AS order_title
+                FROM app.timesheets t JOIN app.users u ON u.id=t.user_id LEFT JOIN app.work_orders o ON o.id=t.work_order_id
+                ORDER BY t.updated_at DESC").fetch_all(&mut *tx).await,
+            Some(set) => {
+                let sites: Vec<Uuid> = set.iter().copied().collect();
+                sqlx::query("SELECT t.id,t.state,t.version,t.created_at,u.email AS owner,o.title AS order_title
+                    FROM app.timesheets t JOIN app.users u ON u.id=t.user_id LEFT JOIN app.work_orders o ON o.id=t.work_order_id
+                    WHERE t.user_id=$1 OR o.site_id = ANY($2) ORDER BY t.updated_at DESC")
+                    .bind(s.user_id).bind(&sites).fetch_all(&mut *tx).await
+            }
+        }
     } else {
-        sqlx::query("SELECT t.id,t.state,t.created_at,u.email AS owner,o.title AS order_title
+        sqlx::query("SELECT t.id,t.state,t.version,t.created_at,u.email AS owner,o.title AS order_title
             FROM app.timesheets t JOIN app.users u ON u.id=t.user_id LEFT JOIN app.work_orders o ON o.id=t.work_order_id
             WHERE t.user_id=$1 ORDER BY t.updated_at DESC").bind(s.user_id).fetch_all(&mut *tx).await
     }.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({
-        "id": r.get::<Uuid,_>("id"), "state": r.get::<String,_>("state"),
+        "id": r.get::<Uuid,_>("id"), "state": r.get::<String,_>("state"), "version": r.get::<i32,_>("version"),
         "owner": r.get::<String,_>("owner"), "order_title": r.try_get::<String,_>("order_title").ok() })).collect();
     Ok(Json(json!(out)))
 }
 
 async fn timesheet_detail(st: &AppState, tid: Uuid, id: Uuid) -> Result<Value, (StatusCode,String)> {
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let head = sqlx::query("SELECT t.id,t.state,t.note,t.user_id,u.email AS owner,o.title AS order_title
+    let head = sqlx::query("SELECT t.id,t.state,t.note,t.user_id,t.version,o.site_id,u.email AS owner,o.title AS order_title
         FROM app.timesheets t JOIN app.users u ON u.id=t.user_id LEFT JOIN app.work_orders o ON o.id=t.work_order_id WHERE t.id=$1")
         .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "non trovato"))?;
@@ -7154,7 +7171,8 @@ async fn timesheet_detail(st: &AppState, tid: Uuid, id: Uuid) -> Result<Value, (
         let m = r.get::<i32,_>("minutes") as i64; minutes += m;
         let bm = if m > 0 { ((m + round - 1) / round) * round } else { 0 }; billed += bm;
         let rate: Option<i64> = r.try_get("rate_cents").ok();
-        match rate { Some(rc) => labor += bm * rc / 60, None => missing_rate = true }
+        // arrotondamento al centesimo (half-up) per riga: evita il troncamento della divisione intera
+        match rate { Some(rc) => labor += (bm * rc + 30) / 60, None => missing_rate = true }
         json!({"id":r.get::<Uuid,_>("id"),"activity":r.get::<String,_>("activity"),
             "work_date":r.get::<chrono::NaiveDate,_>("work_date").to_string(),
             "minutes":m,"billed_minutes":bm,"rate_cents":rate,"currency":r.get::<String,_>("currency")})
@@ -7166,22 +7184,32 @@ async fn timesheet_detail(st: &AppState, tid: Uuid, id: Uuid) -> Result<Value, (
             "amount_cents":a,"currency":r.get::<String,_>("currency"),"has_receipt":r.get::<bool,_>("has_receipt")})
     }).collect();
     Ok(json!({
-        "id": head.get::<Uuid,_>("id"), "state": head.get::<String,_>("state"),
+        "id": head.get::<Uuid,_>("id"), "state": head.get::<String,_>("state"), "version": head.get::<i32,_>("version"),
         "owner": head.get::<String,_>("owner"), "owner_id": head.get::<Uuid,_>("user_id"),
+        "site_id": head.try_get::<Uuid,_>("site_id").ok(),
         "order_title": head.try_get::<String,_>("order_title").ok(), "note": head.try_get::<String,_>("note").ok(),
         "lines": jl, "expenses": je, "currency": currency, "round_minutes": round,
         "total": {"minutes":minutes,"billed_minutes":billed,"labor_cents":labor,"expense_cents":exp_total,"total_cents":labor+exp_total,"missing_rate":missing_rate}
     }))
 }
 
+/// ACL di lettura di un consuntivo: proprietario sempre; altrimenti serve `timesheets.view_all`
+/// e, per i ruoli ristretti per sede, il consuntivo deve appartenere a una sede consentita.
+async fn guard_timesheet_access(st: &AppState, s: &Session, d: &Value) -> Result<(),(StatusCode,String)> {
+    let owner_id = d["owner_id"].as_str().and_then(|x| Uuid::parse_str(x).ok());
+    if owner_id == Some(s.user_id) { return Ok(()); }
+    if !has_cap(s,"timesheets.view_all") { return Err(err(StatusCode::FORBIDDEN, "non autorizzato")); }
+    if let Some(set) = allowed_sites(st, s).await {
+        let site = d["site_id"].as_str().and_then(|x| Uuid::parse_str(x).ok());
+        match site { Some(si) if set.contains(&si) => {}, _ => return Err(err(StatusCode::FORBIDDEN, "consuntivo fuori dalle tue sedi")) }
+    }
+    Ok(())
+}
+
 pub async fn get_timesheet(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
     let d = timesheet_detail(&st, s.tenant_id.unwrap(), id).await?;
-    // owner or approver/auditor
-    let owner_id = d["owner_id"].as_str().and_then(|x| Uuid::parse_str(x).ok());
-    if owner_id != Some(s.user_id) && !has_cap(&s,"timesheets.view_all") {
-        return Err(err(StatusCode::FORBIDDEN, "non autorizzato"));
-    }
+    guard_timesheet_access(&st, &s, &d).await?;
     Ok(Json(d))
 }
 
@@ -7198,6 +7226,9 @@ pub async fn add_line(State(st): State<AppState>, h: HeaderMap, Path(id): Path<U
     sqlx::query("INSERT INTO app.timesheet_lines(tenant_id,timesheet_id,activity,work_date,minutes,rate_cents,currency) VALUES($1,$2,$3,$4,$5,$6,$7)")
         .bind(tid).bind(id).bind(&b.activity).bind(wd).bind(b.minutes).bind(b.rate_cents)
         .bind(b.currency.clone().unwrap_or(def_cur)).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("UPDATE app.timesheets SET version=version+1,updated_at=now() WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'add_line',$3)")
+        .bind(tid).bind(id).bind(json!({"by":s.email,"activity":b.activity,"minutes":b.minutes})).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
@@ -7214,6 +7245,9 @@ pub async fn add_expense(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     sqlx::query("INSERT INTO app.expenses(tenant_id,timesheet_id,description,amount_cents,currency,has_receipt) VALUES($1,$2,$3,$4,$5,$6)")
         .bind(tid).bind(id).bind(&b.description).bind(b.amount_cents)
         .bind(b.currency.clone().unwrap_or(def_cur)).bind(b.has_receipt.unwrap_or(false)).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("UPDATE app.timesheets SET version=version+1,updated_at=now() WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'add_expense',$3)")
+        .bind(tid).bind(id).bind(json!({"by":s.email,"description":b.description,"amount_cents":b.amount_cents})).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
@@ -7233,7 +7267,7 @@ pub async fn submit_timesheet(State(st): State<AppState>, h: HeaderMap, Path(id)
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.timesheets SET state='in_revisione',updated_at=now() WHERE id=$1 AND user_id=$2 AND state IN ('bozza','da_correggere')")
+    let n = sqlx::query("UPDATE app.timesheets SET state='in_revisione',version=version+1,updated_at=now() WHERE id=$1 AND user_id=$2 AND state IN ('bozza','da_correggere')")
         .bind(id).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     if n==0 { let _=tx.rollback().await; return Err(err(StatusCode::CONFLICT,"non inviabile")); }
     sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'submit',$3)")
@@ -7246,9 +7280,18 @@ pub async fn approve_timesheet(State(st): State<AppState>, h: HeaderMap, Path(id
     let s = require_tenant(&st, &h).await?;
     if !is_approver(&s) { return Err(err(StatusCode::FORBIDDEN, "solo responsabile")); }
     let tid = s.tenant_id.unwrap();
+    // Segregation of duties: di default NON si approva il proprio consuntivo. Un tenant può
+    // consentirlo esplicitamente (consuntivi.approval.allow_self_approve=true) per realtà piccole.
+    let allow_self = tool_config(&st, tid, "consuntivi", "approval").await
+        .get("allow_self_approve").and_then(|v| v.as_bool()).unwrap_or(false);
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("SELECT user_id,state FROM app.timesheets WHERE id=$1").bind(id)
+        .fetch_optional(&mut *tx).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND,"non trovato"))?;
+    if row.get::<Uuid,_>("user_id") == s.user_id && !allow_self {
+        let _=tx.rollback().await; return Err(err(StatusCode::FORBIDDEN,"non puoi approvare il tuo consuntivo (separazione dei compiti)"));
+    }
     // only from in_revisione -> blocks double approval
-    let n = sqlx::query("UPDATE app.timesheets SET state='approvato',approved_by=$2,updated_at=now() WHERE id=$1 AND state='in_revisione'")
+    let n = sqlx::query("UPDATE app.timesheets SET state='approvato',approved_by=$2,version=version+1,updated_at=now() WHERE id=$1 AND state='in_revisione'")
         .bind(id).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     if n==0 { let _=tx.rollback().await; return Err(err(StatusCode::CONFLICT,"non in revisione (doppia approvazione bloccata)")); }
     sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'approve',$3)")
@@ -7263,8 +7306,15 @@ pub async fn request_changes(State(st): State<AppState>, h: HeaderMap, Path(id):
     let s = require_tenant(&st, &h).await?;
     if !is_approver(&s) { return Err(err(StatusCode::FORBIDDEN, "solo responsabile")); }
     let tid = s.tenant_id.unwrap();
+    let allow_self = tool_config(&st, tid, "consuntivi", "approval").await
+        .get("allow_self_approve").and_then(|v| v.as_bool()).unwrap_or(false);
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.timesheets SET state='da_correggere',note=$2,updated_at=now() WHERE id=$1 AND state='in_revisione'")
+    let owner = sqlx::query_scalar::<_,Uuid>("SELECT user_id FROM app.timesheets WHERE id=$1").bind(id)
+        .fetch_optional(&mut *tx).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND,"non trovato"))?;
+    if owner == s.user_id && !allow_self {
+        let _=tx.rollback().await; return Err(err(StatusCode::FORBIDDEN,"non puoi revisionare il tuo consuntivo (separazione dei compiti)"));
+    }
+    let n = sqlx::query("UPDATE app.timesheets SET state='da_correggere',note=$2,version=version+1,updated_at=now() WHERE id=$1 AND state='in_revisione'")
         .bind(id).bind(&b.note).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     if n==0 { let _=tx.rollback().await; return Err(err(StatusCode::CONFLICT,"non in revisione")); }
     sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'request_changes',$3)")
@@ -7276,17 +7326,14 @@ pub async fn request_changes(State(st): State<AppState>, h: HeaderMap, Path(id):
 pub async fn export_timesheet_csv(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Response, (StatusCode,String)> {
     let s = require_tenant(&st, &h).await?;
     let d = timesheet_detail(&st, s.tenant_id.unwrap(), id).await?;
-    let owner_id = d["owner_id"].as_str().and_then(|x| Uuid::parse_str(x).ok());
-    if owner_id != Some(s.user_id) && !has_cap(&s,"timesheets.view_all") {
-        return Err(err(StatusCode::FORBIDDEN, "non autorizzato"));
-    }
+    guard_timesheet_access(&st, &s, &d).await?;
     let cur = d["currency"].as_str().unwrap_or("EUR").to_string();
     let mut csv = String::from("tipo,descrizione,data,minuti,minuti_fatturati,tariffa_cent_ora,importo_cent,valuta,giustificativo\n");
     for l in d["lines"].as_array().unwrap_or(&vec![]) {
         let m = l["minutes"].as_i64().unwrap_or(0);
         let bm = l["billed_minutes"].as_i64().unwrap_or(m);
         let rate = l["rate_cents"].as_i64();
-        let amt = rate.map(|r| bm*r/60);
+        let amt = rate.map(|r| (bm*r+30)/60); // half-up, coerente con il calcolo del dettaglio
         csv.push_str(&format!("riga,{},{},{},{},{},{},{},\n",
             csv_esc(l["activity"].as_str().unwrap_or("")), l["work_date"].as_str().unwrap_or(""), m, bm,
             rate.map(|x|x.to_string()).unwrap_or_default(), amt.map(|x|x.to_string()).unwrap_or_default(),
