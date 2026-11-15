@@ -3508,8 +3508,8 @@ async function vUtentiRuoli(v){
       <td style="text-align:right"><button class="btn ghost small" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'>gestisci</button></td></tr>`).join('')||'<tr><td colspan="3" class="empty">nessun utente</td></tr>'}</tbody></table></div>
   <div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Gruppi di persone (${ugroups.length})</h2><div class="small mut">insiemi di persone condivisi, riusabili da qualunque modulo (es. importabili nei gruppi di allarme)</div></div><a onclick="ugNew()">+ nuovo gruppo</a></div>
     <div class="grid g2" style="margin-top:10px">${ugroups.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px">
-      <div class="spread"><b>${esc(g.name)} <span class="chip">${esc(g.kind)}</span></b>
-        <span><button class="btn ghost small" onclick='ugRename(${JSON.stringify(g).replace(/'/g,"&#39;")})'>rinomina</button>
+      <div class="spread"><b>${esc(g.name)} <span class="chip" title="${esc(g.kind)}">${esc(groupKindLabel(g.kind))}</span></b>
+        <span><button class="btn ghost small" onclick='ugRename(${JSON.stringify(g).replace(/'/g,"&#39;")})'>gestisci</button>
         <button class="btn-ico btn ghost" onclick="ugDel('${g.id}')">${ICON.x}</button></span></div>
       <div class="small mut" style="margin:6px 0">${g.members.map(m=>`<span class="tag">${esc(m.email)} <a onclick="ugRm('${g.id}','${m.user_id}')">✕</a></span>`).join(' ')||'nessun membro'}</div>
       <div class="row" style="gap:6px"><select id="ugm_${g.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
@@ -3771,10 +3771,49 @@ async function crAddGroup(rid){ const gid=$('#crg_'+rid).value; if(!gid)return; 
 async function crRmGroup(rid,gid){ try{await api('/custom-roles/'+rid+'/groups/'+gid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function capSet(role,cap,granted){ try{await api('/capabilities',{method:'POST',body:JSON.stringify({role,capability:cap,granted})}); toast('Permesso aggiornato','ok'); route();}catch(e){toast(e.message,'bad'); route();} }
 async function capReset(){ if(!await askConfirm('Ripristinare tutti i permessi ai valori di default?'))return; try{await api('/capabilities',{method:'DELETE'}); toast('Permessi ripristinati','ok'); route();}catch(e){toast(e.message,'bad');} }
-async function ugNew(){ const n=await askPrompt('Nome gruppo di persone?'); if(!n)return; const k=await askPrompt('Tipo (squadra/reparto/zona/turno...)?','squadra')||'squadra';
-  try{await api('/user-groups',{method:'POST',body:JSON.stringify({name:n,kind:k})}); toast('Gruppo creato','ok'); route();}catch(e){toast(e.message,'bad');} }
-async function ugRename(g){ const n=await askPrompt('Nuovo nome?',g.name); if(!n)return; const k=await askPrompt('Tipo?',g.kind)||g.kind;
-  try{await api('/user-groups/'+g.id,{method:'POST',body:JSON.stringify({name:n,kind:k})}); toast('Aggiornato','ok'); route();}catch(e){toast(e.message,'bad');} }
+// Tipi di gruppo con etichette CHIARE (il valore salvato resta il codice).
+const GROUP_KINDS=[['squadra','Squadra'],['reparto','Reparto'],['zona','Zona'],['turno','Turno'],['cantiere','Cantiere'],['reperibilita','Reperibilità'],['ufficio','Ufficio']];
+function groupKindLabel(k){ const f=GROUP_KINDS.find(o=>o[0]===k); return f?f[1]:k; }
+function groupKindOptions(sel){
+  let opts=GROUP_KINDS.slice();
+  if(sel && !opts.some(o=>o[0]===sel)) opts.unshift([sel,sel]); // conserva un tipo custom esistente
+  return opts.map(o=>`<option value="${esc(o[0])}" ${o[0]===sel?'selected':''}>${esc(o[1])}</option>`).join('');
+}
+// Form UNICO (drawer) per creare/modificare un gruppo di persone: nome + tipo + MEMBRI (contenuti
+// del gruppo) a checklist. Stessa modalità del form ruoli.
+async function ugForm(g){
+  g=g||{};
+  let users=[];
+  try{ users=await api('/users'); }catch(e){}
+  const cur=new Set((g.members||[]).map(m=>m.user_id));
+  const rows=users.map(u=>`<label class="row" style="gap:10px;align-items:center;padding:6px 8px;border:1px solid var(--line);border-radius:8px">
+    <input type="checkbox" class="ugmem" value="${u.id}" ${cur.has(u.id)?'checked':''}>
+    <span><b>${esc(u.email)}</b> <span class="chip">${esc(roleLabel(u.role))}</span></span></label>`).join('')
+    ||'<div class="small mut">Nessun utente nel tenant: crea prima gli utenti.</div>';
+  drawer(g.id?('Gruppo · '+esc(g.name)):'Nuovo gruppo di persone', `<div class="col" style="gap:10px">
+    <label class="small mut">Nome del gruppo<input id="gName" value="${esc(g.name||'')}" placeholder="es. Squadra Nord"></label>
+    <label class="small mut">Tipo<select id="gKind">${groupKindOptions(g.kind||'squadra')}</select></label>
+    <div class="small mut" style="margin-top:4px">Membri <span class="mut">(chi fa parte del gruppo)</span></div>
+    <div class="col" style="gap:6px;max-height:48vh;overflow:auto">${rows}</div>
+    <button class="btn" onclick='ugSave("${g.id||''}", ${JSON.stringify([...cur])})'>${g.id?'Salva':'Crea gruppo'}</button><div class="cfg-msg small"></div></div>`);
+}
+async function ugSave(id, prev){
+  const name=$('#gName').value.trim(); const m=$('.cfg-msg');
+  if(!name){ m.textContent='Il nome è obbligatorio'; m.style.color='var(--bad)'; return; }
+  const kind=$('#gKind').value;
+  const now=new Set([...document.querySelectorAll('.ugmem:checked')].map(c=>c.value));
+  const was=new Set(id?(prev||[]):[]);
+  try{
+    let gid=id;
+    if(id){ await api('/user-groups/'+id,{method:'POST',body:JSON.stringify({name,kind})}); }
+    else { const r=await api('/user-groups',{method:'POST',body:JSON.stringify({name,kind})}); gid=r.id; }
+    for(const uid of now){ if(!was.has(uid)) await api('/user-groups/'+gid+'/members',{method:'POST',body:JSON.stringify({user_id:uid})}); }
+    for(const uid of was){ if(!now.has(uid)) await api('/user-groups/'+gid+'/members/'+uid,{method:'DELETE'}); }
+    toast(id?'Aggiornato':'Gruppo creato','ok'); closeDrawer(); route();
+  }catch(e){ m.textContent=e.message; m.style.color='var(--bad)'; }
+}
+function ugNew(){ ugForm(null); }
+function ugRename(g){ ugForm(g); }
 async function ugDel(id){ if(!await askConfirm('Eliminare il gruppo? (i gruppi di allarme già popolati restano intatti)'))return; try{await api('/user-groups/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function ugAdd(gid){ const uid=$('#ugm_'+gid).value; if(!uid)return; try{await api('/user-groups/'+gid+'/members',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Aggiunto','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function ugRm(gid,uid){ try{await api('/user-groups/'+gid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
