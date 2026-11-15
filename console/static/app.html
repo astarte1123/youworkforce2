@@ -3502,7 +3502,17 @@ async function vUtentiRuoli(v){
   const err = (!caps&&!croles) ? '<div class="card pad" style="margin-top:12px;border-color:var(--bad)"><b>Permessi/Ruoli non disponibili.</b> <span class="small mut">Richiede ruolo tenant_admin e i moduli core aggiornati.</span></div>' : '';
   v.innerHTML=`<div class="page-h"><div><h1>Utenti e ruoli</h1><div class="mut">identità, gruppi condivisi, permessi e ruoli del tenant</div></div></div>
   ${err}
-  <div class="card" style="margin-top:0"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
+  ${croles?`<div class="card pad" style="margin-top:0"><div class="spread"><div><h2>Ruoli personalizzati (${croles.roles.length})</h2><div class="small mut">bundle di capability definiti dal tenant, assegnabili a utenti e/o gruppi condivisi. <b>Additivi</b>: aggiungono capability sopra il ruolo base.</div></div><a onclick="crNew()">+ nuovo ruolo</a></div>
+    <div class="grid g2" style="margin-top:10px">${croles.roles.map(r=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px">
+      <div class="spread"><b>${esc(r.name)}</b><span><button class="btn ghost small" onclick='crEdit(${JSON.stringify(r).replace(/'/g,"&#39;")})'>modifica</button><button class="btn-ico btn ghost" onclick="crDel('${r.id}')">${ICON.x}</button></span></div>
+      <div class="small mut" style="margin:4px 0">${esc(r.description||'')}</div>
+      <div style="margin:4px 0">${r.capabilities.map(c=>`<span class="chip" title="${esc(capHelp(c)||'')}">${esc(capLabel(c))}</span>`).join(' ')||'<span class="small mut">nessuna capability</span>'}</div>
+      <div class="small" style="margin-top:6px"><b>Utenti:</b> ${r.users.map(u=>`<span class="tag">${esc(u.email)} <a onclick="crRmUser('${r.id}','${u.user_id}')">✕</a></span>`).join(' ')||'<span class="mut">—</span>'}</div>
+      <div class="row" style="gap:6px;margin-top:4px"><select id="cru_${r.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select><button class="btn ghost small" onclick="crAddUser('${r.id}')">+ utente</button></div>
+      <div class="small" style="margin-top:6px"><b>Gruppi:</b> ${r.groups.map(g=>`<span class="tag">${esc(g.name)} <a onclick="crRmGroup('${r.id}','${g.group_id}')">✕</a></span>`).join(' ')||'<span class="mut">—</span>'}</div>
+      ${ugroups.length?`<div class="row" style="gap:6px;margin-top:4px"><select id="crg_${r.id}" class="grow small">${ugroups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select><button class="btn ghost small" onclick="crAddGroup('${r.id}')">+ gruppo</button></div>`:''}
+      </div>`).join('')||'<div class="small mut">Nessun ruolo personalizzato.</div>'}</div></div>`:''}
+  <div class="card" style="margin-top:16px"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
     <table class="table"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
     <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
       <td style="text-align:right"><button class="btn ghost small" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'>gestisci</button></td></tr>`).join('')||'<tr><td colspan="3" class="empty">nessun utente</td></tr>'}</tbody></table></div>
@@ -3523,17 +3533,7 @@ async function vUtentiRuoli(v){
       <input type="checkbox" ${x.granted?'checked':''} ${(role==='tenant_admin'&&x.cap==='admin')?'disabled title="sempre attivo (anti-lockout)"':''} onchange="capSet('${role}','${x.cap}',this.checked)">
       ${x.override?'<div class="small" style="color:var(--accent);font-weight:700">●</div>':''}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
     <details style="margin-top:10px"><summary class="small mut" style="cursor:pointer">Cosa significano i permessi →</summary>
-      <div class="col" style="gap:4px;margin-top:8px">${caps.catalog.map(c=>`<div class="small"><b>${esc(capLabel(c.code))}</b> — ${esc(capHelp(c.code)||c.desc||'')}</div>`).join('')}</div></details></div>`:''}
-  ${croles?`<div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Ruoli personalizzati (${croles.roles.length})</h2><div class="small mut">bundle di capability definiti dal tenant, assegnabili a utenti e/o gruppi condivisi. <b>Additivi</b>: aggiungono capability sopra il ruolo base.</div></div><a onclick="crNew()">+ nuovo ruolo</a></div>
-    <div class="grid g2" style="margin-top:10px">${croles.roles.map(r=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px">
-      <div class="spread"><b>${esc(r.name)}</b><span><button class="btn ghost small" onclick='crEdit(${JSON.stringify(r).replace(/'/g,"&#39;")})'>modifica</button><button class="btn-ico btn ghost" onclick="crDel('${r.id}')">${ICON.x}</button></span></div>
-      <div class="small mut" style="margin:4px 0">${esc(r.description||'')}</div>
-      <div style="margin:4px 0">${r.capabilities.map(c=>`<span class="chip">${esc(c)}</span>`).join(' ')||'<span class="small mut">nessuna capability</span>'}</div>
-      <div class="small" style="margin-top:6px"><b>Utenti:</b> ${r.users.map(u=>`<span class="tag">${esc(u.email)} <a onclick="crRmUser('${r.id}','${u.user_id}')">✕</a></span>`).join(' ')||'<span class="mut">—</span>'}</div>
-      <div class="row" style="gap:6px;margin-top:4px"><select id="cru_${r.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select><button class="btn ghost small" onclick="crAddUser('${r.id}')">+ utente</button></div>
-      <div class="small" style="margin-top:6px"><b>Gruppi:</b> ${r.groups.map(g=>`<span class="tag">${esc(g.name)} <a onclick="crRmGroup('${r.id}','${g.group_id}')">✕</a></span>`).join(' ')||'<span class="mut">—</span>'}</div>
-      ${ugroups.length?`<div class="row" style="gap:6px;margin-top:4px"><select id="crg_${r.id}" class="grow small">${ugroups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select><button class="btn ghost small" onclick="crAddGroup('${r.id}')">+ gruppo</button></div>`:''}
-      </div>`).join('')||'<div class="small mut">Nessun ruolo personalizzato.</div>'}</div></div>`:''}`;
+      <div class="col" style="gap:4px;margin-top:8px">${caps.catalog.map(c=>`<div class="small"><b>${esc(capLabel(c.code))}</b> — ${esc(capHelp(c.code)||c.desc||'')}</div>`).join('')}</div></details></div>`:''}`;
 }
 const AU_STATE={offset:0,limit:100};
 const GD_STATE={offset:0,limit:100};
