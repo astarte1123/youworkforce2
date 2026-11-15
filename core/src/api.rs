@@ -7118,6 +7118,78 @@ pub async fn create_timesheet(State(st): State<AppState>, h: HeaderMap, Json(b):
     Ok(Json(json!({"id":id,"state":"bozza","version":1})))
 }
 
+/// Riassunto leggibile dei materiali dell'intervento, per la nota del consuntivo generato.
+fn materials_note(m: &Value) -> Option<String> {
+    let arr = m.as_array()?;
+    let items: Vec<String> = arr.iter().filter_map(|x| {
+        let d = x.get("descr").and_then(|v| v.as_str())?;
+        let q = x.get("qta").and_then(|v| v.as_f64()).map(|q| format!(" {q}")).unwrap_or_default();
+        let u = x.get("unita").and_then(|v| v.as_str()).map(|u| format!(" {u}")).unwrap_or_default();
+        Some(format!("{d}{q}{u}"))
+    }).collect();
+    if items.is_empty() { None } else { Some(format!("Materiali intervento: {}", items.join("; "))) }
+}
+
+/// Ponte intervento -> consuntivo (Slice 2): genera (o riusa) una BOZZA di consuntivo per
+/// l'assegnatario dell'ordine, prefillata con una riga "labor" dai minuti lavorati dell'intervento
+/// (tariffa da valorizzare finché non c'è il listino). Idempotente: ri-eseguire non duplica la riga
+/// (vincolo univoco per ordine+utente+labor). I materiali finiscono nella nota. Un solo inserimento:
+/// il tecnico non ricompila ore/materiali a mano.
+pub async fn generate_timesheet_from_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    if !module_active(&st, tid, "interventi").await { return Err(err(StatusCode::FORBIDDEN, "modulo interventi non abilitato")); }
+    if !module_active(&st, tid, "consuntivi").await { return Err(err(StatusCode::FORBIDDEN, "modulo consuntivi non abilitato")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let o = sqlx::query("SELECT title,assigned_user,work_minutes,work_started_at,arrived_at,materials FROM app.work_orders WHERE id=$1")
+        .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "ordine non trovato"))?;
+    let owner: Uuid = o.try_get::<Uuid,_>("assigned_user").map_err(|_| err(StatusCode::BAD_REQUEST, "ordine non assegnato a una persona"))?;
+    // Autorizzazione: l'assegnatario stesso o un pianificatore.
+    if owner != s.user_id && !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo l'assegnatario o il pianificatore")); }
+    let wm: i32 = o.try_get::<i32,_>("work_minutes").ok().filter(|m| *m > 0)
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "nessuna esecuzione da consuntivare (minuti lavorati mancanti)"))?;
+    let title: String = o.get("title");
+    let started: Option<chrono::DateTime<chrono::Utc>> = o.try_get("work_started_at").ok();
+    let arrived: Option<chrono::DateTime<chrono::Utc>> = o.try_get("arrived_at").ok();
+    let wd = started.or(arrived).map(|t| t.date_naive()).unwrap_or_else(|| st.clock.now().date_naive());
+    let materials: Value = o.try_get("materials").unwrap_or(json!([]));
+    let def_cur = tool_config(&st, tid, "consuntivi", "rates").await
+        .get("currency").and_then(|v| v.as_str()).unwrap_or("EUR").to_string();
+    // Riusa una bozza aperta per (ordine, assegnatario) oppure creane una.
+    let existing: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM app.timesheets WHERE work_order_id=$1 AND user_id=$2 AND state IN ('bozza','da_correggere') ORDER BY created_at DESC LIMIT 1")
+        .bind(id).bind(owner).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let (ts_id, created) = match existing {
+        Some(t) => (t, false),
+        None => {
+            let note = materials_note(&materials);
+            let r = sqlx::query("INSERT INTO app.timesheets(tenant_id,work_order_id,user_id,note) VALUES($1,$2,$3,$4) RETURNING id")
+                .bind(tid).bind(id).bind(owner).bind(note).fetch_one(&mut *tx).await.map_err(ise)?;
+            let tsid: Uuid = r.get("id");
+            sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'create',$3)")
+                .bind(tid).bind(tsid).bind(json!({"by":s.email,"from_order":id})).execute(&mut *tx).await.map_err(ise)?;
+            (tsid, true)
+        }
+    };
+    // Riga labor idempotente dall'ordine (tariffa NULL = da valorizzare; listino = Slice 3).
+    let ins = sqlx::query(
+        "INSERT INTO app.timesheet_lines(tenant_id,timesheet_id,activity,work_date,minutes,rate_cents,currency,source_order_id,source_user_id,source_kind)
+         VALUES($1,$2,$3,$4,$5,NULL,$6,$7,$8,'labor')
+         ON CONFLICT (tenant_id,source_order_id,source_user_id,source_kind) WHERE source_order_id IS NOT NULL DO NOTHING
+         RETURNING id")
+        .bind(tid).bind(ts_id).bind(&title).bind(wd).bind(wm).bind(&def_cur).bind(id).bind(owner)
+        .fetch_optional(&mut *tx).await.map_err(ise)?;
+    let line_added = ins.is_some();
+    if line_added {
+        sqlx::query("UPDATE app.timesheets SET version=version+1,updated_at=now() WHERE id=$1").bind(ts_id).execute(&mut *tx).await.map_err(ise)?;
+        sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'add_line',$3)")
+            .bind(tid).bind(ts_id).bind(json!({"by":s.email,"source":"order","order_id":id,"minutes":wm})).execute(&mut *tx).await.map_err(ise)?;
+    }
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "timesheet_from_order", json!({"order_id":id,"timesheet_id":ts_id,"created":created,"line_added":line_added})).await;
+    Ok(Json(json!({"timesheet_id":ts_id,"created":created,"line_added":line_added})))
+}
+
 pub async fn list_timesheets(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     require_module(&st, s.tenant_id.unwrap(), "consuntivi").await?;

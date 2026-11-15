@@ -314,12 +314,17 @@ function openOrderExec(o){
       <div class="row" style="gap:6px;margin-top:10px;align-items:center"><span class="small mut">Esito</span>
         <select id="exOutcome" style="flex:1"><option value="completato">completato</option><option value="parziale">parziale</option><option value="cliente_assente">cliente assente</option><option value="accesso_impedito">accesso impedito</option><option value="ritorno">ritorno da programmare</option></select></div>
       <div class="row" style="gap:6px;margin-top:10px"><button class="btn ghost" onclick="exSave('${o.id}',false)">💾 Salva bozza</button><button class="btn ok" onclick="exSave('${o.id}',true)">✓ Invia rapporto</button></div>
+      ${(typeof MODS!=='undefined' && MODS.has('consuntivi'))?`<button class="btn ghost block" style="margin-top:6px" onclick="oGenTimesheet('${o.id}')">🧾 Genera consuntivo dall'intervento</button><div class="small mut" style="margin-top:2px">Precompila ore e materiali; la tariffa la valorizzi nel consuntivo.</div>`:''}
     `:''}
     <button class="btn ghost block" style="margin-top:12px" onclick="this.closest('.modal').remove()">Chiudi</button></div>`;
   document.body.appendChild(m); if(exec){ exMatRender(); exAttLoad(o.id); }
 }
 async function oArrive(id){ try{ await api('/orders/'+id+'/arrive',{method:'POST',body:'{}'}); toast('Arrivo registrato','ok'); const m=document.querySelector('.modal'); if(m)m.remove(); loadOrders(); }catch(e){toast(e.message,'bad');} }
 async function oStartExec(id,v){ try{ await api('/orders/'+id+'/start',{method:'POST',body:JSON.stringify({version:v})}); toast('Lavoro avviato','ok'); const m=document.querySelector('.modal'); if(m)m.remove(); loadOrders(); }catch(e){toast(e.message,'bad');} }
+// Ponte intervento->consuntivo: genera/riusa la bozza prefillata (idempotente). Salva prima il rapporto se servono i minuti.
+async function oGenTimesheet(id){ try{ const r=await api('/orders/'+id+'/timesheet',{method:'POST',body:'{}'});
+    toast(r.created?'Bozza consuntivo creata dall\'intervento':(r.line_added?'Riga aggiunta al consuntivo':'Consuntivo già presente (nessun duplicato)'),'ok');
+  }catch(e){ toast('Consuntivo: '+e.message,'bad'); } }
 function exMatRender(){ const el=$('#exMat'); if(el) el.innerHTML=_exMat.map((mm,i)=>`<div class="small" style="display:flex;gap:6px;align-items:center">• ${esc(mm.descr||'')} ${mm.qta||''}${esc(mm.unita||'')} <button class="btn ghost" style="padding:0 6px" onclick="exMatDel(${i})">×</button></div>`).join('')||'<span class="small mut">—</span>'; }
 function exMatAdd(){ const d=$('#exMd').value.trim(); if(!d)return; _exMat.push({descr:d,qta:Number($('#exMq').value)||1,unita:'pz'}); $('#exMd').value='';$('#exMq').value=''; exMatRender(); }
 function exMatDel(i){ _exMat.splice(i,1); exMatRender(); }
