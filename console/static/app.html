@@ -3472,7 +3472,7 @@ async function vAnagrafiche(v){
   <div class="grid g2">
     <div class="card"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
       <table class="table"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
-      <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip">${esc(u.role)}</span></td>
+      <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
         <td style="text-align:right"><button class="btn ghost small" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'>gestisci</button></td></tr>`).join('')}</tbody></table></div>
     <div class="card"><div class="card-h"><h2>Sedi (${sites.length})</h2><a onclick="siteForm()">+ aggiungi</a></div>
       <table class="table"><thead><tr><th>Nome</th><th>Indirizzo</th><th></th></tr></thead>
@@ -3504,7 +3504,7 @@ async function vUtentiRuoli(v){
   ${err}
   <div class="card" style="margin-top:0"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
     <table class="table"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
-    <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip">${esc(u.role)}</span></td>
+    <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
       <td style="text-align:right"><button class="btn ghost small" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'>gestisci</button></td></tr>`).join('')||'<tr><td colspan="3" class="empty">nessun utente</td></tr>'}</tbody></table></div>
   <div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Gruppi di persone (${ugroups.length})</h2><div class="small mut">insiemi di persone condivisi, riusabili da qualunque modulo (es. importabili nei gruppi di allarme)</div></div><a onclick="ugNew()">+ nuovo gruppo</a></div>
     <div class="grid g2" style="margin-top:10px">${ugroups.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px">
@@ -3518,10 +3518,12 @@ async function vUtentiRuoli(v){
         <button class="btn ghost small" onclick="ugImport('${g.id}')">→ importa in gruppo allarme</button></div>`:''}
       </div>`).join('')||'<div class="small mut">Nessun gruppo. Crea insiemi di persone da riusare ovunque.</div>'}</div></div>
   ${caps?`<div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Permessi (capability)</h2><div class="small mut">cosa può fare ogni ruolo. Il default riproduce i ruoli di sempre; puoi aggiungere/togliere capability per questo tenant. <b>neretto</b> = modificato rispetto al default.</div></div><a onclick="capReset()">↺ ripristina default</a></div>
-    <div style="overflow-x:auto;margin-top:10px"><table class="table"><thead><tr><th>Ruolo</th>${caps.catalog.map(c=>`<th title="${esc(c.desc)}">${esc(c.code)}</th>`).join('')}</tr></thead>
-    <tbody>${caps.roles.map(role=>`<tr><td><b>${esc(role)}</b></td>${caps.matrix[role].map(x=>`<td style="text-align:center">
+    <div style="overflow-x:auto;margin-top:10px"><table class="table"><thead><tr><th>Ruolo</th>${caps.catalog.map(c=>`<th title="${esc(capLabel(c.code))}: ${esc(capHelp(c.code)||c.desc||'')}">${esc(capLabel(c.code))}</th>`).join('')}</tr></thead>
+    <tbody>${caps.roles.map(role=>`<tr><td><b title="${esc(role)}">${esc(roleLabel(role))}</b></td>${caps.matrix[role].map(x=>`<td style="text-align:center" title="${esc(capLabel(x.cap))}">
       <input type="checkbox" ${x.granted?'checked':''} ${(role==='tenant_admin'&&x.cap==='admin')?'disabled title="sempre attivo (anti-lockout)"':''} onchange="capSet('${role}','${x.cap}',this.checked)">
-      ${x.override?'<div class="small" style="color:var(--accent);font-weight:700">●</div>':''}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>`:''}
+      ${x.override?'<div class="small" style="color:var(--accent);font-weight:700">●</div>':''}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    <details style="margin-top:10px"><summary class="small mut" style="cursor:pointer">Cosa significano i permessi →</summary>
+      <div class="col" style="gap:4px;margin-top:8px">${caps.catalog.map(c=>`<div class="small"><b>${esc(capLabel(c.code))}</b> — ${esc(capHelp(c.code)||c.desc||'')}</div>`).join('')}</div></details></div>`:''}
   ${croles?`<div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Ruoli personalizzati (${croles.roles.length})</h2><div class="small mut">bundle di capability definiti dal tenant, assegnabili a utenti e/o gruppi condivisi. <b>Additivi</b>: aggiungono capability sopra il ruolo base.</div></div><a onclick="crNew()">+ nuovo ruolo</a></div>
     <div class="grid g2" style="margin-top:10px">${croles.roles.map(r=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px">
       <div class="spread"><b>${esc(r.name)}</b><span><button class="btn ghost small" onclick='crEdit(${JSON.stringify(r).replace(/'/g,"&#39;")})'>modifica</button><button class="btn-ico btn ghost" onclick="crDel('${r.id}')">${ICON.x}</button></span></div>
@@ -3555,7 +3557,7 @@ async function vPrivacyAudit(v){
     <button class="btn ghost small" onclick="gdUsersExport()">⬇ esporta CSV</button></div>
     <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
       <input id="gdQ" class="small" placeholder="🔎 cerca email" onkeydown="if(event.key==='Enter')gdReload()">
-      <select id="gdRole" class="small" onchange="gdReload()"><option value="">tutti i ruoli</option>${roles.map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join('')}</select>
+      <select id="gdRole" class="small" onchange="gdReload()"><option value="">tutti i ruoli</option>${roles.map(r=>`<option value="${esc(r)}">${esc(roleLabel(r))}</option>`).join('')}</select>
       <select id="gdStatus" class="small" onchange="gdReload()"><option value="">tutti gli stati</option><option value="active">attivi</option><option value="anonymized">anonimizzati</option></select>
       <select id="gdLimit" class="small" onchange="gdReload()"><option>50</option><option selected>100</option><option>200</option><option>500</option></select>
       <button class="btn ghost small" onclick="gdReload()">filtra</button>
@@ -3652,7 +3654,7 @@ function renderGdUsers(a){
   if(!a) return '<div class="small mut">non disponibile</div>';
   const rows=a.rows||[];
   return `<table class="table"><thead><tr><th>Email</th><th>Ruolo</th><th>Stato</th><th></th></tr></thead>
-  <tbody>${rows.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip">${esc(u.role)}</span></td>
+  <tbody>${rows.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
     <td>${u.anonymized_at?'<span class="chip s-bad">anonimizzato</span>':'<span class="chip s-ok">attivo</span>'}</td>
     <td style="text-align:right">
       <button class="btn ghost small" onclick="gdprExport('${u.id}','${esc(u.email)}')">↓ esporta</button>
@@ -3707,14 +3709,61 @@ async function teamNew(){ const n=await askPrompt('Nome squadra?'); if(!n)return
 async function teamDel(id){ if(!await askConfirm('Eliminare squadra?'))return; try{await api('/teams/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function teamAdd(tid){ const uid=$('#tm_'+tid).value; if(!uid)return; try{await api('/teams/'+tid+'/members',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Aggiunto','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function teamRm(tid,uid){ try{await api('/teams/'+tid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
-async function crCapsPrompt(cur){
-  const list='admin, incidents.view, incidents.handle, devices.manage, plan, approve, timesheets.view_all, config.view, users.manage, devices.admin, iot.manage, escalation.manage, settings.manage, gdpr.manage, audit.view';
-  const pick=await askPrompt('Capability (separate da virgola) tra: '+list,(cur||[]).join(',')); if(pick===null)return null;
-  return pick.split(',').map(s=>s.trim()).filter(Boolean); }
-async function crNew(){ const n=await askPrompt('Nome ruolo?'); if(!n)return; const d=await askPrompt('Descrizione (opz.)?')||null; const caps=await crCapsPrompt([]); if(caps===null)return;
-  try{await api('/custom-roles',{method:'POST',body:JSON.stringify({name:n,description:d,capabilities:caps})}); toast('Ruolo creato','ok'); route();}catch(e){toast(e.message,'bad');} }
-async function crEdit(r){ const n=await askPrompt('Nome ruolo?',r.name); if(!n)return; const d=await askPrompt('Descrizione (opz.)?',r.description||'')||null; const caps=await crCapsPrompt(r.capabilities); if(caps===null)return;
-  try{await api('/custom-roles/'+r.id,{method:'POST',body:JSON.stringify({name:n,description:d,capabilities:caps})}); toast('Aggiornato','ok'); route();}catch(e){toast(e.message,'bad');} }
+// Etichette CHIARE per ogni permesso (nome + spiegazione in parole semplici). La chiave è il
+// codice capability del backend; il valore è come lo mostriamo all'utente.
+const CAP_LABELS={
+  'admin':              ['Amministrazione completa','Tutti i permessi. Dà pieno controllo del tenant: usalo solo per i ruoli di vertice.'],
+  'incidents.view':     ['Sicurezza · Vedere allarmi','Leggere la centrale allarmi, le mappe, i dispositivi e i report.'],
+  'incidents.handle':   ['Sicurezza · Gestire allarmi','Prendere in carico, chiudere, annotare e testare gli allarmi.'],
+  'devices.manage':     ['Dispositivi · Inviare comandi','Controllare i dispositivi (invio comandi).'],
+  'plan':               ['Lavoro sul campo · Pianificare','Creare e assegnare ordini, interventi, ronde e turni.'],
+  'approve':            ['Consuntivi · Approvare','Approvare o rifiutare i consuntivi.'],
+  'timesheets.view_all':['Consuntivi · Vedere tutti','Leggere i consuntivi di tutte le persone, non solo i propri.'],
+  'config.view':        ['Configurazione · Sola lettura','Vedere impostazioni e diagnostica (senza modificarle).'],
+  'users.manage':       ['Amministrazione · Utenti e ruoli','Creare/modificare utenti, gruppi di persone, permessi, ruoli, sedi e squadre.'],
+  'devices.admin':      ['Amministrazione · Dispositivi','Censire dispositivi, gestire token/onboarding, geofence e provisioning.'],
+  'iot.manage':         ['IoT · Regole e sensori','Gestire regole sensori e le integrazioni IoT.'],
+  'escalation.manage':  ['Escalation e reperibilità','Gestire gruppi di allarme, turni on-call, override e trigger.'],
+  'settings.manage':    ['Impostazioni del tenant','Attivare funzionalità e modificare la configurazione generale.'],
+  'gdpr.manage':        ['Privacy (GDPR)','Esportare e anonimizzare i dati personali.'],
+  'audit.view':         ['Audit · Registro attività','Leggere il registro delle attività del tenant.'],
+  'dashboard.manage':   ['Dashboard · Organizzare','Abilitare, ordinare e dimensionare i widget della dashboard.'],
+};
+function capLabel(code){ return (CAP_LABELS[code]||[code,''])[0]; }
+function capHelp(code){ return (CAP_LABELS[code]||[code,''])[1]; }
+// Form UNICO (drawer) per creare/modificare un ruolo personalizzato: nome + descrizione +
+// checklist dei permessi con nome chiaro e spiegazione. Niente codici separati da virgola.
+async function crForm(r){
+  r=r||{};
+  let cat=[];
+  try{ const c=await api('/capabilities'); cat=(c&&c.catalog)||[]; }catch(e){}
+  if(!cat.length){ cat=Object.keys(CAP_LABELS).map(code=>({code})); }
+  const cur=new Set(r.capabilities||[]);
+  const rows=cat.map(c=>{
+    const code=c.code; const checked=cur.has(code)?'checked':'';
+    const warn = code==='admin' ? ' style="color:var(--bad)"' : '';
+    return `<label class="row" style="gap:10px;align-items:flex-start;padding:8px;border:1px solid var(--line);border-radius:8px">
+      <input type="checkbox" class="rcap" value="${code}" ${checked} style="margin-top:3px">
+      <span><b${warn}>${esc(capLabel(code))}</b><div class="small mut">${esc(capHelp(code)||c.desc||'')}</div></span></label>`;
+  }).join('');
+  drawer(r.id?('Ruolo · '+esc(r.name)):'Nuovo ruolo', `<div class="col" style="gap:10px">
+    <label class="small mut">Nome del ruolo<input id="rName" value="${esc(r.name||'')}" placeholder="es. Capo turno"></label>
+    <label class="small mut">Descrizione (facoltativa)<input id="rDesc" value="${esc(r.description||'')}" placeholder="a cosa serve questo ruolo"></label>
+    <div class="small mut" style="margin-top:4px">Permessi inclusi <span class="mut">(si <b>sommano</b> al ruolo base della persona)</span></div>
+    <div class="col" style="gap:6px;max-height:48vh;overflow:auto">${rows}</div>
+    <button class="btn" onclick="crSave('${r.id||''}')">${r.id?'Salva':'Crea ruolo'}</button><div class="cfg-msg small"></div></div>`);
+}
+async function crSave(id){
+  const name=$('#rName').value.trim(); const m=$('.cfg-msg');
+  if(!name){ m.textContent='Il nome è obbligatorio'; m.style.color='var(--bad)'; return; }
+  const description=$('#rDesc').value.trim()||null;
+  const capabilities=[...document.querySelectorAll('.rcap:checked')].map(c=>c.value);
+  const path=id?('/custom-roles/'+id):'/custom-roles';
+  try{ await api(path,{method:'POST',body:JSON.stringify({name,description,capabilities})}); toast(id?'Aggiornato':'Ruolo creato','ok'); closeDrawer(); route(); }
+  catch(e){ m.textContent=e.message; m.style.color='var(--bad)'; }
+}
+function crNew(){ crForm(null); }
+function crEdit(r){ crForm(r); }
 async function crDel(id){ if(!await askConfirm('Eliminare il ruolo? (le assegnazioni decadono)'))return; try{await api('/custom-roles/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function crAddUser(rid){ const uid=$('#cru_'+rid).value; if(!uid)return; try{await api('/custom-roles/'+rid+'/users',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Assegnato','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function crRmUser(rid,uid){ try{await api('/custom-roles/'+rid+'/users/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
@@ -3731,10 +3780,14 @@ async function ugAdd(gid){ const uid=$('#ugm_'+gid).value; if(!uid)return; try{a
 async function ugRm(gid,uid){ try{await api('/user-groups/'+gid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function ugImport(gid){ const ag=$('#ugimp_'+gid).value; if(!ag)return; try{const r=await api('/groups/'+ag+'/members/import',{method:'POST',body:JSON.stringify({user_group_id:gid})}); toast((r.added||0)+' membri importati nel gruppo allarme','ok');}catch(e){toast(e.message,'bad');} }
 const ROLES=['tenant_admin','operatore','pianificatore','responsabile','lavoratore','reperibile','auditor'];
+// Nomi CHIARI dei ruoli base (il codice resta il valore salvato).
+const ROLE_LABELS={tenant_admin:'Amministratore',operatore:'Operatore centrale',pianificatore:'Pianificatore',responsabile:'Responsabile',lavoratore:'Lavoratore',reperibile:'Reperibile (on-call)',auditor:'Auditor (sola lettura)'};
+function roleLabel(r){ return ROLE_LABELS[r]||r; }
+function roleOptions(sel){ return ROLES.map(r=>`<option value="${r}" ${r===sel?'selected':''}>${esc(roleLabel(r))}</option>`).join(''); }
 function userNew(){
   drawer('Invita utente',`<div class="col" style="gap:10px">
     <label class="small mut">Email<input id="uEm"></label>
-    <label class="small mut">Ruolo<select id="uRo">${ROLES.map(r=>`<option>${r}</option>`).join('')}</select></label>
+    <label class="small mut">Ruolo<select id="uRo">${roleOptions('')}</select></label>
     <label class="small mut">Password iniziale<input id="uPw" value="cambiami1"></label>
     <button class="btn" onclick="userCreate()">Crea</button><div class="cfg-msg small"></div></div>`);
 }
@@ -3752,7 +3805,7 @@ async function userEdit(u){
     <div style="max-height:160px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:4px">
     ${sites.map(s=>`<label class="row small" style="gap:8px"><input type="checkbox" class="uSite" value="${s.id}" ${cur.includes(s.id)?'checked':''}> ${esc(s.name)}</label>`).join('')||'<span class="mut">nessuna sede</span>'}</div>` : '';
   drawer('Utente · '+esc(u.email),`<div class="col" style="gap:10px">
-    <label class="small mut">Ruolo<select id="uRo2">${ROLES.map(r=>`<option ${r===u.role?'selected':''}>${r}</option>`).join('')}</select></label>
+    <label class="small mut">Ruolo<select id="uRo2">${roleOptions(u.role)}</select></label>
     <label class="small mut">Nuova password (opzionale)<input id="uPw2" placeholder="lascia vuoto per non cambiare"></label>
     <label class="small mut">Telefono (E.164, per notifiche SMS/voce GoAlert)<input id="uPhone" placeholder="+393331234567" value="${esc(u.phone||'')}"></label>
     ${siteBox}
