@@ -210,3 +210,21 @@ utile per iscriversi al calendario di un team specifico.
 - **Manutenzione**: 1h / 2h / 4h / termina (con riepilogo a fine finestra).
 - **Fallback vocale**: on/off + minuti (1–60). **Avvisa sugli aggiornamenti**: on/off.
 - **Avviso on-call Slack**: off / a ogni cambio / orario fisso.
+
+---
+
+## Robustezza runtime (operations)
+
+Il motore di consegna escalation è composto da `async fn` con frame profondi (runner, shifts,
+dispatch verso Twilio/Slack/relay). Per evitare stack-overflow del worker tokio sotto carico
+concorrente:
+
+- **Stack dei worker**: configurabile con `YW_WORKER_STACK_MB` (default **32**). Abbassarlo non è
+  consigliato; alzarlo dà margine su tenant con molti incidenti aperti e policy lunghe.
+- **Frame ridotti**: i leaf caldi (`esc_dispatch` → client HTTP) sono su heap via `Box::pin`.
+- **Isolamento per-tenant**: la scansione di consegna esegue **un tenant alla volta su task
+  dedicato**, così la profondità non si accumula tra tenant.
+
+Sintomo del problema (prima del fix): il core terminava con
+`thread 'tokio-rt-worker' has overflowed its stack` / `STATUS_ACCESS_VIOLATION` sotto picco di
+carico. Non è una ricorsione infinita: è profondità cumulativa al picco di concorrenza.

@@ -8,6 +8,7 @@ mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attivit
 mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
 mod sites; // servizio core: sedi e asset/mezzi condivisi
 mod iam; // servizio core: permessi (capability) e ruoli personalizzati
+mod users; // servizio core: identità/utenti (CRUD anagrafica + ACL sedi); login/sessione restano in api.rs
 
 use std::sync::Arc;
 use axum::{routing::{get, post, delete}, Router, Json};
@@ -92,8 +93,11 @@ fn tb_parity_routes() -> Router<AppState> {
 
 fn main() -> anyhow::Result<()> {
     // Runtime con stack worker grande: le fn async del motore escalation (runner, shifts) hanno
-    // frame profondi; sotto carico concorrente il default (2 MB) andava in stack-overflow.
-    let stack = std::env::var("YW_WORKER_STACK_MB").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(16);
+    // frame profondi; sotto carico concorrente il default tokio (2 MB) andava in stack-overflow.
+    // Default YW 32 MB (era 16, marginale al picco di concorrenza: un worker sforava). Oltre allo
+    // stack, i frame profondi sono ridotti con Box::pin sui leaf caldi (esc_dispatch) e con
+    // l'esecuzione per-tenant su task dedicato in escalation_delivery_shadow_scan.
+    let stack = std::env::var("YW_WORKER_STACK_MB").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(32);
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(stack * 1024 * 1024)
@@ -217,9 +221,9 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/modules/:code/tools/:tool", post(api::set_module_tool))
         .route("/api/sites", get(sites::list_sites).post(sites::create_site))
         .route("/api/sites/:id", post(sites::update_site).delete(sites::delete_site))
-        .route("/api/users", get(api::list_users).post(api::create_user))
-        .route("/api/users/:id", post(api::update_user).delete(api::delete_user))
-        .route("/api/users/:id/sites", get(api::get_user_sites).post(api::set_user_sites))
+        .route("/api/users", get(users::list_users).post(users::create_user))
+        .route("/api/users/:id", post(users::update_user).delete(users::delete_user))
+        .route("/api/users/:id/sites", get(users::get_user_sites).post(users::set_user_sites))
         .route("/api/user-groups", get(groups::list_user_groups).post(groups::create_user_group))
         .route("/api/user-groups/:id", post(groups::update_user_group).delete(groups::delete_user_group))
         .route("/api/user-groups/:id/members", post(groups::user_group_member_add))

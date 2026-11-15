@@ -61,18 +61,25 @@ docker compose up -d --build
 ```
 
 ## Avvio — nativo (sviluppo)
-```bash
-# 1) Postgres 18 (porta host 55432 per non collidere con un Postgres locale)
-docker run -d --name ywdb -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=youworkforce -p 55432:5432 postgres:18
 
-# 2) core (migrazioni + seed automatici)
+**Modo rapido (consigliato): launcher supervisionato** — avvia e mantiene su core+console,
+riavviandoli se escono (gestisce i rebuild e il drop della console):
+```bash
+# Postgres 18 (porta host 55432 per non collidere con un Postgres locale)
+docker run -d --name ywdb -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=youworkforce -p 55432:5432 postgres:18
+bash scripts/dev-run.sh    # core :8080 + console :8081, Ctrl-C per fermare
+```
+
+**Manuale (due terminali):**
+```bash
+# core (migrazioni + seed automatici)
 cd core
 export YW_DB_OWNER="postgres://postgres:postgres@localhost:55432/youworkforce"
 export YW_DB_RT="postgres://app_rt:app_rt_pw@localhost:55432/youworkforce"
 cargo run --release        # :8080
 
-# 3) console
-cd ../console && go run .   # :8081
+# console — su Windows usare il .exe buildato (`go run .` può morire con 0xc0000006):
+cd ../console && go build -o console.exe . && ./console.exe   # :8081
 ```
 
 ## Test end-to-end (evidenza)

@@ -118,7 +118,7 @@ moduli-feature.
 | Gruppi di persone | `core/src/groups.rs` | estratto (l'import→gruppo allarme resta in api.rs = bridge escalation) |
 | Sedi e asset | `core/src/sites.rs` | estratto (le squadre restano in api.rs = primitiva workforce) |
 | Permessi e ruoli (IAM) | `core/src/iam.rs` | estratto (fondamenta login/sessione restano in api.rs) |
-| Identità/utenti | `api.rs` | da estrarre (deps login/sessione) |
+| Identità/utenti | `core/src/users.rs` | estratto (CRUD anagrafica + ACL sedi; login/sessione/impersonazione restano in api.rs) |
 
 I moduli product/connector e il resto dei servizi vivono ancora in `api.rs` e migreranno con lo
 stesso pattern quando utile. ThingsBoard è il prossimo candidato (vedi sotto).
