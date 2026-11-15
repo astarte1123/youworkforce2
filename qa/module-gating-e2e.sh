@@ -23,12 +23,12 @@ setmod workforce non_abilitato
 setmod workforce attivo
 [ "$(code /api/teams)" = "200" ] && ok "workforce riacceso -> teams API 200" || no "workforce on" "$(code /api/teams)"
 
-# TRACCAR
-setmod traccar non_abilitato
-[ "$(code /api/geofences)" = "403" ] && [ "$(code /api/presence)" = "403" ] \
-  && ok "traccar spento -> geofence/presenza API 403" || no "traccar off" "gf=$(code /api/geofences) pr=$(code /api/presence)"
-setmod traccar attivo
-[ "$(code /api/geofences)" = "200" ] && ok "traccar riacceso -> geofence API 200" || no "traccar on" "$(code /api/geofences)"
+# INTERVENTI (modulo singolo: contratto on/off pulito; i connettori esterni sono ritirati)
+setmod interventi non_abilitato
+[ "$(code /api/orders)" = "403" ] \
+  && ok "interventi spento -> ordini API 403" || no "interventi off" "ord=$(code /api/orders)"
+setmod interventi attivo
+[ "$(code /api/orders)" = "200" ] && ok "interventi riacceso -> ordini API 200" || no "interventi on" "$(code /api/orders)"
 
 # CONSUNTIVI (catena già gated)
 setmod consuntivi non_abilitato

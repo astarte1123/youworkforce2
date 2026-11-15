@@ -498,6 +498,13 @@ pub async fn set_module(State(st): State<AppState>, h: HeaderMap, Path(tid): Pat
     require_super(&st, &h).await?;
     let valid = ["non_abilitato","da_configurare","attivo","degradato","in_disattivazione"];
     if !valid.contains(&b.state.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "bad state")); }
+    // Ritiro connettori esterni: un modulo non disponibile nel prodotto (available=false) non può
+    // essere attivato (suite self-contained). Disattivarlo resta sempre consentito.
+    if b.state != "non_abilitato" {
+        let avail: Option<bool> = sqlx::query_scalar("SELECT available FROM app.modules_catalog WHERE code=$1")
+            .bind(&b.module_code).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+        if avail == Some(false) { return Err(err(StatusCode::BAD_REQUEST, "modulo ritirato dal prodotto (non attivabile)")); }
+    }
     // Block disabling loneworker if it is the only SOS path for a tenant with open incidents.
     if b.module_code == "loneworker" && b.state == "non_abilitato" {
         let open = sqlx::query_scalar::<_, i64>(
@@ -4789,7 +4796,7 @@ pub async fn device_command(State(st): State<AppState>, h: HeaderMap, Path(id): 
 pub async fn list_device_commands(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "traccar").await?;
+    require_any_module(&st, tid, DEVICE_MODS).await?;
     if !has_cap(&s,"incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let rows = sqlx::query("SELECT ctype,actor,traccar_status,result,created_at FROM app.device_commands
          WHERE tenant_id=$1 AND device_id=$2 ORDER BY created_at DESC LIMIT 50")
@@ -4808,7 +4815,7 @@ pub async fn list_device_commands(State(st): State<AppState>, h: HeaderMap, Path
 pub async fn device_command_types(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "traccar").await?;
+    require_any_module(&st, tid, DEVICE_MODS).await?;
     if !has_cap(&s,"devices.manage") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let ext: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND tenant_id=$2 AND source='traccar'")
         .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
@@ -4867,7 +4874,7 @@ fn geofence_contains(geom: &Value, lat: f64, lon: f64) -> bool {
 
 pub async fn list_geofences(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
-    require_module(&st, s.tenant_id.unwrap(), "traccar").await?;
+    require_any_module(&st, s.tenant_id.unwrap(), DEVICE_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = sqlx::query("SELECT g.id,g.name,g.kind,g.geom,g.site_id,g.floorplan_id,g.color,si.name AS site
         FROM app.geofences g LEFT JOIN app.sites si ON si.id=g.site_id ORDER BY g.name").fetch_all(&mut *tx).await.map_err(ise)?;
@@ -4992,7 +4999,7 @@ pub async fn set_geofence_events(State(st): State<AppState>, h: HeaderMap, Path(
 pub async fn list_presence(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     if !has_cap(&s,"incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
-    require_module(&st, s.tenant_id.unwrap(), "traccar").await?;
+    require_any_module(&st, s.tenant_id.unwrap(), DEVICE_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = sqlx::query(
         "SELECT p.device_id,p.geofence_id,p.inside,p.changed_at,d.label,d.external_id,u.email,g.name AS geofence
@@ -5812,7 +5819,7 @@ pub async fn process_traccar_position(st: &AppState, tid: Uuid, pos: &Value, ext
 pub async fn list_device_positions(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
     let s = require_tenant(&st, &h).await?;
-    require_module(&st, s.tenant_id.unwrap(), "traccar").await?;
+    require_any_module(&st, s.tenant_id.unwrap(), DEVICE_MODS).await?;
     if !has_cap(&s,"incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let limit: i64 = q.get("limit").and_then(|x| x.parse().ok()).unwrap_or(50).clamp(1,500);
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;

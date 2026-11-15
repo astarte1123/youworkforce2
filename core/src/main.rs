@@ -473,7 +473,7 @@ async fn bootstrap(pool: &sqlx::PgPool) -> anyhow::Result<()> {
         let tid: Uuid = sqlx::query_scalar("INSERT INTO app.tenants(slug,name) VALUES('acme','Acme SpA') RETURNING id")
             .fetch_one(pool).await?;
         sqlx::query("INSERT INTO app.tenant_modules(tenant_id,module_code,state)
-            SELECT $1, code, CASE WHEN code IN ('loneworker','goalert','traccar','iot','thingsboard','consuntivi','interventi','workforce','assistant') THEN 'attivo' ELSE 'non_abilitato' END
+            SELECT $1, code, CASE WHEN code IN ('loneworker','iot','consuntivi','interventi','workforce','assistant','giri') THEN 'attivo' ELSE 'non_abilitato' END
             FROM app.modules_catalog").bind(tid).execute(pool).await?;
         for (email, role) in [("admin@acme.loneworker.eu","tenant_admin"),
                               ("operatore@acme.loneworker.eu","operatore"),
@@ -486,19 +486,19 @@ async fn bootstrap(pool: &sqlx::PgPool) -> anyhow::Result<()> {
         }
         let site: Uuid = sqlx::query_scalar("INSERT INTO app.sites(tenant_id,name) VALUES($1,'Milano') RETURNING id")
             .bind(tid).fetch_one(pool).await?;
-        sqlx::query("INSERT INTO app.devices(tenant_id,site_id,external_id,source) VALUES($1,$2,'BADGE-001','traccar')")
+        sqlx::query("INSERT INTO app.devices(tenant_id,site_id,external_id,source) VALUES($1,$2,'BADGE-001','iot')")
             .bind(tid).bind(site).execute(pool).await?;
-        sqlx::query("INSERT INTO app.ingest_tokens(token,tenant_id,source) VALUES('acme-ingest-token',$1,'traccar')")
+        sqlx::query("INSERT INTO app.ingest_tokens(token,tenant_id,source) VALUES('acme-ingest-token',$1,'iot')")
             .bind(tid).execute(pool).await?;
         // second tenant to prove isolation (T02)
         let t2: Uuid = sqlx::query_scalar("INSERT INTO app.tenants(slug,name) VALUES('globex','Globex Srl') RETURNING id")
             .fetch_one(pool).await?;
         sqlx::query("INSERT INTO app.tenant_modules(tenant_id,module_code,state)
-            SELECT $1, code, CASE WHEN code='loneworker' THEN 'attivo' ELSE 'non_abilitato' END FROM app.modules_catalog")
+            SELECT $1, code, CASE WHEN code IN ('loneworker','interventi','giri') THEN 'attivo' ELSE 'non_abilitato' END FROM app.modules_catalog")
             .bind(t2).execute(pool).await?;
         sqlx::query("INSERT INTO app.users(tenant_id,email,pass_hash,role) VALUES($1,'admin@globex.loneworker.eu',$2,'tenant_admin')")
             .bind(t2).bind(auth::hash_password("demo")).execute(pool).await?;
-        sqlx::query("INSERT INTO app.ingest_tokens(token,tenant_id,source) VALUES('globex-ingest-token',$1,'traccar')")
+        sqlx::query("INSERT INTO app.ingest_tokens(token,tenant_id,source) VALUES('globex-ingest-token',$1,'iot')")
             .bind(t2).execute(pool).await?;
         tracing::info!("seeded demo tenants acme + globex");
     }
