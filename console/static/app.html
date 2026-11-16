@@ -1653,9 +1653,19 @@ async function ronView(id){ const r=await api('/patrol-rounds/'+id).catch(()=>nu
       <td>${c.punched?(`<span class="chip ${c.punched.ok?'ok':'bad'}">${c.punched.ok?'OK':'KO'}</span> <span class="small mut">${new Date(c.punched.at).toLocaleTimeString()} · ${c.punched.method}</span>`):'<span class="small mut">—</span>'}</td></tr>`).join('')}</tbody></table>
   </div>`);
 }
+// Terminologia e strumenti secondo le modalità attive (cantieri / assistenza / entrambe)
+function fieldTerms(fm){
+  fm=fm||{cantieri:true,assistenza:true};
+  const c=!!fm.cantieri, a=!!fm.assistenza;
+  if(c&&!a) return {mode:'cantieri', title:'Cantieri', unit:'cantiere', newBtn:'+ Nuovo cantiere', agendaH:'Cantieri pianificati', poolH:'Cantieri da pianificare', icon:'🏗️', showCoverage:true};
+  if(a&&!c) return {mode:'assistenza', title:'Interventi e appuntamenti', unit:'appuntamento', newBtn:'+ Nuovo appuntamento', agendaH:'Agenda appuntamenti', poolH:'Da assegnare', icon:'🔧', showCoverage:false};
+  return {mode:'both', title:'Ordini di lavoro', unit:'ordine', newBtn:'+ Nuovo ordine', agendaH:'Agenda (pianificati)', poolH:'Da pianificare', icon:'', showCoverage:true};
+}
+window.FMODES=null;
 async function vOrdini(v){
   const isAdmin=can(['tenant_admin']);
   const [O,FM]=await Promise.all([api('/orders').catch(()=>[]), api('/field-modes').catch(()=>({cantieri:true,assistenza:true}))]);
+  window.FMODES=FM; const TT=fieldTerms(FM);
   const canCreate=can(['pianificatore','tenant_admin']);
   // Modalità del lavoro sul campo (per-tenant): cantieri (turni+copertura) e/o assistenza (appuntamenti+listino)
   const modesCard=isAdmin?`<div class="card" style="margin-bottom:16px"><div class="card-h"><h2>Modalità di lavoro</h2></div>
@@ -1670,15 +1680,16 @@ async function vOrdini(v){
   const asgLabel=o=>o.assignee?esc(o.assignee):(o.group_name?('👥 '+esc(o.group_name)):'—');
   const row=o=>`<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b></td><td>${esc(o.site||'—')}</td>
     <td>${asgLabel(o)}</td><td class="small">${schedLabel(o)}</td><td>${priBadge(o.priority)}</td><td>${chip(o.state)}</td></tr>`;
-  v.innerHTML=`<div class="page-h"><div><h1>${t('ord_title','Ordini di lavoro')}</h1><div class="mut">${O.length} ordini · ${sched.length} pianificati</div></div>
-    ${canCreate?`<button class="btn" onclick="newOrder()">+ Nuovo ordine</button>`:''}</div>
-  ${modesCard}
-  <div class="card"><div class="card-h"><h2>Agenda (pianificati)</h2></div>
+  const modeBanner=TT.mode!=='both'?`<div class="small mut" style="margin:-4px 0 12px">${TT.icon} Modalità <b>${TT.mode==='cantieri'?'Cantieri':'Assistenza'}</b> attiva${TT.mode==='assistenza'?' — enfasi su agenda appuntamenti, listino e consuntivi.':' — enfasi su turni e copertura per sede.'}</div>`:'';
+  v.innerHTML=`<div class="page-h"><div><h1>${esc(TT.title)}</h1><div class="mut">${O.length} ${TT.unit}${O.length===1?'':'i'} · ${sched.length} pianificati</div></div>
+    ${canCreate?`<button class="btn" onclick="newOrder()">${esc(TT.newBtn)}</button>`:''}</div>
+  ${modeBanner}${modesCard}
+  <div class="card"><div class="card-h"><h2>${esc(TT.agendaH)}</h2></div>
     <table class="table"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Quando</th><th>Priorità</th><th>Stato</th></tr></thead>
-    <tbody>${sched.map(row).join('')||`<tr><td colspan="6" class="empty">Nessun ordine pianificato</td></tr>`}</tbody></table></div>
-  <div class="card" style="margin-top:16px"><div class="card-h"><h2>Da pianificare</h2></div>
+    <tbody>${sched.map(row).join('')||`<tr><td colspan="6" class="empty">Nessun ${esc(TT.unit)} pianificato</td></tr>`}</tbody></table></div>
+  <div class="card" style="margin-top:16px"><div class="card-h"><h2>${esc(TT.poolH)}</h2></div>
     <table class="table"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Quando</th><th>Priorità</th><th>Stato</th></tr></thead>
-    <tbody>${unsched.map(row).join('')||`<tr><td colspan="6" class="empty">${ICON.clipboard}<div>Nessun ordine</div></td></tr>`}</tbody></table></div>`;
+    <tbody>${unsched.map(row).join('')||`<tr><td colspan="6" class="empty">${ICON.clipboard}<div>Nessun ${esc(TT.unit)}</div></td></tr>`}</tbody></table></div>`;
   bindRows(v);
 }
 async function fmSave(){
@@ -1699,7 +1710,8 @@ function orderFormFields(o,sites,workers,groups){ o=o||{}; groups=groups||[]; re
 async function newOrder(){
   const [sites,users,groups]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[]),api('/user-groups').catch(()=>[])]);
   const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
-  drawer('Nuovo ordine', `<div class="col">${orderFormFields(null,sites,workers,groups)}
+  const TT=fieldTerms(window.FMODES);
+  drawer('Nuovo '+TT.unit, `<div class="col">${orderFormFields(null,sites,workers,groups)}
       <label class="small mut">Checklist (una voce per riga)<textarea id="o_cl" style="width:100%;height:60px" placeholder="Verifica impianto&#10;Sostituisci pezzo&#10;Test finale"></textarea></label>
       <button class="btn block" id="o_save">Crea ordine</button><div class="cfg-msg small"></div></div>`);
   $('#o_save').onclick=async()=>{
@@ -4085,7 +4097,8 @@ async function vTurni(v){
     <div class="grid g2" style="margin:10px 14px">${(Q||[]).map(q=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px" class="spread"><b class="small">${esc(q.name)}</b><button class="btn-ico btn ghost" onclick="qualDel('${q.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessuna qualifica. Creane una e assegnala alle persone.</div>'}</div></div>`:'';
   const DOW=['lun','mar','mer','gio','ven','sab','dom'];
   const dmTxt=m=>DOW.filter((_,i)=>m[i]==='1').join(' ');
-  const covCard=planner?`<div class="card" style="margin-top:16px"><div class="card-h"><h2>Copertura minima</h2>
+  const showCov = planner && !(hasInterventi && FM && FM.cantieri===false);
+  const covCard=showCov?`<div class="card" style="margin-top:16px"><div class="card-h"><h2>Copertura minima</h2>
     <span><a onclick="covNew()">+ requisito</a> · <a onclick="covCheck()">verifica copertura</a> · <a onclick="covFairness()">equità</a></span></div>
     <div class="small mut" style="padding:0 14px">Dichiara quante persone servono per sede/fascia/giorni; la verifica trova i giorni scoperti del piano.</div>
     <table class="table"><thead><tr><th>Sede</th><th>Giorni</th><th>Fascia</th><th>Min</th><th>Competenza</th><th></th></tr></thead>
@@ -4093,7 +4106,10 @@ async function vTurni(v){
       <td>${c.min_people}</td><td class="small mut">${esc(c.qual||'—')}</td><td style="text-align:right"><button class="btn-ico btn ghost" onclick="covDel('${c.id}')">${ICON.x}</button></td></tr>`).join('')
       ||`<tr><td colspan="6" class="empty">Nessun requisito di copertura</td></tr>`}</tbody></table>
     <div id="covGaps" style="padding:0 14px 12px"></div></div>`:'';
+  const TT=hasInterventi?fieldTerms(FM):null;
+  const modeBanner=(TT&&TT.mode!=='both')?`<div class="small mut" style="margin:-4px 0 12px">${TT.icon} Modalità <b>${TT.mode==='cantieri'?'Cantieri':'Assistenza'}</b>: ${TT.mode==='cantieri'?'turni legati ai cantieri; copertura minima per sede.':'turni legati agli appuntamenti; nessuna copertura per sede.'}</div>`:'';
   v.innerHTML=`<div class="page-h"><div><h1>${t('turni_title','Turni')}</h1><div class="mut">${P.length} turni pianificati${planner?'':' (i tuoi)'}</div></div>${createBtn}</div>
+  ${modeBanner}
   <div class="card"><table class="table"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Quando</th><th>Stato</th><th></th></tr></thead>
     <tbody>${planRows}</tbody></table></div>${oncallCard}${absCard}${qualCard}${covCard}`;
 }
