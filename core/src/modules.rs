@@ -56,9 +56,12 @@ pub const REGISTRY: &[Manifest] = &[
     Manifest{ code:"loneworker", name:"Lone Worker e centrale allarmi", kind:"product", requires:&[], provides:&["incidents","checkins"],
         capabilities:&["incidents.view","incidents.handle","escalation.manage"], widgets:&["incidents","checkins"],
         description:"Centrale allarmi, check-in, escalation: il cuore safety." },
-    Manifest{ code:"interventi", name:"Interventi e cantieri", kind:"product", requires:&[], provides:&["work_orders"],
+    Manifest{ code:"interventi", name:"Assistenza e interventi", kind:"product", requires:&[], provides:&["work_orders"],
         capabilities:&["plan"], widgets:&["orders"],
-        description:"Ordini di lavoro, cantieri, interventi." },
+        description:"Assistenza/manutenzione a visite: appuntamenti dal cliente, report, firma, listino e consuntivo per intervento." },
+    Manifest{ code:"cantieri", name:"Cantieri e commesse", kind:"product", requires:&[], provides:&["commesse"],
+        capabilities:&["plan"], widgets:&["commesse"],
+        description:"Lavoro di cantiere: commessa (progetto) → lavorazioni (WBS) con avanzamento → SAL; riusa turni/copertura e presenze." },
     Manifest{ code:"consuntivi", name:"Ore, spese e consuntivi", kind:"product", requires:&[], provides:&["timesheets"],
         capabilities:&["approve","timesheets.view_all"], widgets:&["timesheets"],
         description:"Ore, spese, consuntivi di lavoro." },
@@ -126,7 +129,7 @@ mod tests {
     }
     #[test]
     fn standalone_modules_have_no_deps() {
-        for c in ["loneworker","iot","thingsboard","workforce","interventi","consuntivi","assistant","qualifiche","prevenzione"] {
+        for c in ["loneworker","iot","thingsboard","workforce","interventi","cantieri","consuntivi","assistant","qualifiche","prevenzione"] {
             assert!(missing_deps(c, &set(&[])).is_empty(), "{c} dovrebbe essere standalone");
         }
     }

@@ -42,8 +42,9 @@ const NAV = [
   {k:'profili',   t:'Profili di protezione', ico:'shield', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
   {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
   // --- Lavoro sul campo ---
-  {k:'ordini',    t:'Ordini di lavoro', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
-  {k:'calendario',t:'Calendario', ico:'calendar', roles:['pianificatore','tenant_admin','lavoratore','reperibile','responsabile','auditor'], mod:['workforce','interventi','giri'], grp:'work'},
+  {k:'ordini',    t:'Assistenza', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
+  {k:'cantieri',  t:'Cantieri', ico:'building', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], grp:'work'},
+  {k:'calendario',t:'Calendario', ico:'calendar', roles:['pianificatore','tenant_admin','lavoratore','reperibile','responsabile','auditor'], mod:['workforce','interventi','giri','cantieri'], grp:'work'},
   {k:'ronde',     t:'Ronde', ico:'route', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['giri'], grp:'work'},
   {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], mod:['consuntivi'], grp:'work'},
   {k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], mod:['workforce'], grp:'work'},
@@ -348,7 +349,7 @@ function route(){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,cantieri:vCantieri,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -1698,8 +1699,114 @@ async function fmSave(){
   try{ await api('/field-modes',{method:'POST',body:JSON.stringify({cantieri:c,assistenza:a})}); toast('Modalità salvate','ok'); route(); }
   catch(e){ if(m){m.textContent=e.message;m.style.color='var(--bad)';} }
 }
+// ===== Modulo Cantieri: commessa (progetto) -> lavorazioni (WBS) -> SAL =====
+const COMM_STATI={pianificato:'Pianificato',in_corso:'In corso',sospeso:'Sospeso',chiuso:'Chiuso'};
+const LAV_STATI={da_fare:'Da fare',in_corso:'In corso',fatto:'Fatto'};
+function progBar(pct){ pct=Math.max(0,Math.min(100,pct||0)); const col=pct>=100?'var(--ok,#16a34a)':pct>0?'var(--brand,#2563eb)':'var(--line)';
+  return `<div style="background:var(--line);border-radius:6px;height:8px;overflow:hidden;min-width:90px"><div style="width:${pct}%;height:100%;background:${col}"></div></div>`; }
+async function vCantieri(v){
+  const planner=can(['pianificatore','tenant_admin']);
+  const [C,sites]=await Promise.all([api('/commesse').catch(()=>[]), planner?api('/sites').catch(()=>[]):Promise.resolve([])]);
+  v._sites=sites;
+  const row=c=>`<tr class="clk" data-com="${c.id}"><td><b>${esc(c.code)}</b><div class="small mut">${esc(c.name)}</div></td>
+    <td class="small">${esc(c.client_name||'—')}</td><td class="small">${esc(c.site||'—')}</td>
+    <td><span class="chip">${esc(COMM_STATI[c.status]||c.status)}</span></td>
+    <td><div class="row" style="gap:6px;align-items:center">${progBar(c.progress)}<span class="small">${c.progress}%</span></div><div class="small mut">${c.lav_count} lavorazioni · ${c.shift_count} turni</div></td></tr>`;
+  v.innerHTML=`<div class="page-h"><div><h1>Cantieri e commesse</h1><div class="mut">${C.length} commesse · progetti di cantiere con lavorazioni e avanzamento</div></div>
+    ${planner?`<button class="btn" onclick="comNew()">+ Nuova commessa</button>`:''}</div>
+  <div class="small mut" style="margin:-4px 0 12px">🏗️ Cantiere = progetto su un sito, scomposto in <b>lavorazioni</b> con avanzamento; lo stato complessivo è la media pesata. I <b>SAL</b> fotografano l'avanzamento nel tempo. I turni possono essere legati alla commessa.</div>
+  <div class="card"><table class="table"><thead><tr><th>Commessa</th><th>Committente</th><th>Sede</th><th>Stato</th><th>Avanzamento</th></tr></thead>
+    <tbody>${C.map(row).join('')||`<tr><td colspan="5" class="empty">${ICON.building}<div>Nessuna commessa</div></td></tr>`}</tbody></table></div>`;
+  v.querySelectorAll('tr[data-com]').forEach(tr=>tr.onclick=()=>openCommessa(tr.dataset.com));
+}
+function comNew(){
+  const v=$('#view'); const sites=v._sites||[];
+  drawer('Nuova commessa',`<div class="col" style="gap:10px">
+    <div class="row" style="gap:8px"><label class="small mut grow">Codice<input id="cmCode" placeholder="C-2026-014"></label>
+      <label class="small mut grow">Committente<input id="cmClient" placeholder="Azienda XY"></label></div>
+    <label class="small mut">Nome / descrizione<input id="cmName" placeholder="Ristrutturazione capannone"></label>
+    <label class="small mut">Sede / cantiere<select id="cmSite"><option value="">—</option>${sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
+    <div class="row" style="gap:8px"><label class="small mut grow">Inizio<input id="cmStart" type="date"></label><label class="small mut grow">Fine prevista<input id="cmEnd" type="date"></label></div>
+    <label class="small mut">Importo contratto (€, facoltativo)<input id="cmBudget" type="number" step="0.01" style="width:160px"></label>
+    <label class="small mut">Note<input id="cmNote"></label>
+    <button class="btn" onclick="comSave()">Crea commessa</button><div class="cfg-msg small"></div></div>`);
+}
+async function comSave(){
+  const m=$('.cfg-msg');
+  const b={code:$('#cmCode').value.trim(),name:$('#cmName').value.trim(),site_id:$('#cmSite').value||null,
+    client_name:$('#cmClient').value||null,start_date:$('#cmStart').value||null,end_date:$('#cmEnd').value||null,
+    budget_amount:$('#cmBudget').value?Number($('#cmBudget').value):null,note:$('#cmNote').value||null};
+  if(!b.code||!b.name){m.textContent='codice e nome richiesti';m.style.color='var(--bad)';return;}
+  try{await api('/commesse',{method:'POST',body:JSON.stringify(b)}); toast('Commessa creata','ok'); closeDrawer(); route();}
+  catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
+}
+async function openCommessa(id){
+  const planner=can(['pianificatore','tenant_admin']);
+  let c; try{ c=await api('/commesse/'+id); }catch(e){ toast(e.message,'bad'); return; }
+  $('#view')._curCommessa=id;
+  const statusSel=planner?`<select id="cmStatus" onchange="comSetStatus('${id}',this.value)">${Object.entries(COMM_STATI).map(([k,l])=>`<option value="${k}" ${k===c.status?'selected':''}>${l}</option>`).join('')}</select>`:`<span class="chip">${esc(COMM_STATI[c.status]||c.status)}</span>`;
+  const lav=(c.lavorazioni||[]).map(l=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+    <div class="spread"><b class="small">${esc(l.name)}</b><span class="small mut">peso ${l.weight} · ${esc(LAV_STATI[l.status]||l.status)}</span></div>
+    <div class="row" style="gap:8px;align-items:center;margin-top:6px">${progBar(l.progress_pct)}
+      ${planner?`<input type="range" min="0" max="100" value="${l.progress_pct}" style="flex:1" onchange="lavSetProgress('${l.id}',this.value)">
+      <span class="small" style="width:38px;text-align:right">${l.progress_pct}%</span>
+      <button class="btn-ico btn ghost" onclick="lavDel('${l.id}')">${ICON.x}</button>`:`<span class="small">${l.progress_pct}%</span>`}</div></div>`).join('')
+    ||'<div class="small mut">Nessuna lavorazione. Aggiungine per misurare l\'avanzamento.</div>';
+  const sal=(c.sal||[]).map(s=>`<tr><td class="small">${esc(s.sal_date)}</td><td>${s.pct}%</td><td class="small">${s.amount!=null?'€ '+s.amount.toLocaleString('it-IT'):'—'}</td><td class="small mut">${esc(s.note||'')}</td></tr>`).join('')
+    ||`<tr><td colspan="4" class="empty">Nessun SAL registrato</td></tr>`;
+  const shifts=(c.shifts||[]).map(s=>`<tr><td class="small">${esc(s.email)}</td><td class="small">${dtLocal(s.starts_at)} → ${dtLocal(s.ends_at)}</td><td>${chip(s.state)}</td></tr>`).join('')
+    ||`<tr><td colspan="3" class="empty">Nessun turno legato</td></tr>`;
+  drawer('Commessa · '+esc(c.code),`<div class="col" style="gap:12px">
+    <div><div class="spread"><b>${esc(c.name)}</b>${statusSel}</div>
+      <div class="small mut" style="margin-top:4px">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}${c.start_date?' · '+esc(c.start_date):''}${c.end_date?' → '+esc(c.end_date):''}${c.budget!=null?' · € '+c.budget.toLocaleString('it-IT'):''}</div>
+      <div class="row" style="gap:8px;align-items:center;margin-top:8px">${progBar(c.progress)}<b>${c.progress}%</b><span class="small mut">avanzamento complessivo (media pesata)</span></div></div>
+    <div><div class="spread"><h3 style="margin:0">Lavorazioni (WBS)</h3>${planner?`<a onclick="lavNew('${id}')">+ aggiungi</a>`:''}</div>
+      <div style="margin-top:8px">${lav}</div></div>
+    <div><div class="spread"><h3 style="margin:0">SAL — stato avanzamento</h3>${planner?`<a onclick="salNew('${id}')">+ registra SAL</a>`:''}</div>
+      <table class="table" style="margin-top:6px"><thead><tr><th>Data</th><th>%</th><th>Importo</th><th>Note</th></tr></thead><tbody>${sal}</tbody></table></div>
+    <div><h3 style="margin:0">Turni legati</h3>
+      <table class="table" style="margin-top:6px"><thead><tr><th>Lavoratore</th><th>Quando</th><th>Stato</th></tr></thead><tbody>${shifts}</tbody></table>
+      <div class="small mut" style="margin-top:4px">Per legare un turno: pianificalo in <b>Turni</b> e scegli questa commessa.</div></div>
+    ${planner?`<button class="btn ghost" onclick="comDel('${id}')">${ICON.x} Elimina commessa</button>`:''}</div>`);
+}
+async function comSetStatus(id,st){ try{await api('/commesse/'+id,{method:'POST',body:JSON.stringify({status:st})}); toast('Stato aggiornato','ok');}catch(e){toast(e.message,'bad');} }
+async function comDel(id){ if(!await askConfirm('Eliminare la commessa? (rimuove lavorazioni e SAL; i turni restano, slegati)'))return;
+  try{await api('/commesse/'+id,{method:'DELETE'}); toast('Eliminata','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
+function lavNew(cid){
+  drawer('Nuova lavorazione',`<div class="col" style="gap:10px">
+    <label class="small mut">Nome<input id="lvName" placeholder="Scavo e fondazioni"></label>
+    <label class="small mut">Peso (quanto incide sul totale)<input id="lvW" type="number" step="0.5" value="1" style="width:120px"></label>
+    <label class="small mut">Note<input id="lvNote"></label>
+    <button class="btn" onclick="lavSave('${cid}')">Aggiungi</button><div class="cfg-msg small"></div></div>`);
+}
+async function lavSave(cid){
+  const m=$('.cfg-msg'); const name=$('#lvName').value.trim();
+  if(!name){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
+  try{await api('/commesse/'+cid+'/lavorazioni',{method:'POST',body:JSON.stringify({name,weight:Number($('#lvW').value)||1,note:$('#lvNote').value||null})});
+    toast('Lavorazione aggiunta','ok'); closeDrawer(); openCommessa(cid);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
+}
+async function lavSetProgress(id,val){ const p=Number(val)||0; const st=p>=100?'fatto':p>0?'in_corso':'da_fare';
+  try{await api('/lavorazioni/'+id,{method:'POST',body:JSON.stringify({progress_pct:p,status:st})}); const cid=$('#view')._curCommessa; if(cid)openCommessa(cid);}catch(e){toast(e.message,'bad');} }
+async function lavDel(id){ if(!await askConfirm('Eliminare la lavorazione?'))return; const cid=$('#view')._curCommessa;
+  try{await api('/lavorazioni/'+id,{method:'DELETE'}); toast('Eliminata','ok'); if(cid)openCommessa(cid);}catch(e){toast(e.message,'bad');} }
+function salNew(cid){
+  drawer('Registra SAL',`<div class="col" style="gap:10px">
+    <div class="small mut">Fotografia dell'avanzamento a una data (per fatturazione a milestone).</div>
+    <div class="row" style="gap:8px"><label class="small mut grow">Data<input id="slDate" type="date" value="${new Date().toISOString().slice(0,10)}"></label>
+      <label class="small mut grow">Avanzamento %<input id="slPct" type="number" min="0" max="100" value="0"></label></div>
+    <label class="small mut">Importo maturato (€, facoltativo)<input id="slAmt" type="number" step="0.01" style="width:160px"></label>
+    <label class="small mut">Note<input id="slNote"></label>
+    <button class="btn" onclick="salSave('${cid}')">Registra</button><div class="cfg-msg small"></div></div>`);
+}
+async function salSave(cid){
+  const m=$('.cfg-msg'); const pct=Number($('#slPct').value);
+  if(!(pct>=0&&pct<=100)){m.textContent='percentuale 0..100';m.style.color='var(--bad)';return;}
+  try{await api('/commesse/'+cid+'/sal',{method:'POST',body:JSON.stringify({pct,amount:$('#slAmt').value?Number($('#slAmt').value):null,note:$('#slNote').value||null,sal_date:$('#slDate').value||null})});
+    toast('SAL registrato','ok'); closeDrawer(); openCommessa(cid);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
+}
 function orderFormFields(o,sites,workers,groups){ o=o||{}; groups=groups||[]; return `
   <div class="field"><label>Titolo</label><input id="o_title" value="${esc(o.title||'')}" placeholder="Manutenzione quadro elettrico"></div>
+  <div class="field"><label>Sede</label><select id="o_site"><option value="">—</option>${sites.map(s=>`<option value="${s.id}" ${s.id===o.site_id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>
   <div class="field"><label>Sede</label><select id="o_site"><option value="">—</option>${sites.map(s=>`<option value="${s.id}" ${s.id===o.site_id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>
   <div class="field"><label>Assegna a (persona)</label><select id="o_asg"><option value="">—</option>${workers.map(w=>`<option value="${w.id}" ${w.id===o.assigned_user?'selected':''}>${esc(w.email)}</option>`).join('')}</select></div>
   <div class="field"><label>Assegna a (gruppo di persone)</label><select id="o_grp"><option value="">—</option>${groups.map(g=>`<option value="${g.id}" ${g.id===o.assigned_group?'selected':''}>${esc(g.name)}</option>`).join('')}</select><div class="small mut">i membri del gruppo vedono ed eseguono l'ordine</div></div>
@@ -4057,12 +4164,14 @@ function toISO(localVal){ if(!localVal)return null; const d=new Date(localVal); 
 async function vTurni(v){
   const planner=can(['pianificatore','tenant_admin']);
   const hasInterventi=ACTIVE_MODS.has('interventi');
-  const [P,OC,A,Q,CV,users,sites,O,FM]=await Promise.all([
+  const hasCantieri=ACTIVE_MODS.has('cantieri');
+  const [P,OC,A,Q,CV,users,sites,O,FM,CM]=await Promise.all([
     api('/shift-plans').catch(()=>[]), api('/oncall').catch(()=>[]), api('/absences').catch(()=>[]), api('/qualifications').catch(()=>[]),
     api('/coverage').catch(()=>[]),
     planner?api('/users').catch(()=>[]):Promise.resolve([]), planner?api('/sites').catch(()=>[]):Promise.resolve([]),
-    hasInterventi?api('/orders').catch(()=>[]):Promise.resolve([]), hasInterventi?api('/field-modes').catch(()=>({cantieri:true,assistenza:true})):Promise.resolve(null)]);
-  v._users=users; v._sites=sites; v._quals=Q||[]; v._cov=CV||[]; v._orders=(O&&O.length!==undefined)?O:[]; v._fmodes=FM;
+    hasInterventi?api('/orders').catch(()=>[]):Promise.resolve([]), hasInterventi?api('/field-modes').catch(()=>({cantieri:true,assistenza:true})):Promise.resolve(null),
+    hasCantieri?api('/commesse').catch(()=>[]):Promise.resolve([])]);
+  v._users=users; v._sites=sites; v._quals=Q||[]; v._cov=CV||[]; v._orders=(O&&O.length!==undefined)?O:[]; v._fmodes=FM; v._commesse=(CM&&CM.length!==undefined)?CM:[];
   const stChip=s=>`<span class="chip ${s==='confermato'?'s-attivo':''}">${s}</span>`;
   const planRows=P.map(p=>{
     const mine=p.user_id===ME.user_id||ME.email===p.email;
@@ -4071,7 +4180,7 @@ async function vTurni(v){
     if(planner&&p.state!=='annullato') acts.push(`<button class="btn ghost small" onclick='spSubs(${JSON.stringify(p).replace(/'/g,"&#39;")})'>sostituti</button>`);
     if(planner&&p.state!=='annullato') acts.push(`<button class="btn ghost small" onclick="spAct('${p.id}','cancel')">annulla</button>`);
     if(planner) acts.push(`<button class="btn-ico btn ghost" onclick="spDel('${p.id}')">${ICON.x}</button>`);
-    return `<tr><td>${esc(p.email)}${p.order_title?`<div class="small mut">🔧 ${esc(p.order_title)}</div>`:''}</td><td>${esc(p.site||'—')}</td>
+    return `<tr><td>${esc(p.email)}${p.order_title?`<div class="small mut">🔧 ${esc(p.order_title)}</div>`:''}${p.commessa_name?`<div class="small mut">🏗️ ${esc(p.commessa_code||'')} ${esc(p.commessa_name)}</div>`:''}</td><td>${esc(p.site||'—')}</td>
       <td class="small">${dtLocal(p.starts_at)} → ${dtLocal(p.ends_at)}</td><td>${stChip(p.state)}</td>
       <td style="text-align:right">${acts.join(' ')}</td></tr>`;}).join('')
     ||`<tr><td colspan="5" class="empty">Nessun turno pianificato</td></tr>`;
@@ -4193,11 +4302,12 @@ async function absSave(){
 }
 async function absDel(id){ if(!await askConfirm('Eliminare l\'assenza?'))return; try{await api('/absences/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
 function spNew(){
-  const v=$('#view'); const users=v._users||[], sites=v._sites||[], quals=v._quals||[], orders=v._orders||[], fm=v._fmodes;
+  const v=$('#view'); const users=v._users||[], sites=v._sites||[], quals=v._quals||[], orders=v._orders||[], fm=v._fmodes, commesse=v._commesse||[];
   const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
   const qualField=quals.length?`<label class="small mut">Competenza richiesta (facoltativa)<select id="spQ"><option value="">—</option>${quals.map(q=>`<option value="${q.id}">${esc(q.name)}</option>`).join('')}</select></label>`:'';
-  let woLabel='Intervento / Cantiere'; if(fm){ if(fm.cantieri&&!fm.assistenza)woLabel='Cantiere'; else if(fm.assistenza&&!fm.cantieri)woLabel='Intervento'; }
-  const woField=orders.length?`<label class="small mut">${woLabel} (facoltativo)<select id="spW2"><option value="">—</option>${orders.map(o=>`<option value="${o.id}">${esc(o.title)}${o.site?' · '+esc(o.site):''}</option>`).join('')}</select></label>`:'';
+  let woLabel='Intervento'; if(fm){ if(fm.cantieri&&!fm.assistenza)woLabel='Intervento'; }
+  const woField=orders.length?`<label class="small mut">Intervento/appuntamento (facoltativo)<select id="spW2"><option value="">—</option>${orders.map(o=>`<option value="${o.id}">${esc(o.title)}${o.site?' · '+esc(o.site):''}</option>`).join('')}</select></label>`:'';
+  const cmField=commesse.length?`<label class="small mut">Cantiere / commessa (facoltativo)<select id="spCM"><option value="">—</option>${commesse.map(c=>`<option value="${c.id}">${esc(c.code)} · ${esc(c.name)}</option>`).join('')}</select></label>`:'';
   drawer('Pianifica turno',`<div class="col" style="gap:10px">
     <label class="small mut">Lavoratore<select id="spU">${workers.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select></label>
     <label class="small mut">Sede<select id="spS"><option value="">—</option>${sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
@@ -4206,6 +4316,7 @@ function spNew(){
     <div class="small mut">Se «Alle» è ≤ «Dalle» il turno finisce il giorno dopo (turno notturno). Per più giorni usa «Genera turni».</div>
     ${qualField}
     ${woField}
+    ${cmField}
     <label class="small mut">Nota<input id="spN"></label>
     <button class="btn" onclick="spSave()">Pianifica</button><div class="cfg-msg small"></div></div>`);
 }
@@ -4215,7 +4326,7 @@ async function spSave(){
   if(!$('#spU').value||!day||!t1||!t2){m.textContent='compila lavoratore, giorno e orari';m.style.color='var(--bad)';return;}
   // turno notturno: se "Alle" <= "Dalle" la fine è il giorno successivo
   let endDay=day; if(t2<=t1){ const d=new Date(day+'T00:00'); d.setDate(d.getDate()+1); endDay=d.toISOString().slice(0,10); }
-  const b={user_id:$('#spU').value,site_id:$('#spS').value||null,starts_at:toISO(day+'T'+t1),ends_at:toISO(endDay+'T'+t2),note:$('#spN').value||null,required_qualification:($('#spQ')&&$('#spQ').value)||null,work_order_id:($('#spW2')&&$('#spW2').value)||null};
+  const b={user_id:$('#spU').value,site_id:$('#spS').value||null,starts_at:toISO(day+'T'+t1),ends_at:toISO(endDay+'T'+t2),note:$('#spN').value||null,required_qualification:($('#spQ')&&$('#spQ').value)||null,work_order_id:($('#spW2')&&$('#spW2').value)||null,commessa_id:($('#spCM')&&$('#spCM').value)||null};
   if(!b.starts_at||!b.ends_at){m.textContent='orari non validi';m.style.color='var(--bad)';return;}
   try{ const r=await api('/shift-plans',{method:'POST',body:JSON.stringify(b)});
     const w=(r&&r.warnings)||[];

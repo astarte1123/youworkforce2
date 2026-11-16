@@ -512,7 +512,11 @@ pub async fn set_module(State(st): State<AppState>, h: HeaderMap, Path(tid): Pat
             .bind(tid).fetch_one(&st.owner_pool).await.map_err(ise)?;
         if open > 0 { return Err(err(StatusCode::CONFLICT, "open incidents: disattivazione bloccata (apri piano di disattivazione)")); }
     }
-    sqlx::query("UPDATE app.tenant_modules SET state=$1,updated_at=now() WHERE tenant_id=$2 AND module_code=$3")
+    // UPSERT: i moduli aggiunti al catalogo DOPO la creazione del tenant non hanno la riga
+    // (il seed la crea solo al create). Un semplice UPDATE non troverebbe nulla e lo stato
+    // resterebbe 'non_abilitato'. Con ON CONFLICT l'attivazione funziona per qualsiasi modulo.
+    sqlx::query("INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES($2,$3,$1)
+                 ON CONFLICT (tenant_id,module_code) DO UPDATE SET state=EXCLUDED.state,updated_at=now()")
         .bind(&b.state).bind(tid).bind(&b.module_code).execute(&st.owner_pool).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,'superadmin','set_module',$2)")
         .bind(tid).bind(json!({"module":b.module_code,"state":b.state})).execute(&st.owner_pool).await.map_err(ise)?;
@@ -4193,7 +4197,7 @@ pub async fn remove_team_member(State(st): State<AppState>, h: HeaderMap, Path((
 
 // ---------------- Turni pianificati ----------------
 #[derive(Deserialize)]
-pub struct ShiftPlanReq { pub user_id: Uuid, pub site_id: Option<Uuid>, pub starts_at: String, pub ends_at: String, pub note: Option<String>, #[serde(default)] pub required_qualification: Option<Uuid>, #[serde(default)] pub work_order_id: Option<Uuid> }
+pub struct ShiftPlanReq { pub user_id: Uuid, pub site_id: Option<Uuid>, pub starts_at: String, pub ends_at: String, pub note: Option<String>, #[serde(default)] pub required_qualification: Option<Uuid>, #[serde(default)] pub work_order_id: Option<Uuid>, #[serde(default)] pub commessa_id: Option<Uuid> }
 
 /// Regole di pianificazione del tenant (default di prodotto; preset "standard").
 async fn scheduling_rules(st: &AppState, tid: Uuid) -> crate::scheduling::Rules {
@@ -4579,8 +4583,8 @@ pub async fn create_shift_plan(State(st): State<AppState>, h: HeaderMap, Json(b)
     }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query(
-        "INSERT INTO app.shift_plans(tenant_id,user_id,site_id,starts_at,ends_at,note,created_by,required_qualification,work_order_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id")
-        .bind(tid).bind(b.user_id).bind(b.site_id).bind(a).bind(z).bind(&b.note).bind(s.user_id).bind(b.required_qualification).bind(b.work_order_id)
+        "INSERT INTO app.shift_plans(tenant_id,user_id,site_id,starts_at,ends_at,note,created_by,required_qualification,work_order_id,commessa_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id")
+        .bind(tid).bind(b.user_id).bind(b.site_id).bind(a).bind(z).bind(&b.note).bind(s.user_id).bind(b.required_qualification).bind(b.work_order_id).bind(b.commessa_id)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let iid: Uuid = row.get("id");
@@ -4753,9 +4757,10 @@ pub async fn list_shift_plans(State(st): State<AppState>, h: HeaderMap,
     let own = matches!(s.role.as_str(), "lavoratore"|"reperibile");
     let rows = sqlx::query(
         "SELECT p.id,p.user_id,p.site_id,p.starts_at,p.ends_at,p.note,p.state,u.email,si.name AS site,
-                p.work_order_id, o.title AS order_title
+                p.work_order_id, o.title AS order_title, p.commessa_id, cm.code AS commessa_code, cm.name AS commessa_name
          FROM app.shift_plans p JOIN app.users u ON u.id=p.user_id LEFT JOIN app.sites si ON si.id=p.site_id
          LEFT JOIN app.work_orders o ON o.id=p.work_order_id
+         LEFT JOIN app.commesse cm ON cm.id=p.commessa_id
          WHERE ($1=false OR p.user_id=$2)
            AND ($3::timestamptz IS NULL OR p.ends_at>=$3)
            AND ($4::timestamptz IS NULL OR p.starts_at<=$4)
@@ -4768,8 +4773,192 @@ pub async fn list_shift_plans(State(st): State<AppState>, h: HeaderMap,
         "starts_at":r.get::<chrono::DateTime<chrono::Utc>,_>("starts_at"),
         "ends_at":r.get::<chrono::DateTime<chrono::Utc>,_>("ends_at"),
         "note":r.try_get::<String,_>("note").ok(),"state":r.get::<String,_>("state"),
-        "work_order_id":r.try_get::<Uuid,_>("work_order_id").ok(),"order_title":r.try_get::<String,_>("order_title").ok() })).collect();
+        "work_order_id":r.try_get::<Uuid,_>("work_order_id").ok(),"order_title":r.try_get::<String,_>("order_title").ok(),
+        "commessa_id":r.try_get::<Uuid,_>("commessa_id").ok(),"commessa_code":r.try_get::<String,_>("commessa_code").ok(),"commessa_name":r.try_get::<String,_>("commessa_name").ok() })).collect();
     Ok(Json(json!(out)))
+}
+// ===== Modulo Cantieri: commessa (progetto) -> lavorazioni (WBS) -> SAL; riuso turni =====
+fn parse_date_opt(s: &Option<String>) -> Option<chrono::NaiveDate> {
+    s.as_ref().and_then(|x| chrono::NaiveDate::parse_from_str(x.trim(), "%Y-%m-%d").ok())
+}
+#[derive(Deserialize)]
+pub struct CommessaReq {
+    pub code: String, pub name: String,
+    #[serde(default)] pub site_id: Option<Uuid>, #[serde(default)] pub client_name: Option<String>,
+    #[serde(default)] pub start_date: Option<String>, #[serde(default)] pub end_date: Option<String>,
+    #[serde(default)] pub budget_amount: Option<f64>, #[serde(default)] pub status: Option<String>,
+    #[serde(default)] pub note: Option<String>,
+}
+#[derive(Deserialize)]
+pub struct CommessaPatch {
+    #[serde(default)] pub name: Option<String>, #[serde(default)] pub status: Option<String>,
+    #[serde(default)] pub client_name: Option<String>, #[serde(default)] pub start_date: Option<String>,
+    #[serde(default)] pub end_date: Option<String>, #[serde(default)] pub budget_amount: Option<f64>,
+    #[serde(default)] pub note: Option<String>,
+}
+pub async fn list_commesse(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query(
+        "SELECT c.id,c.code,c.name,c.status,c.client_name,c.start_date,c.end_date,c.budget_amount::float8 AS budget,
+                si.name AS site,
+                COALESCE((SELECT CASE WHEN sum(weight)>0 THEN round(sum(weight*progress_pct)/sum(weight)) ELSE 0 END
+                          FROM app.commessa_lavorazioni l WHERE l.commessa_id=c.id),0)::int AS progress,
+                (SELECT count(*) FROM app.commessa_lavorazioni l WHERE l.commessa_id=c.id)::int AS lav_count,
+                (SELECT count(*) FROM app.shift_plans p WHERE p.commessa_id=c.id AND p.state<>'annullato')::int AS shift_count
+         FROM app.commesse c LEFT JOIN app.sites si ON si.id=c.site_id ORDER BY c.created_at DESC")
+        .fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"code":r.get::<String,_>("code"),"name":r.get::<String,_>("name"),
+        "status":r.get::<String,_>("status"),"client_name":r.try_get::<String,_>("client_name").ok(),
+        "site":r.try_get::<String,_>("site").ok(),
+        "start_date":r.try_get::<chrono::NaiveDate,_>("start_date").ok().map(|d|d.to_string()),
+        "end_date":r.try_get::<chrono::NaiveDate,_>("end_date").ok().map(|d|d.to_string()),
+        "budget":r.try_get::<f64,_>("budget").ok(),
+        "progress":r.get::<i32,_>("progress"),"lav_count":r.get::<i32,_>("lav_count"),"shift_count":r.get::<i32,_>("shift_count")
+    })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn create_commessa(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CommessaReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    if b.code.trim().is_empty() || b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "codice e nome richiesti")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let dup: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.commesse WHERE code=$1").bind(b.code.trim()).fetch_optional(&mut *tx).await.map_err(ise)?;
+    if dup.is_some() { return Err(err(StatusCode::CONFLICT, "codice commessa già esistente")); }
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO app.commesse(tenant_id,code,name,site_id,client_name,start_date,end_date,budget_amount,status,note,created_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8::numeric,COALESCE($9,'pianificato'),$10,$11) RETURNING id")
+        .bind(tid).bind(b.code.trim()).bind(b.name.trim()).bind(b.site_id).bind(&b.client_name)
+        .bind(parse_date_opt(&b.start_date)).bind(parse_date_opt(&b.end_date)).bind(b.budget_amount)
+        .bind(&b.status).bind(&b.note).bind(s.user_id)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "commessa_create", json!({"code":b.code,"name":b.name})).await;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let c = sqlx::query(
+        "SELECT c.id,c.code,c.name,c.status,c.client_name,c.start_date,c.end_date,c.budget_amount::float8 AS budget,
+                c.note,c.site_id,si.name AS site,
+                COALESCE((SELECT CASE WHEN sum(weight)>0 THEN round(sum(weight*progress_pct)/sum(weight)) ELSE 0 END
+                          FROM app.commessa_lavorazioni l WHERE l.commessa_id=c.id),0)::int AS progress
+         FROM app.commesse c LEFT JOIN app.sites si ON si.id=c.site_id WHERE c.id=$1")
+        .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let c = match c { Some(r)=>r, None=>{ return Err(err(StatusCode::NOT_FOUND, "commessa non trovata")); } };
+    let lav = sqlx::query("SELECT id,name,position,weight::float8 AS weight,progress_pct,status,note FROM app.commessa_lavorazioni WHERE commessa_id=$1 ORDER BY position,name").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let sal = sqlx::query("SELECT s.id,s.sal_date,s.pct,s.amount::float8 AS amount,s.note,s.created_at,u.email AS author FROM app.commessa_sal s LEFT JOIN app.users u ON u.id=s.created_by WHERE s.commessa_id=$1 ORDER BY s.sal_date DESC,s.created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let shifts = sqlx::query("SELECT p.id,p.starts_at,p.ends_at,p.state,u.email FROM app.shift_plans p JOIN app.users u ON u.id=p.user_id WHERE p.commessa_id=$1 AND p.state<>'annullato' ORDER BY p.starts_at").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let lav_out: Vec<Value> = lav.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"position":r.get::<i32,_>("position"),
+        "weight":r.get::<f64,_>("weight"),"progress_pct":r.get::<i32,_>("progress_pct"),
+        "status":r.get::<String,_>("status"),"note":r.try_get::<String,_>("note").ok() })).collect();
+    let sal_out: Vec<Value> = sal.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"sal_date":r.get::<chrono::NaiveDate,_>("sal_date").to_string(),
+        "pct":r.get::<i32,_>("pct"),"amount":r.try_get::<f64,_>("amount").ok(),
+        "note":r.try_get::<String,_>("note").ok(),"author":r.try_get::<String,_>("author").ok() })).collect();
+    let sh_out: Vec<Value> = shifts.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"email":r.get::<String,_>("email"),"state":r.get::<String,_>("state"),
+        "starts_at":r.get::<chrono::DateTime<chrono::Utc>,_>("starts_at"),
+        "ends_at":r.get::<chrono::DateTime<chrono::Utc>,_>("ends_at") })).collect();
+    Ok(Json(json!({
+        "id":c.get::<Uuid,_>("id"),"code":c.get::<String,_>("code"),"name":c.get::<String,_>("name"),
+        "status":c.get::<String,_>("status"),"client_name":c.try_get::<String,_>("client_name").ok(),
+        "site":c.try_get::<String,_>("site").ok(),"site_id":c.try_get::<Uuid,_>("site_id").ok(),
+        "start_date":c.try_get::<chrono::NaiveDate,_>("start_date").ok().map(|d|d.to_string()),
+        "end_date":c.try_get::<chrono::NaiveDate,_>("end_date").ok().map(|d|d.to_string()),
+        "budget":c.try_get::<f64,_>("budget").ok(),"note":c.try_get::<String,_>("note").ok(),
+        "progress":c.get::<i32,_>("progress"),
+        "lavorazioni":lav_out,"sal":sal_out,"shifts":sh_out
+    })))
+}
+pub async fn update_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<CommessaPatch>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query(
+        "UPDATE app.commesse SET name=COALESCE($2,name),status=COALESCE($3,status),client_name=COALESCE($4,client_name),
+         start_date=COALESCE($5,start_date),end_date=COALESCE($6,end_date),budget_amount=COALESCE($7::numeric,budget_amount),
+         note=COALESCE($8,note) WHERE id=$1")
+        .bind(id).bind(&b.name).bind(&b.status).bind(&b.client_name)
+        .bind(parse_date_opt(&b.start_date)).bind(parse_date_opt(&b.end_date)).bind(b.budget_amount).bind(&b.note)
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "commessa non trovata")); }
+    audit(&st, tid, &s.email, "commessa_update", json!({"id":id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.commesse WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "commessa_delete", json!({"id":id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)]
+pub struct LavorazioneReq { pub name: String, #[serde(default)] pub weight: Option<f64>, #[serde(default)] pub position: Option<i32>, #[serde(default)] pub note: Option<String> }
+pub async fn create_lavorazione(State(st): State<AppState>, h: HeaderMap, Path(cid): Path<Uuid>, Json(b): Json<LavorazioneReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let pos = match b.position { Some(p)=>p, None=> sqlx::query_scalar::<_,Option<i32>>("SELECT max(position) FROM app.commessa_lavorazioni WHERE commessa_id=$1").bind(cid).fetch_one(&mut *tx).await.map_err(ise)?.unwrap_or(0)+1 };
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO app.commessa_lavorazioni(tenant_id,commessa_id,name,position,weight,note) VALUES($1,$2,$3,$4,COALESCE($5::numeric,1),$6) RETURNING id")
+        .bind(tid).bind(cid).bind(b.name.trim()).bind(pos).bind(b.weight).bind(&b.note)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":id})))
+}
+#[derive(Deserialize)]
+pub struct LavorazionePatch { #[serde(default)] pub name: Option<String>, #[serde(default)] pub weight: Option<f64>, #[serde(default)] pub progress_pct: Option<i32>, #[serde(default)] pub status: Option<String>, #[serde(default)] pub note: Option<String> }
+pub async fn update_lavorazione(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<LavorazionePatch>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    if let Some(p)=b.progress_pct { if !(0..=100).contains(&p) { return Err(err(StatusCode::BAD_REQUEST, "avanzamento 0..100")); } }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // se status='fatto' porta a 100; se 'da_fare' e nessun progress esplicito, lascia
+    let n = sqlx::query(
+        "UPDATE app.commessa_lavorazioni SET name=COALESCE($2,name),weight=COALESCE($3::numeric,weight),
+         progress_pct=CASE WHEN $5='fatto' THEN 100 ELSE COALESCE($4,progress_pct) END,
+         status=COALESCE($5,status),note=COALESCE($6,note) WHERE id=$1")
+        .bind(id).bind(&b.name).bind(b.weight).bind(b.progress_pct).bind(&b.status).bind(&b.note)
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "lavorazione non trovata")); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_lavorazione(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.commessa_lavorazioni WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)]
+pub struct SalReq { pub pct: i32, #[serde(default)] pub amount: Option<f64>, #[serde(default)] pub note: Option<String>, #[serde(default)] pub sal_date: Option<String> }
+pub async fn create_sal(State(st): State<AppState>, h: HeaderMap, Path(cid): Path<Uuid>, Json(b): Json<SalReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    if !(0..=100).contains(&b.pct) { return Err(err(StatusCode::BAD_REQUEST, "pct 0..100")); }
+    let d = parse_date_opt(&b.sal_date).unwrap_or_else(|| chrono::Utc::now().date_naive());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO app.commessa_sal(tenant_id,commessa_id,sal_date,pct,amount,note,created_by) VALUES($1,$2,$3,$4,$5::numeric,$6,$7) RETURNING id")
+        .bind(tid).bind(cid).bind(d).bind(b.pct).bind(b.amount).bind(&b.note).bind(s.user_id)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "commessa_sal", json!({"commessa":cid,"pct":b.pct})).await;
+    Ok(Json(json!({"id":id})))
 }
 #[derive(Deserialize)]
 pub struct ShiftPlanAction { pub action: String } // confirm|cancel
@@ -9469,9 +9658,11 @@ async fn calendar_collect(st: &AppState, tid: Uuid, from: chrono::DateTime<chron
     // --- Forza lavoro e turni: shift_plans ---
     if module_active(st, tid, "workforce").await {
         let rows = sqlx::query(
-            "SELECT sp.id, sp.user_id, sp.starts_at, sp.ends_at, sp.state, u.email, u.cal_color, o.title AS order_title
+            "SELECT sp.id, sp.user_id, sp.starts_at, sp.ends_at, sp.state, u.email, u.cal_color, o.title AS order_title,
+                    cm.code AS commessa_code, cm.name AS commessa_name
              FROM app.shift_plans sp JOIN app.users u ON u.id=sp.user_id
              LEFT JOIN app.work_orders o ON o.id=sp.work_order_id
+             LEFT JOIN app.commesse cm ON cm.id=sp.commessa_id
              WHERE sp.tenant_id=$1 AND sp.ends_at >= $2 AND sp.starts_at <= $3
                AND ($4::uuid IS NULL OR sp.user_id=$4)")
             .bind(tid).bind(from).bind(to).bind(only_uid)
@@ -9480,8 +9671,11 @@ async fn calendar_collect(st: &AppState, tid: Uuid, from: chrono::DateTime<chron
             let em: String = r.get("email");
             let uid: Uuid = r.get("user_id");
             let ordt: Option<String> = r.try_get("order_title").ok().flatten();
+            let cmc: Option<String> = r.try_get("commessa_code").ok().flatten();
+            let cmn: Option<String> = r.try_get("commessa_name").ok().flatten();
             // colore PER LAVORATORE (scelto o da palette) per distinguerli sul calendario
-            let title = match &ordt { Some(t) => format!("Turno · {em} · {t}"), None => format!("Turno · {em}") };
+            let ctx = cmn.as_ref().map(|n| match &cmc { Some(c)=>format!("{c} · {n}"), None=>n.clone() }).or(ordt.clone());
+            let title = match &ctx { Some(t) => format!("Turno · {em} · {t}"), None => format!("Turno · {em}") };
             out.push(CalEvent{ id: format!("shift-{}", r.get::<Uuid,_>("id")), source:"turno",
                 title, color: user_color(r.try_get("cal_color").ok().flatten(), uid),
                 start: r.get("starts_at"), end: r.get("ends_at"),

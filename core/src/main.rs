@@ -304,6 +304,12 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/shift-plans/suggest", post(api::shift_suggest))
         .route("/api/users/:id/color", post(api::user_set_color))
         .route("/api/field-modes", get(api::field_modes_get).post(api::field_modes_set))
+        // Modulo Cantieri: commessa -> lavorazioni (WBS) -> SAL
+        .route("/api/commesse", get(api::list_commesse).post(api::create_commessa))
+        .route("/api/commesse/:id", get(api::get_commessa).post(api::update_commessa).delete(api::delete_commessa))
+        .route("/api/commesse/:id/lavorazioni", post(api::create_lavorazione))
+        .route("/api/commesse/:id/sal", post(api::create_sal))
+        .route("/api/lavorazioni/:id", post(api::update_lavorazione).delete(api::delete_lavorazione))
         ;
     // catena spezzata in più statement: una singola espressione .route()* troppo lunga
     // fa esplodere lo stack di rustc in codegen (STATUS_STACK_BUFFER_OVERRUN su Windows).

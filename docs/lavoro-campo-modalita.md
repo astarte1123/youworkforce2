@@ -56,6 +56,44 @@ dal **tenant_admin**. Effetti:
 - Form «Pianifica turno»: campo **Intervento/Cantiere** (ordini aperti), etichetta secondo le modalità.
 - Calendario: il turno mostra anche l'intervento collegato.
 
+## DECISIONE (2026-11-16): due moduli su core condiviso
+
+La modalità "solo etichetta" su `work_orders` **non bastava**: cantiere e assistenza divergono
+in entità e flusso, non solo nei nomi. `work_orders` (una finestra programmata + report + firma)
+descrive bene **una visita di assistenza**, non un cantiere (manca il progetto-padre,
+l'avanzamento, le lavorazioni, le presenze). Per questo "Nuovo cantiere" e "Nuovo appuntamento"
+risultavano identici.
+
+Scelta: **due moduli distinti** che condividono il core campo (persone, sedi, calendario,
+motore turni, allegati/firma, consuntivi, AI, PWA, qualifiche):
+
+| | Modulo `interventi` (= Assistenza) | Modulo `cantieri` (nuovo) |
+|---|---|---|
+| Oggetto | ordine/appuntamento (`work_orders`) | **commessa** (progetto) |
+| Scomposizione | checklist della visita | **lavorazioni (WBS)** con peso+avanzamento |
+| Avanzamento | esito per visita | **media pesata** delle lavorazioni + **SAL** datati |
+| Commerciale | listino + consuntivo per visita | SAL/milestone, importo contratto |
+| Pianificazione | agenda appuntamenti | turni (riusa workforce) legati alla commessa |
+
+Un tenant attiva `interventi`, `cantieri` o entrambi (dal superadmin). Aree di menu separate
+("Assistenza" e "Cantieri") perché flussi e spesso squadre sono diversi.
+
+### Implementato (modulo Cantieri)
+- mig `0088`: catalogo `cantieri`; tabelle `commesse`, `commessa_lavorazioni` (peso, progress_pct,
+  status), `commessa_sal` (data, pct, importo); `shift_plans.commessa_id` (FK ON DELETE SET NULL).
+  mig `0089`: backfill righe `tenant_modules` per i tenant esistenti.
+- Fix robusto: `set_module` ora fa **UPSERT** (un modulo aggiunto dopo la creazione del tenant
+  non aveva la riga → l'attivazione falliva silenziosamente).
+- Avanzamento commessa = `round(sum(weight*progress)/sum(weight))`. Status lavorazione `fatto`→100%.
+- Endpoint: `GET/POST /api/commesse`, `GET/POST/DELETE /api/commesse/:id`,
+  `POST /api/commesse/:id/lavorazioni`, `POST/DELETE /api/lavorazioni/:id`,
+  `POST /api/commesse/:id/sal`. Turno può avere `commessa_id`; lista turni e calendario mostrano la commessa.
+- Console: menu "Cantieri" (vCantieri) con elenco+barre avanzamento; drawer commessa con lavorazioni
+  (slider avanzamento), SAL, turni legati; form turno con select "Cantiere / commessa". e2e `qa/cantieri-e2e.sh` 9/9.
+
+Nota: il toggle `interventi.modes` (cantieri/assistenza) resta per la terminologia del modulo
+interventi, ma la vera separazione ora è a livello di **modulo**. Candidato a deprecazione.
+
 ## Fuori da questa slice (roadmap)
 - Anagrafica **cliente/commessa** dedicata (oggi solo sede).
 - Vista «agenda appuntamenti» per l'assistenza (diversa dalla copertura-cantiere).
