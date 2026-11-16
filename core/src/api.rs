@@ -8903,6 +8903,147 @@ pub async fn oncall_calendar_ics(State(st): State<AppState>, axum::extract::Quer
     ([(axum::http::header::CONTENT_TYPE, "text/calendar; charset=utf-8")], ics).into_response()
 }
 
+// ============================================================================
+// Calendario CORE condiviso (W1): un'unica vista che aggrega gli eventi dei moduli
+// Campo attivi (turni/interventi/ronde). Ogni modulo è una "sorgente eventi"; il
+// calendario li fonde. Tenant-scoped (RLS). I ruoli ristretti vedono solo i propri.
+// ============================================================================
+#[derive(Clone)]
+struct CalEvent { id: String, source: &'static str, title: String, color: &'static str,
+    start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>,
+    user_id: Option<Uuid>, user: Option<String>, link: Option<String> }
+fn cal_json(e: &CalEvent) -> Value {
+    json!({"id":e.id,"source":e.source,"title":e.title,"color":e.color,
+        "start":e.start.to_rfc3339(),"end":e.end.to_rfc3339(),
+        "user_id":e.user_id,"user":e.user,"link":e.link})
+}
+/// Raccoglie gli eventi del tenant nella finestra [from,to] dai moduli attivi. `only_uid` limita
+/// a una persona (ruoli ristretti: i propri). Usato sia dall'endpoint JSON sia dall'iCal.
+async fn calendar_collect(st: &AppState, tid: Uuid, from: chrono::DateTime<chrono::Utc>,
+    to: chrono::DateTime<chrono::Utc>, only_uid: Option<Uuid>) -> Vec<CalEvent> {
+    let mut out: Vec<CalEvent> = Vec::new();
+    // --- Forza lavoro e turni: shift_plans ---
+    if module_active(st, tid, "workforce").await {
+        let rows = sqlx::query(
+            "SELECT sp.id, sp.user_id, sp.starts_at, sp.ends_at, sp.state, u.email
+             FROM app.shift_plans sp JOIN app.users u ON u.id=sp.user_id
+             WHERE sp.tenant_id=$1 AND sp.ends_at >= $2 AND sp.starts_at <= $3
+               AND ($4::uuid IS NULL OR sp.user_id=$4)")
+            .bind(tid).bind(from).bind(to).bind(only_uid)
+            .fetch_all(&st.owner_pool).await.unwrap_or_default();
+        for r in &rows {
+            let em: String = r.get("email");
+            out.push(CalEvent{ id: format!("shift-{}", r.get::<Uuid,_>("id")), source:"turno",
+                title: format!("Turno · {em}"), color:"#16a34a",
+                start: r.get("starts_at"), end: r.get("ends_at"),
+                user_id: Some(r.get("user_id")), user: Some(em), link: None });
+        }
+    }
+    // --- Interventi e cantieri: ordini con appuntamento programmato ---
+    if module_active(st, tid, "interventi").await {
+        let rows = sqlx::query(
+            "SELECT o.id, o.title, o.assigned_user, o.scheduled_start, o.scheduled_end, u.email
+             FROM app.work_orders o LEFT JOIN app.users u ON u.id=o.assigned_user
+             WHERE o.tenant_id=$1 AND o.scheduled_start IS NOT NULL
+               AND o.scheduled_start <= $3
+               AND COALESCE(o.scheduled_end, o.scheduled_start + interval '1 hour') >= $2
+               AND ($4::uuid IS NULL OR o.assigned_user=$4)")
+            .bind(tid).bind(from).bind(to).bind(only_uid)
+            .fetch_all(&st.owner_pool).await.unwrap_or_default();
+        for r in &rows {
+            let s0: chrono::DateTime<chrono::Utc> = r.get("scheduled_start");
+            let e0: chrono::DateTime<chrono::Utc> = r.try_get("scheduled_end").ok()
+                .unwrap_or_else(|| s0 + chrono::Duration::hours(1));
+            let title: String = r.get("title");
+            out.push(CalEvent{ id: format!("order-{}", r.get::<Uuid,_>("id")), source:"intervento",
+                title: format!("Intervento · {title}"), color:"#2563eb",
+                start: s0, end: e0, user_id: r.try_get("assigned_user").ok(),
+                user: r.try_get::<String,_>("email").ok(), link: None });
+        }
+    }
+    // --- Ronde e punzonature: giri eseguiti (finestra reale) ---
+    if module_active(st, tid, "giri").await {
+        let rows = sqlx::query(
+            "SELECT pr.id, pr.user_id, pr.started_at, pr.ended_at, pr.status, u.email, rt.name AS route
+             FROM app.patrol_rounds pr JOIN app.users u ON u.id=pr.user_id
+             JOIN app.patrol_routes rt ON rt.id=pr.route_id
+             WHERE pr.tenant_id=$1 AND pr.started_at <= $3
+               AND COALESCE(pr.ended_at, pr.started_at + interval '2 hours') >= $2
+               AND ($4::uuid IS NULL OR pr.user_id=$4)")
+            .bind(tid).bind(from).bind(to).bind(only_uid)
+            .fetch_all(&st.owner_pool).await.unwrap_or_default();
+        for r in &rows {
+            let s0: chrono::DateTime<chrono::Utc> = r.get("started_at");
+            let e0: chrono::DateTime<chrono::Utc> = r.try_get("ended_at").ok()
+                .unwrap_or_else(|| s0 + chrono::Duration::hours(2));
+            let route: String = r.get("route");
+            out.push(CalEvent{ id: format!("round-{}", r.get::<Uuid,_>("id")), source:"ronda",
+                title: format!("Ronda · {route}"), color:"#9333ea",
+                start: s0, end: e0, user_id: Some(r.get("user_id")),
+                user: r.try_get::<String,_>("email").ok(), link: None });
+        }
+    }
+    out.sort_by_key(|e| e.start);
+    out
+}
+/// GET /api/calendar/events?from&to[&all=1] — eventi del calendario condiviso (JSON per FullCalendar).
+pub async fn calendar_events(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let parse = |k:&str, def: chrono::DateTime<chrono::Utc>| q.get(k)
+        .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok().map(|t| t.with_timezone(&chrono::Utc)))
+        .unwrap_or(def);
+    let now = st.clock.now();
+    let from = parse("from", now - chrono::Duration::days(7));
+    let to   = parse("to",   now + chrono::Duration::days(31));
+    // ruoli ristretti (operatore/lavoratore/reperibile) o chi non pianifica: solo i propri eventi.
+    let only_uid = if is_planner(&s) { None } else { Some(s.user_id) };
+    let evs = calendar_collect(&st, tid, from, to, only_uid).await;
+    Ok(Json(json!(evs.iter().map(cal_json).collect::<Vec<_>>())))
+}
+/// GET /api/calendar/my-url[?rotate=1] — URL iCal personale (aggrega tutti i moduli attivi).
+pub async fn calendar_my_url(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap(); let uid = s.user_id;
+    let rotate = q.get("rotate").map(|v| v=="1"||v=="true").unwrap_or(false);
+    let existing: Option<String> = sqlx::query_scalar("SELECT token FROM app.calendar_ical_tokens WHERE tenant_id=$1 AND user_id=$2")
+        .bind(tid).bind(uid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let token = match (existing, rotate) {
+        (Some(t), false) => t,
+        _ => { let t = auth::new_token();
+            sqlx::query("INSERT INTO app.calendar_ical_tokens(tenant_id,user_id,token) VALUES($1,$2,$3) ON CONFLICT (tenant_id,user_id) DO UPDATE SET token=EXCLUDED.token,created_at=now()")
+                .bind(tid).bind(uid).bind(&t).execute(&st.owner_pool).await.map_err(ise)?; t }
+    };
+    Ok(Json(json!({"url":format!("/api/calendar.ics?token={token}"),"token":token})))
+}
+#[derive(Deserialize)] pub struct CalIcs { pub token: String }
+/// GET /api/calendar.ics?token= — feed iCal PERSONALE (senza sessione; token -> utente/tenant).
+pub async fn calendar_ics(State(st): State<AppState>, axum::extract::Query(q): axum::extract::Query<CalIcs>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let row = sqlx::query("SELECT tenant_id,user_id FROM app.calendar_ical_tokens WHERE token=$1")
+        .bind(&q.token).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let Some(row) = row else { return (StatusCode::NOT_FOUND, "token non valido").into_response(); };
+    let tid: Uuid = row.get("tenant_id"); let uid: Uuid = row.get("user_id");
+    let now = chrono::Utc::now();
+    let evs = calendar_collect(&st, tid, now - chrono::Duration::days(7), now + chrono::Duration::days(60), Some(uid)).await;
+    let fmt = |t: chrono::DateTime<chrono::Utc>| t.format("%Y%m%dT%H%M%SZ").to_string();
+    let esc_ics = |x: &str| x.replace('\\',"\\\\").replace('\n'," ").replace(',', "\\,").replace(';', "\\;");
+    let mut ics = String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//YouWorkforce//Calendario//IT\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:YouWorkforce\r\n");
+    for e in &evs {
+        ics.push_str("BEGIN:VEVENT\r\n");
+        ics.push_str(&format!("UID:{}@youworkforce\r\n", e.id));
+        ics.push_str(&format!("DTSTAMP:{}\r\n", fmt(now)));
+        ics.push_str(&format!("DTSTART:{}\r\n", fmt(e.start)));
+        ics.push_str(&format!("DTEND:{}\r\n", fmt(e.end)));
+        ics.push_str(&format!("SUMMARY:{}\r\n", esc_ics(&e.title)));
+        ics.push_str("END:VEVENT\r\n");
+    }
+    ics.push_str("END:VCALENDAR\r\n");
+    ([(axum::http::header::CONTENT_TYPE, "text/calendar; charset=utf-8")], ics).into_response()
+}
+
 /// #5 Sync ack/chiusura da GoAlert -> incidente YW. Se il reperibile prende in carico o
 /// chiude via SMS/voce/console GoAlert, lo stato dell'incidente YW lo riflette.
 /// Girata periodicamente dal worker. Best-effort: un tenant giu' non blocca gli altri.

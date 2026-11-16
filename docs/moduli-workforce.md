@@ -171,11 +171,15 @@ Regole di contorno:
 
 ## 8. Roadmap a slice (proposta, non avviata)
 
-- **W1 — Calendario + iCal come SERVIZIO CORE condiviso.** Vista FullCalendar (giorno/settimana/mese)
-  con il contratto "sorgente eventi": il primo adapter è workforce (`shift_plans`), ma la stessa vista
-  accoglie subito Interventi (appuntamenti ordini) e Giri (ronde pianificate) attivando i rispettivi
-  adapter. URL iCal **personale** (un feed per persona, aggrega tutti i moduli attivi) per sync
-  Google/Microsoft/Apple. Pubblicazione vera (draft→publish).
+- **W1 — Calendario + iCal come SERVIZIO CORE condiviso. FATTO.** Vista FullCalendar
+  (giorno/settimana/mese, voce menu «Calendario» sotto Lavoro sul campo) col contratto "sorgente
+  eventi": adapter attivi per **workforce** (`shift_plans`), **interventi** (ordini con
+  `scheduled_start`) e **giri** (ronde eseguite); ogni sorgente è inclusa solo se il suo modulo è
+  attivo (tenant RLS; i ruoli ristretti vedono solo i propri). Endpoint: `GET /api/calendar/events`,
+  `GET /api/calendar/my-url`, `GET /api/calendar.ics?token=` (feed iCal **personale**, un feed per
+  persona che aggrega tutti i moduli attivi; senza sessione, token revocabile). Mig `0081`
+  (`calendar_ical_tokens`). e2e `qa/calendar-e2e.sh` 4/4. Resta per dopo: pubblicazione vera
+  (draft→publish) e il drag per spostare/estendere.
 - **W2 — Motore regole (nativo).** Vincoli duri (riposo, overlap, competenze, copertura) + rilevazione
   conflitti + preset. Contratto riusabile (`propose`/`validate`/`explain`).
 - **W3 — Disponibilità/assenze** + equità (vincoli morbidi) + aggancio competenze (`qualifiche`).
