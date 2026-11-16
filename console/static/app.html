@@ -946,7 +946,12 @@ async function geofenceAlarmsSet(on){
 }
 async function loadAlarmsOnMap(){
   if(ALARMLAYER){ try{MAP.removeLayer(ALARMLAYER);}catch(e){} }
-  ALARMLAYER=L.layerGroup().addTo(MAP); AMARK={};
+  // Cluster/spiderfy come la Mappa dispositivi: pin vicini o sovrapposti si raggruppano e si aprono
+  // a ventaglio allo zoom/clic (niente pin accatastati illeggibili).
+  ALARMLAYER=(typeof L.markerClusterGroup==='function')
+    ? L.markerClusterGroup({maxClusterRadius:50, spiderfyOnMaxZoom:true, showCoverageOnHover:false, spiderfyDistanceMultiplier:1.6})
+    : L.layerGroup();
+  ALARMLAYER.addTo(MAP); AMARK={};
   const f=$('#mFrom').value+'T00:00:00Z', t=$('#mTo').value+'T23:59:59Z', e=encodeURIComponent($('#mEtype')?.value||'');
   const side=$('#mapSide'); side.innerHTML='<div class="small mut">Carico…</div>';
   try{
@@ -984,10 +989,12 @@ function focusAlarm(id,lat,lon){
   _selAlarmRow(id);
   if(lat==null||lat==='null'||lat===''||isNaN(+lat)){ toast('Allarme senza posizione GPS — apro l\'incidente','mut'); openIncident(id); return; }
   lat=+lat; lon=+lon;
-  MAP.setView([lat,lon], Math.max(MAP.getZoom()||0,17));
   const m=AMARK[id];
   if(_alarmTipM&&_alarmTipM!==m){ try{_alarmTipM.closeTooltip();}catch(e){} }
-  if(m){ if(m.setZIndexOffset)m.setZIndexOffset(1000); try{m.openTooltip();}catch(e){} _alarmTipM=m; }
+  const reveal=()=>{ if(m){ if(m.setZIndexOffset)m.setZIndexOffset(1000); try{m.openTooltip();}catch(e){} _alarmTipM=m; } };
+  // se il pin è dentro un cluster, zoomToShowLayer lo scopre (declustera/spiderfy) poi apre il tooltip
+  if(m && ALARMLAYER && typeof ALARMLAYER.zoomToShowLayer==='function'){ try{ ALARMLAYER.zoomToShowLayer(m, reveal); }catch(e){ MAP.setView([lat,lon], Math.max(MAP.getZoom()||0,17)); reveal(); } }
+  else { MAP.setView([lat,lon], Math.max(MAP.getZoom()||0,17)); reveal(); }
   // anello di evidenziazione temporaneo, raggio animato in JS
   if(_alarmHi){ try{MAP.removeLayer(_alarmHi);}catch(e){} _alarmHi=null; }
   if(_alarmHiT){ clearInterval(_alarmHiT); }
