@@ -131,6 +131,14 @@ Regola: se una funzione serve a entrambi, vive nel **core**; se è specifica del
 Ogni slice: migrazione additiva + endpoint gated per modulo + UI comprensibile + e2e + doc + memory,
 nello stesso commit. Nessun passo distrugge i dati o umilia il prodotto.
 
+## Stato avanzamento
+
+- ✅ **Fase 0** — scorciatoia modalità rimossa; due moduli netti (commit a5e96e7).
+- ✅ **A1 Cliente** — `clients` + `client_contacts` + `work_orders.client_id` (mig 0091); CRUD +
+  referenti; menu "Clienti"; select cliente nell'intervento; scheda cliente con i suoi interventi.
+  e2e `qa/clients-e2e.sh` 8/8.
+- ⏳ prossimi: C1 (squadre+presenze), poi A2 (listino) / C2 (cronoprogramma).
+
 ## 6. Criteri di "fatto" (definition of done) per slice
 
 - Endpoint con gating modulo + capability + RLS; isolamento tenant verificato.

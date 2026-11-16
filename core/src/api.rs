@@ -7496,7 +7496,7 @@ pub async fn super_set_tool(State(st): State<AppState>, h: HeaderMap, Path(tid):
 
 #[derive(Deserialize)]
 pub struct NewOrder { pub title: String, pub site_id: Option<Uuid>, pub instructions: Option<String>, pub assigned_user: Option<Uuid>,
-    #[serde(default)] pub assigned_group: Option<Uuid>,
+    #[serde(default)] pub assigned_group: Option<Uuid>, #[serde(default)] pub client_id: Option<Uuid>,
     pub scheduled_start: Option<String>, pub scheduled_end: Option<String>, pub priority: Option<i32>,
     #[serde(default)] pub checklist: Option<Vec<String>> }
 
@@ -7520,10 +7520,10 @@ pub async fn create_order(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     let checklist = json!(b.checklist.clone().unwrap_or_default().into_iter().map(|l| json!({"label":l,"done":false})).collect::<Vec<_>>());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query(
-        "INSERT INTO app.work_orders(tenant_id,site_id,title,instructions,assigned_user,assigned_group,state,created_by,scheduled_start,scheduled_end,priority,checklist)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id")
+        "INSERT INTO app.work_orders(tenant_id,site_id,title,instructions,assigned_user,assigned_group,state,created_by,scheduled_start,scheduled_end,priority,checklist,client_id)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id")
         .bind(tid).bind(b.site_id).bind(&b.title).bind(&b.instructions).bind(b.assigned_user).bind(b.assigned_group).bind(state).bind(s.user_id)
-        .bind(ss).bind(se).bind(pri).bind(&checklist)
+        .bind(ss).bind(se).bind(pri).bind(&checklist).bind(b.client_id)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":row.get::<Uuid,_>("id"),"state":state})))
@@ -7532,6 +7532,7 @@ pub async fn create_order(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
 #[derive(Deserialize)]
 pub struct EditOrder { pub version: i32, pub title: Option<String>, pub site_id: Option<Uuid>, pub instructions: Option<String>,
     pub assigned_user: Option<Uuid>, #[serde(default)] pub assigned_group: Option<Uuid>, #[serde(default)] pub clear_group: Option<bool>,
+    #[serde(default)] pub client_id: Option<Uuid>,
     pub scheduled_start: Option<String>, pub scheduled_end: Option<String>, pub priority: Option<i32>,
     pub clear_schedule: Option<bool> }
 /// Modifica dell'ordine (pianificatore) con concorrenza ottimistica. Non cambia lo stato
@@ -7558,11 +7559,12 @@ pub async fn edit_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path
            scheduled_start=CASE WHEN $7 THEN NULL ELSE COALESCE($8,scheduled_start) END,
            scheduled_end=CASE WHEN $7 THEN NULL ELSE COALESCE($9,scheduled_end) END,
            priority=COALESCE($10,priority),
+           client_id=COALESCE($13,client_id),
            state=CASE WHEN state='bozza' AND ($6 IS NOT NULL OR $12 IS NOT NULL) THEN 'assegnato' ELSE state END,
            version=version+1, updated_at=now()
          WHERE id=$1 AND version=$2")
         .bind(id).bind(b.version).bind(&b.title).bind(&b.instructions).bind(b.site_id).bind(b.assigned_user)
-        .bind(clear).bind(ss).bind(se).bind(pri).bind(clear_g).bind(b.assigned_group)
+        .bind(clear).bind(ss).bind(se).bind(pri).bind(clear_g).bind(b.assigned_group).bind(b.client_id)
         .execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::CONFLICT, "versione superata o ordine inesistente")); }
@@ -7577,8 +7579,8 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
     // technician sees only own; planner/admin/auditor see all (RLS already scopes to tenant)
     let cols="o.id,o.title,o.state,o.version,o.outcome,o.instructions,o.site_id,o.assigned_user,o.assigned_group,o.scheduled_start,o.scheduled_end,o.priority,s.name AS site,u.email AS assignee,g.name AS group_name,\
         o.arrived_at,o.work_started_at,o.work_minutes,o.materials,o.checklist,o.outcome_kind,o.report,o.signed_by,o.signed_at,\
-        s.address AS site_address,s.lat AS site_lat,s.lon AS site_lon,s.access_notes AS site_access";
-    let joins="FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user LEFT JOIN app.user_groups g ON g.id=o.assigned_group";
+        s.address AS site_address,s.lat AS site_lat,s.lon AS site_lon,s.access_notes AS site_access,o.client_id,cl.name AS client_name";
+    let joins="FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user LEFT JOIN app.user_groups g ON g.id=o.assigned_group LEFT JOIN app.clients cl ON cl.id=o.client_id";
     let rows = if s.role == "lavoratore" {
         // tecnico: i propri ordini + quelli assegnati a un gruppo di persone di cui è membro
         sqlx::query(&format!("SELECT {cols} {joins}
@@ -7611,9 +7613,101 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
         "site_address": r.try_get::<String,_>("site_address").ok(),
         "site_lat": r.try_get::<f64,_>("site_lat").ok(), "site_lon": r.try_get::<f64,_>("site_lon").ok(),
         // indicazioni d'accesso: solo a chi è autorizzato (assegnatario/lavoratore o pianificatore)
-        "site_access": if is_planner(&s) || s.role=="lavoratore" { r.try_get::<String,_>("site_access").ok() } else { None }
+        "site_access": if is_planner(&s) || s.role=="lavoratore" { r.try_get::<String,_>("site_access").ok() } else { None },
+        "client_id": r.try_get::<Uuid,_>("client_id").ok(), "client_name": r.try_get::<String,_>("client_name").ok()
     })).collect();
     Ok(Json(json!(out)))
+}
+// ===== Assistenza A1: anagrafica Cliente + referenti =====
+#[derive(Deserialize)]
+pub struct ClientReq { pub name: String, #[serde(default)] pub vat: Option<String>, #[serde(default)] pub address: Option<String>,
+    #[serde(default)] pub phone: Option<String>, #[serde(default)] pub email: Option<String>, #[serde(default)] pub notes: Option<String> }
+pub async fn list_clients(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query(
+        "SELECT c.id,c.name,c.vat,c.address,c.phone,c.email,c.notes,c.active,
+                (SELECT count(*) FROM app.work_orders o WHERE o.client_id=c.id)::int AS orders,
+                (SELECT count(*) FROM app.client_contacts k WHERE k.client_id=c.id)::int AS contacts
+         FROM app.clients c ORDER BY c.name").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"vat":r.try_get::<String,_>("vat").ok(),
+        "address":r.try_get::<String,_>("address").ok(),"phone":r.try_get::<String,_>("phone").ok(),
+        "email":r.try_get::<String,_>("email").ok(),"notes":r.try_get::<String,_>("notes").ok(),
+        "active":r.get::<bool,_>("active"),"orders":r.get::<i32,_>("orders"),"contacts":r.get::<i32,_>("contacts") })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn create_client(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ClientReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO app.clients(tenant_id,name,vat,address,phone,email,notes,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(&b.vat).bind(&b.address).bind(&b.phone).bind(&b.email).bind(&b.notes).bind(s.user_id)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "client_create", json!({"name":b.name})).await;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn get_client(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let c = sqlx::query("SELECT id,name,vat,address,phone,email,notes,active FROM app.clients WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let c = match c { Some(r)=>r, None=>{ return Err(err(StatusCode::NOT_FOUND, "cliente non trovato")); } };
+    let ks = sqlx::query("SELECT id,name,role,phone,email FROM app.client_contacts WHERE client_id=$1 ORDER BY name").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let orders = sqlx::query("SELECT o.id,o.title,o.state,o.scheduled_start FROM app.work_orders o WHERE o.client_id=$1 ORDER BY o.scheduled_start NULLS LAST, o.updated_at DESC LIMIT 50").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let kout: Vec<Value> = ks.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),
+        "role":r.try_get::<String,_>("role").ok(),"phone":r.try_get::<String,_>("phone").ok(),"email":r.try_get::<String,_>("email").ok()})).collect();
+    let oout: Vec<Value> = orders.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"title":r.get::<String,_>("title"),
+        "state":r.get::<String,_>("state"),"scheduled_start":r.try_get::<chrono::DateTime<chrono::Utc>,_>("scheduled_start").ok()})).collect();
+    Ok(Json(json!({"id":c.get::<Uuid,_>("id"),"name":c.get::<String,_>("name"),"vat":c.try_get::<String,_>("vat").ok(),
+        "address":c.try_get::<String,_>("address").ok(),"phone":c.try_get::<String,_>("phone").ok(),"email":c.try_get::<String,_>("email").ok(),
+        "notes":c.try_get::<String,_>("notes").ok(),"active":c.get::<bool,_>("active"),"contacts":kout,"orders":oout})))
+}
+pub async fn update_client(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<ClientReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.clients SET name=COALESCE($2,name),vat=$3,address=$4,phone=$5,email=$6,notes=$7 WHERE id=$1")
+        .bind(id).bind(if b.name.trim().is_empty(){None}else{Some(b.name.trim())}).bind(&b.vat).bind(&b.address).bind(&b.phone).bind(&b.email).bind(&b.notes)
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "cliente non trovato")); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_client(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.clients WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "client_delete", json!({"id":id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)]
+pub struct ContactReq { pub name: String, #[serde(default)] pub role: Option<String>, #[serde(default)] pub phone: Option<String>, #[serde(default)] pub email: Option<String> }
+pub async fn create_contact(State(st): State<AppState>, h: HeaderMap, Path(cid): Path<Uuid>, Json(b): Json<ContactReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.client_contacts(tenant_id,client_id,name,role,phone,email) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
+        .bind(tid).bind(cid).bind(b.name.trim()).bind(&b.role).bind(&b.phone).bind(&b.email).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn delete_contact(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.client_contacts WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
 }
 
 #[derive(Deserialize)]

@@ -43,6 +43,7 @@ const NAV = [
   {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
   // --- Lavoro sul campo ---
   {k:'ordini',    t:'Assistenza', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
+  {k:'clienti',   t:'Clienti', ico:'building', roles:['pianificatore','tenant_admin','auditor'], mod:['interventi'], grp:'work'},
   {k:'cantieri',  t:'Cantieri', ico:'building', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], grp:'work'},
   {k:'calendario',t:'Calendario', ico:'calendar', roles:['pianificatore','tenant_admin','lavoratore','reperibile','responsabile','auditor'], mod:['workforce','interventi','giri','cantieri'], grp:'work'},
   {k:'ronde',     t:'Ronde', ico:'route', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['giri'], grp:'work'},
@@ -349,7 +350,7 @@ function route(){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,cantieri:vCantieri,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,cantieri:vCantieri,clienti:vClienti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -1779,9 +1780,67 @@ async function salSave(cid){
   try{await api('/commesse/'+cid+'/sal',{method:'POST',body:JSON.stringify({pct,amount:$('#slAmt').value?Number($('#slAmt').value):null,note:$('#slNote').value||null,sal_date:$('#slDate').value||null})});
     toast('SAL registrato','ok'); closeDrawer(); openCommessa(cid);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
 }
-function orderFormFields(o,sites,workers,groups){ o=o||{}; groups=groups||[]; return `
+// ===== Assistenza A1: Clienti (anagrafica + referenti) =====
+async function vClienti(v){
+  const C=await api('/clients').catch(()=>[]);
+  const canEdit=can(['pianificatore','tenant_admin']);
+  const row=c=>`<tr class="clk" data-cli="${c.id}"><td><b>${esc(c.name)}</b>${c.vat?`<div class="small mut">${esc(c.vat)}</div>`:''}</td>
+    <td class="small">${esc(c.phone||c.email||'—')}</td><td class="small">${esc(c.address||'—')}</td>
+    <td class="small mut">${c.orders} interventi · ${c.contacts} referenti</td></tr>`;
+  v.innerHTML=`<div class="page-h"><div><h1>Clienti</h1><div class="mut">${C.length} clienti · committenti dell'assistenza</div></div>
+    ${canEdit?`<button class="btn" onclick="cliNew()">+ Nuovo cliente</button>`:''}</div>
+  <div class="card"><table class="table"><thead><tr><th>Cliente</th><th>Contatto</th><th>Indirizzo</th><th></th></tr></thead>
+    <tbody>${C.map(row).join('')||`<tr><td colspan="4" class="empty">${ICON.building}<div>Nessun cliente</div></td></tr>`}</tbody></table></div>`;
+  v.querySelectorAll('tr[data-cli]').forEach(tr=>tr.onclick=()=>openClient(tr.dataset.cli));
+}
+function cliForm(c){ c=c||{}; return `<div class="col" style="gap:10px">
+    <label class="small mut">Ragione sociale / nome<input id="clName" value="${esc(c.name||'')}"></label>
+    <div class="row" style="gap:8px"><label class="small mut grow">P.IVA / C.F.<input id="clVat" value="${esc(c.vat||'')}"></label>
+      <label class="small mut grow">Telefono<input id="clPhone" value="${esc(c.phone||'')}"></label></div>
+    <label class="small mut">Email<input id="clEmail" value="${esc(c.email||'')}"></label>
+    <label class="small mut">Indirizzo<input id="clAddr" value="${esc(c.address||'')}"></label>
+    <label class="small mut">Note<input id="clNote" value="${esc(c.notes||'')}"></label>`; }
+function cliBody(){ return {name:$('#clName').value.trim(),vat:$('#clVat').value||null,phone:$('#clPhone').value||null,
+    email:$('#clEmail').value||null,address:$('#clAddr').value||null,notes:$('#clNote').value||null}; }
+function cliNew(){ drawer('Nuovo cliente',`${cliForm()}<button class="btn" onclick="cliSave()">Crea</button><div class="cfg-msg small"></div></div>`); }
+async function cliSave(){ const m=$('.cfg-msg'); const b=cliBody(); if(!b.name){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
+  try{await api('/clients',{method:'POST',body:JSON.stringify(b)}); toast('Cliente creato','ok'); closeDrawer(); route();}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
+async function openClient(id){
+  const canEdit=can(['pianificatore','tenant_admin']);
+  let c; try{ c=await api('/clients/'+id); }catch(e){ toast(e.message,'bad'); return; }
+  $('#view')._curClient=id;
+  const contacts=(c.contacts||[]).map(k=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:8px">
+    <div><b class="small">${esc(k.name)}</b>${k.role?` · <span class="small mut">${esc(k.role)}</span>`:''}<div class="small mut">${esc(k.phone||'')} ${esc(k.email||'')}</div></div>
+    ${canEdit?`<button class="btn-ico btn ghost" onclick="contDel('${k.id}')">${ICON.x}</button>`:''}</div>`).join('')||'<div class="small mut">Nessun referente.</div>';
+  const orders=(c.orders||[]).map(o=>`<tr><td class="small">${esc(o.title)}</td><td>${chip(o.state)}</td><td class="small mut">${o.scheduled_start?dtLocal(o.scheduled_start):'—'}</td></tr>`).join('')||`<tr><td colspan="3" class="empty">Nessun intervento</td></tr>`;
+  drawer('Cliente · '+esc(c.name),`<div class="col" style="gap:12px">
+    ${canEdit?`<a onclick="cliEdit('${id}')" class="small">✎ modifica anagrafica</a>`:''}
+    <div class="small mut">${esc(c.vat||'')}${c.address?' · '+esc(c.address):''}<br>${esc(c.phone||'')} ${esc(c.email||'')}${c.notes?'<br>'+esc(c.notes):''}</div>
+    <div><div class="spread"><h3 style="margin:0">Referenti</h3>${canEdit?`<a onclick="contNew('${id}')">+ aggiungi</a>`:''}</div>
+      <div class="col" style="gap:6px;margin-top:8px">${contacts}</div></div>
+    <div><h3 style="margin:0">Interventi del cliente</h3>
+      <table class="table" style="margin-top:6px"><thead><tr><th>Titolo</th><th>Stato</th><th>Quando</th></tr></thead><tbody>${orders}</tbody></table></div>
+    ${canEdit?`<button class="btn ghost" onclick="cliDel('${id}')">${ICON.x} Elimina cliente</button>`:''}</div>`);
+}
+async function cliEdit(id){ let c; try{c=await api('/clients/'+id);}catch(e){toast(e.message,'bad');return;}
+  drawer('Modifica cliente',`${cliForm(c)}<button class="btn" onclick="cliUpd('${id}')">Salva</button><div class="cfg-msg small"></div></div>`); }
+async function cliUpd(id){ const m=$('.cfg-msg'); const b=cliBody(); if(!b.name){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
+  try{await api('/clients/'+id,{method:'POST',body:JSON.stringify(b)}); toast('Salvato','ok'); openClient(id);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
+async function cliDel(id){ if(!await askConfirm('Eliminare il cliente? (gli interventi restano, slegati)'))return;
+  try{await api('/clients/'+id,{method:'DELETE'}); toast('Eliminato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
+function contNew(cid){ drawer('Nuovo referente',`<div class="col" style="gap:10px">
+    <label class="small mut">Nome<input id="ktName"></label>
+    <label class="small mut">Ruolo (es. responsabile tecnico)<input id="ktRole"></label>
+    <div class="row" style="gap:8px"><label class="small mut grow">Telefono<input id="ktPhone"></label><label class="small mut grow">Email<input id="ktEmail"></label></div>
+    <button class="btn" onclick="contSave('${cid}')">Aggiungi</button><div class="cfg-msg small"></div></div>`); }
+async function contSave(cid){ const m=$('.cfg-msg'); const name=$('#ktName').value.trim(); if(!name){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
+  try{await api('/clients/'+cid+'/contacts',{method:'POST',body:JSON.stringify({name,role:$('#ktRole').value||null,phone:$('#ktPhone').value||null,email:$('#ktEmail').value||null})});
+    toast('Referente aggiunto','ok'); openClient(cid);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
+async function contDel(id){ if(!await askConfirm('Eliminare il referente?'))return; const cid=$('#view')._curClient;
+  try{await api('/contacts/'+id,{method:'DELETE'}); toast('Eliminato','ok'); if(cid)openClient(cid);}catch(e){toast(e.message,'bad');} }
+function orderFormFields(o,sites,workers,groups,clients){ o=o||{}; groups=groups||[]; clients=clients||[]; return `
   <div class="field"><label>Titolo</label><input id="o_title" value="${esc(o.title||'')}" placeholder="Manutenzione quadro elettrico"></div>
-  <div class="field"><label>Sede</label><select id="o_site"><option value="">—</option>${sites.map(s=>`<option value="${s.id}" ${s.id===o.site_id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>
+  ${clients.length?`<div class="field"><label>Cliente</label><select id="o_client"><option value="">—</option>${clients.map(c=>`<option value="${c.id}" ${c.id===o.client_id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>`:''}
   <div class="field"><label>Sede</label><select id="o_site"><option value="">—</option>${sites.map(s=>`<option value="${s.id}" ${s.id===o.site_id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>
   <div class="field"><label>Assegna a (persona)</label><select id="o_asg"><option value="">—</option>${workers.map(w=>`<option value="${w.id}" ${w.id===o.assigned_user?'selected':''}>${esc(w.email)}</option>`).join('')}</select></div>
   <div class="field"><label>Assegna a (gruppo di persone)</label><select id="o_grp"><option value="">—</option>${groups.map(g=>`<option value="${g.id}" ${g.id===o.assigned_group?'selected':''}>${esc(g.name)}</option>`).join('')}</select><div class="small mut">i membri del gruppo vedono ed eseguono l'ordine</div></div>
@@ -1790,19 +1849,19 @@ function orderFormFields(o,sites,workers,groups){ o=o||{}; groups=groups||[]; re
   <div class="field"><label>Priorità</label><select id="o_pri">${[1,2,3].map(p=>`<option value="${p}" ${p===(o.priority||2)?'selected':''}>${PRI_LAB[p]}</option>`).join('')}</select></div>
   <div class="field"><label>Istruzioni</label><textarea id="o_instr">${esc(o.instructions||'')}</textarea></div>`; }
 async function newOrder(){
-  const [sites,users,groups]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[]),api('/user-groups').catch(()=>[])]);
+  const [sites,users,groups,clients]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[]),api('/user-groups').catch(()=>[]),api('/clients').catch(()=>[])]);
   const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
-  drawer('Nuovo intervento', `<div class="col">${orderFormFields(null,sites,workers,groups)}
+  drawer('Nuovo intervento', `<div class="col">${orderFormFields(null,sites,workers,groups,clients)}
       <label class="small mut">Checklist (una voce per riga)<textarea id="o_cl" style="width:100%;height:60px" placeholder="Verifica impianto&#10;Sostituisci pezzo&#10;Test finale"></textarea></label>
-      <button class="btn block" id="o_save">Crea ordine</button><div class="cfg-msg small"></div></div>`);
+      <button class="btn block" id="o_save">Crea intervento</button><div class="cfg-msg small"></div></div>`);
   $('#o_save').onclick=async()=>{
     const m=$('.cfg-msg');
     const checklist=($('#o_cl').value||'').split('\n').map(x=>x.trim()).filter(Boolean);
-    const b={title:$('#o_title').value,site_id:$('#o_site').value||null,assigned_user:$('#o_asg').value||null,assigned_group:$('#o_grp').value||null,
+    const b={title:$('#o_title').value,site_id:$('#o_site').value||null,client_id:($('#o_client')&&$('#o_client').value)||null,assigned_user:$('#o_asg').value||null,assigned_group:$('#o_grp').value||null,
       instructions:$('#o_instr').value||null,scheduled_start:toISO($('#o_ss').value),scheduled_end:toISO($('#o_se').value),priority:+$('#o_pri').value,checklist};
     if(!b.title){m.textContent='titolo richiesto';m.style.color='var(--bad)';return;}
     try{ await api('/orders',{method:'POST',body:JSON.stringify(b)});
-      toast('Ordine creato','ok'); closeDrawer(); route(); }catch(e){m.textContent=e.message;m.style.color='var(--bad)';} };
+      toast('Intervento creato','ok'); closeDrawer(); route(); }catch(e){m.textContent=e.message;m.style.color='var(--bad)';} };
 }
 async function openOrder(id){
   const planner=can(['pianificatore','tenant_admin']);
@@ -1821,7 +1880,7 @@ async function openOrder(id){
   const editBtn = (planner && o.state!=='completato' && o.state!=='annullato')
     ? `<button class="btn ghost block" onclick='editOrder(${JSON.stringify(o).replace(/'/g,"&#39;")})'>✎ Modifica / ripianifica</button>` : '';
   drawer('Ordine · '+esc(o.title), `
-    <div class="row" style="margin-bottom:14px">${chip(o.state)}<span class="chip">${esc(o.site||'—')}</span>${priBadge(o.priority)}<span class="chip">v${o.version}</span></div>
+    <div class="row" style="margin-bottom:14px">${chip(o.state)}${o.client_name?`<span class="chip">👤 ${esc(o.client_name)}</span>`:''}<span class="chip">${esc(o.site||'—')}</span>${priBadge(o.priority)}<span class="chip">v${o.version}</span></div>
     <div class="small mut">Assegnatario</div><div style="margin-bottom:12px">${esc(o.assignee||'non assegnato')}</div>
     <div class="small mut">Quando</div><div style="margin-bottom:12px">${schedLabel(o)}</div>
     <div class="small mut">Istruzioni</div><div style="margin-bottom:16px">${esc(o.instructions||'—')}</div>
@@ -1890,15 +1949,15 @@ async function aiOrderBrief(id,btn){ const box=$('#aiOrdOut'); if(!box)return; b
   try{ const r=await api('/orders/'+id+'/ai-assist'); box.innerHTML=`<div class="card pad" style="margin-top:6px;background:var(--brand-soft)"><div class="small mut">✦ youworker.ai — proposta d'aiuto</div><div style="white-space:pre-wrap;margin-top:4px">${esc(r.brief)}</div></div>`; }
   catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad);margin-top:6px">${esc(e.message)}</div>`; } finally{ btn.disabled=false; } }
 async function editOrder(o){
-  const [sites,users,groups]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[]),api('/user-groups').catch(()=>[])]);
+  const [sites,users,groups,clients]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[]),api('/user-groups').catch(()=>[]),api('/clients').catch(()=>[])]);
   const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
-  drawer('Modifica ordine', `<div class="col">${orderFormFields(o,sites,workers,groups)}
+  drawer('Modifica intervento', `<div class="col">${orderFormFields(o,sites,workers,groups,clients)}
     <label class="row small" style="gap:8px"><input type="checkbox" id="o_clear"> Rimuovi pianificazione</label>
     <button class="btn block" id="o_edit">Salva modifiche</button><div class="cfg-msg small"></div></div>`);
   $('#o_edit').onclick=async()=>{
     const m=$('.cfg-msg');
     const grp=$('#o_grp').value||null;
-    const b={version:o.version,title:$('#o_title').value||null,site_id:$('#o_site').value||null,assigned_user:$('#o_asg').value||null,
+    const b={version:o.version,title:$('#o_title').value||null,site_id:$('#o_site').value||null,client_id:($('#o_client')&&$('#o_client').value)||null,assigned_user:$('#o_asg').value||null,
       assigned_group:grp, clear_group:(!grp && !!o.assigned_group),
       instructions:$('#o_instr').value||null,scheduled_start:toISO($('#o_ss').value),scheduled_end:toISO($('#o_se').value),
       priority:+$('#o_pri').value,clear_schedule:$('#o_clear').checked};
