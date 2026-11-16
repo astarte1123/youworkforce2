@@ -299,6 +299,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/fairness", get(api::fairness_report))
         .route("/api/coverage/:id", delete(api::delete_coverage))
         .route("/api/shift-plans/:id", post(api::shift_plan_action).delete(api::delete_shift_plan))
+        .route("/api/shift-plans/:id/substitutes", get(api::shift_substitutes))
         ;
     // catena spezzata in più statement: una singola espressione .route()* troppo lunga
     // fa esplodere lo stack di rustc in codegen (STATUS_STACK_BUFFER_OVERRUN su Windows).

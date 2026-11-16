@@ -208,8 +208,13 @@ Regole di contorno:
     `GET /api/fairness` = carico per persona (ore/turni/weekend/notti) + squilibrio max-min. Console:
     card «Copertura minima» in Turni (requisiti + «verifica copertura» che elenca i buchi + «equità»).
     e2e `qa/coverage-e2e.sh` 4/4.
-- **W4 — AI turni.** Proposta piano, sostituti per cambi turno, spiegazioni — sul motore W2, con
-  conferma umana.
+- **W4 — AI turni. FATTO (prima tappa: sostituti).** `GET /api/shift-plans/:id/substitutes`:
+  proposta **grounded** di sostituti per un cambio turno — il MOTORE scarta chi ha conflitti/assenze
+  o manca la competenza, e ordina per equità (meno ore). Se youworker.ai è attivo aggiunge una frase
+  di consiglio in linguaggio naturale (fallback: testo deterministico). L'AI **propone**, il
+  pianificatore **assegna** (un clic riassegna: nuovo turno al sostituto + annulla il vecchio).
+  Console: azione «sostituti» sul turno. e2e `qa/substitutes-e2e.sh` 4/4.
+  Resta per dopo: comporre un intero piano a parole, riempimento automatico dei buchi di copertura.
 - **W5 (opz.) — Push OAuth** bidirezionale e/o solver Timefold per ottimizzazione pesante. Solo se
   richiesto; non cambia il modello base.
 

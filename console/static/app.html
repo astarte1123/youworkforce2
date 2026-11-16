@@ -3937,6 +3937,7 @@ async function vTurni(v){
     const mine=p.user_id===ME.user_id||ME.email===p.email;
     const acts=[];
     if(p.state==='pianificato'&&mine) acts.push(`<button class="btn ghost small" onclick="spAct('${p.id}','confirm')">conferma</button>`);
+    if(planner&&p.state!=='annullato') acts.push(`<button class="btn ghost small" onclick='spSubs(${JSON.stringify(p).replace(/'/g,"&#39;")})'>sostituti</button>`);
     if(planner&&p.state!=='annullato') acts.push(`<button class="btn ghost small" onclick="spAct('${p.id}','cancel')">annulla</button>`);
     if(planner) acts.push(`<button class="btn-ico btn ghost" onclick="spDel('${p.id}')">${ICON.x}</button>`);
     return `<tr><td>${esc(p.email)}</td><td>${esc(p.site||'—')}</td>
@@ -4091,6 +4092,29 @@ async function spSave(){
   }
 }
 async function spAct(id,action){ try{await api('/shift-plans/'+id,{method:'POST',body:JSON.stringify({action})}); toast(action==='confirm'?'Turno confermato':'Turno annullato','ok'); route();}catch(e){toast(e.message,'bad');} }
+// W4 — proposta sostituti (cambio turno): il motore scarta conflitti/assenze/competenza, ordina per equità
+async function spSubs(p){
+  drawer('Sostituti per il turno',`<div class="col" style="gap:8px"><div class="small mut">Carico…</div></div>`);
+  try{ const r=await api('/shift-plans/'+p.id+'/substitutes');
+    const c=r.candidates||[];
+    const rows=c.map(x=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:8px">
+      <div><b class="small">${esc(x.email)}</b><div class="small mut">${x.hours_30d}h/30g${x.warnings.length?' · ⚠ '+x.warnings.map(esc).join(' · '):' · nessun avviso'}</div></div>
+      <button class="btn ghost small" onclick='spApplySub(${JSON.stringify(p).replace(/'/g,"&#39;")},"${x.user_id}","${esc(x.email)}")'>assegna</button></div>`).join('')
+      ||'<div class="small mut">Nessun sostituto idoneo (conflitti, assenze o competenza mancante).</div>';
+    drawer('Sostituti per il turno',`<div class="col" style="gap:8px">
+      <div class="card pad" style="background:var(--brand-soft)"><div class="small mut">✦ ${esc(r.provider)}</div><div style="margin-top:4px">${esc(r.summary)}</div></div>
+      ${rows}</div>`);
+  }catch(e){ drawer('Sostituti',`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`); }
+}
+async function spApplySub(p,uid,email){
+  if(!await askConfirm('Riassegnare il turno a '+email+'? (il turno attuale viene annullato)'))return;
+  try{
+    const b={user_id:uid,site_id:p.site_id||null,starts_at:p.starts_at,ends_at:p.ends_at,note:p.note||null};
+    await api('/shift-plans',{method:'POST',body:JSON.stringify(b)});
+    await api('/shift-plans/'+p.id,{method:'POST',body:JSON.stringify({action:'cancel'})});
+    toast('Turno riassegnato a '+email,'ok'); closeDrawer(); route();
+  }catch(e){ toast(e.message,'bad'); }
+}
 async function spDel(id){ if(!await askConfirm('Eliminare il turno?'))return; try{await api('/shift-plans/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
 function ocNew(){
   const v=$('#view'); const users=v._users||[];

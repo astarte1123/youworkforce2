@@ -4491,6 +4491,60 @@ pub async fn fairness_report(State(st): State<AppState>, h: HeaderMap,
         (mx, mn) if !hrs.is_empty() => ((mx-mn)*10.0).round()/10.0, _ => 0.0 };
     Ok(Json(json!({"people":people,"spread_hours":spread,"from":from.to_rfc3339(),"to":to.to_rfc3339()})))
 }
+
+// ---------------- W4: AI turni — proposta sostituti (cambio turno) ----------------
+// Deterministico e GROUNDED: usa il MOTORE regole per scartare chi ha conflitti/assenze o manca la
+// competenza, e ordina per equità (meno ore). Se youworker.ai è attivo, aggiunge una frase di
+// consiglio in linguaggio naturale (fallback: testo deterministico). L'AI propone, l'uomo assegna.
+pub async fn shift_substitutes(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "workforce").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let sh = sqlx::query("SELECT user_id,site_id,starts_at,ends_at,required_qualification FROM app.shift_plans WHERE id=$1 AND tenant_id=$2")
+        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "turno inesistente"))?;
+    let cur: Uuid = sh.get("user_id");
+    let a: chrono::DateTime<chrono::Utc> = sh.get("starts_at");
+    let z: chrono::DateTime<chrono::Utc> = sh.get("ends_at");
+    let req_qual: Option<Uuid> = sh.try_get("required_qualification").ok();
+    // bacino candidati: ruoli assegnabili del tenant
+    let pool = sqlx::query("SELECT id,email FROM app.users WHERE tenant_id=$1 AND role IN ('lavoratore','operatore','reperibile','responsabile','pianificatore') AND id<>$2")
+        .bind(tid).bind(cur).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    // carico (ore ultimi 30g) per equità
+    let from30 = a - chrono::Duration::days(30);
+    let load = sqlx::query("SELECT user_id, COALESCE(sum(EXTRACT(EPOCH FROM (ends_at-starts_at))/3600.0),0)::float8 AS hrs FROM app.shift_plans WHERE tenant_id=$1 AND starts_at>=$2 AND starts_at<$3 GROUP BY user_id")
+        .bind(tid).bind(from30).bind(a).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let hmap: std::collections::HashMap<Uuid,f64> = load.iter().map(|r| (r.get::<Uuid,_>("user_id"), r.get::<f64,_>("hrs"))).collect();
+    let mut cands: Vec<(Uuid,String,f64,Vec<crate::scheduling::Violation>)> = Vec::new();
+    for u in &pool {
+        let uid: Uuid = u.get("id");
+        let vs = validate_shift_candidate(&st, tid, uid, a, z, req_qual).await;
+        if crate::scheduling::has_hard(&vs) { continue; } // scarta chi ha conflitti duri
+        cands.push((uid, u.get::<String,_>("email"), *hmap.get(&uid).unwrap_or(&0.0), vs));
+    }
+    // ordina: prima chi non ha nemmeno avvisi, poi meno ore (equità)
+    cands.sort_by(|x,y| (x.3.len(), (x.2*10.0) as i64).cmp(&(y.3.len(), (y.2*10.0) as i64)));
+    let candidates: Vec<Value> = cands.iter().take(10).map(|(uid,em,hrs,vs)| json!({
+        "user_id":uid,"email":em,"hours_30d":(hrs*10.0).round()/10.0,
+        "warnings": vs.iter().map(|v| v.message.clone()).collect::<Vec<_>>()})).collect();
+    // sintesi: deterministica, poi (se AI attiva) riformulata
+    let det = match cands.first() {
+        Some((_,em,hrs,vs)) => format!("Consiglio: {} ({} ore negli ultimi 30g{}). {} candidati idonei.",
+            em, (hrs*10.0).round()/10.0, if vs.is_empty() {", nessun avviso"} else {", con avvisi"}, cands.len()),
+        None => "Nessun sostituto idoneo (tutti in conflitto, assenti o senza la competenza richiesta).".into(),
+    };
+    let mut summary = det.clone();
+    if module_active(&st, tid, "assistant").await && ai_feature_on(&st, tid, "assistant").await {
+        if let Some(c) = ai_conn(&st, tid).await {
+            let sys = "Sei l'assistente di pianificazione turni di YouWorkforce. In UNA frase, consiglia il \
+                sostituto migliore usando SOLO i fatti forniti (equità=meno ore, nessun avviso meglio). Italiano, conciso.";
+            let ctx = format!("Candidati idonei (già filtrati dal motore regole): {}", serde_json::to_string(&candidates).unwrap_or_default());
+            if let Ok(ans) = ai_chat(&st, &c, sys, &ctx).await { if !ans.trim().is_empty() { summary = ans; } }
+        }
+    }
+    Ok(Json(json!({"shift_id":id,"candidates":candidates,"summary":summary,
+        "provider": if summary==det {"deterministico"} else {"youworker.ai"}})))
+}
 fn violations_json(vs: &[crate::scheduling::Violation]) -> Value {
     json!(vs.iter().map(|v| json!({"code":v.code,"hard":v.hard,"message":v.message})).collect::<Vec<_>>())
 }
