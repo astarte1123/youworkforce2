@@ -5927,8 +5927,8 @@ pub async fn ack_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): P
     guard_incident_site(&st, &s, iid).await?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.incidents SET state='preso_in_carico',version=version+1 WHERE id=$1 AND state='aperto'")
-        .bind(iid).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    let n = sqlx::query("UPDATE app.incidents SET state='preso_in_carico',version=version+1 WHERE id=$1 AND tenant_id=$2 AND state='aperto'")
+        .bind(iid).bind(tid).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     if n==0 { let _=tx.rollback().await; return Err(err(StatusCode::CONFLICT,"not open")); }
     sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'human_ack',$3)")
         .bind(tid).bind(iid).bind(json!({"by":s.email})).execute(&mut *tx).await.map_err(ise)?;
@@ -5948,8 +5948,8 @@ pub async fn close_incident(State(st): State<AppState>, h: HeaderMap, Path(iid):
     guard_incident_site(&st, &s, iid).await?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let row = sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$2,closed_at=now(),version=version+1 WHERE id=$1 AND state<>'chiuso' RETURNING correlation,etype")
-        .bind(iid).bind(&b.outcome).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let row = sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$2,closed_at=now(),version=version+1 WHERE id=$1 AND tenant_id=$3 AND state<>'chiuso' RETURNING correlation,etype")
+        .bind(iid).bind(&b.outcome).bind(tid).fetch_optional(&mut *tx).await.map_err(ise)?;
     let Some(row) = row else { let _=tx.rollback().await; return Err(err(StatusCode::CONFLICT,"already closed")); };
     let correlation: String = row.get("correlation"); let etype: String = row.get("etype");
     sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'transition',$3)")
@@ -10706,11 +10706,12 @@ pub async fn incidents_ack_all(State(st): State<AppState>, h: HeaderMap) -> R {
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // solo gli incidenti 'aperto' visibili all'ACL dell'operatore. Gli incidenti senza sede NON sono
     // visibili a un operatore ristretto (coerente con guard_incident_site): quindi esclusi dal bulk.
+    // tenant_id ESPLICITO oltre alla RLS (vedi incidents_close_all).
     let rows = match &acl {
-        Some(sites) => sqlx::query("UPDATE app.incidents SET state='preso_in_carico',version=version+1 WHERE state='aperto' AND site_id = ANY($1) RETURNING id")
-            .bind(sites).fetch_all(&mut *tx).await.map_err(ise)?,
-        None => sqlx::query("UPDATE app.incidents SET state='preso_in_carico',version=version+1 WHERE state='aperto' RETURNING id")
-            .fetch_all(&mut *tx).await.map_err(ise)?,
+        Some(sites) => sqlx::query("UPDATE app.incidents SET state='preso_in_carico',version=version+1 WHERE tenant_id=$2 AND state='aperto' AND site_id = ANY($1) RETURNING id")
+            .bind(sites).bind(tid).fetch_all(&mut *tx).await.map_err(ise)?,
+        None => sqlx::query("UPDATE app.incidents SET state='preso_in_carico',version=version+1 WHERE tenant_id=$1 AND state='aperto' RETURNING id")
+            .bind(tid).fetch_all(&mut *tx).await.map_err(ise)?,
     };
     // trail per-incidente come l'ack singolo (il bulk NON invia lo status-update per non intasare)
     for r in &rows {
@@ -10730,11 +10731,13 @@ pub async fn incidents_close_all(State(st): State<AppState>, h: HeaderMap, Json(
     let acl: Option<Vec<Uuid>> = allowed_sites(&st, &s).await.map(|h| h.into_iter().collect());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // Incidenti senza sede esclusi per operatore ristretto (coerente con guard_incident_site).
+    // tenant_id ESPLICITO oltre alla RLS: un bulk destructive non deve MAI poter uscire dal tenant,
+    // nemmeno se il ruolo DB fosse mal configurato (owner/BYPASSRLS).
     let rows = match &acl {
-        Some(sites) => sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$1,closed_at=now(),version=version+1 WHERE state<>'chiuso' AND site_id = ANY($2) RETURNING id,correlation,etype")
-            .bind(&b.outcome).bind(sites).fetch_all(&mut *tx).await.map_err(ise)?,
-        None => sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$1,closed_at=now(),version=version+1 WHERE state<>'chiuso' RETURNING id,correlation,etype")
-            .bind(&b.outcome).fetch_all(&mut *tx).await.map_err(ise)?,
+        Some(sites) => sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$1,closed_at=now(),version=version+1 WHERE tenant_id=$3 AND state<>'chiuso' AND site_id = ANY($2) RETURNING id,correlation,etype")
+            .bind(&b.outcome).bind(sites).bind(tid).fetch_all(&mut *tx).await.map_err(ise)?,
+        None => sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$1,closed_at=now(),version=version+1 WHERE tenant_id=$2 AND state<>'chiuso' RETURNING id,correlation,etype")
+            .bind(&b.outcome).bind(tid).fetch_all(&mut *tx).await.map_err(ise)?,
     };
     for r in &rows {
         let iid: Uuid = r.get("id"); let correlation: String = r.get("correlation"); let etype: String = r.get("etype");
