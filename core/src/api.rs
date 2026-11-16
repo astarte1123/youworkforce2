@@ -4193,7 +4193,7 @@ pub async fn remove_team_member(State(st): State<AppState>, h: HeaderMap, Path((
 
 // ---------------- Turni pianificati ----------------
 #[derive(Deserialize)]
-pub struct ShiftPlanReq { pub user_id: Uuid, pub site_id: Option<Uuid>, pub starts_at: String, pub ends_at: String, pub note: Option<String>, #[serde(default)] pub required_qualification: Option<Uuid> }
+pub struct ShiftPlanReq { pub user_id: Uuid, pub site_id: Option<Uuid>, pub starts_at: String, pub ends_at: String, pub note: Option<String>, #[serde(default)] pub required_qualification: Option<Uuid>, #[serde(default)] pub work_order_id: Option<Uuid> }
 
 /// Regole di pianificazione del tenant (default di prodotto; preset "standard").
 async fn scheduling_rules(st: &AppState, tid: Uuid) -> crate::scheduling::Rules {
@@ -4579,8 +4579,8 @@ pub async fn create_shift_plan(State(st): State<AppState>, h: HeaderMap, Json(b)
     }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query(
-        "INSERT INTO app.shift_plans(tenant_id,user_id,site_id,starts_at,ends_at,note,created_by,required_qualification) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id")
-        .bind(tid).bind(b.user_id).bind(b.site_id).bind(a).bind(z).bind(&b.note).bind(s.user_id).bind(b.required_qualification)
+        "INSERT INTO app.shift_plans(tenant_id,user_id,site_id,starts_at,ends_at,note,created_by,required_qualification,work_order_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id")
+        .bind(tid).bind(b.user_id).bind(b.site_id).bind(a).bind(z).bind(&b.note).bind(s.user_id).bind(b.required_qualification).bind(b.work_order_id)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let iid: Uuid = row.get("id");
@@ -4711,6 +4711,36 @@ pub async fn user_set_color(State(st): State<AppState>, h: HeaderMap, Path(uid):
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true,"color":c})))
 }
+
+// ---------------- Modalità Lavoro sul campo: Cantieri / Assistenza (per-tenant) ----------------
+async fn field_modes(st: &AppState, tid: Uuid) -> (bool, bool) {
+    let cfg: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='interventi' AND tool_code='modes'")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    match cfg {
+        Some(v) => (v.get("cantieri").and_then(|x| x.as_bool()).unwrap_or(true),
+                    v.get("assistenza").and_then(|x| x.as_bool()).unwrap_or(true)),
+        None => (true, true), // default: entrambe
+    }
+}
+pub async fn field_modes_get(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?;
+    let (c,a) = field_modes(&st, tid).await;
+    Ok(Json(json!({"cantieri":c,"assistenza":a})))
+}
+#[derive(Deserialize)] pub struct FieldModesReq { pub cantieri: bool, pub assistenza: bool }
+pub async fn field_modes_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<FieldModesReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?;
+    require_cap(&s, "settings.manage")?;
+    if !b.cantieri && !b.assistenza { return Err(err(StatusCode::BAD_REQUEST, "attiva almeno una modalità")); }
+    sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'interventi','modes',$2,$3)
+                 ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config=EXCLUDED.config,updated_by=EXCLUDED.updated_by")
+        .bind(tid).bind(json!({"cantieri":b.cantieri,"assistenza":b.assistenza})).bind(s.user_id)
+        .execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, &s.email, "field_modes_set", json!({"cantieri":b.cantieri,"assistenza":b.assistenza})).await;
+    Ok(Json(json!({"ok":true,"cantieri":b.cantieri,"assistenza":b.assistenza})))
+}
 pub async fn list_shift_plans(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
     let s = require_tenant(&st, &h).await?;
@@ -4722,8 +4752,10 @@ pub async fn list_shift_plans(State(st): State<AppState>, h: HeaderMap,
     // worker sees own; planner/admin/auditor see all
     let own = matches!(s.role.as_str(), "lavoratore"|"reperibile");
     let rows = sqlx::query(
-        "SELECT p.id,p.user_id,p.site_id,p.starts_at,p.ends_at,p.note,p.state,u.email,si.name AS site
+        "SELECT p.id,p.user_id,p.site_id,p.starts_at,p.ends_at,p.note,p.state,u.email,si.name AS site,
+                p.work_order_id, o.title AS order_title
          FROM app.shift_plans p JOIN app.users u ON u.id=p.user_id LEFT JOIN app.sites si ON si.id=p.site_id
+         LEFT JOIN app.work_orders o ON o.id=p.work_order_id
          WHERE ($1=false OR p.user_id=$2)
            AND ($3::timestamptz IS NULL OR p.ends_at>=$3)
            AND ($4::timestamptz IS NULL OR p.starts_at<=$4)
@@ -4735,7 +4767,8 @@ pub async fn list_shift_plans(State(st): State<AppState>, h: HeaderMap,
         "site_id":r.try_get::<Uuid,_>("site_id").ok(),"site":r.try_get::<String,_>("site").ok(),
         "starts_at":r.get::<chrono::DateTime<chrono::Utc>,_>("starts_at"),
         "ends_at":r.get::<chrono::DateTime<chrono::Utc>,_>("ends_at"),
-        "note":r.try_get::<String,_>("note").ok(),"state":r.get::<String,_>("state") })).collect();
+        "note":r.try_get::<String,_>("note").ok(),"state":r.get::<String,_>("state"),
+        "work_order_id":r.try_get::<Uuid,_>("work_order_id").ok(),"order_title":r.try_get::<String,_>("order_title").ok() })).collect();
     Ok(Json(json!(out)))
 }
 #[derive(Deserialize)]
@@ -9436,8 +9469,9 @@ async fn calendar_collect(st: &AppState, tid: Uuid, from: chrono::DateTime<chron
     // --- Forza lavoro e turni: shift_plans ---
     if module_active(st, tid, "workforce").await {
         let rows = sqlx::query(
-            "SELECT sp.id, sp.user_id, sp.starts_at, sp.ends_at, sp.state, u.email, u.cal_color
+            "SELECT sp.id, sp.user_id, sp.starts_at, sp.ends_at, sp.state, u.email, u.cal_color, o.title AS order_title
              FROM app.shift_plans sp JOIN app.users u ON u.id=sp.user_id
+             LEFT JOIN app.work_orders o ON o.id=sp.work_order_id
              WHERE sp.tenant_id=$1 AND sp.ends_at >= $2 AND sp.starts_at <= $3
                AND ($4::uuid IS NULL OR sp.user_id=$4)")
             .bind(tid).bind(from).bind(to).bind(only_uid)
@@ -9445,11 +9479,13 @@ async fn calendar_collect(st: &AppState, tid: Uuid, from: chrono::DateTime<chron
         for r in &rows {
             let em: String = r.get("email");
             let uid: Uuid = r.get("user_id");
+            let ordt: Option<String> = r.try_get("order_title").ok().flatten();
             // colore PER LAVORATORE (scelto o da palette) per distinguerli sul calendario
+            let title = match &ordt { Some(t) => format!("Turno · {em} · {t}"), None => format!("Turno · {em}") };
             out.push(CalEvent{ id: format!("shift-{}", r.get::<Uuid,_>("id")), source:"turno",
-                title: format!("Turno · {em}"), color: user_color(r.try_get("cal_color").ok().flatten(), uid),
+                title, color: user_color(r.try_get("cal_color").ok().flatten(), uid),
                 start: r.get("starts_at"), end: r.get("ends_at"),
-                user_id: Some(uid), user: Some(em), link: None });
+                user_id: Some(uid), user: Some(em), link: ordt });
         }
     }
     // --- Interventi e cantieri: ordini con appuntamento programmato ---

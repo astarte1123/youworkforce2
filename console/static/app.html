@@ -1654,8 +1654,17 @@ async function ronView(id){ const r=await api('/patrol-rounds/'+id).catch(()=>nu
   </div>`);
 }
 async function vOrdini(v){
-  const O=await api('/orders').catch(()=>[]);
+  const isAdmin=can(['tenant_admin']);
+  const [O,FM]=await Promise.all([api('/orders').catch(()=>[]), api('/field-modes').catch(()=>({cantieri:true,assistenza:true}))]);
   const canCreate=can(['pianificatore','tenant_admin']);
+  // Modalità del lavoro sul campo (per-tenant): cantieri (turni+copertura) e/o assistenza (appuntamenti+listino)
+  const modesCard=isAdmin?`<div class="card" style="margin-bottom:16px"><div class="card-h"><h2>Modalità di lavoro</h2></div>
+    <div class="small mut" style="padding:0 14px">Scegli come lavora questo tenant. Puoi attivarne una o entrambe. Cambia terminologia e strumenti, non i dati.</div>
+    <div class="col" style="gap:8px;padding:12px 14px">
+      <label class="row small" style="gap:8px;align-items:flex-start"><input type="checkbox" id="fmC" ${FM.cantieri?'checked':''}><span><b>🏗️ Cantieri</b> — lavoro continuativo su un sito: turni e copertura minima per sede.</span></label>
+      <label class="row small" style="gap:8px;align-items:flex-start"><input type="checkbox" id="fmA" ${FM.assistenza?'checked':''}><span><b>🔧 Assistenza / Manutenzione</b> — tecnico con appuntamenti dal cliente: agenda, listino e consuntivi.</span></label>
+      <div class="row" style="gap:8px;align-items:center"><button class="btn small" onclick="fmSave()">Salva modalità</button><span class="cfg-msg small"></span></div>
+    </div></div>`:'';
   // agenda: pianificati (con finestra) separati dai non pianificati
   const sched=O.filter(o=>o.scheduled_start), unsched=O.filter(o=>!o.scheduled_start);
   const asgLabel=o=>o.assignee?esc(o.assignee):(o.group_name?('👥 '+esc(o.group_name)):'—');
@@ -1663,6 +1672,7 @@ async function vOrdini(v){
     <td>${asgLabel(o)}</td><td class="small">${schedLabel(o)}</td><td>${priBadge(o.priority)}</td><td>${chip(o.state)}</td></tr>`;
   v.innerHTML=`<div class="page-h"><div><h1>${t('ord_title','Ordini di lavoro')}</h1><div class="mut">${O.length} ordini · ${sched.length} pianificati</div></div>
     ${canCreate?`<button class="btn" onclick="newOrder()">+ Nuovo ordine</button>`:''}</div>
+  ${modesCard}
   <div class="card"><div class="card-h"><h2>Agenda (pianificati)</h2></div>
     <table class="table"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Quando</th><th>Priorità</th><th>Stato</th></tr></thead>
     <tbody>${sched.map(row).join('')||`<tr><td colspan="6" class="empty">Nessun ordine pianificato</td></tr>`}</tbody></table></div>
@@ -1670,6 +1680,12 @@ async function vOrdini(v){
     <table class="table"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Quando</th><th>Priorità</th><th>Stato</th></tr></thead>
     <tbody>${unsched.map(row).join('')||`<tr><td colspan="6" class="empty">${ICON.clipboard}<div>Nessun ordine</div></td></tr>`}</tbody></table></div>`;
   bindRows(v);
+}
+async function fmSave(){
+  const m=$('.cfg-msg'); const c=$('#fmC').checked, a=$('#fmA').checked;
+  if(!c&&!a){ if(m){m.textContent='attiva almeno una modalità';m.style.color='var(--bad)';} return; }
+  try{ await api('/field-modes',{method:'POST',body:JSON.stringify({cantieri:c,assistenza:a})}); toast('Modalità salvate','ok'); route(); }
+  catch(e){ if(m){m.textContent=e.message;m.style.color='var(--bad)';} }
 }
 function orderFormFields(o,sites,workers,groups){ o=o||{}; groups=groups||[]; return `
   <div class="field"><label>Titolo</label><input id="o_title" value="${esc(o.title||'')}" placeholder="Manutenzione quadro elettrico"></div>
@@ -4028,11 +4044,13 @@ function dtLocal(iso){ const d=new Date(iso); return d.toLocaleString('it-IT',{d
 function toISO(localVal){ if(!localVal)return null; const d=new Date(localVal); return isNaN(d)?null:d.toISOString(); }
 async function vTurni(v){
   const planner=can(['pianificatore','tenant_admin']);
-  const [P,OC,A,Q,CV,users,sites]=await Promise.all([
+  const hasInterventi=ACTIVE_MODS.has('interventi');
+  const [P,OC,A,Q,CV,users,sites,O,FM]=await Promise.all([
     api('/shift-plans').catch(()=>[]), api('/oncall').catch(()=>[]), api('/absences').catch(()=>[]), api('/qualifications').catch(()=>[]),
     api('/coverage').catch(()=>[]),
-    planner?api('/users').catch(()=>[]):Promise.resolve([]), planner?api('/sites').catch(()=>[]):Promise.resolve([])]);
-  v._users=users; v._sites=sites; v._quals=Q||[]; v._cov=CV||[];
+    planner?api('/users').catch(()=>[]):Promise.resolve([]), planner?api('/sites').catch(()=>[]):Promise.resolve([]),
+    hasInterventi?api('/orders').catch(()=>[]):Promise.resolve([]), hasInterventi?api('/field-modes').catch(()=>({cantieri:true,assistenza:true})):Promise.resolve(null)]);
+  v._users=users; v._sites=sites; v._quals=Q||[]; v._cov=CV||[]; v._orders=(O&&O.length!==undefined)?O:[]; v._fmodes=FM;
   const stChip=s=>`<span class="chip ${s==='confermato'?'s-attivo':''}">${s}</span>`;
   const planRows=P.map(p=>{
     const mine=p.user_id===ME.user_id||ME.email===p.email;
@@ -4041,7 +4059,7 @@ async function vTurni(v){
     if(planner&&p.state!=='annullato') acts.push(`<button class="btn ghost small" onclick='spSubs(${JSON.stringify(p).replace(/'/g,"&#39;")})'>sostituti</button>`);
     if(planner&&p.state!=='annullato') acts.push(`<button class="btn ghost small" onclick="spAct('${p.id}','cancel')">annulla</button>`);
     if(planner) acts.push(`<button class="btn-ico btn ghost" onclick="spDel('${p.id}')">${ICON.x}</button>`);
-    return `<tr><td>${esc(p.email)}</td><td>${esc(p.site||'—')}</td>
+    return `<tr><td>${esc(p.email)}${p.order_title?`<div class="small mut">🔧 ${esc(p.order_title)}</div>`:''}</td><td>${esc(p.site||'—')}</td>
       <td class="small">${dtLocal(p.starts_at)} → ${dtLocal(p.ends_at)}</td><td>${stChip(p.state)}</td>
       <td style="text-align:right">${acts.join(' ')}</td></tr>`;}).join('')
     ||`<tr><td colspan="5" class="empty">Nessun turno pianificato</td></tr>`;
@@ -4159,9 +4177,11 @@ async function absSave(){
 }
 async function absDel(id){ if(!await askConfirm('Eliminare l\'assenza?'))return; try{await api('/absences/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
 function spNew(){
-  const v=$('#view'); const users=v._users||[], sites=v._sites||[], quals=v._quals||[];
+  const v=$('#view'); const users=v._users||[], sites=v._sites||[], quals=v._quals||[], orders=v._orders||[], fm=v._fmodes;
   const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
   const qualField=quals.length?`<label class="small mut">Competenza richiesta (facoltativa)<select id="spQ"><option value="">—</option>${quals.map(q=>`<option value="${q.id}">${esc(q.name)}</option>`).join('')}</select></label>`:'';
+  let woLabel='Intervento / Cantiere'; if(fm){ if(fm.cantieri&&!fm.assistenza)woLabel='Cantiere'; else if(fm.assistenza&&!fm.cantieri)woLabel='Intervento'; }
+  const woField=orders.length?`<label class="small mut">${woLabel} (facoltativo)<select id="spW2"><option value="">—</option>${orders.map(o=>`<option value="${o.id}">${esc(o.title)}${o.site?' · '+esc(o.site):''}</option>`).join('')}</select></label>`:'';
   drawer('Pianifica turno',`<div class="col" style="gap:10px">
     <label class="small mut">Lavoratore<select id="spU">${workers.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select></label>
     <label class="small mut">Sede<select id="spS"><option value="">—</option>${sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
@@ -4169,6 +4189,7 @@ function spNew(){
     <div class="row" style="gap:8px"><label class="small mut grow">Dalle<input id="spS1" type="time" value="08:00"></label><label class="small mut grow">Alle<input id="spE1" type="time" value="16:00"></label></div>
     <div class="small mut">Se «Alle» è ≤ «Dalle» il turno finisce il giorno dopo (turno notturno). Per più giorni usa «Genera turni».</div>
     ${qualField}
+    ${woField}
     <label class="small mut">Nota<input id="spN"></label>
     <button class="btn" onclick="spSave()">Pianifica</button><div class="cfg-msg small"></div></div>`);
 }
@@ -4178,7 +4199,7 @@ async function spSave(){
   if(!$('#spU').value||!day||!t1||!t2){m.textContent='compila lavoratore, giorno e orari';m.style.color='var(--bad)';return;}
   // turno notturno: se "Alle" <= "Dalle" la fine è il giorno successivo
   let endDay=day; if(t2<=t1){ const d=new Date(day+'T00:00'); d.setDate(d.getDate()+1); endDay=d.toISOString().slice(0,10); }
-  const b={user_id:$('#spU').value,site_id:$('#spS').value||null,starts_at:toISO(day+'T'+t1),ends_at:toISO(endDay+'T'+t2),note:$('#spN').value||null,required_qualification:($('#spQ')&&$('#spQ').value)||null};
+  const b={user_id:$('#spU').value,site_id:$('#spS').value||null,starts_at:toISO(day+'T'+t1),ends_at:toISO(endDay+'T'+t2),note:$('#spN').value||null,required_qualification:($('#spQ')&&$('#spQ').value)||null,work_order_id:($('#spW2')&&$('#spW2').value)||null};
   if(!b.starts_at||!b.ends_at){m.textContent='orari non validi';m.style.color='var(--bad)';return;}
   try{ const r=await api('/shift-plans',{method:'POST',body:JSON.stringify(b)});
     const w=(r&&r.warnings)||[];
