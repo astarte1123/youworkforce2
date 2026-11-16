@@ -190,7 +190,14 @@ Regole di contorno:
   (override consapevole via header `x-force`). e2e `qa/scheduling-e2e.sh` 5/5.
   Resta per dopo: competenze (via `qualifiche`), copertura minima, consecutivi, e l'uso del motore
   da parte di reperibilità/ordini/giri.
-- **W3 — Disponibilità/assenze** + equità (vincoli morbidi) + aggancio competenze (`qualifiche`).
+- **W3 — Disponibilità/assenze** + competenze (`qualifiche`) + equità.
+  - **W3a — Assenze FATTO.** Tabella `worker_absences` (ferie/malattia/permesso/assenza, RLS, mig
+    `0082`); un'assenza è un vincolo **DURO** nel motore (niente turni sopra un'assenza). CRUD
+    `GET/POST /api/absences`, `DELETE /api/absences/:id` (pianificatore). Pannello «Assenze e
+    indisponibilità» nella pagina Turni. e2e `qa/absence-e2e.sh` 5/5.
+  - W3b — Competenze (via `qualifiche`, oggi solo stub): catalogo qualifiche + assegnazione +
+    requisito sul turno → vincolo duro se manca/scaduta. Da fare.
+  - W3c — Copertura minima per sede/fascia + equità (vincoli morbidi). Da fare.
 - **W4 — AI turni.** Proposta piano, sostituti per cambi turno, spiegazioni — sul motore W2, con
   conferma umana.
 - **W5 (opz.) — Push OAuth** bidirezionale e/o solver Timefold per ottimizzazione pesante. Solo se

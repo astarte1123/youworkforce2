@@ -4213,11 +4213,72 @@ async fn shift_intervals(st: &AppState, tid: Uuid, uid: Uuid,
         .bind(tid).bind(uid).bind(from).bind(to).fetch_all(&st.owner_pool).await.unwrap_or_default()
         .iter().map(|r| crate::scheduling::Interval{ start: r.get("starts_at"), end: r.get("ends_at") }).collect()
 }
+/// Le assenze della persona che toccano la finestra del candidato (vincolo duro).
+async fn absence_intervals(st: &AppState, tid: Uuid, uid: Uuid,
+    a: chrono::DateTime<chrono::Utc>, z: chrono::DateTime<chrono::Utc>) -> Vec<crate::scheduling::Interval> {
+    sqlx::query("SELECT starts_at,ends_at FROM app.worker_absences WHERE tenant_id=$1 AND user_id=$2 AND ends_at>=$3 AND starts_at<=$4")
+        .bind(tid).bind(uid).bind(a).bind(z).fetch_all(&st.owner_pool).await.unwrap_or_default()
+        .iter().map(|r| crate::scheduling::Interval{ start: r.get("starts_at"), end: r.get("ends_at") }).collect()
+}
 async fn validate_shift_candidate(st: &AppState, tid: Uuid, uid: Uuid,
     a: chrono::DateTime<chrono::Utc>, z: chrono::DateTime<chrono::Utc>) -> Vec<crate::scheduling::Violation> {
     let rules = scheduling_rules(st, tid).await;
     let ex = shift_intervals(st, tid, uid, a, z).await;
-    crate::scheduling::validate(&crate::scheduling::Interval{start:a,end:z}, &ex, &rules)
+    let ab = absence_intervals(st, tid, uid, a, z).await;
+    crate::scheduling::validate(&crate::scheduling::Interval{start:a,end:z}, &ex, &ab, &rules)
+}
+
+// ---------------- Assenze / indisponibilità (W3a) ----------------
+#[derive(Deserialize)]
+pub struct AbsenceReq { pub user_id: Uuid, pub starts_at: String, pub ends_at: String, pub kind: Option<String>, pub note: Option<String> }
+pub async fn list_absences(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "workforce").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // planner/admin: tutte; altri: solo le proprie.
+    let rows = if is_planner(&s) {
+        sqlx::query("SELECT a.id,a.user_id,a.starts_at,a.ends_at,a.kind,a.note,u.email FROM app.worker_absences a JOIN app.users u ON u.id=a.user_id ORDER BY a.starts_at DESC")
+            .fetch_all(&mut *tx).await
+    } else {
+        sqlx::query("SELECT a.id,a.user_id,a.starts_at,a.ends_at,a.kind,a.note,u.email FROM app.worker_absences a JOIN app.users u ON u.id=a.user_id WHERE a.user_id=$1 ORDER BY a.starts_at DESC")
+            .bind(s.user_id).fetch_all(&mut *tx).await
+    }.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"user_id":r.get::<Uuid,_>("user_id"),"email":r.get::<String,_>("email"),
+        "starts_at":r.get::<chrono::DateTime<chrono::Utc>,_>("starts_at"),
+        "ends_at":r.get::<chrono::DateTime<chrono::Utc>,_>("ends_at"),
+        "kind":r.get::<String,_>("kind"),"note":r.try_get::<String,_>("note").ok() })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn create_absence(State(st): State<AppState>, h: HeaderMap, Json(b): Json<AbsenceReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "workforce").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let (a,z) = (parse_ts(&b.starts_at)?, parse_ts(&b.ends_at)?);
+    if z <= a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); }
+    let kind = b.kind.clone().unwrap_or_else(|| "assenza".into());
+    if !["ferie","malattia","permesso","assenza"].contains(&kind.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "tipo non valido")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.worker_absences(tenant_id,user_id,starts_at,ends_at,kind,note,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        .bind(tid).bind(b.user_id).bind(a).bind(z).bind(&kind).bind(&b.note).bind(s.user_id)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "create_absence", json!({"user":b.user_id,"kind":kind})).await;
+    Ok(Json(json!({"id":row.get::<Uuid,_>("id")})))
+}
+pub async fn delete_absence(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "workforce").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.worker_absences WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "assenza inesistente")); }
+    Ok(Json(json!({"ok":true})))
 }
 fn violations_json(vs: &[crate::scheduling::Violation]) -> Value {
     json!(vs.iter().map(|v| json!({"code":v.code,"hard":v.hard,"message":v.message})).collect::<Vec<_>>())

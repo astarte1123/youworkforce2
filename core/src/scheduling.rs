@@ -24,13 +24,19 @@ pub struct Violation { pub code: &'static str, pub hard: bool, pub message: Stri
 
 fn fmt_local(t: DateTime<Utc>) -> String { t.format("%d/%m %H:%M").to_string() }
 
-/// Valida un intervallo candidato per UNA persona contro i suoi intervalli esistenti.
-/// `existing` = gli altri turni/impegni della stessa persona in una finestra ampia attorno al candidato.
-pub fn validate(cand: &Interval, existing: &[Interval], r: &Rules) -> Vec<Violation> {
+/// Valida un intervallo candidato per UNA persona contro i suoi intervalli esistenti e le assenze.
+/// `existing` = gli altri turni/impegni della persona nella finestra; `absences` = periodi di
+/// indisponibilità (ferie/malattia/permesso). Entrambi sono vincoli DURI.
+pub fn validate(cand: &Interval, existing: &[Interval], absences: &[Interval], r: &Rules) -> Vec<Violation> {
     let mut v = Vec::new();
     if cand.end <= cand.start {
         v.push(Violation{ code:"invalid_window", hard:true, message:"La fine deve essere dopo l'inizio.".into() });
         return v;
+    }
+    // --- ASSENZA (hard): la persona non è pianificabile durante un'assenza ---
+    if let Some(a) = absences.iter().find(|a| cand.overlaps(a)) {
+        v.push(Violation{ code:"absence", hard:true,
+            message: format!("La persona è assente nel periodo ({}–{}).", fmt_local(a.start), fmt_local(a.end)) });
     }
     // --- OVERLAP (hard): niente due impegni sovrapposti per la stessa persona ---
     if let Some(o) = existing.iter().find(|e| cand.overlaps(e)) {
@@ -75,24 +81,30 @@ mod tests {
     #[test] fn overlap_is_hard() {
         let c = iv("2030-03-04T08:00:00Z","2030-03-04T16:00:00Z");
         let ex = vec![iv("2030-03-04T12:00:00Z","2030-03-04T18:00:00Z")];
-        let v = validate(&c, &ex, &Rules::default());
+        let v = validate(&c, &ex, &[], &Rules::default());
         assert!(has_hard(&v)); assert!(v.iter().any(|x| x.code=="overlap"));
+    }
+    #[test] fn absence_is_hard() {
+        let c = iv("2030-03-04T08:00:00Z","2030-03-04T16:00:00Z");
+        let ab = vec![iv("2030-03-03T00:00:00Z","2030-03-05T00:00:00Z")]; // ferie
+        let v = validate(&c, &[], &ab, &Rules::default());
+        assert!(has_hard(&v)); assert!(v.iter().any(|x| x.code=="absence"));
     }
     #[test] fn short_rest_is_warning() {
         let c = iv("2030-03-05T06:00:00Z","2030-03-05T14:00:00Z");
         let ex = vec![iv("2030-03-04T16:00:00Z","2030-03-05T00:00:00Z")]; // 6h di riposo
-        let v = validate(&c, &ex, &Rules::default());
+        let v = validate(&c, &ex, &[], &Rules::default());
         assert!(!has_hard(&v)); assert!(v.iter().any(|x| x.code=="min_rest"));
     }
     #[test] fn clean_shift_ok() {
         let c = iv("2030-03-10T08:00:00Z","2030-03-10T16:00:00Z");
-        let v = validate(&c, &[], &Rules::default());
+        let v = validate(&c, &[], &[], &Rules::default());
         assert!(v.is_empty());
     }
     #[test] fn over_week_is_warning() {
         let c = iv("2030-03-08T08:00:00Z","2030-03-08T20:00:00Z"); // 12h
         let ex: Vec<Interval> = (4..8).map(|d| iv(&format!("2030-03-0{d}T08:00:00Z"), &format!("2030-03-0{d}T20:00:00Z"))).collect(); // 4*12=48
-        let v = validate(&c, &ex, &Rules::default());
+        let v = validate(&c, &ex, &[], &Rules::default());
         assert!(v.iter().any(|x| x.code=="max_week" && !x.hard));
     }
 }

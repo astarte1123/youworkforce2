@@ -288,6 +288,8 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/teams/:tid/members/:uid", axum::routing::delete(api::remove_team_member))
         .route("/api/shift-plans", get(api::list_shift_plans).post(api::create_shift_plan))
         .route("/api/shift-plans/validate", post(api::shift_plan_validate))
+        .route("/api/absences", get(api::list_absences).post(api::create_absence))
+        .route("/api/absences/:id", delete(api::delete_absence))
         .route("/api/shift-plans/:id", post(api::shift_plan_action).delete(api::delete_shift_plan))
         ;
     // catena spezzata in più statement: una singola espressione .route()* troppo lunga

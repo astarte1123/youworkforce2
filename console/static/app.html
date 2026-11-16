@@ -3927,8 +3927,8 @@ function dtLocal(iso){ const d=new Date(iso); return d.toLocaleString('it-IT',{d
 function toISO(localVal){ if(!localVal)return null; const d=new Date(localVal); return isNaN(d)?null:d.toISOString(); }
 async function vTurni(v){
   const planner=can(['pianificatore','tenant_admin']);
-  const [P,OC,users,sites]=await Promise.all([
-    api('/shift-plans').catch(()=>[]), api('/oncall').catch(()=>[]),
+  const [P,OC,A,users,sites]=await Promise.all([
+    api('/shift-plans').catch(()=>[]), api('/oncall').catch(()=>[]), api('/absences').catch(()=>[]),
     planner?api('/users').catch(()=>[]):Promise.resolve([]), planner?api('/sites').catch(()=>[]):Promise.resolve([])]);
   v._users=users; v._sites=sites;
   const stChip=s=>`<span class="chip ${s==='confermato'?'s-attivo':''}">${s}</span>`;
@@ -3949,10 +3949,37 @@ async function vTurni(v){
     <tbody>${OC.map(o=>`<tr><td>${esc(o.email)}</td><td class="small">${dtLocal(o.starts_at)}</td><td class="small">${dtLocal(o.ends_at)}</td>
       <td class="small mut">${esc(o.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="ocDel('${o.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
       ||`<tr><td colspan="5" class="empty">Nessuna reperibilità</td></tr>`}</tbody></table></div>`;
+  const absKind=k=>`<span class="chip">${esc(k)}</span>`;
+  const absCard=`<div class="card" style="margin-top:16px"><div class="card-h"><h2>Assenze e indisponibilità</h2>
+    ${planner?`<a onclick="absNew()">+ aggiungi</a>`:''}</div>
+    <div class="small mut" style="padding:0 14px">Un'assenza impedisce di pianificare turni sulla persona in quel periodo.</div>
+    <table class="table"><thead><tr><th>Lavoratore</th><th>Tipo</th><th>Dal</th><th>Al</th><th>Nota</th><th></th></tr></thead>
+    <tbody>${(A||[]).map(a=>`<tr><td>${esc(a.email)}</td><td>${absKind(a.kind)}</td><td class="small">${dtLocal(a.starts_at)}</td><td class="small">${dtLocal(a.ends_at)}</td>
+      <td class="small mut">${esc(a.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="absDel('${a.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
+      ||`<tr><td colspan="6" class="empty">Nessuna assenza</td></tr>`}</tbody></table></div>`;
   v.innerHTML=`<div class="page-h"><div><h1>${t('turni_title','Turni')}</h1><div class="mut">${P.length} turni pianificati${planner?'':' (i tuoi)'}</div></div>${createBtn}</div>
   <div class="card"><table class="table"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Quando</th><th>Stato</th><th></th></tr></thead>
-    <tbody>${planRows}</tbody></table></div>${oncallCard}`;
+    <tbody>${planRows}</tbody></table></div>${oncallCard}${absCard}`;
 }
+function absNew(){
+  const v=$('#view'); const users=v._users||[];
+  const workers=users.filter(u=>['lavoratore','reperibile','operatore','pianificatore','responsabile'].includes(u.role));
+  drawer('Aggiungi assenza',`<div class="col" style="gap:10px">
+    <label class="small mut">Lavoratore<select id="abU">${workers.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select></label>
+    <label class="small mut">Tipo<select id="abK"><option value="ferie">ferie</option><option value="malattia">malattia</option><option value="permesso">permesso</option><option value="assenza">assenza</option></select></label>
+    <label class="small mut">Dal<input id="abA" type="datetime-local"></label>
+    <label class="small mut">Al<input id="abZ" type="datetime-local"></label>
+    <label class="small mut">Nota<input id="abN"></label>
+    <button class="btn" onclick="absSave()">Salva</button><div class="cfg-msg small"></div></div>`);
+}
+async function absSave(){
+  const m=$('.cfg-msg');
+  const b={user_id:$('#abU').value,kind:$('#abK').value,starts_at:toISO($('#abA').value),ends_at:toISO($('#abZ').value),note:$('#abN').value||null};
+  if(!b.user_id||!b.starts_at||!b.ends_at){m.textContent='compila lavoratore, dal e al';m.style.color='var(--bad)';return;}
+  try{await api('/absences',{method:'POST',body:JSON.stringify(b)}); toast('Assenza salvata','ok'); closeDrawer(); route();}
+  catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
+}
+async function absDel(id){ if(!await askConfirm('Eliminare l\'assenza?'))return; try{await api('/absences/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
 function spNew(){
   const v=$('#view'); const users=v._users||[], sites=v._sites||[];
   const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
