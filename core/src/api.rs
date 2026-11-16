@@ -5218,6 +5218,7 @@ pub async fn alarms_map(State(st): State<AppState>, h: HeaderMap,
          LEFT JOIN app.sites s ON s.id=i.site_id
          WHERE i.opened_at BETWEEN $1 AND $2
            AND ($3::text IS NULL OR i.etype=$3)
+           AND i.state='aperto'   -- mappa: SOLO allarmi non gestiti; gestiti/chiusi restano nello storico/report
          ORDER BY i.opened_at DESC LIMIT 2000")
         .bind(from).bind(to).bind(&etype_f)
         .fetch_all(&mut *tx).await.map_err(ise)?;

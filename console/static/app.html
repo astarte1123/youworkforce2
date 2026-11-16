@@ -361,6 +361,8 @@ function connectSSE(){
     if(d.type==='device_position' && typeof mapLivePos==='function') mapLivePos(d.device_id,d.lat,d.lon);
     const k=location.hash.replace('#/','')||'dashboard';
     if(d.type==='presence' && k==='mappa') route();
+    // mappa allarmi = solo non gestiti: aggiorna live quando un incidente si apre/gestisce/chiude
+    if(k==='mappa' && (d.type==='incident_opened'||d.type==='incident_ack'||d.type==='incident_closed'||d.type==='incident_updated')) route();
     if(k==='centrale'||k==='dashboard') route();
   };
 }
