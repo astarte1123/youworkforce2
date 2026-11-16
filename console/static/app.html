@@ -4165,16 +4165,21 @@ function spNew(){
   drawer('Pianifica turno',`<div class="col" style="gap:10px">
     <label class="small mut">Lavoratore<select id="spU">${workers.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select></label>
     <label class="small mut">Sede<select id="spS"><option value="">—</option>${sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
-    <label class="small mut">Inizio<input id="spA" type="datetime-local"></label>
-    <label class="small mut">Fine<input id="spZ" type="datetime-local"></label>
+    <label class="small mut">Giorno<input id="spD" type="date"></label>
+    <div class="row" style="gap:8px"><label class="small mut grow">Dalle<input id="spS1" type="time" value="08:00"></label><label class="small mut grow">Alle<input id="spE1" type="time" value="16:00"></label></div>
+    <div class="small mut">Se «Alle» è ≤ «Dalle» il turno finisce il giorno dopo (turno notturno). Per più giorni usa «Genera turni».</div>
     ${qualField}
     <label class="small mut">Nota<input id="spN"></label>
     <button class="btn" onclick="spSave()">Pianifica</button><div class="cfg-msg small"></div></div>`);
 }
 async function spSave(){
   const m=$('.cfg-msg');
-  const b={user_id:$('#spU').value,site_id:$('#spS').value||null,starts_at:toISO($('#spA').value),ends_at:toISO($('#spZ').value),note:$('#spN').value||null,required_qualification:($('#spQ')&&$('#spQ').value)||null};
-  if(!b.user_id||!b.starts_at||!b.ends_at){m.textContent='compila lavoratore, inizio e fine';m.style.color='var(--bad)';return;}
+  const day=$('#spD').value, t1=$('#spS1').value, t2=$('#spE1').value;
+  if(!$('#spU').value||!day||!t1||!t2){m.textContent='compila lavoratore, giorno e orari';m.style.color='var(--bad)';return;}
+  // turno notturno: se "Alle" <= "Dalle" la fine è il giorno successivo
+  let endDay=day; if(t2<=t1){ const d=new Date(day+'T00:00'); d.setDate(d.getDate()+1); endDay=d.toISOString().slice(0,10); }
+  const b={user_id:$('#spU').value,site_id:$('#spS').value||null,starts_at:toISO(day+'T'+t1),ends_at:toISO(endDay+'T'+t2),note:$('#spN').value||null,required_qualification:($('#spQ')&&$('#spQ').value)||null};
+  if(!b.starts_at||!b.ends_at){m.textContent='orari non validi';m.style.color='var(--bad)';return;}
   try{ const r=await api('/shift-plans',{method:'POST',body:JSON.stringify(b)});
     const w=(r&&r.warnings)||[];
     toast('Turno pianificato'+(w.length?' · '+w.length+' avviso':''),'ok');
