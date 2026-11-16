@@ -3927,10 +3927,10 @@ function dtLocal(iso){ const d=new Date(iso); return d.toLocaleString('it-IT',{d
 function toISO(localVal){ if(!localVal)return null; const d=new Date(localVal); return isNaN(d)?null:d.toISOString(); }
 async function vTurni(v){
   const planner=can(['pianificatore','tenant_admin']);
-  const [P,OC,A,users,sites]=await Promise.all([
-    api('/shift-plans').catch(()=>[]), api('/oncall').catch(()=>[]), api('/absences').catch(()=>[]),
+  const [P,OC,A,Q,users,sites]=await Promise.all([
+    api('/shift-plans').catch(()=>[]), api('/oncall').catch(()=>[]), api('/absences').catch(()=>[]), api('/qualifications').catch(()=>[]),
     planner?api('/users').catch(()=>[]):Promise.resolve([]), planner?api('/sites').catch(()=>[]):Promise.resolve([])]);
-  v._users=users; v._sites=sites;
+  v._users=users; v._sites=sites; v._quals=Q||[];
   const stChip=s=>`<span class="chip ${s==='confermato'?'s-attivo':''}">${s}</span>`;
   const planRows=P.map(p=>{
     const mine=p.user_id===ME.user_id||ME.email===p.email;
@@ -3957,9 +3957,34 @@ async function vTurni(v){
     <tbody>${(A||[]).map(a=>`<tr><td>${esc(a.email)}</td><td>${absKind(a.kind)}</td><td class="small">${dtLocal(a.starts_at)}</td><td class="small">${dtLocal(a.ends_at)}</td>
       <td class="small mut">${esc(a.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="absDel('${a.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
       ||`<tr><td colspan="6" class="empty">Nessuna assenza</td></tr>`}</tbody></table></div>`;
+  // Qualifiche (solo se il modulo è attivo: l'endpoint ritorna dati; altrimenti Q è vuoto per il 403)
+  const qualCard=(planner && ACTIVE_MODS.has('qualifiche'))?`<div class="card" style="margin-top:16px"><div class="card-h"><h2>Qualifiche e competenze</h2>
+    <span><a onclick="qualNew()">+ nuova</a> · <a onclick="qualAssign()">assegna a persona</a></span></div>
+    <div class="small mut" style="padding:0 14px">Un turno può richiedere una qualifica: solo chi la possiede (non scaduta) può coprirlo.</div>
+    <div class="grid g2" style="margin:10px 14px">${(Q||[]).map(q=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px" class="spread"><b class="small">${esc(q.name)}</b><button class="btn-ico btn ghost" onclick="qualDel('${q.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessuna qualifica. Creane una e assegnala alle persone.</div>'}</div></div>`:'';
   v.innerHTML=`<div class="page-h"><div><h1>${t('turni_title','Turni')}</h1><div class="mut">${P.length} turni pianificati${planner?'':' (i tuoi)'}</div></div>${createBtn}</div>
   <div class="card"><table class="table"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Quando</th><th>Stato</th><th></th></tr></thead>
-    <tbody>${planRows}</tbody></table></div>${oncallCard}${absCard}`;
+    <tbody>${planRows}</tbody></table></div>${oncallCard}${absCard}${qualCard}`;
+}
+async function qualNew(){ const n=await askPrompt('Nome qualifica? (es. Patentino carrello, Primo soccorso)'); if(!n)return;
+  try{await api('/qualifications',{method:'POST',body:JSON.stringify({name:n})}); toast('Qualifica creata','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function qualDel(id){ if(!await askConfirm('Eliminare la qualifica? (decadono le assegnazioni e i requisiti sui turni)'))return;
+  try{await api('/qualifications/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
+function qualAssign(){
+  const v=$('#view'); const users=v._users||[], quals=v._quals||[];
+  const workers=users.filter(u=>['lavoratore','reperibile','operatore','pianificatore','responsabile'].includes(u.role));
+  if(!quals.length){ toast('Crea prima una qualifica','mut'); return; }
+  drawer('Assegna qualifica a persona',`<div class="col" style="gap:10px">
+    <label class="small mut">Persona<select id="qaU">${workers.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select></label>
+    <label class="small mut">Qualifica<select id="qaQ">${quals.map(q=>`<option value="${q.id}">${esc(q.name)}</option>`).join('')}</select></label>
+    <label class="small mut">Scadenza (facoltativa)<input id="qaE" type="date"></label>
+    <button class="btn" onclick="qualAssignSave()">Assegna</button><div class="cfg-msg small"></div></div>`);
+}
+async function qualAssignSave(){
+  const m=$('.cfg-msg'); const uid=$('#qaU').value, qid=$('#qaQ').value, exp=$('#qaE').value;
+  const body={qualification_id:qid, expires_at: exp?exp+'T23:59:59Z':null};
+  try{await api('/users/'+uid+'/qualifications',{method:'POST',body:JSON.stringify(body)}); toast('Assegnata','ok'); closeDrawer();}
+  catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
 }
 function absNew(){
   const v=$('#view'); const users=v._users||[];
@@ -3981,19 +4006,21 @@ async function absSave(){
 }
 async function absDel(id){ if(!await askConfirm('Eliminare l\'assenza?'))return; try{await api('/absences/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
 function spNew(){
-  const v=$('#view'); const users=v._users||[], sites=v._sites||[];
+  const v=$('#view'); const users=v._users||[], sites=v._sites||[], quals=v._quals||[];
   const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
+  const qualField=quals.length?`<label class="small mut">Competenza richiesta (facoltativa)<select id="spQ"><option value="">—</option>${quals.map(q=>`<option value="${q.id}">${esc(q.name)}</option>`).join('')}</select></label>`:'';
   drawer('Pianifica turno',`<div class="col" style="gap:10px">
     <label class="small mut">Lavoratore<select id="spU">${workers.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select></label>
     <label class="small mut">Sede<select id="spS"><option value="">—</option>${sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
     <label class="small mut">Inizio<input id="spA" type="datetime-local"></label>
     <label class="small mut">Fine<input id="spZ" type="datetime-local"></label>
+    ${qualField}
     <label class="small mut">Nota<input id="spN"></label>
     <button class="btn" onclick="spSave()">Pianifica</button><div class="cfg-msg small"></div></div>`);
 }
 async function spSave(){
   const m=$('.cfg-msg');
-  const b={user_id:$('#spU').value,site_id:$('#spS').value||null,starts_at:toISO($('#spA').value),ends_at:toISO($('#spZ').value),note:$('#spN').value||null};
+  const b={user_id:$('#spU').value,site_id:$('#spS').value||null,starts_at:toISO($('#spA').value),ends_at:toISO($('#spZ').value),note:$('#spN').value||null,required_qualification:($('#spQ')&&$('#spQ').value)||null};
   if(!b.user_id||!b.starts_at||!b.ends_at){m.textContent='compila lavoratore, inizio e fine';m.style.color='var(--bad)';return;}
   try{ const r=await api('/shift-plans',{method:'POST',body:JSON.stringify(b)});
     const w=(r&&r.warnings)||[];

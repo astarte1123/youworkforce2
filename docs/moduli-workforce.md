@@ -195,8 +195,12 @@ Regole di contorno:
     `0082`); un'assenza è un vincolo **DURO** nel motore (niente turni sopra un'assenza). CRUD
     `GET/POST /api/absences`, `DELETE /api/absences/:id` (pianificatore). Pannello «Assenze e
     indisponibilità» nella pagina Turni. e2e `qa/absence-e2e.sh` 5/5.
-  - W3b — Competenze (via `qualifiche`, oggi solo stub): catalogo qualifiche + assegnazione +
-    requisito sul turno → vincolo duro se manca/scaduta. Da fare.
+  - **W3b — Competenze FATTO.** Modulo `qualifiche` attivato (mig `0083`): catalogo `qualifications`
+    + assegnazione `user_qualifications` (con scadenza) + `shift_plans.required_qualification`. Regola
+    motore **DURA** `qualification`: un turno che richiede una qualifica va solo a chi la possiede
+    valida (non scaduta) all'orario del turno. CRUD `/api/qualifications`, assegnazione
+    `/api/users/:id/qualifications`. Console: card «Qualifiche e competenze» in Turni (crea/assegna)
+    + «Competenza richiesta» nel form turno. e2e `qa/qualification-e2e.sh` 5/5.
   - W3c — Copertura minima per sede/fascia + equità (vincoli morbidi). Da fare.
 - **W4 — AI turni.** Proposta piano, sostituti per cambi turno, spiegazioni — sul motore W2, con
   conferma umana.

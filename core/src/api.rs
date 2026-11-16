@@ -4193,7 +4193,7 @@ pub async fn remove_team_member(State(st): State<AppState>, h: HeaderMap, Path((
 
 // ---------------- Turni pianificati ----------------
 #[derive(Deserialize)]
-pub struct ShiftPlanReq { pub user_id: Uuid, pub site_id: Option<Uuid>, pub starts_at: String, pub ends_at: String, pub note: Option<String> }
+pub struct ShiftPlanReq { pub user_id: Uuid, pub site_id: Option<Uuid>, pub starts_at: String, pub ends_at: String, pub note: Option<String>, #[serde(default)] pub required_qualification: Option<Uuid> }
 
 /// Regole di pianificazione del tenant (default di prodotto; preset "standard").
 async fn scheduling_rules(st: &AppState, tid: Uuid) -> crate::scheduling::Rules {
@@ -4220,12 +4220,26 @@ async fn absence_intervals(st: &AppState, tid: Uuid, uid: Uuid,
         .bind(tid).bind(uid).bind(a).bind(z).fetch_all(&st.owner_pool).await.unwrap_or_default()
         .iter().map(|r| crate::scheduling::Interval{ start: r.get("starts_at"), end: r.get("ends_at") }).collect()
 }
+/// Se il turno richiede una qualifica, verifica che la persona la possieda valida (non scaduta)
+/// all'orario del turno. Nessun requisito o qualifica rimossa -> nessun vincolo.
+async fn qual_check(st: &AppState, tid: Uuid, uid: Uuid, required: Option<Uuid>,
+    at: chrono::DateTime<chrono::Utc>) -> Option<crate::scheduling::QualReq> {
+    let rq = required?;
+    let name: Option<String> = sqlx::query_scalar("SELECT name FROM app.qualifications WHERE id=$1 AND tenant_id=$2")
+        .bind(rq).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let name = name?;
+    let held: bool = sqlx::query_scalar::<_,Option<i32>>(
+        "SELECT 1 FROM app.user_qualifications WHERE tenant_id=$1 AND user_id=$2 AND qualification_id=$3 AND (expires_at IS NULL OR expires_at > $4)")
+        .bind(tid).bind(uid).bind(rq).bind(at).fetch_optional(&st.owner_pool).await.ok().flatten().flatten().is_some();
+    Some(crate::scheduling::QualReq{ name, satisfied: held })
+}
 async fn validate_shift_candidate(st: &AppState, tid: Uuid, uid: Uuid,
-    a: chrono::DateTime<chrono::Utc>, z: chrono::DateTime<chrono::Utc>) -> Vec<crate::scheduling::Violation> {
+    a: chrono::DateTime<chrono::Utc>, z: chrono::DateTime<chrono::Utc>, required_qual: Option<Uuid>) -> Vec<crate::scheduling::Violation> {
     let rules = scheduling_rules(st, tid).await;
     let ex = shift_intervals(st, tid, uid, a, z).await;
     let ab = absence_intervals(st, tid, uid, a, z).await;
-    crate::scheduling::validate(&crate::scheduling::Interval{start:a,end:z}, &ex, &ab, &rules)
+    let q = qual_check(st, tid, uid, required_qual, a).await;
+    crate::scheduling::validate(&crate::scheduling::Interval{start:a,end:z}, &ex, &ab, q.as_ref(), &rules)
 }
 
 // ---------------- Assenze / indisponibilità (W3a) ----------------
@@ -4280,6 +4294,72 @@ pub async fn delete_absence(State(st): State<AppState>, h: HeaderMap, Path(id): 
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "assenza inesistente")); }
     Ok(Json(json!({"ok":true})))
 }
+
+// ---------------- Qualifiche e competenze (W3b, modulo `qualifiche`) ----------------
+#[derive(Deserialize)] pub struct QualBody { pub name: String, pub note: Option<String> }
+pub async fn list_qualifications(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "qualifiche").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT id,name,note FROM app.qualifications ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!(rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"note":r.try_get::<String,_>("note").ok()})).collect::<Vec<_>>())))
+}
+pub async fn create_qualification(State(st): State<AppState>, h: HeaderMap, Json(b): Json<QualBody>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "qualifiche").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.qualifications(tenant_id,name,note) VALUES($1,$2,$3) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(&b.note)
+        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "qualifica già esistente"))?;
+    tx.commit().await.map_err(ise)?;
+    let id = row.ok_or_else(|| err(StatusCode::CONFLICT,"già esistente"))?.get::<Uuid,_>("id");
+    audit(&st, tid, &s.email, "create_qualification", json!({"name":b.name})).await;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn delete_qualification(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "qualifiche").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.qualifications WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn list_user_qualifications(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "qualifiche").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT q.id,q.name,uq.expires_at FROM app.user_qualifications uq JOIN app.qualifications q ON q.id=uq.qualification_id WHERE uq.user_id=$1 ORDER BY q.name")
+        .bind(uid).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!(rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),
+        "expires_at": r.try_get::<chrono::DateTime<chrono::Utc>,_>("expires_at").ok()})).collect::<Vec<_>>())))
+}
+#[derive(Deserialize)] pub struct AssignQual { pub qualification_id: Uuid, pub expires_at: Option<String> }
+pub async fn user_qualification_add(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>, Json(b): Json<AssignQual>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "qualifiche").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let exp = match &b.expires_at { Some(e) if !e.trim().is_empty() => Some(parse_ts(e)?), _ => None };
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.user_qualifications(tenant_id,user_id,qualification_id,expires_at) VALUES($1,$2,$3,$4) ON CONFLICT (tenant_id,user_id,qualification_id) DO UPDATE SET expires_at=EXCLUDED.expires_at")
+        .bind(tid).bind(uid).bind(b.qualification_id).bind(exp).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn user_qualification_del(State(st): State<AppState>, h: HeaderMap, Path((uid,qid)): Path<(Uuid,Uuid)>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "qualifiche").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.user_qualifications WHERE user_id=$1 AND qualification_id=$2").bind(uid).bind(qid).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
 fn violations_json(vs: &[crate::scheduling::Violation]) -> Value {
     json!(vs.iter().map(|v| json!({"code":v.code,"hard":v.hard,"message":v.message})).collect::<Vec<_>>())
 }
@@ -4291,7 +4371,7 @@ pub async fn shift_plan_validate(State(st): State<AppState>, h: HeaderMap, Json(
     need_workforce(&st, tid).await?;
     if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
     let (a,z) = (parse_ts(&b.starts_at)?, parse_ts(&b.ends_at)?);
-    let vs = validate_shift_candidate(&st, tid, b.user_id, a, z).await;
+    let vs = validate_shift_candidate(&st, tid, b.user_id, a, z, b.required_qualification).await;
     Ok(Json(json!({"ok": !crate::scheduling::has_hard(&vs), "violations": violations_json(&vs)})))
 }
 
@@ -4306,15 +4386,15 @@ pub async fn create_shift_plan(State(st): State<AppState>, h: HeaderMap, Json(b)
     // settimana) non bloccano ma tornano nella risposta. Con `force=1` si ignorano anche gli hard
     // (override consapevole del pianificatore), tranne la finestra non valida.
     let force = h.get("x-force").map(|v| v=="1"||v=="true").unwrap_or(false);
-    let vs = validate_shift_candidate(&st, tid, b.user_id, a, z).await;
+    let vs = validate_shift_candidate(&st, tid, b.user_id, a, z, b.required_qualification).await;
     if crate::scheduling::has_hard(&vs) && !force {
         let msg = vs.iter().filter(|v| v.hard).map(|v| v.message.clone()).collect::<Vec<_>>().join(" ");
         return Err(err(StatusCode::CONFLICT, &format!("Conflitto: {msg} (usa Forza per procedere)")));
     }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query(
-        "INSERT INTO app.shift_plans(tenant_id,user_id,site_id,starts_at,ends_at,note,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
-        .bind(tid).bind(b.user_id).bind(b.site_id).bind(a).bind(z).bind(&b.note).bind(s.user_id)
+        "INSERT INTO app.shift_plans(tenant_id,user_id,site_id,starts_at,ends_at,note,created_by,required_qualification) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id")
+        .bind(tid).bind(b.user_id).bind(b.site_id).bind(a).bind(z).bind(&b.note).bind(s.user_id).bind(b.required_qualification)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let iid: Uuid = row.get("id");
