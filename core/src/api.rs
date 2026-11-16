@@ -4745,9 +4745,14 @@ pub async fn shift_plan_action(State(st): State<AppState>, h: HeaderMap, Path(id
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = match b.action.as_str() {
-        // il lavoratore conferma il PROPRIO turno pianificato
-        "confirm" => sqlx::query("UPDATE app.shift_plans SET state='confermato' WHERE id=$1 AND user_id=$2 AND state='pianificato'")
-            .bind(id).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected(),
+        // il lavoratore conferma il PROPRIO turno; il pianificatore può confermare per conto di chiunque
+        "confirm" => if is_planner(&s) {
+            sqlx::query("UPDATE app.shift_plans SET state='confermato' WHERE id=$1 AND state='pianificato'")
+                .bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected()
+        } else {
+            sqlx::query("UPDATE app.shift_plans SET state='confermato' WHERE id=$1 AND user_id=$2 AND state='pianificato'")
+                .bind(id).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected()
+        },
         // pianificatore/admin annulla
         "cancel" => { if !is_planner(&s) { let _=tx.rollback().await; return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
             sqlx::query("UPDATE app.shift_plans SET state='annullato' WHERE id=$1 AND state<>'annullato'")

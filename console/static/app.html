@@ -4037,7 +4037,7 @@ async function vTurni(v){
   const planRows=P.map(p=>{
     const mine=p.user_id===ME.user_id||ME.email===p.email;
     const acts=[];
-    if(p.state==='pianificato'&&mine) acts.push(`<button class="btn ghost small" onclick="spAct('${p.id}','confirm')">conferma</button>`);
+    if(p.state==='pianificato'&&(mine||planner)) acts.push(`<button class="btn ghost small" onclick="spAct('${p.id}','confirm')">conferma</button>`);
     if(planner&&p.state!=='annullato') acts.push(`<button class="btn ghost small" onclick='spSubs(${JSON.stringify(p).replace(/'/g,"&#39;")})'>sostituti</button>`);
     if(planner&&p.state!=='annullato') acts.push(`<button class="btn ghost small" onclick="spAct('${p.id}','cancel')">annulla</button>`);
     if(planner) acts.push(`<button class="btn-ico btn ghost" onclick="spDel('${p.id}')">${ICON.x}</button>`);
