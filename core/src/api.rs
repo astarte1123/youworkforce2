@@ -4716,35 +4716,6 @@ pub async fn user_set_color(State(st): State<AppState>, h: HeaderMap, Path(uid):
     Ok(Json(json!({"ok":true,"color":c})))
 }
 
-// ---------------- Modalità Lavoro sul campo: Cantieri / Assistenza (per-tenant) ----------------
-async fn field_modes(st: &AppState, tid: Uuid) -> (bool, bool) {
-    let cfg: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='interventi' AND tool_code='modes'")
-        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
-    match cfg {
-        Some(v) => (v.get("cantieri").and_then(|x| x.as_bool()).unwrap_or(true),
-                    v.get("assistenza").and_then(|x| x.as_bool()).unwrap_or(true)),
-        None => (true, true), // default: entrambe
-    }
-}
-pub async fn field_modes_get(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "interventi").await?;
-    let (c,a) = field_modes(&st, tid).await;
-    Ok(Json(json!({"cantieri":c,"assistenza":a})))
-}
-#[derive(Deserialize)] pub struct FieldModesReq { pub cantieri: bool, pub assistenza: bool }
-pub async fn field_modes_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<FieldModesReq>) -> R {
-    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "interventi").await?;
-    require_cap(&s, "settings.manage")?;
-    if !b.cantieri && !b.assistenza { return Err(err(StatusCode::BAD_REQUEST, "attiva almeno una modalità")); }
-    sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'interventi','modes',$2,$3)
-                 ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config=EXCLUDED.config,updated_by=EXCLUDED.updated_by")
-        .bind(tid).bind(json!({"cantieri":b.cantieri,"assistenza":b.assistenza})).bind(s.user_id)
-        .execute(&st.owner_pool).await.map_err(ise)?;
-    audit(&st, tid, &s.email, "field_modes_set", json!({"cantieri":b.cantieri,"assistenza":b.assistenza})).await;
-    Ok(Json(json!({"ok":true,"cantieri":b.cantieri,"assistenza":b.assistenza})))
-}
 pub async fn list_shift_plans(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
     let s = require_tenant(&st, &h).await?;

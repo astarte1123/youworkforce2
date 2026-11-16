@@ -1,5 +1,10 @@
 # Lavoro sul campo — modalità Cantieri vs Assistenza (analisi)
 
+> **SUPERATO (2026-11-16).** L'idea del toggle di "modalità" su un modello unico si è rivelata una
+> scorciatoia: cantiere e assistenza sono due mestieri diversi. La direzione definitiva è **due
+> moduli distinti** (`interventi`=Assistenza, `cantieri`=Cantieri) su core condiviso. Vedi il piano
+> operativo in `docs/lavoro-campo-piano.md`. Questo file resta come analisi storica del dominio.
+
 Il lavoro sul campo non è uno solo. Due realtà operative diverse convivono sotto l'area «Lavoro sul
 campo», e un tenant può averne una, l'altra o entrambe. L'amministratore del tenant **attiva la/e
 modalità** (impostazione per-tenant, non del superadmin): cambia terminologia, campi e strumenti

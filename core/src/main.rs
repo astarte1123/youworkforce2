@@ -303,7 +303,6 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/shift-plans/:id/move", post(api::shift_plan_move))
         .route("/api/shift-plans/suggest", post(api::shift_suggest))
         .route("/api/users/:id/color", post(api::user_set_color))
-        .route("/api/field-modes", get(api::field_modes_get).post(api::field_modes_set))
         // Modulo Cantieri: commessa -> lavorazioni (WBS) -> SAL
         .route("/api/commesse", get(api::list_commesse).post(api::create_commessa))
         .route("/api/commesse/:id", get(api::get_commessa).post(api::update_commessa).delete(api::delete_commessa))
