@@ -217,6 +217,11 @@ function brandMark(){ return BRANDING.has_logo
   ? `<img src="/api/branding/logo" alt="logo" style="width:100%;height:100%;object-fit:contain;border-radius:inherit">`
   : ICON.logomark; }
 function brandName(){ return esc(BRANDING.name||'YouWorkforce'); }
+// Nello spazio del NOME del tenant: se il tenant ha un logo caricato mostra quello (al posto del
+// nome), altrimenti il nome (es. "Acme SpA"). Il logomark YouWorkforce resta nel suo slot.
+function brandNameOrLogo(){ return BRANDING.has_logo
+  ? `<img src="/api/branding/logo" alt="${brandName()}" title="${brandName()}" style="height:24px;max-width:160px;object-fit:contain;display:block">`
+  : `<span>${brandName()}</span>`; }
 
 // ---------------- boot ----------------
 (async function(){
@@ -276,9 +281,9 @@ function renderShell(){
   $('#root').innerHTML = `
   <div class="shell">
     <aside class="side" id="side">
-      <div class="brand"><div class="logo">${brandMark()}</div>
+      <div class="brand"><div class="logo">${ICON.logomark}</div>
         <div style="display:flex;flex-direction:column;line-height:1.1">
-          <span>${brandName()}</span>
+          ${brandNameOrLogo()}
           <span style="font-size:8px;color:var(--faint);font-weight:700;letter-spacing:.03em;margin-top:2px;white-space:nowrap">Powered by YouCo</span>
         </div></div>
       <nav id="nav">${navHtml()}</nav>
