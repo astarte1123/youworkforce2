@@ -30,28 +30,43 @@ Rimosso il modulo → spariscono (menu + API 403): turni, presenza, squadre, dis
 shifts. **Non tocca** Consuntivi (modulo a sé, consuntivo manuale regge senza workforce), Interventi,
 e la reperibilità d'allarme (perimetro Sicurezza). Il Diario è condiviso `workforce OR interventi`.
 
-## 3. Calendario stile Google Calendar + sync agende
+## 3. Servizi COMUNI dell'area «Lavoro sul campo»
 
-**Vista (console + PWA).** Un calendario a griglia (giorno / settimana / mese) con i turni come
-blocchi colorati per persona o per squadra; filtri per tecnico/squadra/sede; i conflitti evidenziati
-in rosso; drag per spostare/estendere un turno (chi pianifica). Niente timeline/risorse "premium".
-Riuso diretto di **FullCalendar Standard (MIT)** — viste giorno/settimana/mese bastano (vedi
-valutazione OSS in [consuntivi-plan]); nessuna dipendenza a pagamento.
+Due capacità non sono di workforce soltanto: servono a **tutta** l'area Campo (Forza lavoro e turni,
+Ronde e punzonature, Interventi e cantieri). Le progettiamo come **servizi core condivisi**, non
+dentro un singolo modulo, così si mettono a fattor comune senza duplicarle e senza accoppiare i
+moduli fra loro.
 
-**Collegamento alle agende personali (Google/Microsoft/Apple) — self-contained.**
-Strada principale, zero credenziali, zero OAuth: ogni dipendente ha un **URL iCal (ICS) personale,
-a sottoscrizione** (`/api/calendar/<token>.ics`) che incolla una volta nel suo Google/Outlook/Apple
-Calendar. Da lì i turni (e opzionalmente la reperibilità) compaiono nella sua agenda e si aggiornano
-da soli. Read-only, token revocabile, un calendario per persona. È lo **stesso meccanismo iCal già
-usato per la reperibilità d'allarme** (`docs/goalert-manuale.md`): lo generalizziamo.
+### 3a. Calendario / Agenda (servizio core condiviso)
 
-- Pro: funziona con TUTTI i calendari, nessun segreto da custodire, coerente con la direzione
-  "self-contained" ([self-contained-native]).
-- Limite: è una direzione sola (prodotto → agenda del dipendente). Sufficiente per il 95% dei casi.
+Un **unico calendario** (griglia giorno / settimana / mese, stile Google) che mostra, a livelli
+sovrapponibili e filtrabili, gli eventi di **ogni modulo Campo attivo**:
 
-**Opzione futura (fase 2, solo se richiesta): push bidirezionale via OAuth** verso Google/Microsoft
-(crea/aggiorna eventi nel calendario aziendale, legge disponibilità "busy"). Più potente ma introduce
-credenziali e manutenzione: resta **opt-in**, non obbligatoria, e non cambia il modello base iCal.
+- **Forza lavoro e turni** → turni pianificati + presenza.
+- **Interventi e cantieri** → appuntamenti/visite degli ordini (finestra programmata `scheduled_*`).
+- **Ronde e punzonature** → giri pianificati / finestre di ronda.
+
+Ogni modulo **contribuisce una "sorgente eventi"** (un adapter che espone i suoi record come eventi
+`{titolo, inizio, fine, persona/squadra, sede, colore, link}`); il calendario core li fonde e li
+filtra per persona/squadra/sede/modulo. Il calendario **esiste finché è attivo almeno un modulo che
+lo alimenta**; spegnere un modulo fa sparire solo il suo livello, non il calendario.
+
+Resa: **FullCalendar Standard (MIT)** (giorno/settimana/mese bastano; niente timeline/risorse
+"premium"), conflitti in rosso, drag per spostare/estendere (chi pianifica). Un solo componente,
+riusato dalle tre voci di menu — non tre calendari diversi.
+
+**Agende personali (Google / Microsoft / Apple) — self-contained.** Ogni dipendente ha **un** URL
+iCal (ICS) personale a sottoscrizione (`/api/calendar/<token>.ics`) che incolla una volta nel suo
+calendario: dentro ci finiscono **tutti** i suoi item dai moduli attivi (turni, sue visite, sue
+ronde) — non un feed per modulo, ma uno per persona. Read-only, token revocabile. Stesso meccanismo
+iCal già usato per la reperibilità d'allarme: lo generalizziamo come servizio core. Zero credenziali,
+zero OAuth, funziona con tutti i calendari, coerente con la direzione "self-contained".
+Push OAuth bidirezionale verso Google/Microsoft = opzione futura opt-in, non cambia il modello base.
+
+### 3b. Motore regole / assegnazione (servizio core condiviso)
+
+Vedi §4: lo stesso motore che valida/propone i turni serve anche a reperibilità d'allarme,
+assegnazione ordini e pianificazione giri. È core, non di workforce.
 
 ## 4. Motore regole dei turni (il cuore "invisibile")
 
@@ -113,6 +128,34 @@ Consuntivi) → `checkins` (sessione lone worker, Sicurezza). Il flusso ideale
 **piano → presenza → consuntivo** li collega (derivazione automatica proposta, confermabile), senza
 fonderli: ogni registro resta la verità del suo dominio.
 
+## 6bis. Contorni e ciclo di vita del modulo (attivabile/disattivabile pulito)
+
+Ogni modulo Campo deve accendersi e spegnersi **senza rompere nulla** e senza lasciare dati orfani.
+Regole di contorno:
+
+- **Dati di proprietà esclusiva.** Ogni modulo possiede le SUE tabelle (RLS per tenant, FK con
+  `ON DELETE CASCADE` interne). Workforce: `shift_plans`, `shifts`, `teams`, `team_members`, `oncall`.
+  Nessun'altra funzione scrive in queste tabelle; nessun modulo dipende dalle tabelle di un altro via
+  FK rigida (i legami cross-modulo sono **deboli**: id nullable + `ON DELETE SET NULL`, come
+  `work_orders.assigned_group`). Così spegnere un modulo non rompe gli altri.
+- **Tre stati, non due.** (1) **Attivo**. (2) **Disattivato** = reversibile: le funzioni e il menu
+  spariscono, le API rispondono 403 (già così, `module-gating`), **ma i dati restano** nel DB e
+  ritornano riaccendendo il modulo. (3) **Rimosso/Purga** = irreversibile: cancella i dati del
+  modulo per quel tenant.
+- **Avviso perdita dati.** La **disattivazione** NON perde dati (si limita a nasconderli) e lo dice:
+  «I dati dei turni restano salvati; riattivando il modulo tornano disponibili». La **Purga** invece
+  è distruttiva e va dietro una conferma esplicita che **conta i record**: «Eliminerai
+  definitivamente N turni, M presenze, K squadre di questo tenant. Operazione irreversibile.»
+  (digita per confermare). Niente purga silenziosa.
+- **Blocchi di sicurezza alla disattivazione** (come già per `loneworker` con incidenti aperti):
+  avvisare se ci sono **turni futuri pubblicati** o **presenze aperte** (turni timbrati non chiusi)
+  prima di spegnere, con l'opzione «chiudi/annulla prima».
+- **Servizi condivisi (calendario, motore regole) NON si spengono con un singolo modulo.** Il
+  calendario resta finché c'è almeno un modulo che lo alimenta; perde solo il livello del modulo
+  spento. Il feed iCal personale smette di includere gli item di quel modulo, il resto continua.
+- **Reversibilità provabile** (già nella pratica del repo): spegnere il flag + riavviare la build
+  precedente sul DB migrato (migrazioni additive) non deve rompere nulla.
+
 ## 7. Cose da sistemare nel perimetro (decisioni aperte)
 
 1. **Doppia "reperibilità"**: `oncall` (workforce) vs rotazioni d'allarme (Sicurezza). Rinominare la
@@ -128,8 +171,11 @@ fonderli: ogni registro resta la verità del suo dominio.
 
 ## 8. Roadmap a slice (proposta, non avviata)
 
-- **W1 — Calendario + iCal.** Vista FullCalendar (giorno/settimana/mese) su `shift_plans` esistenti +
-  URL iCal personale per sync Google/Microsoft/Apple. Pubblicazione vera (draft→publish).
+- **W1 — Calendario + iCal come SERVIZIO CORE condiviso.** Vista FullCalendar (giorno/settimana/mese)
+  con il contratto "sorgente eventi": il primo adapter è workforce (`shift_plans`), ma la stessa vista
+  accoglie subito Interventi (appuntamenti ordini) e Giri (ronde pianificate) attivando i rispettivi
+  adapter. URL iCal **personale** (un feed per persona, aggrega tutti i moduli attivi) per sync
+  Google/Microsoft/Apple. Pubblicazione vera (draft→publish).
 - **W2 — Motore regole (nativo).** Vincoli duri (riposo, overlap, competenze, copertura) + rilevazione
   conflitti + preset. Contratto riusabile (`propose`/`validate`/`explain`).
 - **W3 — Disponibilità/assenze** + equità (vincoli morbidi) + aggancio competenze (`qualifiche`).
