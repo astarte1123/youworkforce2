@@ -215,7 +215,19 @@ Regole di contorno:
   pianificatore **assegna** (un clic riassegna: nuovo turno al sostituto + annulla il vecchio).
   Console: azione «sostituti» sul turno. e2e `qa/substitutes-e2e.sh` 4/4.
   Resta per dopo: comporre un intero piano a parole, riempimento automatico dei buchi di copertura.
-- **W5 (opz.) — Push OAuth** bidirezionale e/o solver Timefold per ottimizzazione pesante. Solo se
-  richiesto; non cambia il modello base.
+- **W5 — Calendario pianificatore FATTO.** Strumenti per chi fa gli orari, nel calendario:
+  - **Drag & drop / resize** dei turni (sposta/ridimensiona come un appuntamento): endpoint
+    `POST /api/shift-plans/:id/move` validato dal motore (esclude il turno stesso dai conflitti;
+    header `x-force` per forzare).
+  - **Colore per lavoratore** (`users.cal_color`, mig `0085`; fallback palette stabile): ogni
+    turnista ha un colore distinto; endpoint `POST /api/users/:id/color`. **Legenda** con
+    checkbox **mostra/nascondi** per persona (come i calendari Google) + color picker + «tutti/nessuno».
+  - **Export** della vista (filtrata ai selezionati): **CSV** (Excel) e **PDF** (jsPDF).
+  - **Genera turni**: applica un modello a più lavoratori su un intervallo; salta in automatico
+    conflitti/assenze (motore).
+  - **✦ Suggerisci (AI)**: `POST /api/shift-plans/suggest` propone combinazioni VALIDE e bilanciate
+    (equità, carico aggiornato man mano) da rivedere e applicare; frase youworker.ai se attivo.
+  - Verificato: color/move/suggest 200, calendario con colori distinti + legenda + tools.
+- Oltre: push OAuth bidirezionale e/o solver Timefold per ottimizzazione pesante — solo se richiesto.
 
 Vedi anche [architettura-moduli.md](architettura-moduli.md), [consuntivi-plan], [field-work-module].

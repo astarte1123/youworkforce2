@@ -842,23 +842,33 @@ window.addEventListener('orientationchange',()=>setTimeout(invalidateMaps,300));
 // L'indoor sta nella voce di menu separata "Piantine" (vPiantine).
 // Mappa ALLARMI (Sicurezza lavoratore): incidenti georeferenziati indoor/outdoor.
 // La mappa dei DISPOSITIVI è una voce separata (vMappaDispositivi), condivisa con "Lavoro sul campo".
-// Calendario CORE condiviso (W1): un'unica agenda con turni + interventi programmati + ronde.
-let _CAL=null;
+// Calendario CORE condiviso (W1) + strumenti pianificatore (W5): drag, colore per lavoratore,
+// legenda mostra/nascondi, export CSV/PDF dei selezionati, genera turni (anche con suggerimenti AI).
+let _CAL=null, CAL_HIDDEN=new Set(), CAL_WORKERS={}, CAL_LAST=[];
 async function vCalendario(v){
-  v.innerHTML=`<div class="page-h"><div><h1>Calendario</h1><div class="mut">turni, interventi programmati e ronde — un'unica agenda</div></div>
-    <div class="row" style="gap:8px"><button class="btn ghost small" onclick="calMyIcal()">🔗 Il mio calendario (iCal)</button></div></div>
-    <div class="card pad"><div id="calWrap"></div>
-      <div class="small mut" style="margin-top:8px">
-        <span style="color:#16a34a">● turno</span> · <span style="color:#2563eb">● intervento</span> · <span style="color:#9333ea">● ronda</span></div></div>`;
+  const planner=can(['pianificatore','tenant_admin']);
+  const tools=planner?`<button class="btn ghost small" onclick="genTurni()">✨ Genera turni</button>`:'';
+  v.innerHTML=`<div class="page-h"><div><h1>Calendario</h1><div class="mut">turni, interventi programmati e ronde — un'unica agenda${planner?' · trascina per spostare':''}</div></div>
+    <div class="row" style="gap:8px">${tools}<button class="btn ghost small" onclick="calExport('csv')">⬇ CSV</button><button class="btn ghost small" onclick="calExport('pdf')">⬇ PDF</button><button class="btn ghost small" onclick="calMyIcal()">🔗 iCal</button></div></div>
+    <div id="calLegend" class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:8px"></div>
+    <div class="card pad"><div id="calWrap"></div></div>`;
   if(typeof FullCalendar==='undefined'){ $('#calWrap').innerHTML='<div class="mut">Libreria calendario non disponibile (serve connessione).</div>'; return; }
   setTimeout(()=>{
     _CAL=new FullCalendar.Calendar($('#calWrap'),{
       initialView:'timeGridWeek', locale:'it', height:'auto', firstDay:1, nowIndicator:true, expandRows:true, slotMinTime:'06:00:00', slotMaxTime:'22:00:00',
       headerToolbar:{left:'prev,next today',center:'title',right:'dayGridMonth,timeGridWeek,timeGridDay'},
       buttonText:{today:'oggi',month:'mese',week:'settimana',day:'giorno'},
+      editable:planner, eventStartEditable:planner, eventDurationEditable:planner,
+      eventDrop:calMove, eventResize:calMove,
       events:(info,ok,fail)=>{ api('/calendar/events?from='+encodeURIComponent(info.startStr)+'&to='+encodeURIComponent(info.endStr))
-        .then(evs=>ok((evs||[]).map(e=>({id:e.id,title:e.title,start:e.start,end:e.end,backgroundColor:e.color,borderColor:e.color}))))
-        .catch(e=>{ toast(e.message,'bad'); fail(e); }); }
+        .then(evs=>{ evs=evs||[];
+          evs.forEach(e=>{ if(e.source==='turno'&&e.user_id){ CAL_WORKERS[e.user_id]={email:e.user||e.title,color:e.color}; } });
+          renderCalLegend(planner);
+          const vis=evs.filter(e=> !(e.source==='turno'&&e.user_id&&CAL_HIDDEN.has(e.user_id)));
+          CAL_LAST=vis;
+          ok(vis.map(e=>({id:e.id,title:e.title,start:e.start,end:e.end,backgroundColor:e.color,borderColor:e.color,
+            editable: planner && e.source==='turno'})));
+        }).catch(e=>{ toast(e.message,'bad'); fail(e); }); }
     });
     _CAL.render();
   },60);
@@ -867,6 +877,97 @@ async function calMyIcal(){
   try{ const r=await api('/calendar/my-url'); const url=location.origin+r.url;
     await askPrompt('Il tuo calendario personale (turni, tuoi interventi e ronde). Incollalo in Google/Outlook/Apple Calendar → «Aggiungi calendario da URL». Si aggiorna da solo.', url);
   }catch(e){ toast(e.message,'bad'); }
+}
+function renderCalLegend(planner){
+  const el=$('#calLegend'); if(!el)return;
+  const ws=Object.entries(CAL_WORKERS);
+  if(!ws.length){ el.innerHTML='<span class="small mut">Nessun turno nel periodo.</span>'; return; }
+  el.innerHTML=`<span class="small mut">Lavoratori:</span>`+ws.map(([uid,w])=>`
+    <label class="row small" style="gap:4px;align-items:center;border:1px solid var(--line);border-radius:14px;padding:2px 8px">
+      <input type="checkbox" ${CAL_HIDDEN.has(uid)?'':'checked'} onchange="calToggle('${uid}',this.checked)">
+      <input type="color" value="${w.color}" ${planner?'':'disabled'} onchange="calColor('${uid}',this.value)" title="colore" style="width:18px;height:18px;border:none;background:none;padding:0">
+      <span>${esc(w.email)}</span></label>`).join('')+
+    ` <a class="small" onclick="calAll(true)">tutti</a> · <a class="small" onclick="calAll(false)">nessuno</a>`;
+}
+function calToggle(uid,show){ if(show)CAL_HIDDEN.delete(uid); else CAL_HIDDEN.add(uid); _CAL&&_CAL.refetchEvents(); }
+function calAll(show){ if(show){ CAL_HIDDEN.clear(); } else { Object.keys(CAL_WORKERS).forEach(u=>CAL_HIDDEN.add(u)); } _CAL&&_CAL.refetchEvents(); }
+async function calColor(uid,color){ try{ await api('/users/'+uid+'/color',{method:'POST',body:JSON.stringify({color})}); if(CAL_WORKERS[uid])CAL_WORKERS[uid].color=color; toast('Colore aggiornato','ok'); _CAL&&_CAL.refetchEvents(); }catch(e){ toast(e.message,'bad'); } }
+async function calMove(info){
+  const ev=info.event; if(!ev.id.startsWith('shift-')){ toast('Solo i turni sono spostabili qui','mut'); info.revert(); return; }
+  const sid=ev.id.slice(6);
+  const body={starts_at:ev.start.toISOString(), ends_at:(ev.end||ev.start).toISOString()};
+  try{ await api('/shift-plans/'+sid+'/move',{method:'POST',body:JSON.stringify(body)}); toast('Turno spostato','ok'); }
+  catch(e){
+    if(/Forza/.test(e.message)){ if(await askConfirm(e.message+'\n\nSpostarlo comunque?')){
+        try{ await api('/shift-plans/'+sid+'/move',{method:'POST',body:JSON.stringify(body),headers:{'x-force':'1'}}); toast('Turno spostato (forzato)','ok'); return; }
+        catch(e2){ toast(e2.message,'bad'); info.revert(); return; } }
+      info.revert(); return; }
+    toast(e.message,'bad'); info.revert();
+  }
+}
+function calExport(fmt){
+  const rows=(CAL_LAST||[]).slice().sort((a,b)=>a.start<b.start?-1:1).map(e=>[
+    (e.user||'').replace(/\n/g,' '), e.source, new Date(e.start).toLocaleString('it-IT'), new Date(e.end||e.start).toLocaleString('it-IT'), e.title]);
+  if(!rows.length){ toast('Nessun evento da esportare','mut'); return; }
+  const head=['Lavoratore','Tipo','Inizio','Fine','Titolo'];
+  if(fmt==='csv'){
+    const csv=[head.join(',')].concat(rows.map(r=>r.map(c=>/[,"\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c).join(','))).join('\n');
+    const bl=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a');
+    a.href=URL.createObjectURL(bl); a.download='turni.csv'; a.click(); toast(rows.length+' righe (CSV, apribile in Excel)','ok');
+  } else {
+    try{ const {jsPDF}=window.jspdf; const doc=new jsPDF(); doc.text('Turni — '+(_CAL?_CAL.view.title:''),14,16);
+      doc.autoTable({head:[head],body:rows,startY:22,styles:{fontSize:8}}); doc.save('turni.pdf'); toast('PDF esportato','ok');
+    }catch(e){ toast('PDF non disponibile','bad'); }
+  }
+}
+// Generatore + suggerimento AI: applica un modello a più lavoratori; chi è in conflitto/assente viene
+// saltato. "✦ Suggerisci (AI)" propone combinazioni valide bilanciate che poi applichi.
+async function genTurni(){
+  let users=[]; try{ users=await api('/users'); }catch(e){}
+  const workers=users.filter(u=>['lavoratore','reperibile','operatore','responsabile','pianificatore'].includes(u.role));
+  drawer('Genera turni',`<div class="col" style="gap:10px">
+    <div class="small mut">Scegli lavoratori, intervallo, orario e giorni. «Genera» applica il modello a tutti i selezionati; «Suggerisci (AI)» propone combinazioni valide e bilanciate da rivedere.</div>
+    <label class="small mut">Lavoratori</label>
+    <div style="max-height:140px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px">${workers.map(u=>`<label class="row small" style="gap:6px"><input type="checkbox" class="gW" value="${u.id}"> ${esc(u.email)} <span class="chip">${esc(roleLabel(u.role))}</span></label>`).join('')}</div>
+    <div class="row" style="gap:8px"><label class="small mut grow">Dal<input id="gA" type="date"></label><label class="small mut grow">Al<input id="gZ" type="date"></label></div>
+    <div class="row" style="gap:8px"><label class="small mut grow">Ora inizio<input id="gS" type="time" value="08:00"></label><label class="small mut grow">Ora fine<input id="gE" type="time" value="16:00"></label></div>
+    <label class="small mut">Giorni</label>
+    <div class="row" style="gap:6px;flex-wrap:wrap">${['lun','mar','mer','gio','ven','sab','dom'].map((d,i)=>`<label class="row small" style="gap:3px"><input type="checkbox" class="gD" data-i="${i}" ${i<5?'checked':''}>${d}</label>`).join('')}</div>
+    <label class="small mut">Persone/giorno (per il suggeritore)<input id="gN" type="number" value="1" min="1" style="width:90px"></label>
+    <div class="row" style="gap:8px"><button class="btn ghost" onclick="genSuggest()">✦ Suggerisci (AI)</button><button class="btn" onclick="genTurniRun()">Genera</button></div>
+    <div id="genMsg" class="small"></div></div>`);
+}
+function genMask(){ let m=''; for(let i=0;i<7;i++){ m+= (document.querySelector('.gD[data-i="'+i+'"]')?.checked)?'1':'0'; } return m; }
+async function genSuggest(){
+  const box=$('#genMsg'); const uids=[...document.querySelectorAll('.gW:checked')].map(c=>c.value);
+  const a=$('#gA').value, z=$('#gZ').value;
+  if(!a||!z){ box.textContent='scegli intervallo'; box.style.color='var(--bad)'; return; }
+  box.textContent='✦ Calcolo proposta…'; box.style.color='var(--mut)';
+  try{ const r=await api('/shift-plans/suggest',{method:'POST',body:JSON.stringify({from:a,to:z,days_mask:genMask(),cov_start:$('#gS').value,cov_end:$('#gE').value,min_people:Number($('#gN').value)||1,candidates:uids.length?uids:null})});
+    const p=r.proposals||[]; window._genProps=p;
+    box.innerHTML=`<div class="card pad" style="background:var(--brand-soft);margin-top:6px"><div class="small mut">✦ ${esc(r.provider)}</div><div>${esc(r.summary)}</div></div>`+
+      (p.length?`<div style="max-height:180px;overflow:auto;margin-top:6px">${p.map(x=>`<div class="small">· ${x.date} — ${esc(x.email)}</div>`).join('')}</div>
+        <button class="btn" style="margin-top:8px" onclick="genApply()">Applica ${p.length} turni proposti</button>`:'<div class="small mut">Nessuna proposta valida.</div>');
+  }catch(e){ box.textContent=e.message; box.style.color='var(--bad)'; }
+}
+async function genApply(){
+  const p=window._genProps||[]; let ok=0,skip=0;
+  for(const x of p){ try{ await api('/shift-plans',{method:'POST',body:JSON.stringify({user_id:x.user_id,starts_at:x.starts_at,ends_at:x.ends_at})}); ok++; }catch(e){ skip++; } }
+  toast('Applicati '+ok+' turni'+(skip?' · '+skip+' saltati':''),'ok'); closeDrawer(); route();
+}
+async function genTurniRun(){
+  const m=$('#genMsg');
+  const uids=[...document.querySelectorAll('.gW:checked')].map(c=>c.value);
+  const a=$('#gA').value, z=$('#gZ').value, s=$('#gS').value, e=$('#gE').value; const mask=genMask();
+  if(!uids.length||!a||!z||mask==='0000000'){ m.textContent='scegli lavoratori, intervallo e giorni'; m.style.color='var(--bad)'; return; }
+  m.textContent='Genero…'; m.style.color='var(--mut)';
+  let ok=0, skip=0; const d0=new Date(a+'T00:00:00'), d1=new Date(z+'T00:00:00');
+  for(let d=new Date(d0); d<=d1; d.setDate(d.getDate()+1)){
+    const wd=(d.getDay()+6)%7; if(mask[wd]!=='1') continue;
+    const day=d.toISOString().slice(0,10);
+    for(const u of uids){ try{ await api('/shift-plans',{method:'POST',body:JSON.stringify({user_id:u,starts_at:day+'T'+s+':00Z',ends_at:day+'T'+e+':00Z'})}); ok++; }catch(err){ skip++; } }
+  }
+  toast('Generati '+ok+' turni'+(skip?' · '+skip+' saltati (conflitti/assenze)':''),'ok'); closeDrawer(); route();
 }
 async function vMappa(v){
   const admin=can(['tenant_admin']);

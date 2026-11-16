@@ -4206,11 +4206,12 @@ async fn scheduling_rules(st: &AppState, tid: Uuid) -> crate::scheduling::Rules 
     }
 }
 /// Gli altri turni della persona in una finestra ampia attorno al candidato (per i vincoli).
+/// `exclude` esclude un turno (usato quando si SPOSTA un turno: non deve confliggere con se stesso).
 async fn shift_intervals(st: &AppState, tid: Uuid, uid: Uuid,
-    a: chrono::DateTime<chrono::Utc>, z: chrono::DateTime<chrono::Utc>) -> Vec<crate::scheduling::Interval> {
+    a: chrono::DateTime<chrono::Utc>, z: chrono::DateTime<chrono::Utc>, exclude: Option<Uuid>) -> Vec<crate::scheduling::Interval> {
     let from = a - chrono::Duration::days(9); let to = z + chrono::Duration::days(9);
-    sqlx::query("SELECT starts_at,ends_at FROM app.shift_plans WHERE tenant_id=$1 AND user_id=$2 AND ends_at>=$3 AND starts_at<=$4")
-        .bind(tid).bind(uid).bind(from).bind(to).fetch_all(&st.owner_pool).await.unwrap_or_default()
+    sqlx::query("SELECT starts_at,ends_at FROM app.shift_plans WHERE tenant_id=$1 AND user_id=$2 AND ends_at>=$3 AND starts_at<=$4 AND ($5::uuid IS NULL OR id<>$5)")
+        .bind(tid).bind(uid).bind(from).bind(to).bind(exclude).fetch_all(&st.owner_pool).await.unwrap_or_default()
         .iter().map(|r| crate::scheduling::Interval{ start: r.get("starts_at"), end: r.get("ends_at") }).collect()
 }
 /// Le assenze della persona che toccano la finestra del candidato (vincolo duro).
@@ -4234,9 +4235,9 @@ async fn qual_check(st: &AppState, tid: Uuid, uid: Uuid, required: Option<Uuid>,
     Some(crate::scheduling::QualReq{ name, satisfied: held })
 }
 async fn validate_shift_candidate(st: &AppState, tid: Uuid, uid: Uuid,
-    a: chrono::DateTime<chrono::Utc>, z: chrono::DateTime<chrono::Utc>, required_qual: Option<Uuid>) -> Vec<crate::scheduling::Violation> {
+    a: chrono::DateTime<chrono::Utc>, z: chrono::DateTime<chrono::Utc>, required_qual: Option<Uuid>, exclude: Option<Uuid>) -> Vec<crate::scheduling::Violation> {
     let rules = scheduling_rules(st, tid).await;
-    let ex = shift_intervals(st, tid, uid, a, z).await;
+    let ex = shift_intervals(st, tid, uid, a, z, exclude).await;
     let ab = absence_intervals(st, tid, uid, a, z).await;
     let q = qual_check(st, tid, uid, required_qual, a).await;
     crate::scheduling::validate(&crate::scheduling::Interval{start:a,end:z}, &ex, &ab, q.as_ref(), &rules)
@@ -4518,7 +4519,7 @@ pub async fn shift_substitutes(State(st): State<AppState>, h: HeaderMap, Path(id
     let mut cands: Vec<(Uuid,String,f64,Vec<crate::scheduling::Violation>)> = Vec::new();
     for u in &pool {
         let uid: Uuid = u.get("id");
-        let vs = validate_shift_candidate(&st, tid, uid, a, z, req_qual).await;
+        let vs = validate_shift_candidate(&st, tid, uid, a, z, req_qual, None).await;
         if crate::scheduling::has_hard(&vs) { continue; } // scarta chi ha conflitti duri
         cands.push((uid, u.get::<String,_>("email"), *hmap.get(&uid).unwrap_or(&0.0), vs));
     }
@@ -4556,7 +4557,7 @@ pub async fn shift_plan_validate(State(st): State<AppState>, h: HeaderMap, Json(
     need_workforce(&st, tid).await?;
     if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
     let (a,z) = (parse_ts(&b.starts_at)?, parse_ts(&b.ends_at)?);
-    let vs = validate_shift_candidate(&st, tid, b.user_id, a, z, b.required_qualification).await;
+    let vs = validate_shift_candidate(&st, tid, b.user_id, a, z, b.required_qualification, None).await;
     Ok(Json(json!({"ok": !crate::scheduling::has_hard(&vs), "violations": violations_json(&vs)})))
 }
 
@@ -4571,7 +4572,7 @@ pub async fn create_shift_plan(State(st): State<AppState>, h: HeaderMap, Json(b)
     // settimana) non bloccano ma tornano nella risposta. Con `force=1` si ignorano anche gli hard
     // (override consapevole del pianificatore), tranne la finestra non valida.
     let force = h.get("x-force").map(|v| v=="1"||v=="true").unwrap_or(false);
-    let vs = validate_shift_candidate(&st, tid, b.user_id, a, z, b.required_qualification).await;
+    let vs = validate_shift_candidate(&st, tid, b.user_id, a, z, b.required_qualification, None).await;
     if crate::scheduling::has_hard(&vs) && !force {
         let msg = vs.iter().filter(|v| v.hard).map(|v| v.message.clone()).collect::<Vec<_>>().join(" ");
         return Err(err(StatusCode::CONFLICT, &format!("Conflitto: {msg} (usa Forza per procedere)")));
@@ -4586,6 +4587,129 @@ pub async fn create_shift_plan(State(st): State<AppState>, h: HeaderMap, Json(b)
     audit(&st, tid, &s.email, "create_shift_plan", json!({"user":b.user_id,"warnings":vs.len()})).await;
     publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"shift_planned","id":iid})}).await;
     Ok(Json(json!({"id":iid, "warnings": violations_json(&vs)})))
+}
+
+#[derive(Deserialize)]
+pub struct ShiftMove { pub starts_at: String, pub ends_at: String, #[serde(default)] pub user_id: Option<Uuid> }
+/// Sposta/ridimensiona un turno (drag&drop dal calendario) o lo riassegna. Validato dal motore
+/// (overlap/assenza/competenza = duri, salvo header x-force; riposo/ore = avvisi). Escludo il turno
+/// stesso dai conflitti così trascinarlo di poco non confligge con se stesso.
+pub async fn shift_plan_move(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<ShiftMove>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    need_workforce(&st, tid).await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let (a,z) = (parse_ts(&b.starts_at)?, parse_ts(&b.ends_at)?);
+    if z <= a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); }
+    let cur = sqlx::query("SELECT user_id,required_qualification,state FROM app.shift_plans WHERE id=$1 AND tenant_id=$2")
+        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "turno inesistente"))?;
+    let new_uid = b.user_id.unwrap_or_else(|| cur.get::<Uuid,_>("user_id"));
+    let req_qual: Option<Uuid> = cur.try_get("required_qualification").ok();
+    let force = h.get("x-force").map(|v| v=="1"||v=="true").unwrap_or(false);
+    let vs = validate_shift_candidate(&st, tid, new_uid, a, z, req_qual, Some(id)).await;
+    if crate::scheduling::has_hard(&vs) && !force {
+        let msg = vs.iter().filter(|v| v.hard).map(|v| v.message.clone()).collect::<Vec<_>>().join(" ");
+        return Err(err(StatusCode::CONFLICT, &format!("Conflitto: {msg} (usa Forza per procedere)")));
+    }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("UPDATE app.shift_plans SET starts_at=$2, ends_at=$3, user_id=$4 WHERE id=$1")
+        .bind(id).bind(a).bind(z).bind(new_uid).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "shift_plan_move", json!({"id":id,"user":new_uid})).await;
+    publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"shift_planned","id":id})}).await;
+    Ok(Json(json!({"ok":true, "warnings": violations_json(&vs)})))
+}
+
+#[derive(Deserialize)]
+pub struct SuggestReq { pub from: String, pub to: String, #[serde(default)] pub days_mask: Option<String>,
+    pub cov_start: String, pub cov_end: String, #[serde(default)] pub min_people: Option<i32>,
+    #[serde(default)] pub candidates: Option<Vec<Uuid>> }
+/// W4/W5 — SUGGERIMENTO AI di combinazioni turni: per ogni giorno applicabile propone chi assegnare
+/// per coprire la fascia, scegliendo candidati VALIDI (motore: no conflitti/assenze/competenza) e
+/// bilanciando il carico (equità: aggiorna le ore man mano). NON crea nulla: il pianificatore rivede
+/// e applica. Se youworker.ai è attivo, aggiunge una frase di sintesi.
+pub async fn shift_suggest(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SuggestReq>) -> R {
+    use chrono::{Datelike, TimeZone};
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    need_workforce(&st, tid).await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let d0 = chrono::NaiveDate::parse_from_str(&b.from, "%Y-%m-%d").map_err(|_| err(StatusCode::BAD_REQUEST, "from: data YYYY-MM-DD"))?;
+    let mut d1 = chrono::NaiveDate::parse_from_str(&b.to, "%Y-%m-%d").map_err(|_| err(StatusCode::BAD_REQUEST, "to: data YYYY-MM-DD"))?;
+    if (d1 - d0).num_days() > 62 { d1 = d0 + chrono::Duration::days(62); }
+    let (sh, eh) = (parse_hhmm(&b.cov_start).ok_or_else(|| err(StatusCode::BAD_REQUEST, "cov_start HH:MM"))?,
+                    parse_hhmm(&b.cov_end).ok_or_else(|| err(StatusCode::BAD_REQUEST, "cov_end HH:MM"))?);
+    let dm = b.days_mask.clone().unwrap_or_else(|| "1111111".into());
+    let need = b.min_people.unwrap_or(1).max(1);
+    // pool candidati
+    let pool: Vec<(Uuid,String)> = match &b.candidates {
+        Some(ids) if !ids.is_empty() => sqlx::query("SELECT id,email FROM app.users WHERE tenant_id=$1 AND id=ANY($2)")
+            .bind(tid).bind(ids).fetch_all(&st.owner_pool).await.unwrap_or_default(),
+        _ => sqlx::query("SELECT id,email FROM app.users WHERE tenant_id=$1 AND role IN ('lavoratore','operatore','reperibile','responsabile','pianificatore')")
+            .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default(),
+    }.iter().map(|r| (r.get::<Uuid,_>("id"), r.get::<String,_>("email"))).collect();
+    // carico iniziale (ultimi 30g prima di from) per equità, poi aggiornato man mano
+    let from_dt = chrono::Utc.from_utc_datetime(&d0.and_hms_opt(0,0,0).unwrap());
+    let mut hours: std::collections::HashMap<Uuid,f64> = sqlx::query(
+        "SELECT user_id, COALESCE(sum(EXTRACT(EPOCH FROM (ends_at-starts_at))/3600.0),0)::float8 AS hrs FROM app.shift_plans WHERE tenant_id=$1 AND starts_at>=$2 AND starts_at<$3 GROUP BY user_id")
+        .bind(tid).bind(from_dt - chrono::Duration::days(30)).bind(from_dt).fetch_all(&st.owner_pool).await.unwrap_or_default()
+        .iter().map(|r| (r.get::<Uuid,_>("user_id"), r.get::<f64,_>("hrs"))).collect();
+    let shift_hours = ((eh.0*60+eh.1) as f64 - (sh.0*60+sh.1) as f64)/60.0;
+    let mut proposals: Vec<Value> = Vec::new();
+    let mut d = d0;
+    while d <= d1 {
+        let widx = d.weekday().num_days_from_monday() as usize;
+        if dm.chars().nth(widx) == Some('1') {
+            let ws = chrono::Utc.from_utc_datetime(&d.and_hms_opt(sh.0,sh.1,0).unwrap());
+            let we = chrono::Utc.from_utc_datetime(&d.and_hms_opt(eh.0,eh.1,0).unwrap());
+            // candidati validi per questo giorno, ordinati per meno ore (equità)
+            let mut ok_c: Vec<(Uuid,String,f64)> = Vec::new();
+            for (uid,em) in &pool {
+                let vs = validate_shift_candidate(&st, tid, *uid, ws, we, None, None).await;
+                if crate::scheduling::has_hard(&vs) { continue; }
+                ok_c.push((*uid, em.clone(), *hours.get(uid).unwrap_or(&0.0)));
+            }
+            ok_c.sort_by(|a,b| ((a.2*10.0) as i64).cmp(&((b.2*10.0) as i64)));
+            for (uid,em,_) in ok_c.into_iter().take(need as usize) {
+                *hours.entry(uid).or_insert(0.0) += shift_hours; // bilancia i giorni successivi
+                proposals.push(json!({"date":d.to_string(),"user_id":uid,"email":em,
+                    "starts_at":ws.to_rfc3339(),"ends_at":we.to_rfc3339()}));
+            }
+        }
+        d = d.succ_opt().unwrap();
+    }
+    let det = format!("{} assegnazioni proposte su {}–{} ({} persone/giorno), bilanciate per equità.",
+        proposals.len(), b.from, b.to, need);
+    let mut summary = det.clone();
+    if module_active(&st, tid, "assistant").await && ai_feature_on(&st, tid, "assistant").await {
+        if let Some(c) = ai_conn(&st, tid).await {
+            let sys = "Assistente pianificazione turni YouWorkforce. In UNA frase riassumi la proposta usando SOLO i fatti. Italiano, conciso.";
+            let ctx = format!("Proposte: {}", serde_json::to_string(&proposals).unwrap_or_default());
+            if let Ok(ans) = ai_chat(&st, &c, sys, &ctx).await { if !ans.trim().is_empty() { summary = ans; } }
+        }
+    }
+    Ok(Json(json!({"proposals":proposals,"summary":summary,"provider": if summary==det {"deterministico"} else {"youworker.ai"}})))
+}
+
+#[derive(Deserialize)] pub struct ColorReq { pub color: Option<String> }
+/// Imposta il colore calendario di un utente (il pianificatore per chiunque, ognuno per sé).
+pub async fn user_set_color(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>, Json(b): Json<ColorReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "workforce").await?;
+    if uid != s.user_id && !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin o te stesso")); }
+    let c = match b.color.as_deref().map(|x| x.trim()) {
+        None | Some("") => None,
+        Some(x) => {
+            let ok = x.starts_with('#') && x[1..].chars().all(|c| c.is_ascii_hexdigit()) && (x.len()==4 || x.len()==7);
+            if !ok { return Err(err(StatusCode::BAD_REQUEST, "colore non valido (#rgb o #rrggbb)")); }
+            Some(x.to_string())
+        }
+    };
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("UPDATE app.users SET cal_color=$2 WHERE id=$1").bind(uid).bind(&c).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true,"color":c})))
 }
 pub async fn list_shift_plans(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
@@ -9284,9 +9408,16 @@ pub async fn oncall_calendar_ics(State(st): State<AppState>, axum::extract::Quer
 // calendario li fonde. Tenant-scoped (RLS). I ruoli ristretti vedono solo i propri.
 // ============================================================================
 #[derive(Clone)]
-struct CalEvent { id: String, source: &'static str, title: String, color: &'static str,
+struct CalEvent { id: String, source: &'static str, title: String, color: String,
     start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>,
     user_id: Option<Uuid>, user: Option<String>, link: Option<String> }
+/// Colore calendario di un utente: quello scelto, altrimenti un colore stabile da palette (per id).
+fn user_color(chosen: Option<String>, uid: Uuid) -> String {
+    if let Some(c) = chosen { if !c.trim().is_empty() { return c; } }
+    const P: &[&str] = &["#2563eb","#16a34a","#9333ea","#dc2626","#d97706","#0891b2","#db2777","#65a30d",
+        "#4f46e5","#0d9488","#ea580c","#7c3aed","#059669","#e11d48","#0284c7","#ca8a04"];
+    P[(uid.as_bytes()[0] as usize) % P.len()].to_string()
+}
 fn cal_json(e: &CalEvent) -> Value {
     json!({"id":e.id,"source":e.source,"title":e.title,"color":e.color,
         "start":e.start.to_rfc3339(),"end":e.end.to_rfc3339(),
@@ -9300,7 +9431,7 @@ async fn calendar_collect(st: &AppState, tid: Uuid, from: chrono::DateTime<chron
     // --- Forza lavoro e turni: shift_plans ---
     if module_active(st, tid, "workforce").await {
         let rows = sqlx::query(
-            "SELECT sp.id, sp.user_id, sp.starts_at, sp.ends_at, sp.state, u.email
+            "SELECT sp.id, sp.user_id, sp.starts_at, sp.ends_at, sp.state, u.email, u.cal_color
              FROM app.shift_plans sp JOIN app.users u ON u.id=sp.user_id
              WHERE sp.tenant_id=$1 AND sp.ends_at >= $2 AND sp.starts_at <= $3
                AND ($4::uuid IS NULL OR sp.user_id=$4)")
@@ -9308,10 +9439,12 @@ async fn calendar_collect(st: &AppState, tid: Uuid, from: chrono::DateTime<chron
             .fetch_all(&st.owner_pool).await.unwrap_or_default();
         for r in &rows {
             let em: String = r.get("email");
+            let uid: Uuid = r.get("user_id");
+            // colore PER LAVORATORE (scelto o da palette) per distinguerli sul calendario
             out.push(CalEvent{ id: format!("shift-{}", r.get::<Uuid,_>("id")), source:"turno",
-                title: format!("Turno · {em}"), color:"#16a34a",
+                title: format!("Turno · {em}"), color: user_color(r.try_get("cal_color").ok().flatten(), uid),
                 start: r.get("starts_at"), end: r.get("ends_at"),
-                user_id: Some(r.get("user_id")), user: Some(em), link: None });
+                user_id: Some(uid), user: Some(em), link: None });
         }
     }
     // --- Interventi e cantieri: ordini con appuntamento programmato ---
@@ -9331,7 +9464,7 @@ async fn calendar_collect(st: &AppState, tid: Uuid, from: chrono::DateTime<chron
                 .unwrap_or_else(|| s0 + chrono::Duration::hours(1));
             let title: String = r.get("title");
             out.push(CalEvent{ id: format!("order-{}", r.get::<Uuid,_>("id")), source:"intervento",
-                title: format!("Intervento · {title}"), color:"#2563eb",
+                title: format!("Intervento · {title}"), color:"#2563eb".into(),
                 start: s0, end: e0, user_id: r.try_get("assigned_user").ok(),
                 user: r.try_get::<String,_>("email").ok(), link: None });
         }
@@ -9353,7 +9486,7 @@ async fn calendar_collect(st: &AppState, tid: Uuid, from: chrono::DateTime<chron
                 .unwrap_or_else(|| s0 + chrono::Duration::hours(2));
             let route: String = r.get("route");
             out.push(CalEvent{ id: format!("round-{}", r.get::<Uuid,_>("id")), source:"ronda",
-                title: format!("Ronda · {route}"), color:"#9333ea",
+                title: format!("Ronda · {route}"), color:"#9333ea".into(),
                 start: s0, end: e0, user_id: Some(r.get("user_id")),
                 user: r.try_get::<String,_>("email").ok(), link: None });
         }
