@@ -9,6 +9,7 @@ mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
 mod sites; // servizio core: sedi e asset/mezzi condivisi
 mod iam; // servizio core: permessi (capability) e ruoli personalizzati
 mod users; // servizio core: identità/utenti (CRUD anagrafica + ACL sedi); login/sessione restano in api.rs
+mod scheduling; // motore regole/validazione pianificazione (puro, riusabile): turni oggi, poi reperibilità/ordini/giri
 
 use std::sync::Arc;
 use axum::{routing::{get, post, delete}, Router, Json};
@@ -286,6 +287,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/teams/:id/members", post(api::add_team_member))
         .route("/api/teams/:tid/members/:uid", axum::routing::delete(api::remove_team_member))
         .route("/api/shift-plans", get(api::list_shift_plans).post(api::create_shift_plan))
+        .route("/api/shift-plans/validate", post(api::shift_plan_validate))
         .route("/api/shift-plans/:id", post(api::shift_plan_action).delete(api::delete_shift_plan))
         ;
     // catena spezzata in più statement: una singola espressione .route()* troppo lunga

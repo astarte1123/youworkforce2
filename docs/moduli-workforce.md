@@ -180,8 +180,16 @@ Regole di contorno:
   persona che aggrega tutti i moduli attivi; senza sessione, token revocabile). Mig `0081`
   (`calendar_ical_tokens`). e2e `qa/calendar-e2e.sh` 4/4. Resta per dopo: pubblicazione vera
   (draft→publish) e il drag per spostare/estendere.
-- **W2 — Motore regole (nativo).** Vincoli duri (riposo, overlap, competenze, copertura) + rilevazione
-  conflitti + preset. Contratto riusabile (`propose`/`validate`/`explain`).
+- **W2 — Motore regole (nativo). FATTO (prima tappa).** Engine PURO e RIUSABILE in
+  `core/src/scheduling.rs` (`validate(cand, existing, rules) -> [violation]`, deterministico,
+  spiegabile, con test unitari): **overlap = vincolo DURO** (blocca la creazione del turno, 409 con
+  spiegazione), **riposo minimo** e **max ore/settimana** = avvisi (non bloccano, tornano nella
+  risposta). Config per-tenant `workforce.rules` con default di prodotto (preset "standard":
+  riposo 11h, 48h/sett). Endpoint preflight `POST /api/shift-plans/validate` (riusabile dalla UI).
+  Console: alla pianificazione gli avvisi appaiono in toast e un conflitto duro offre «Forza»
+  (override consapevole via header `x-force`). e2e `qa/scheduling-e2e.sh` 5/5.
+  Resta per dopo: competenze (via `qualifiche`), copertura minima, consecutivi, e l'uso del motore
+  da parte di reperibilità/ordini/giri.
 - **W3 — Disponibilità/assenze** + equità (vincoli morbidi) + aggancio competenze (`qualifiche`).
 - **W4 — AI turni.** Proposta piano, sostituti per cambi turno, spiegazioni — sul motore W2, con
   conferma umana.

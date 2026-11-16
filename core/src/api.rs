@@ -4194,6 +4194,46 @@ pub async fn remove_team_member(State(st): State<AppState>, h: HeaderMap, Path((
 // ---------------- Turni pianificati ----------------
 #[derive(Deserialize)]
 pub struct ShiftPlanReq { pub user_id: Uuid, pub site_id: Option<Uuid>, pub starts_at: String, pub ends_at: String, pub note: Option<String> }
+
+/// Regole di pianificazione del tenant (default di prodotto; preset "standard").
+async fn scheduling_rules(st: &AppState, tid: Uuid) -> crate::scheduling::Rules {
+    let c = tool_config(st, tid, "workforce", "rules").await;
+    let d = crate::scheduling::Rules::default();
+    crate::scheduling::Rules {
+        min_rest_hours: c.get("min_rest_hours").and_then(|v| v.as_i64()).unwrap_or(d.min_rest_hours),
+        max_hours_week: c.get("max_hours_week").and_then(|v| v.as_f64()).unwrap_or(d.max_hours_week),
+        max_consec_days: c.get("max_consec_days").and_then(|v| v.as_i64()).unwrap_or(d.max_consec_days),
+    }
+}
+/// Gli altri turni della persona in una finestra ampia attorno al candidato (per i vincoli).
+async fn shift_intervals(st: &AppState, tid: Uuid, uid: Uuid,
+    a: chrono::DateTime<chrono::Utc>, z: chrono::DateTime<chrono::Utc>) -> Vec<crate::scheduling::Interval> {
+    let from = a - chrono::Duration::days(9); let to = z + chrono::Duration::days(9);
+    sqlx::query("SELECT starts_at,ends_at FROM app.shift_plans WHERE tenant_id=$1 AND user_id=$2 AND ends_at>=$3 AND starts_at<=$4")
+        .bind(tid).bind(uid).bind(from).bind(to).fetch_all(&st.owner_pool).await.unwrap_or_default()
+        .iter().map(|r| crate::scheduling::Interval{ start: r.get("starts_at"), end: r.get("ends_at") }).collect()
+}
+async fn validate_shift_candidate(st: &AppState, tid: Uuid, uid: Uuid,
+    a: chrono::DateTime<chrono::Utc>, z: chrono::DateTime<chrono::Utc>) -> Vec<crate::scheduling::Violation> {
+    let rules = scheduling_rules(st, tid).await;
+    let ex = shift_intervals(st, tid, uid, a, z).await;
+    crate::scheduling::validate(&crate::scheduling::Interval{start:a,end:z}, &ex, &rules)
+}
+fn violations_json(vs: &[crate::scheduling::Violation]) -> Value {
+    json!(vs.iter().map(|v| json!({"code":v.code,"hard":v.hard,"message":v.message})).collect::<Vec<_>>())
+}
+
+/// Preflight: valida un turno candidato senza crearlo (riusabile dalla UI). Non modifica nulla.
+pub async fn shift_plan_validate(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ShiftPlanReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    need_workforce(&st, tid).await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let (a,z) = (parse_ts(&b.starts_at)?, parse_ts(&b.ends_at)?);
+    let vs = validate_shift_candidate(&st, tid, b.user_id, a, z).await;
+    Ok(Json(json!({"ok": !crate::scheduling::has_hard(&vs), "violations": violations_json(&vs)})))
+}
+
 pub async fn create_shift_plan(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ShiftPlanReq>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
@@ -4201,6 +4241,15 @@ pub async fn create_shift_plan(State(st): State<AppState>, h: HeaderMap, Json(b)
     if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
     let (a,z) = (parse_ts(&b.starts_at)?, parse_ts(&b.ends_at)?);
     if z <= a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); }
+    // Motore regole: i vincoli DURI (es. sovrapposizione) bloccano; gli avvisi (riposo, ore
+    // settimana) non bloccano ma tornano nella risposta. Con `force=1` si ignorano anche gli hard
+    // (override consapevole del pianificatore), tranne la finestra non valida.
+    let force = h.get("x-force").map(|v| v=="1"||v=="true").unwrap_or(false);
+    let vs = validate_shift_candidate(&st, tid, b.user_id, a, z).await;
+    if crate::scheduling::has_hard(&vs) && !force {
+        let msg = vs.iter().filter(|v| v.hard).map(|v| v.message.clone()).collect::<Vec<_>>().join(" ");
+        return Err(err(StatusCode::CONFLICT, &format!("Conflitto: {msg} (usa Forza per procedere)")));
+    }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query(
         "INSERT INTO app.shift_plans(tenant_id,user_id,site_id,starts_at,ends_at,note,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
@@ -4208,9 +4257,9 @@ pub async fn create_shift_plan(State(st): State<AppState>, h: HeaderMap, Json(b)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let iid: Uuid = row.get("id");
-    audit(&st, tid, &s.email, "create_shift_plan", json!({"user":b.user_id})).await;
+    audit(&st, tid, &s.email, "create_shift_plan", json!({"user":b.user_id,"warnings":vs.len()})).await;
     publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"shift_planned","id":iid})}).await;
-    Ok(Json(json!({"id":iid})))
+    Ok(Json(json!({"id":iid, "warnings": violations_json(&vs)})))
 }
 pub async fn list_shift_plans(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
