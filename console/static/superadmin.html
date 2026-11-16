@@ -29,7 +29,7 @@ async function shell(){
   $('#root').innerHTML=`
   <div class="topbar"><div class="logo" style="width:26px;height:26px">${ICON.logomark}</div><strong>Piano di controllo</strong>
     <span class="chip">superadmin</span><div class="grow"></div>
-    <button class="btn-ico btn ghost" onclick="toggleTheme()">${ICON.moon}</button>
+    <button id="themeBtn" class="btn-ico btn ghost" title="Tema" onclick="toggleTheme()">${themeIconHtml()}</button>
     <button class="btn-ico btn ghost" onclick="out()">${ICON.logout}</button></div>
   <div class="content">
     <div class="card" style="margin-bottom:18px"><div class="card-h"><h2>Crea tenant</h2></div><div class="card-b">
