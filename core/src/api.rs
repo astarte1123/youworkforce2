@@ -4360,6 +4360,137 @@ pub async fn user_qualification_del(State(st): State<AppState>, h: HeaderMap, Pa
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
+
+// ---------------- Copertura minima (W3c, modulo workforce) ----------------
+#[derive(Deserialize)]
+pub struct CoverageBody { pub site_id: Option<Uuid>, pub days_mask: Option<String>, pub cov_start: String, pub cov_end: String,
+    pub min_people: Option<i32>, pub required_qualification: Option<Uuid>, pub note: Option<String> }
+pub async fn list_coverage(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "workforce").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT c.id,c.site_id,c.days_mask,c.cov_start,c.cov_end,c.min_people,c.required_qualification,c.note,
+            s.name AS site, q.name AS qual
+        FROM app.coverage_requirements c LEFT JOIN app.sites s ON s.id=c.site_id LEFT JOIN app.qualifications q ON q.id=c.required_qualification
+        ORDER BY c.created_at").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!(rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"site_id":r.try_get::<Uuid,_>("site_id").ok(),"site":r.try_get::<String,_>("site").ok(),
+        "days_mask":r.get::<String,_>("days_mask"),"cov_start":r.get::<String,_>("cov_start"),"cov_end":r.get::<String,_>("cov_end"),
+        "min_people":r.get::<i32,_>("min_people"),"required_qualification":r.try_get::<Uuid,_>("required_qualification").ok(),
+        "qual":r.try_get::<String,_>("qual").ok(),"note":r.try_get::<String,_>("note").ok()})).collect::<Vec<_>>())))
+}
+pub async fn create_coverage(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CoverageBody>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "workforce").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let (sh, eh) = (parse_hhmm(&b.cov_start), parse_hhmm(&b.cov_end));
+    if sh.is_none() || eh.is_none() { return Err(err(StatusCode::BAD_REQUEST, "orari HH:MM richiesti")); }
+    let (sh, eh) = (sh.unwrap(), eh.unwrap());
+    if (eh.0*60+eh.1) <= (sh.0*60+sh.1) { return Err(err(StatusCode::BAD_REQUEST, "la fine deve essere dopo l'inizio (stessa giornata)")); }
+    let dm = b.days_mask.clone().unwrap_or_else(|| "1111111".into());
+    if dm.len()!=7 || !dm.chars().all(|c| c=='0'||c=='1') { return Err(err(StatusCode::BAD_REQUEST, "giorni: 7 cifre 0/1 (lun..dom)")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.coverage_requirements(tenant_id,site_id,days_mask,cov_start,cov_end,min_people,required_qualification,note) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id")
+        .bind(tid).bind(b.site_id).bind(&dm).bind(&b.cov_start).bind(&b.cov_end).bind(b.min_people.unwrap_or(1).max(1)).bind(b.required_qualification).bind(&b.note)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":row.get::<Uuid,_>("id")})))
+}
+pub async fn delete_coverage(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "workforce").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.coverage_requirements WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND,"inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
+/// Controllo copertura: per ogni requisito e giorno applicabile nell'intervallo, conta le persone che
+/// coprono l'INTERA fascia (con sede/qualifica giusta) e segnala i giorni sotto il minimo (i "buchi").
+pub async fn coverage_check(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    use chrono::{Datelike, TimeZone};
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "workforce").await?;
+    let now = st.clock.now();
+    let pd = |k:&str, def: chrono::DateTime<chrono::Utc>| q.get(k).and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok().map(|t| t.with_timezone(&chrono::Utc))).unwrap_or(def);
+    let from = pd("from", now);
+    let mut to = pd("to", now + chrono::Duration::days(14));
+    if (to - from).num_days() > 62 { to = from + chrono::Duration::days(62); } // cap
+    // filtro facoltativo a un singolo requisito (?requirement=<id>)
+    let only: Option<Uuid> = q.get("requirement").and_then(|v| Uuid::parse_str(v).ok());
+    let reqs = sqlx::query("SELECT c.id,c.site_id,c.days_mask,c.cov_start,c.cov_end,c.min_people,c.required_qualification,s.name AS site
+        FROM app.coverage_requirements c LEFT JOIN app.sites s ON s.id=c.site_id WHERE c.tenant_id=$1 AND ($2::uuid IS NULL OR c.id=$2)")
+        .bind(tid).bind(only).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let mut gaps: Vec<Value> = Vec::new();
+    for r in &reqs {
+        let rid: Uuid = r.get("id");
+        let site_id: Option<Uuid> = r.try_get("site_id").ok();
+        let dm: String = r.get("days_mask");
+        let (sh,sm) = match parse_hhmm(&r.get::<String,_>("cov_start")) { Some(x)=>x, None=>continue };
+        let (eh,em) = match parse_hhmm(&r.get::<String,_>("cov_end")) { Some(x)=>x, None=>continue };
+        let min_people: i32 = r.get("min_people");
+        let qual: Option<Uuid> = r.try_get("required_qualification").ok();
+        let site_name: Option<String> = r.try_get("site").ok();
+        let mut d = from.date_naive();
+        let last = to.date_naive();
+        while d <= last {
+            let widx = d.weekday().num_days_from_monday() as usize; // 0=lun
+            if dm.chars().nth(widx) == Some('1') {
+                let ws = chrono::Utc.from_utc_datetime(&d.and_hms_opt(sh,sm,0).unwrap());
+                let we = chrono::Utc.from_utc_datetime(&d.and_hms_opt(eh,em,0).unwrap());
+                let count: i64 = sqlx::query_scalar(
+                    "SELECT count(DISTINCT sp.user_id) FROM app.shift_plans sp
+                     WHERE sp.tenant_id=$1 AND sp.starts_at<=$2 AND sp.ends_at>=$3
+                       AND ($4::uuid IS NULL OR sp.site_id=$4)
+                       AND ($5::uuid IS NULL OR EXISTS(SELECT 1 FROM app.user_qualifications uq
+                              WHERE uq.tenant_id=$1 AND uq.user_id=sp.user_id AND uq.qualification_id=$5
+                                AND (uq.expires_at IS NULL OR uq.expires_at>$2)))")
+                    .bind(tid).bind(ws).bind(we).bind(site_id).bind(qual)
+                    .fetch_one(&st.owner_pool).await.unwrap_or(0);
+                if (count as i32) < min_people {
+                    gaps.push(json!({"requirement_id":rid,"date":d.to_string(),"site":site_name,
+                        "window":format!("{:02}:{:02}–{:02}:{:02}",sh,sm,eh,em),
+                        "have":count,"need":min_people}));
+                }
+            }
+            d = d.succ_opt().unwrap();
+        }
+    }
+    Ok(Json(json!({"gaps":gaps,"requirements":reqs.len(),"from":from.to_rfc3339(),"to":to.to_rfc3339()})))
+}
+/// Equità (vincolo MORBIDO, informativo): distribuzione del carico per persona nell'intervallo —
+/// ore, numero turni, weekend, notti. Aiuta a bilanciare; non blocca nulla.
+pub async fn fairness_report(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "workforce").await?;
+    let now = st.clock.now();
+    let pd = |k:&str, def: chrono::DateTime<chrono::Utc>| q.get(k).and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok().map(|t| t.with_timezone(&chrono::Utc))).unwrap_or(def);
+    let from = pd("from", now - chrono::Duration::days(30));
+    let to   = pd("to", now + chrono::Duration::days(1));
+    let rows = sqlx::query(
+        "SELECT u.email,
+            count(*) AS n,
+            COALESCE(sum(EXTRACT(EPOCH FROM (sp.ends_at-sp.starts_at))/3600.0),0)::float8 AS hours,
+            count(*) FILTER (WHERE EXTRACT(DOW FROM sp.starts_at) IN (0,6)) AS weekend,
+            count(*) FILTER (WHERE EXTRACT(HOUR FROM sp.starts_at) >= 22 OR EXTRACT(HOUR FROM sp.starts_at) < 6) AS nights
+         FROM app.shift_plans sp JOIN app.users u ON u.id=sp.user_id
+         WHERE sp.tenant_id=$1 AND sp.starts_at>=$2 AND sp.starts_at<$3
+         GROUP BY u.email ORDER BY hours DESC")
+        .bind(tid).bind(from).bind(to).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let people: Vec<Value> = rows.iter().map(|r| json!({
+        "email":r.get::<String,_>("email"),"shifts":r.get::<i64,_>("n"),
+        "hours":(r.get::<f64,_>("hours")*10.0).round()/10.0,
+        "weekend":r.get::<i64,_>("weekend"),"nights":r.get::<i64,_>("nights")})).collect();
+    // scarto ore max-min (indice di squilibrio)
+    let hrs: Vec<f64> = rows.iter().map(|r| r.get::<f64,_>("hours")).collect();
+    let spread = match (hrs.iter().cloned().fold(f64::MIN, f64::max), hrs.iter().cloned().fold(f64::MAX, f64::min)) {
+        (mx, mn) if !hrs.is_empty() => ((mx-mn)*10.0).round()/10.0, _ => 0.0 };
+    Ok(Json(json!({"people":people,"spread_hours":spread,"from":from.to_rfc3339(),"to":to.to_rfc3339()})))
+}
 fn violations_json(vs: &[crate::scheduling::Violation]) -> Value {
     json!(vs.iter().map(|v| json!({"code":v.code,"hard":v.hard,"message":v.message})).collect::<Vec<_>>())
 }

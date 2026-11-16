@@ -201,7 +201,13 @@ Regole di contorno:
     valida (non scaduta) all'orario del turno. CRUD `/api/qualifications`, assegnazione
     `/api/users/:id/qualifications`. Console: card «Qualifiche e competenze» in Turni (crea/assegna)
     + «Competenza richiesta» nel form turno. e2e `qa/qualification-e2e.sh` 5/5.
-  - W3c — Copertura minima per sede/fascia + equità (vincoli morbidi). Da fare.
+  - **W3c — Copertura minima + equità FATTO.** `coverage_requirements` (sede/giorni/fascia/min
+    persone/qualifica opz., mig `0084`): `GET/POST/DELETE /api/coverage` + `GET /api/coverage/check`
+    (per requisito e giorno conta chi copre l'INTERA fascia con sede/qualifica giuste e segnala i
+    giorni sotto il minimo — i "buchi"; filtro `?requirement=<id>`). Equità (morbida, informativa):
+    `GET /api/fairness` = carico per persona (ore/turni/weekend/notti) + squilibrio max-min. Console:
+    card «Copertura minima» in Turni (requisiti + «verifica copertura» che elenca i buchi + «equità»).
+    e2e `qa/coverage-e2e.sh` 4/4.
 - **W4 — AI turni.** Proposta piano, sostituti per cambi turno, spiegazioni — sul motore W2, con
   conferma umana.
 - **W5 (opz.) — Push OAuth** bidirezionale e/o solver Timefold per ottimizzazione pesante. Solo se

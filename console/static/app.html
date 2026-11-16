@@ -3927,10 +3927,11 @@ function dtLocal(iso){ const d=new Date(iso); return d.toLocaleString('it-IT',{d
 function toISO(localVal){ if(!localVal)return null; const d=new Date(localVal); return isNaN(d)?null:d.toISOString(); }
 async function vTurni(v){
   const planner=can(['pianificatore','tenant_admin']);
-  const [P,OC,A,Q,users,sites]=await Promise.all([
+  const [P,OC,A,Q,CV,users,sites]=await Promise.all([
     api('/shift-plans').catch(()=>[]), api('/oncall').catch(()=>[]), api('/absences').catch(()=>[]), api('/qualifications').catch(()=>[]),
+    api('/coverage').catch(()=>[]),
     planner?api('/users').catch(()=>[]):Promise.resolve([]), planner?api('/sites').catch(()=>[]):Promise.resolve([])]);
-  v._users=users; v._sites=sites; v._quals=Q||[];
+  v._users=users; v._sites=sites; v._quals=Q||[]; v._cov=CV||[];
   const stChip=s=>`<span class="chip ${s==='confermato'?'s-attivo':''}">${s}</span>`;
   const planRows=P.map(p=>{
     const mine=p.user_id===ME.user_id||ME.email===p.email;
@@ -3962,9 +3963,59 @@ async function vTurni(v){
     <span><a onclick="qualNew()">+ nuova</a> · <a onclick="qualAssign()">assegna a persona</a></span></div>
     <div class="small mut" style="padding:0 14px">Un turno può richiedere una qualifica: solo chi la possiede (non scaduta) può coprirlo.</div>
     <div class="grid g2" style="margin:10px 14px">${(Q||[]).map(q=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px" class="spread"><b class="small">${esc(q.name)}</b><button class="btn-ico btn ghost" onclick="qualDel('${q.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessuna qualifica. Creane una e assegnala alle persone.</div>'}</div></div>`:'';
+  const DOW=['lun','mar','mer','gio','ven','sab','dom'];
+  const dmTxt=m=>DOW.filter((_,i)=>m[i]==='1').join(' ');
+  const covCard=planner?`<div class="card" style="margin-top:16px"><div class="card-h"><h2>Copertura minima</h2>
+    <span><a onclick="covNew()">+ requisito</a> · <a onclick="covCheck()">verifica copertura</a> · <a onclick="covFairness()">equità</a></span></div>
+    <div class="small mut" style="padding:0 14px">Dichiara quante persone servono per sede/fascia/giorni; la verifica trova i giorni scoperti del piano.</div>
+    <table class="table"><thead><tr><th>Sede</th><th>Giorni</th><th>Fascia</th><th>Min</th><th>Competenza</th><th></th></tr></thead>
+    <tbody>${(CV||[]).map(c=>`<tr><td>${esc(c.site||'ovunque')}</td><td class="small">${esc(dmTxt(c.days_mask))}</td><td class="small">${esc(c.cov_start)}–${esc(c.cov_end)}</td>
+      <td>${c.min_people}</td><td class="small mut">${esc(c.qual||'—')}</td><td style="text-align:right"><button class="btn-ico btn ghost" onclick="covDel('${c.id}')">${ICON.x}</button></td></tr>`).join('')
+      ||`<tr><td colspan="6" class="empty">Nessun requisito di copertura</td></tr>`}</tbody></table>
+    <div id="covGaps" style="padding:0 14px 12px"></div></div>`:'';
   v.innerHTML=`<div class="page-h"><div><h1>${t('turni_title','Turni')}</h1><div class="mut">${P.length} turni pianificati${planner?'':' (i tuoi)'}</div></div>${createBtn}</div>
   <div class="card"><table class="table"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Quando</th><th>Stato</th><th></th></tr></thead>
-    <tbody>${planRows}</tbody></table></div>${oncallCard}${absCard}${qualCard}`;
+    <tbody>${planRows}</tbody></table></div>${oncallCard}${absCard}${qualCard}${covCard}`;
+}
+function covNew(){
+  const v=$('#view'); const sites=v._sites||[], quals=v._quals||[];
+  drawer('Requisito di copertura',`<div class="col" style="gap:10px">
+    <label class="small mut">Sede<select id="cvS"><option value="">ovunque</option>${sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
+    <label class="small mut">Giorni</label>
+    <div class="row" style="gap:6px;flex-wrap:wrap">${['lun','mar','mer','gio','ven','sab','dom'].map((d,i)=>`<label class="row small" style="gap:3px"><input type="checkbox" class="cvD" data-i="${i}" ${i<5?'checked':''}>${d}</label>`).join('')}</div>
+    <div class="row" style="gap:8px"><label class="small mut grow">Dalle<input id="cvA" type="time" value="08:00"></label><label class="small mut grow">Alle<input id="cvZ" type="time" value="17:00"></label></div>
+    <label class="small mut">Minimo persone<input id="cvN" type="number" value="1" min="1" style="width:90px"></label>
+    ${quals.length?`<label class="small mut">Competenza richiesta (facoltativa)<select id="cvQ"><option value="">—</option>${quals.map(q=>`<option value="${q.id}">${esc(q.name)}</option>`).join('')}</select></label>`:''}
+    <button class="btn" onclick="covSave()">Salva</button><div class="cfg-msg small"></div></div>`);
+}
+async function covSave(){
+  const m=$('.cfg-msg');
+  let mask=''; for(let i=0;i<7;i++){ mask+= (document.querySelector('.cvD[data-i="'+i+'"]')?.checked)?'1':'0'; }
+  const b={site_id:$('#cvS').value||null,days_mask:mask,cov_start:$('#cvA').value,cov_end:$('#cvZ').value,min_people:Number($('#cvN').value)||1,required_qualification:($('#cvQ')&&$('#cvQ').value)||null};
+  if(mask==='0000000'){m.textContent='scegli almeno un giorno';m.style.color='var(--bad)';return;}
+  try{await api('/coverage',{method:'POST',body:JSON.stringify(b)}); toast('Requisito salvato','ok'); closeDrawer(); route();}
+  catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
+}
+async function covDel(id){ if(!await askConfirm('Eliminare il requisito?'))return; try{await api('/coverage/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function covCheck(){
+  const box=$('#covGaps'); if(box) box.innerHTML='<div class="small mut">Verifico…</div>';
+  const from=new Date(); const to=new Date(Date.now()+14*864e5);
+  try{ const r=await api('/coverage/check?from='+from.toISOString()+'&to='+to.toISOString());
+    const g=r.gaps||[];
+    if(!box)return;
+    box.innerHTML = g.length? `<div class="small" style="color:var(--bad);margin-top:8px"><b>${g.length} giorni scoperti (prossimi 14):</b></div>`+
+      g.map(x=>`<div class="small">· ${x.date} · ${esc(x.site||'ovunque')} ${esc(x.window)} — ci sono ${x.have}/${x.need}</div>`).join('')
+      : '<div class="small" style="color:var(--ok,green);margin-top:8px">✓ Copertura ok nei prossimi 14 giorni.</div>';
+  }catch(e){ if(box) box.innerHTML='<div class="small" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
+}
+async function covFairness(){
+  const box=$('#covGaps'); if(box) box.innerHTML='<div class="small mut">Calcolo…</div>';
+  try{ const r=await api('/fairness'); const p=r.people||[]; if(!box)return;
+    box.innerHTML = p.length? `<div class="small mut" style="margin-top:8px">Carico ultimi 30 giorni — squilibrio max-min: <b>${r.spread_hours}h</b></div>`+
+      `<table class="table"><thead><tr><th>Persona</th><th>Ore</th><th>Turni</th><th>Weekend</th><th>Notti</th></tr></thead><tbody>`+
+      p.map(x=>`<tr><td class="small">${esc(x.email)}</td><td>${x.hours}</td><td>${x.shifts}</td><td>${x.weekend}</td><td>${x.nights}</td></tr>`).join('')+`</tbody></table>`
+      : '<div class="small mut" style="margin-top:8px">Nessun turno nel periodo.</div>';
+  }catch(e){ if(box) box.innerHTML='<div class="small" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
 }
 async function qualNew(){ const n=await askPrompt('Nome qualifica? (es. Patentino carrello, Primo soccorso)'); if(!n)return;
   try{await api('/qualifications',{method:'POST',body:JSON.stringify({name:n})}); toast('Qualifica creata','ok'); route();}catch(e){toast(e.message,'bad');} }

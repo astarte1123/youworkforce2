@@ -294,6 +294,10 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/qualifications/:id", delete(api::delete_qualification))
         .route("/api/users/:id/qualifications", get(api::list_user_qualifications).post(api::user_qualification_add))
         .route("/api/users/:id/qualifications/:qid", delete(api::user_qualification_del))
+        .route("/api/coverage", get(api::list_coverage).post(api::create_coverage))
+        .route("/api/coverage/check", get(api::coverage_check))
+        .route("/api/fairness", get(api::fairness_report))
+        .route("/api/coverage/:id", delete(api::delete_coverage))
         .route("/api/shift-plans/:id", post(api::shift_plan_action).delete(api::delete_shift_plan))
         ;
     // catena spezzata in più statement: una singola espressione .route()* troppo lunga
