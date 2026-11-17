@@ -261,7 +261,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/catalog/devices", get(api::list_catalog))
         .route("/api/catalog/facets", get(api::catalog_facets))
         .route("/api/assets", get(sites::list_assets).post(sites::create_asset))
-        .route("/api/assets/:id", axum::routing::delete(sites::delete_asset))
+        .route("/api/assets/:id", post(sites::update_asset).delete(sites::delete_asset))
         .route("/api/groups", get(api::list_groups).post(api::create_group))
         .route("/api/groups/:id", axum::routing::delete(api::delete_group))
         .route("/api/groups/:id/members", post(api::add_group_member))

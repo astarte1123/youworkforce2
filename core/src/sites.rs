@@ -79,6 +79,18 @@ pub async fn create_asset(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":row.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id")})))
 }
+pub async fn update_asset(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<AssetReq>) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
+    let tid = s.tenant_id.unwrap();
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.assets SET name=$2,kind=COALESCE($3,kind),identifier=$4,site_id=$5,note=$6 WHERE id=$1")
+        .bind(id).bind(b.name.trim()).bind(&b.kind).bind(&b.identifier).bind(b.site_id).bind(&b.note)
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "asset inesistente")); }
+    Ok(Json(json!({"ok":true})))
+}
 pub async fn delete_asset(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;

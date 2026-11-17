@@ -3722,11 +3722,7 @@ async function vProfili(v){
       vengono instradati a <b>quel gruppo</b> con precedenza sul routing globale per-evento.</div></div>
     ${(D.profiles||[]).map(card).join('')||'<div class="card pad mut">Nessun profilo. Creane uno per iniziare.</div>'}`;
 }
-async function profNew(){
-  const name=await askPrompt('Nome del nuovo profilo di protezione'); if(!name)return;
-  try{ await api('/safety/profiles',{method:'POST',body:JSON.stringify({name})}); toast('Profilo creato','ok'); route(); }
-  catch(e){ toast(e.message,'bad'); }
-}
+function profNew(){ simpleCreateDrawer('Nuovo profilo di protezione','Nome profilo','', v=>api('/safety/profiles',{method:'POST',body:JSON.stringify({name:v})})); }
 async function profSave(id,btn){
   const box=document.querySelector(`[data-prof="${id}"]`); if(!box)return;
   const m=box.querySelector('.prof-msg'); if(m){m.textContent='…';m.style.color='var(--mut)';}
@@ -4197,8 +4193,16 @@ async function grpOncallSave(gid){
   try{ await api('/groups/'+gid+'/oncall',{method:'POST',body:JSON.stringify(body)}); toast('Salvato — premi Sincronizza con GoAlert','ok'); }
   catch(e){ toast(e.message,'bad'); }
 }
-async function grpNew(){ const n=await askPrompt('Nome gruppo?'); if(!n)return;
-  try{await api('/groups',{method:'POST',body:JSON.stringify({name:n})}); toast('Gruppo creato','ok'); route();}catch(e){toast(e.message,'bad');} }
+// Helper comune: drawer di creazione a campo singolo (comportamento uniforme in tutto il prodotto).
+function simpleCreateDrawer(title,label,placeholder,fn){
+  drawer(title,`<div class="col" style="gap:10px"><label class="small mut">${esc(label)}<input id="scInput" placeholder="${esc(placeholder||'')}"></label>
+    <button class="btn" id="scBtn">Crea</button><div class="cfg-msg small"></div></div>`);
+  setTimeout(()=>{ const i=$('#scInput'); if(i)i.focus(); },50);
+  $('#scBtn').onclick=async()=>{ const m=$('.cfg-msg'); const val=$('#scInput').value.trim();
+    if(!val){ m.textContent='valore richiesto'; m.style.color='var(--bad)'; return; }
+    try{ await fn(val); toast('Creato','ok'); closeDrawer(); route(); }catch(e){ m.textContent=e.message; m.style.color='var(--bad)'; } };
+}
+function grpNew(){ simpleCreateDrawer('Nuovo gruppo allarme','Nome gruppo','', v=>api('/groups',{method:'POST',body:JSON.stringify({name:v})})); }
 async function grpDel(id){ if(!await askConfirm('Eliminare il gruppo?'))return;
   try{await api('/groups/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function grpAdd(gid){ const uid=$('#mSel_'+gid).value; if(!uid)return;
@@ -4382,11 +4386,26 @@ async function vAnagrafiche(v){
         <button class="btn ghost small" onclick="teamAdd('${t.id}')">+ membro</button></div></div>`).join('')
       ||'<div class="small mut">Nessuna squadra.</div>'}</div></div>`:''}
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Asset / mezzi (${assets.length})</h2><a onclick="assetNew()">+ nuovo asset</a></div>
-    <table class="table"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th></th></tr></thead>
-    <tbody>${assets.map(a=>`<tr><td>${esc(a.name)}</td><td><span class="chip">${esc(a.kind)}</span></td><td class="small mut">${esc(a.identifier||'—')}</td>
-      <td style="text-align:right"><button class="btn-ico btn ghost" onclick="assetDel('${a.id}')">${ICON.x}</button></td></tr>`).join('')
-      ||'<tr><td colspan="4" class="empty">nessun asset</td></tr>'}</tbody></table></div>`;
+    <table class="table"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th>Sede</th><th></th></tr></thead>
+    <tbody>${assets.map(a=>`<tr class="clk" data-asset='${JSON.stringify(a).replace(/'/g,"&#39;")}'><td><b>${esc(a.name)}</b></td><td><span class="chip">${esc(a.kind)}</span></td><td class="small mut">${esc(a.identifier||'—')}</td><td class="small mut">${esc(a.site||'—')}</td>
+      <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();assetDel('${a.id}')">${ICON.x}</button></td></tr>`).join('')
+      ||'<tr><td colspan="5" class="empty">nessun asset</td></tr>'}</tbody></table></div>`;
+  v.querySelectorAll('tr[data-asset]').forEach(tr=>tr.onclick=()=>{ try{ assetForm(JSON.parse(tr.dataset.asset)); }catch(e){} });
 }
+const ASSET_KINDS=['veicolo','attrezzatura','mezzo','strumento','altro'];
+async function assetForm(a){ a=a||{}; const sites=await api('/sites').catch(()=>[]);
+  drawer(a.id?('Asset · '+esc(a.name)):'Nuovo asset / mezzo',`<div class="col" style="gap:10px">
+    <label class="small mut">Nome<input id="asName" value="${esc(a.name||'')}" placeholder="Furgone, scala, radio…"></label>
+    <div class="row" style="gap:8px"><label class="small mut grow">Tipo<select id="asKind">${ASSET_KINDS.map(k=>`<option ${k===(a.kind||'attrezzatura')?'selected':''}>${k}</option>`).join('')}</select></label>
+      <label class="small mut grow">Matricola / targa<input id="asId" value="${esc(a.identifier||'')}"></label></div>
+    <label class="small mut">Sede (opz.)<select id="asSite"><option value="">—</option>${sites.map(s=>`<option value="${s.id}" ${s.id===a.site_id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label>
+    <label class="small mut">Note<input id="asNote" value="${esc(a.note||'')}"></label>
+    <button class="btn" onclick="assetSave('${a.id||''}')">${a.id?'Salva':'Crea'}</button>${a.id?` <button class="btn ghost" onclick="assetDel('${a.id}')">${ICON.x} Elimina</button>`:''}<div class="cfg-msg small"></div></div>`);
+}
+function assetNew(){ assetForm(null); }
+async function assetSave(id){ const m=$('.cfg-msg'); const name=$('#asName').value.trim(); if(!name){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
+  const b={name,kind:$('#asKind').value,identifier:$('#asId').value||null,site_id:$('#asSite').value||null,note:$('#asNote').value||null};
+  try{await api(id?('/assets/'+id):'/assets',{method:'POST',body:JSON.stringify(b)}); toast('Asset salvato','ok'); closeDrawer(); route();}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
 
 // Hub IAM: identità, gruppi condivisi, permessi (capability), ruoli personalizzati.
 async function vUtentiRuoli(v){
@@ -4595,12 +4614,8 @@ async function gdprAnon(uid,email){
   if(!await askConfirm('Anonimizzare '+email+'?\nRimuove PII (email, telefono, diario), blocca il login. Irreversibile. Lo storico incidenti resta integro.'))return;
   try{ await api('/gdpr/anonymize/'+uid,{method:'POST'}); toast('Utente anonimizzato','ok'); gdReload(false); }catch(e){ toast(e.message,'bad'); }
 }
-async function assetNew(){ const n=await askPrompt('Nome asset/mezzo?'); if(!n)return;
-  const k=await askPrompt('Tipo (veicolo/attrezzatura/varco/altro)?','veicolo')||'attrezzatura';
-  const id=await askPrompt('Matricola/targa (opz.)?')||null;
-  try{await api('/assets',{method:'POST',body:JSON.stringify({name:n,kind:k,identifier:id})}); toast('Asset creato','ok'); route();}catch(e){toast(e.message,'bad');} }
-async function assetDel(id){ if(!await askConfirm('Eliminare asset?'))return; try{await api('/assets/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
-async function teamNew(){ const n=await askPrompt('Nome squadra?'); if(!n)return; try{await api('/teams',{method:'POST',body:JSON.stringify({name:n})}); toast('Squadra creata','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function assetDel(id){ if(!await askConfirm('Eliminare asset?'))return; try{await api('/assets/'+id,{method:'DELETE'}); toast('Eliminato','ok'); closeDrawer&&closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
+function teamNew(){ simpleCreateDrawer('Nuova squadra','Nome squadra','', v=>api('/teams',{method:'POST',body:JSON.stringify({name:v})})); }
 async function teamDel(id){ if(!await askConfirm('Eliminare squadra?'))return; try{await api('/teams/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function teamAdd(tid){ const uid=$('#tm_'+tid).value; if(!uid)return; try{await api('/teams/'+tid+'/members',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Aggiunto','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function teamRm(tid,uid){ try{await api('/teams/'+tid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e.message,'bad');} }
@@ -4915,8 +4930,7 @@ async function covFairness(){
       : '<div class="small mut" style="margin-top:8px">Nessun turno nel periodo.</div>';
   }catch(e){ if(box) box.innerHTML='<div class="small" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
 }
-async function qualNew(){ const n=await askPrompt('Nome qualifica? (es. Patentino carrello, Primo soccorso)'); if(!n)return;
-  try{await api('/qualifications',{method:'POST',body:JSON.stringify({name:n})}); toast('Qualifica creata','ok'); route();}catch(e){toast(e.message,'bad');} }
+function qualNew(){ simpleCreateDrawer('Nuova qualifica','Nome qualifica','es. Patentino carrello, Primo soccorso', v=>api('/qualifications',{method:'POST',body:JSON.stringify({name:v})})); }
 async function qualDel(id){ if(!await askConfirm('Eliminare la qualifica? (decadono le assegnazioni e i requisiti sui turni)'))return;
   try{await api('/qualifications/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
 function qualAssign(){
