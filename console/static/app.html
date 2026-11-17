@@ -44,6 +44,7 @@ const NAV = [
   // --- Lavoro sul campo ---
   {k:'ordini',    t:'Interventi', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
   {k:'clienti',   t:'Clienti', ico:'building', roles:['pianificatore','tenant_admin','auditor'], mod:['interventi'], grp:'work'},
+  {k:'listino',   t:'Listino', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], mod:['interventi'], grp:'work'},
   {k:'cantieri',  t:'Cantieri', ico:'building', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], grp:'work'},
   {k:'calendario',t:'Calendario', ico:'calendar', roles:['pianificatore','tenant_admin','lavoratore','reperibile','responsabile','auditor'], mod:['workforce','interventi','giri','cantieri'], grp:'work'},
   {k:'ronde',     t:'Ronde', ico:'route', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['giri'], grp:'work'},
@@ -350,7 +351,7 @@ function route(){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,cantieri:vCantieri,clienti:vClienti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,cantieri:vCantieri,clienti:vClienti,listino:vListino,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -1917,6 +1918,79 @@ async function contSave(cid){ const m=$('.cfg-msg'); const name=$('#ktName').val
     toast('Referente aggiunto','ok'); openClient(cid);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
 async function contDel(id){ if(!await askConfirm('Eliminare il referente?'))return; const cid=$('#view')._curClient;
   try{await api('/contacts/'+id,{method:'DELETE'}); toast('Eliminato','ok'); if(cid)openClient(cid);}catch(e){toast(e.message,'bad');} }
+// ===== Interventi A2: Listino prezzi =====
+const PRICE_CAT={manodopera:'Manodopera',materiale:'Materiale',trasferta:'Trasferta',forfait:'Forfait',altro:'Altro'};
+const PRICE_UNITS=['ora','pezzo','km','giorno','forfait'];
+function eur(n){ return '€ '+(Number(n)||0).toLocaleString('it-IT',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+async function vListino(v){
+  const P=await api('/price-items').catch(()=>[]);
+  const canEdit=can(['pianificatore','tenant_admin']);
+  const row=p=>`<tr><td><b>${esc(p.name)}</b>${p.code?`<div class="small mut">${esc(p.code)}</div>`:''}</td>
+    <td class="small">${esc(PRICE_CAT[p.category]||p.category)}</td><td class="small">${esc(p.unit)}</td>
+    <td style="text-align:right">${eur(p.unit_price)}</td>
+    <td>${p.active?'<span class="chip s-attivo">attiva</span>':'<span class="chip">sospesa</span>'}</td>
+    <td style="text-align:right">${canEdit?`<button class="btn ghost small" onclick='priceForm(${JSON.stringify(p).replace(/'/g,"&#39;")})'>modifica</button> <button class="btn-ico btn ghost" onclick="priceDel('${p.id}')">${ICON.x}</button>`:''}</td></tr>`;
+  v.innerHTML=`<div class="page-h"><div><h1>Listino</h1><div class="mut">${P.length} voci · prezzi per valorizzare gli interventi</div></div>
+    ${canEdit?`<button class="btn" onclick="priceForm()">+ Nuova voce</button>`:''}</div>
+  <div class="small mut" style="margin:-4px 0 12px">🧾 Il listino è il catalogo delle voci fatturabili (manodopera, materiali, trasferta). Si usa per valorizzare ogni intervento.</div>
+  <div class="card"><table class="table"><thead><tr><th>Voce</th><th>Categoria</th><th>Unità</th><th style="text-align:right">Prezzo</th><th>Stato</th><th></th></tr></thead>
+    <tbody>${P.map(row).join('')||`<tr><td colspan="6" class="empty">${ICON.receipt}<div>Nessuna voce di listino</div></td></tr>`}</tbody></table></div>`;
+}
+function priceForm(p){ p=p||{};
+  drawer(p.id?'Voce · '+esc(p.name):'Nuova voce di listino',`<div class="col" style="gap:10px">
+    <label class="small mut">Nome<input id="piName" value="${esc(p.name||'')}" placeholder="Manodopera elettricista"></label>
+    <div class="row" style="gap:8px"><label class="small mut grow">Codice (opz.)<input id="piCode" value="${esc(p.code||'')}"></label>
+      <label class="small mut grow">Prezzo (€)<input id="piPrice" type="number" step="0.01" value="${p.unit_price!=null?p.unit_price:''}"></label></div>
+    <div class="row" style="gap:8px"><label class="small mut grow">Categoria<select id="piCat">${Object.entries(PRICE_CAT).map(([k,l])=>`<option value="${k}" ${k===(p.category||'altro')?'selected':''}>${l}</option>`).join('')}</select></label>
+      <label class="small mut grow">Unità<select id="piUnit">${PRICE_UNITS.map(u=>`<option value="${u}" ${u===(p.unit||'pezzo')?'selected':''}>${u}</option>`).join('')}</select></label></div>
+    ${p.id?`<label class="row small" style="gap:8px"><input type="checkbox" id="piActive" ${p.active!==false?'checked':''}> Attiva (selezionabile sugli interventi)</label>`:''}
+    <button class="btn" onclick="priceSave('${p.id||''}')">Salva</button><div class="cfg-msg small"></div></div>`);
+}
+async function priceSave(id){ const m=$('.cfg-msg'); const name=$('#piName').value.trim();
+  if(!name){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
+  const b={name,code:$('#piCode').value.trim()||null,category:$('#piCat').value,unit:$('#piUnit').value,unit_price:Number($('#piPrice').value)||0};
+  if(id&&$('#piActive')) b.active=$('#piActive').checked;
+  try{await api(id?('/price-items/'+id):'/price-items',{method:'POST',body:JSON.stringify(b)}); toast('Salvato','ok'); closeDrawer(); route();}catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
+}
+async function priceDel(id){ if(!await askConfirm('Eliminare la voce di listino?'))return;
+  try{await api('/price-items/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
+// Valorizzazione di un intervento: righe (da listino o a mano) + totale.
+async function orderLines(wo){
+  const box=$('#oLines'); if(!box)return;
+  let d; try{ d=await api('/orders/'+wo+'/lines'); }catch(e){ box.innerHTML='<div class="small mut">—</div>'; return; }
+  const rows=(d.lines||[]).map(l=>`<tr><td class="small">${esc(l.description)}<div class="small mut">${esc(PRICE_CAT[l.category]||l.category)}</div></td>
+    <td class="small" style="text-align:right">${l.qty} ${esc(l.unit)}</td><td class="small" style="text-align:right">${eur(l.unit_price)}</td>
+    <td style="text-align:right"><b>${eur(l.total)}</b></td><td style="text-align:right"><button class="btn-ico btn ghost" onclick="orderLineDel('${wo}','${l.id}')">${ICON.x}</button></td></tr>`).join('')
+    ||`<tr><td colspan="5" class="empty">Nessuna voce</td></tr>`;
+  box.innerHTML=`<table class="table"><thead><tr><th>Voce</th><th style="text-align:right">Q.tà</th><th style="text-align:right">Prezzo</th><th style="text-align:right">Totale</th><th></th></tr></thead>
+    <tbody>${rows}</tbody><tfoot><tr><td colspan="3" style="text-align:right"><b>Totale</b></td><td style="text-align:right"><b>${eur(d.total)}</b></td><td></td></tr></tfoot></table>
+    <button class="btn ghost small" onclick="orderLineAdd('${wo}')">+ aggiungi voce</button>`;
+}
+async function orderLineAdd(wo){
+  const items=await api('/price-items').catch(()=>[]);
+  const act=items.filter(i=>i.active!==false);
+  drawer('Aggiungi voce all\'intervento',`<div class="col" style="gap:10px">
+    ${act.length?`<label class="small mut">Dal listino<select id="olItem" onchange="olFill()"><option value="">— voce libera —</option>${act.map(i=>`<option value="${i.id}" data-d="${esc(i.name)}" data-c="${i.category}" data-u="${i.unit}" data-p="${i.unit_price}">${esc(i.name)} · ${eur(i.unit_price)}/${esc(i.unit)}</option>`).join('')}</select></label>`:''}
+    <label class="small mut">Descrizione<input id="olDesc"></label>
+    <div class="row" style="gap:8px"><label class="small mut grow">Categoria<select id="olCat">${Object.entries(PRICE_CAT).map(([k,l])=>`<option value="${k}">${l}</option>`).join('')}</select></label>
+      <label class="small mut grow">Unità<select id="olUnit">${PRICE_UNITS.map(u=>`<option value="${u}">${u}</option>`).join('')}</select></label></div>
+    <div class="row" style="gap:8px"><label class="small mut grow">Quantità<input id="olQty" type="number" step="0.01" value="1"></label>
+      <label class="small mut grow">Prezzo unitario (€)<input id="olPrice" type="number" step="0.01" value="0"></label></div>
+    <button class="btn" onclick="orderLineSave('${wo}')">Aggiungi</button><div class="cfg-msg small"></div></div>`);
+  window._olItems=act;
+}
+function olFill(){ const sel=$('#olItem'); const o=sel&&sel.selectedOptions[0]; if(!o||!o.value)return;
+  $('#olDesc').value=o.dataset.d||''; $('#olCat').value=o.dataset.c||'altro'; $('#olUnit').value=o.dataset.u||'pezzo'; $('#olPrice').value=o.dataset.p||0;
+  if(window._olItems){ const it=window._olItems.find(x=>x.id===o.value); if(it){/* item_id tracked via desc match */} }
+}
+async function orderLineSave(wo){
+  const m=$('.cfg-msg'); const desc=$('#olDesc').value.trim(); if(!desc){m.textContent='descrizione richiesta';m.style.color='var(--bad)';return;}
+  const sel=$('#olItem'); const item_id=(sel&&sel.value)||null;
+  const b={description:desc,item_id,category:$('#olCat').value,unit:$('#olUnit').value,qty:Number($('#olQty').value)||1,unit_price:Number($('#olPrice').value)||0};
+  try{await api('/orders/'+wo+'/lines',{method:'POST',body:JSON.stringify(b)}); toast('Voce aggiunta','ok'); closeDrawer(); orderLines(wo);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
+}
+async function orderLineDel(wo,id){ if(!await askConfirm('Eliminare la voce?'))return;
+  try{await api('/order-lines/'+id,{method:'DELETE'}); toast('Eliminata','ok'); orderLines(wo);}catch(e){toast(e.message,'bad');} }
 function orderFormFields(o,sites,workers,groups,clients){ o=o||{}; groups=groups||[]; clients=clients||[]; return `
   <div class="field"><label>Titolo</label><input id="o_title" value="${esc(o.title||'')}" placeholder="Manutenzione quadro elettrico"></div>
   ${clients.length?`<div class="field"><label>Cliente</label><select id="o_client"><option value="">—</option>${clients.map(c=>`<option value="${c.id}" ${c.id===o.client_id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>`:''}
@@ -1973,6 +2047,9 @@ async function openOrder(id){
         ${(o.materials&&o.materials.length)?`<div class="small mut" style="margin-top:6px">Materiali: ${o.materials.map(mm=>esc((mm.descr||'')+' '+(mm.qta||'')+(mm.unita||''))).join(', ')}</div>`:''}</div>`:''}
     <div class="col">${acts||'<div class="chip">nessuna azione disponibile</div>'}${editBtn}</div>
     ${AI_FEAT.interventi_assist?`<div class="row" style="gap:6px;margin-top:12px"><button class="btn ghost small" onclick="aiOrderBrief('${id}',this)">✦ Brief AI</button></div><div id="aiOrdOut"></div>`:''}
+    ${(mine||planner)?`<div class="divider" style="margin:16px 0"></div>
+      <h3 style="margin:0 0 8px">Valorizzazione (listino)</h3>
+      <div id="oLines" class="small mut">carico…</div>`:''}
     ${((mine||planner)&&(o.state==='in_corso'||o.state==='completato'))?`
       <div class="divider" style="margin:16px 0"></div>
       <h3 style="margin:0 0 8px">Esecuzione intervento</h3>
@@ -1986,6 +2063,7 @@ async function openOrder(id){
       <canvas id="ordSig" width="300" height="120" style="border:1px solid var(--line);border-radius:8px;touch-action:none;background:#fff;max-width:100%"></canvas>
       <div class="row" style="gap:6px;margin-top:4px"><button class="btn ghost small" onclick="ordSigClear()">pulisci</button><button class="btn ghost small" onclick="ordSigSave('${id}')">✍ Salva firma</button></div>`:''}`);
   if((mine||planner)&&(o.state==='in_corso'||o.state==='completato')){ ordAttLoad(id); ordSigInit(); }
+  if(mine||planner){ orderLines(id); }
 }
 async function ordReportSave(id){ try{ await api('/orders/'+id+'/report',{method:'POST',body:JSON.stringify({report:$('#ordReport').value,signed_by:$('#ordSigner').value||null})}); toast('Report salvato','ok'); }catch(e){ toast(e.message,'bad'); } }
 async function ordAttLoad(id){ const el=$('#ordAtt'); if(!el)return;

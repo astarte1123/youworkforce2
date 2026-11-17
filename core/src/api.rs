@@ -7776,6 +7776,101 @@ pub async fn delete_contact(State(st): State<AppState>, h: HeaderMap, Path(id): 
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
+// ===== Interventi A2: listino prezzi + valorizzazione della visita =====
+#[derive(Deserialize)]
+pub struct PriceItemReq { pub name: String, #[serde(default)] pub code: Option<String>, #[serde(default)] pub category: Option<String>,
+    #[serde(default)] pub unit: Option<String>, #[serde(default)] pub unit_price: Option<f64>, #[serde(default)] pub active: Option<bool> }
+pub async fn list_price_items(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT id,code,name,category,unit,unit_price::float8 AS unit_price,active FROM app.price_list_items ORDER BY active DESC,category,name").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"code":r.try_get::<String,_>("code").ok(),"name":r.get::<String,_>("name"),
+        "category":r.get::<String,_>("category"),"unit":r.get::<String,_>("unit"),
+        "unit_price":r.get::<f64,_>("unit_price"),"active":r.get::<bool,_>("active") })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn create_price_item(State(st): State<AppState>, h: HeaderMap, Json(b): Json<PriceItemReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO app.price_list_items(tenant_id,code,name,category,unit,unit_price) VALUES($1,$2,$3,COALESCE($4,'altro'),COALESCE($5,'pezzo'),COALESCE($6::numeric,0)) RETURNING id")
+        .bind(tid).bind(&b.code).bind(b.name.trim()).bind(&b.category).bind(&b.unit).bind(b.unit_price)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn update_price_item(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<PriceItemReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.price_list_items SET name=COALESCE($2,name),code=$3,category=COALESCE($4,category),unit=COALESCE($5,unit),unit_price=COALESCE($6::numeric,unit_price),active=COALESCE($7,active) WHERE id=$1")
+        .bind(id).bind(if b.name.trim().is_empty(){None}else{Some(b.name.trim())}).bind(&b.code).bind(&b.category).bind(&b.unit).bind(b.unit_price).bind(b.active)
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "voce non trovata")); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_price_item(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.price_list_items WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+/// Chi può valorizzare una visita: pianificatore o l'assegnatario dell'ordine.
+async fn order_line_allowed(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, s: &Session, wo: Uuid) -> Result<bool, (StatusCode,String)> {
+    if is_planner(s) { return Ok(true); }
+    let asg: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.work_orders WHERE id=$1").bind(wo).fetch_optional(&mut **tx).await.map_err(ise)?.flatten();
+    Ok(asg == Some(s.user_id))
+}
+pub async fn list_order_lines(State(st): State<AppState>, h: HeaderMap, Path(wo): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT id,item_id,description,category,unit,qty::float8 AS qty,unit_price::float8 AS unit_price,(qty*unit_price)::float8 AS total FROM app.work_order_lines WHERE work_order_id=$1 ORDER BY created_at").bind(wo).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let mut tot=0.0;
+    let out: Vec<Value> = rows.iter().map(|r| { let t=r.get::<f64,_>("total"); tot+=t; json!({
+        "id":r.get::<Uuid,_>("id"),"item_id":r.try_get::<Uuid,_>("item_id").ok(),"description":r.get::<String,_>("description"),
+        "category":r.get::<String,_>("category"),"unit":r.get::<String,_>("unit"),
+        "qty":r.get::<f64,_>("qty"),"unit_price":r.get::<f64,_>("unit_price"),"total":t }) }).collect();
+    Ok(Json(json!({"lines":out,"total":(tot*100.0).round()/100.0})))
+}
+#[derive(Deserialize)]
+pub struct OrderLineReq { pub description: String, #[serde(default)] pub item_id: Option<Uuid>, #[serde(default)] pub category: Option<String>,
+    #[serde(default)] pub unit: Option<String>, #[serde(default)] pub qty: Option<f64>, #[serde(default)] pub unit_price: Option<f64> }
+pub async fn add_order_line(State(st): State<AppState>, h: HeaderMap, Path(wo): Path<Uuid>, Json(b): Json<OrderLineReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?;
+    if b.description.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "descrizione richiesta")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    if !order_line_allowed(&mut tx, &s, wo).await? { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore o assegnatario")); }
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO app.work_order_lines(tenant_id,work_order_id,item_id,description,category,unit,qty,unit_price,created_by)
+         VALUES($1,$2,$3,$4,COALESCE($5,'altro'),COALESCE($6,'pezzo'),COALESCE($7::numeric,1),COALESCE($8::numeric,0),$9) RETURNING id")
+        .bind(tid).bind(wo).bind(b.item_id).bind(b.description.trim()).bind(&b.category).bind(&b.unit).bind(b.qty).bind(b.unit_price).bind(s.user_id)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn delete_order_line(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // consenti a pianificatore o assegnatario dell'ordine a cui appartiene la riga
+    let wo: Option<Uuid> = sqlx::query_scalar("SELECT work_order_id FROM app.work_order_lines WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let wo = match wo { Some(x)=>x, None=>{ return Err(err(StatusCode::NOT_FOUND,"riga non trovata")); } };
+    if !order_line_allowed(&mut tx, &s, wo).await? { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore o assegnatario")); }
+    sqlx::query("DELETE FROM app.work_order_lines WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
 
 #[derive(Deserialize)]
 pub struct OrderAction { pub version: i32, pub user_id: Option<Uuid>, #[serde(default)] pub group_id: Option<Uuid>, pub outcome: Option<String>, pub reason: Option<String> }

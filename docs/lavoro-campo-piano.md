@@ -143,7 +143,10 @@ nello stesso commit. Nessun passo distrugge i dati o umilia il prodotto.
 - ✅ **C2 Cronoprogramma** — lavorazioni con date (start/end) + dipendenza finish-to-start
   (`depends_on`) (mig 0094); vista **Gantt** leggera con barre + avanzamento; rilevamento
   **ritardo** (fine passata e non completata). e2e `qa/cantieri-cronoprogramma-e2e.sh` 7/7.
-- ⏳ prossimi: A2 (listino + valorizzazione visita), poi A3/C3.
+- ✅ **A2 Listino + valorizzazione** — `price_list_items` (catalogo voci: categoria, unità,
+  prezzo) + `work_order_lines` (righe valorizzate sull'intervento, da listino o a mano) (mig 0095);
+  menu "Listino"; sezione "Valorizzazione" nell'intervento con totale. e2e `qa/listino-e2e.sh` 7/7.
+- ⏳ prossimi: A3 (agenda dispatch) / C3 (costi vs budget); poi A4-A5 / C4-C5.
 
 ## 6. Criteri di "fatto" (definition of done) per slice
 
