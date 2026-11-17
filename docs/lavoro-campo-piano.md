@@ -159,7 +159,16 @@ nello stesso commit. Nessun passo distrugge i dati o umilia il prodotto.
   `work_orders.contract_id` (mig 0097); menu "Contratti". e2e `qa/contratti-e2e.sh` 6/6.
 - ✅ **A5 Richieste/ticket** — `service_requests` (mig 0098); inbox "Richieste" + conversione in
   intervento (stato→convertita, order_id). e2e `qa/richieste-e2e.sh` 7/7.
-- ⏳ prossimi: C4 (giornale di cantiere) / C5 (fatturazione da SAL).
+- ✅ **C4 Giornale di cantiere** — `commessa_diario` (data, meteo, presenti, note) (mig 0099);
+  sezione "Giornale di cantiere" nella commessa. e2e in `qa/cantieri-giornale-fatture-e2e.sh`.
+- ✅ **C5 Fatturazione da SAL** — `commessa_fatture` (numero, importo, stato emessa/pagata/annullata,
+  link al SAL) (mig 0100); «fattura» sulla riga SAL, sezione "Fatturazione" con totale fatturato.
+  e2e `qa/cantieri-giornale-fatture-e2e.sh` 8/8.
+
+**PIANO COMPLETO:** Fase 0 + A1-A5 + C1-C5 fatti (+ geocoding sedi/navigazione PWA). Tutti gli slice
+additivi, gated per modulo, isolati per tenant, con e2e verdi e UI comprensibile. Roadmap residua
+(evolutiva, non bloccante): anagrafica cliente/commessa più ricca, vista agenda-appuntamenti
+dedicata, cronoprogramma con dipendenze multiple, allegati su diario/fatture, export documenti.
 
 ## 6. Criteri di "fatto" (definition of done) per slice
 

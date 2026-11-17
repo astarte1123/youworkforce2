@@ -4834,7 +4834,17 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     let costi = sqlx::query("SELECT k.id,k.description,k.category,k.amount::float8 AS amount,k.cost_date,u.email AS author FROM app.commessa_costi k LEFT JOIN app.users u ON u.id=k.created_by WHERE k.commessa_id=$1 ORDER BY k.cost_date DESC,k.created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let labor_hours: f64 = sqlx::query_scalar("SELECT COALESCE(sum(EXTRACT(EPOCH FROM (clock_out-clock_in))/3600.0),0)::float8 FROM app.commessa_presenze WHERE commessa_id=$1 AND clock_out IS NOT NULL").bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
     let materials_cost: f64 = sqlx::query_scalar("SELECT COALESCE(sum(amount),0)::float8 FROM app.commessa_costi WHERE commessa_id=$1").bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
+    let diario = sqlx::query("SELECT g.id,g.diary_date,g.weather,g.present_count,g.body,u.email AS author FROM app.commessa_diario g LEFT JOIN app.users u ON u.id=g.created_by WHERE g.commessa_id=$1 ORDER BY g.diary_date DESC,g.created_at DESC LIMIT 100").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let fatture = sqlx::query("SELECT f.id,f.number,f.amount::float8 AS amount,f.issue_date,f.status,f.note,f.sal_id FROM app.commessa_fatture f WHERE f.commessa_id=$1 ORDER BY f.issue_date DESC,f.created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    let diario_out: Vec<Value> = diario.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"diary_date":r.get::<chrono::NaiveDate,_>("diary_date").to_string(),
+        "weather":r.try_get::<String,_>("weather").ok(),"present_count":r.try_get::<i32,_>("present_count").ok(),
+        "body":r.get::<String,_>("body"),"author":r.try_get::<String,_>("author").ok() })).collect();
+    let fatture_out: Vec<Value> = fatture.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"number":r.get::<String,_>("number"),"amount":r.get::<f64,_>("amount"),
+        "issue_date":r.get::<chrono::NaiveDate,_>("issue_date").to_string(),"status":r.get::<String,_>("status"),
+        "note":r.try_get::<String,_>("note").ok(),"sal_id":r.try_get::<Uuid,_>("sal_id").ok() })).collect();
     let labor_rate: f64 = c.try_get::<f64,_>("labor_rate").ok().unwrap_or(0.0);
     let labor_cost = (labor_hours*labor_rate*100.0).round()/100.0;
     let total_cost = ((labor_cost+materials_cost)*100.0).round()/100.0;
@@ -4876,7 +4886,8 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
         "teams":team_out,"presenze":pres_out,"my_open":my_open.is_some(),
         "labor_rate":labor_rate,"costi":costi_out,
         "cost":{"labor_hours":(labor_hours*100.0).round()/100.0,"labor_cost":labor_cost,"materials_cost":materials_cost,
-                "total_cost":total_cost,"budget":budget_v,"variance":variance}
+                "total_cost":total_cost,"budget":budget_v,"variance":variance},
+        "diario":diario_out,"fatture":fatture_out
     })))
 }
 pub async fn update_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<CommessaPatch>) -> R {
@@ -5035,6 +5046,64 @@ pub async fn delete_commessa_costo(State(st): State<AppState>, h: HeaderMap, Pat
     require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.commessa_costi WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+// ----- Cantieri C4: giornale di cantiere -----
+#[derive(Deserialize)]
+pub struct DiarioReq { pub body: String, #[serde(default)] pub diary_date: Option<String>, #[serde(default)] pub weather: Option<String>, #[serde(default)] pub present_count: Option<i32> }
+pub async fn add_commessa_diario(State(st): State<AppState>, h: HeaderMap, Path(cid): Path<Uuid>, Json(b): Json<DiarioReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?;
+    if b.body.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "testo richiesto")); }
+    let d = parse_date_opt(&b.diary_date).unwrap_or_else(|| chrono::Utc::now().date_naive());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.commessa_diario(tenant_id,commessa_id,diary_date,weather,present_count,body,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        .bind(tid).bind(cid).bind(d).bind(&b.weather).bind(b.present_count).bind(b.body.trim()).bind(s.user_id)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn delete_commessa_diario(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.commessa_diario WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+// ----- Cantieri C5: fatturazione da SAL -----
+#[derive(Deserialize)]
+pub struct FatturaReq { pub number: String, pub amount: f64, #[serde(default)] pub sal_id: Option<Uuid>, #[serde(default)] pub issue_date: Option<String>, #[serde(default)] pub note: Option<String> }
+pub async fn add_commessa_fattura(State(st): State<AppState>, h: HeaderMap, Path(cid): Path<Uuid>, Json(b): Json<FatturaReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    if b.number.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "numero richiesto")); }
+    let d = parse_date_opt(&b.issue_date).unwrap_or_else(|| chrono::Utc::now().date_naive());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.commessa_fatture(tenant_id,commessa_id,sal_id,number,amount,issue_date,note,created_by) VALUES($1,$2,$3,$4,$5::numeric,$6,$7,$8) RETURNING id")
+        .bind(tid).bind(cid).bind(b.sal_id).bind(b.number.trim()).bind(b.amount).bind(d).bind(&b.note).bind(s.user_id)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "commessa_fattura", json!({"commessa":cid,"number":b.number,"amount":b.amount})).await;
+    Ok(Json(json!({"id":id})))
+}
+#[derive(Deserialize)] pub struct FatturaPatch { pub status: String }
+pub async fn update_commessa_fattura(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<FatturaPatch>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    if !["emessa","pagata","annullata"].contains(&b.status.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "stato non valido")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.commessa_fatture SET status=$2 WHERE id=$1").bind(id).bind(&b.status).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "fattura non trovata")); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_commessa_fattura(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.commessa_fatture WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }

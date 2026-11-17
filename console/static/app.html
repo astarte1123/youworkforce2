@@ -1739,8 +1739,8 @@ async function openCommessa(id){
       <button class="btn-ico btn ghost" onclick="lavDel('${l.id}')">${ICON.x}</button>`:`<span class="small">${l.progress_pct}%</span>`}</div></div>`).join('')
     ||'<div class="small mut">Nessuna lavorazione. Aggiungine per misurare l\'avanzamento.</div>';
   const gantt=ganttHtml(c.lavorazioni||[]);
-  const sal=(c.sal||[]).map(s=>`<tr><td class="small">${esc(s.sal_date)}</td><td>${s.pct}%</td><td class="small">${s.amount!=null?'€ '+s.amount.toLocaleString('it-IT'):'—'}</td><td class="small mut">${esc(s.note||'')}</td></tr>`).join('')
-    ||`<tr><td colspan="4" class="empty">Nessun SAL registrato</td></tr>`;
+  const sal=(c.sal||[]).map(s=>`<tr><td class="small">${esc(s.sal_date)}</td><td>${s.pct}%</td><td class="small">${s.amount!=null?eur(s.amount):'—'}</td><td class="small mut">${esc(s.note||'')}</td><td style="text-align:right">${planner?`<button class="btn ghost small" onclick='fatturaNew("${id}",${JSON.stringify(s).replace(/'/g,"&#39;")})'>fattura</button>`:''}</td></tr>`).join('')
+    ||`<tr><td colspan="5" class="empty">Nessun SAL registrato</td></tr>`;
   const shifts=(c.shifts||[]).map(s=>`<tr><td class="small">${esc(s.email)}</td><td class="small">${dtLocal(s.starts_at)} → ${dtLocal(s.ends_at)}</td><td>${chip(s.state)}</td></tr>`).join('')
     ||`<tr><td colspan="3" class="empty">Nessun turno legato</td></tr>`;
   // C1 — squadre assegnate
@@ -1775,6 +1775,23 @@ async function openCommessa(id){
     </tbody></table>
     <div class="small mut" style="margin:6px 0 4px">Voci di costo</div>
     <table class="table"><tbody>${costiRows}</tbody></table></div>`;
+  // C4 — giornale di cantiere
+  const diarioRows=(c.diario||[]).map(g=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+    <div class="spread"><b class="small">${esc(g.diary_date)}</b><span class="small mut">${g.weather?esc(g.weather)+' · ':''}${g.present_count!=null?g.present_count+' presenti':''}${planner?` <button class="btn-ico btn ghost" onclick="diarioDel('${id}','${g.id}')">${ICON.x}</button>`:''}</span></div>
+    <div class="small" style="white-space:pre-wrap;margin-top:4px">${esc(g.body)}</div>${g.author?`<div class="small mut" style="margin-top:2px">— ${esc(g.author)}</div>`:''}</div>`).join('')
+    ||'<div class="small mut">Nessuna annotazione.</div>';
+  const giornaleSection=`<div><div class="spread"><h3 style="margin:0">Giornale di cantiere</h3>${planner?`<a onclick="diarioNew('${id}')">+ annotazione</a>`:''}</div>
+    <div style="margin-top:8px">${diarioRows}</div></div>`;
+  // C5 — fatture da SAL
+  const fattRows=(c.fatture||[]).map(f=>`<tr><td class="small"><b>${esc(f.number)}</b><div class="small mut">${esc(f.issue_date)}</div></td>
+    <td style="text-align:right">${eur(f.amount)}</td><td><span class="chip ${f.status==='pagata'?'s-attivo':''}">${esc(f.status)}</span></td>
+    <td style="text-align:right">${planner?`<select onchange="fatturaStatus('${id}','${f.id}',this.value)" class="small"><option ${f.status==='emessa'?'selected':''}>emessa</option><option ${f.status==='pagata'?'selected':''}>pagata</option><option ${f.status==='annullata'?'selected':''}>annullata</option></select> <button class="btn-ico btn ghost" onclick="fatturaDel('${id}','${f.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
+    ||`<tr><td colspan="4" class="empty">Nessuna fattura</td></tr>`;
+  const fatt_tot=(c.fatture||[]).filter(f=>f.status!=='annullata').reduce((a,f)=>a+(f.amount||0),0);
+  const fattureSection=`<div><h3 style="margin:0">Fatturazione (da SAL)</h3>
+    <div class="small mut" style="margin:4px 0">Usa «fattura» su una riga SAL per emettere il documento con l'importo maturato.</div>
+    <table class="table"><thead><tr><th>Numero</th><th style="text-align:right">Importo</th><th>Stato</th><th></th></tr></thead>
+    <tbody>${fattRows}</tbody><tfoot><tr><td style="text-align:right"><b>Fatturato</b></td><td style="text-align:right"><b>${eur(fatt_tot)}</b></td><td colspan="2"></td></tr></tfoot></table></div>`;
   drawer('Commessa · '+esc(c.code),`<div class="col" style="gap:12px">
     <div><div class="spread"><b>${esc(c.name)}</b>${statusSel}</div>
       <div class="small mut" style="margin-top:4px">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}${c.start_date?' · '+esc(c.start_date):''}${c.end_date?' → '+esc(c.end_date):''}${c.budget!=null?' · € '+c.budget.toLocaleString('it-IT'):''}</div>
@@ -1783,13 +1800,15 @@ async function openCommessa(id){
       <div style="margin-top:8px">${lav}</div></div>
     ${gantt}
     <div><div class="spread"><h3 style="margin:0">SAL — stato avanzamento</h3>${planner?`<a onclick="salNew('${id}')">+ registra SAL</a>`:''}</div>
-      <table class="table" style="margin-top:6px"><thead><tr><th>Data</th><th>%</th><th>Importo</th><th>Note</th></tr></thead><tbody>${sal}</tbody></table></div>
+      <table class="table" style="margin-top:6px"><thead><tr><th>Data</th><th>%</th><th>Importo</th><th>Note</th><th></th></tr></thead><tbody>${sal}</tbody></table></div>
     <div><h3 style="margin:0">Turni legati</h3>
       <table class="table" style="margin-top:6px"><thead><tr><th>Lavoratore</th><th>Quando</th><th>Stato</th></tr></thead><tbody>${shifts}</tbody></table>
       <div class="small mut" style="margin-top:4px">Per legare un turno: pianificalo in <b>Turni</b> e scegli questa commessa.</div></div>
     ${squadreSection}
     ${presenzeSection}
     ${costiSection}
+    ${giornaleSection}
+    ${fattureSection}
     ${planner?`<button class="btn ghost" onclick="comDel('${id}')">${ICON.x} Elimina commessa</button>`:''}</div>`);
 }
 async function comSetStatus(id,st){ try{await api('/commesse/'+id,{method:'POST',body:JSON.stringify({status:st})}); toast('Stato aggiornato','ok');}catch(e){toast(e.message,'bad');} }
@@ -1818,6 +1837,31 @@ async function costoSave(cid){ const m=$('.cfg-msg'); const d=$('#koDesc').value
     toast('Costo aggiunto','ok'); closeDrawer(); openCommessa(cid);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
 async function costoDel(cid,id){ if(!await askConfirm('Eliminare il costo?'))return;
   try{await api('/commessa-costi/'+id,{method:'DELETE'}); toast('Eliminato','ok'); openCommessa(cid);}catch(e){toast(e.message,'bad');} }
+function diarioNew(cid){ drawer('Annotazione giornale',`<div class="col" style="gap:10px">
+    <div class="row" style="gap:8px"><label class="small mut grow">Data<input id="gdDate" type="date" value="${new Date().toISOString().slice(0,10)}"></label>
+      <label class="small mut grow">Meteo<input id="gdWeather" placeholder="sereno, pioggia…"></label>
+      <label class="small mut" style="width:120px">Presenti<input id="gdPres" type="number"></label></div>
+    <label class="small mut">Attività svolte / note<textarea id="gdBody" style="width:100%;height:80px"></textarea></label>
+    <button class="btn" onclick="diarioSave('${cid}')">Salva</button><div class="cfg-msg small"></div></div>`); }
+async function diarioSave(cid){ const m=$('.cfg-msg'); const body=$('#gdBody').value.trim(); if(!body){m.textContent='testo richiesto';m.style.color='var(--bad)';return;}
+  const b={body,diary_date:$('#gdDate').value||null,weather:$('#gdWeather').value||null,present_count:$('#gdPres').value!==''?+$('#gdPres').value:null};
+  try{await api('/commesse/'+cid+'/diario',{method:'POST',body:JSON.stringify(b)}); toast('Annotazione salvata','ok'); closeDrawer(); openCommessa(cid);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
+async function diarioDel(cid,id){ if(!await askConfirm('Eliminare l\'annotazione?'))return;
+  try{await api('/commessa-diario/'+id,{method:'DELETE'}); toast('Eliminata','ok'); openCommessa(cid);}catch(e){toast(e.message,'bad');} }
+function fatturaNew(cid,s){ const sugg=new Date().getFullYear()+'/'+Math.floor(Math.random()*900+100);
+  drawer('Emetti fattura da SAL',`<div class="col" style="gap:10px">
+    <div class="small mut">SAL del ${esc(s.sal_date)} · ${s.pct}%</div>
+    <div class="row" style="gap:8px"><label class="small mut grow">Numero<input id="fnNum" value="${sugg}"></label>
+      <label class="small mut grow">Importo (€)<input id="fnAmt" type="number" step="0.01" value="${s.amount!=null?s.amount:0}"></label></div>
+    <label class="small mut">Data<input id="fnDate" type="date" value="${new Date().toISOString().slice(0,10)}"></label>
+    <label class="small mut">Note<input id="fnNote"></label>
+    <button class="btn" onclick="fatturaSave('${cid}','${s.id}')">Emetti</button><div class="cfg-msg small"></div></div>`); }
+async function fatturaSave(cid,salId){ const m=$('.cfg-msg'); const num=$('#fnNum').value.trim(); if(!num){m.textContent='numero richiesto';m.style.color='var(--bad)';return;}
+  const b={number:num,amount:Number($('#fnAmt').value)||0,sal_id:salId||null,issue_date:$('#fnDate').value||null,note:$('#fnNote').value||null};
+  try{await api('/commesse/'+cid+'/fatture',{method:'POST',body:JSON.stringify(b)}); toast('Fattura emessa','ok'); closeDrawer(); openCommessa(cid);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
+async function fatturaStatus(cid,id,st){ try{await api('/commessa-fatture/'+id,{method:'POST',body:JSON.stringify({status:st})}); toast('Stato fattura aggiornato','ok'); openCommessa(cid);}catch(e){toast(e.message,'bad');} }
+async function fatturaDel(cid,id){ if(!await askConfirm('Eliminare la fattura?'))return;
+  try{await api('/commessa-fatture/'+id,{method:'DELETE'}); toast('Eliminata','ok'); openCommessa(cid);}catch(e){toast(e.message,'bad');} }
 async function comDel(id){ if(!await askConfirm('Eliminare la commessa? (rimuove lavorazioni e SAL; i turni restano, slegati)'))return;
   try{await api('/commesse/'+id,{method:'DELETE'}); toast('Eliminata','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 function lavNew(cid){
