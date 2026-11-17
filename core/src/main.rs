@@ -314,6 +314,16 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/orders/:id/lines", get(api::list_order_lines).post(api::add_order_line))
         .route("/api/order-lines/:id", delete(api::delete_order_line))
         .route("/api/orders/:id/suggest-tech", get(api::suggest_order_tech))
+        // Interventi A4: contratti/SLA + piani manutenzione
+        .route("/api/contracts", get(api::list_contracts).post(api::create_contract))
+        .route("/api/contracts/:id", post(api::update_contract).delete(api::delete_contract))
+        .route("/api/maintenance-plans", get(api::list_plans).post(api::create_plan))
+        .route("/api/maintenance-plans/:id", delete(api::delete_plan))
+        .route("/api/maintenance-plans/:id/generate", post(api::generate_plan_order))
+        // Interventi A5: richieste/ticket
+        .route("/api/requests", get(api::list_requests).post(api::create_request))
+        .route("/api/requests/:id", post(api::update_request).delete(api::delete_request))
+        .route("/api/requests/:id/convert", post(api::convert_request))
         // Modulo Cantieri: commessa -> lavorazioni (WBS) -> SAL
         .route("/api/commesse", get(api::list_commesse).post(api::create_commessa))
         .route("/api/commesse/:id", get(api::get_commessa).post(api::update_commessa).delete(api::delete_commessa))

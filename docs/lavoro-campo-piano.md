@@ -154,7 +154,12 @@ nello stesso commit. Nessun passo distrugge i dati o umilia il prodotto.
   **suggerimento tecnico** `GET /orders/:id/suggest-tech` (grounded: esclude assenti nel giorno,
   ordina per carico; youworker.ai opzionale per il riassunto). Assegnazione diretta dal suggerimento.
   e2e `qa/dispatch-e2e.sh` 6/6.
-- ⏳ prossimi: A4-A5 (contratti/SLA, ricorrenze, ticket) / C4-C5 (giornale, fatturazione SAL).
+- ✅ **A4 Contratti/SLA + ricorrenze** — `service_contracts` (SLA ore, monte ore) +
+  `maintenance_plans` (cadenza + generazione appuntamento che avanza la prossima data) +
+  `work_orders.contract_id` (mig 0097); menu "Contratti". e2e `qa/contratti-e2e.sh` 6/6.
+- ✅ **A5 Richieste/ticket** — `service_requests` (mig 0098); inbox "Richieste" + conversione in
+  intervento (stato→convertita, order_id). e2e `qa/richieste-e2e.sh` 7/7.
+- ⏳ prossimi: C4 (giornale di cantiere) / C5 (fatturazione da SAL).
 
 ## 6. Criteri di "fatto" (definition of done) per slice
 

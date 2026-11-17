@@ -7959,6 +7959,183 @@ pub async fn suggest_order_tech(State(st): State<AppState>, h: HeaderMap, Path(i
     }
     Ok(Json(json!({"day":day.to_string(),"candidates":out,"summary":summary,"provider": if summary==det {"deterministico"} else {"youworker.ai"}})))
 }
+// ===== Interventi A4: contratti/SLA + piani di manutenzione ricorrente =====
+#[derive(Deserialize)]
+pub struct ContractReq { pub name: String, #[serde(default)] pub client_id: Option<Uuid>, #[serde(default)] pub sla_hours: Option<i32>,
+    #[serde(default)] pub hours_bundle: Option<f64>, #[serde(default)] pub start_date: Option<String>, #[serde(default)] pub end_date: Option<String>,
+    #[serde(default)] pub active: Option<bool>, #[serde(default)] pub note: Option<String> }
+pub async fn list_contracts(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT c.id,c.name,c.sla_hours,c.hours_bundle::float8 AS hours_bundle,c.start_date,c.end_date,c.active,c.note,c.client_id,cl.name AS client_name FROM app.service_contracts c LEFT JOIN app.clients cl ON cl.id=c.client_id ORDER BY c.active DESC,c.name").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"sla_hours":r.try_get::<i32,_>("sla_hours").ok(),
+        "hours_bundle":r.try_get::<f64,_>("hours_bundle").ok(),
+        "start_date":r.try_get::<chrono::NaiveDate,_>("start_date").ok().map(|d|d.to_string()),
+        "end_date":r.try_get::<chrono::NaiveDate,_>("end_date").ok().map(|d|d.to_string()),
+        "active":r.get::<bool,_>("active"),"note":r.try_get::<String,_>("note").ok(),
+        "client_id":r.try_get::<Uuid,_>("client_id").ok(),"client_name":r.try_get::<String,_>("client_name").ok() })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn create_contract(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ContractReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO app.service_contracts(tenant_id,client_id,name,sla_hours,hours_bundle,start_date,end_date,note,created_by) VALUES($1,$2,$3,$4,$5::numeric,$6,$7,$8,$9) RETURNING id")
+        .bind(tid).bind(b.client_id).bind(b.name.trim()).bind(b.sla_hours).bind(b.hours_bundle)
+        .bind(parse_date_opt(&b.start_date)).bind(parse_date_opt(&b.end_date)).bind(&b.note).bind(s.user_id)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn update_contract(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<ContractReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.service_contracts SET name=COALESCE($2,name),client_id=$3,sla_hours=$4,hours_bundle=$5::numeric,start_date=$6,end_date=$7,active=COALESCE($8,active),note=$9 WHERE id=$1")
+        .bind(id).bind(if b.name.trim().is_empty(){None}else{Some(b.name.trim())}).bind(b.client_id).bind(b.sla_hours).bind(b.hours_bundle)
+        .bind(parse_date_opt(&b.start_date)).bind(parse_date_opt(&b.end_date)).bind(b.active).bind(&b.note)
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "contratto non trovato")); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_contract(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.service_contracts WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)]
+pub struct PlanReq { pub title: String, #[serde(default)] pub client_id: Option<Uuid>, #[serde(default)] pub site_id: Option<Uuid>,
+    #[serde(default)] pub contract_id: Option<Uuid>, #[serde(default)] pub every_days: Option<i32>, #[serde(default)] pub next_date: Option<String>,
+    #[serde(default)] pub active: Option<bool> }
+pub async fn list_plans(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT p.id,p.title,p.every_days,p.next_date,p.active,p.client_id,cl.name AS client_name,p.site_id,si.name AS site FROM app.maintenance_plans p LEFT JOIN app.clients cl ON cl.id=p.client_id LEFT JOIN app.sites si ON si.id=p.site_id ORDER BY p.active DESC,p.next_date").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"title":r.get::<String,_>("title"),"every_days":r.get::<i32,_>("every_days"),
+        "next_date":r.get::<chrono::NaiveDate,_>("next_date").to_string(),"active":r.get::<bool,_>("active"),
+        "client_id":r.try_get::<Uuid,_>("client_id").ok(),"client_name":r.try_get::<String,_>("client_name").ok(),
+        "site_id":r.try_get::<Uuid,_>("site_id").ok(),"site":r.try_get::<String,_>("site").ok() })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn create_plan(State(st): State<AppState>, h: HeaderMap, Json(b): Json<PlanReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    if b.title.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "titolo richiesto")); }
+    let ev = b.every_days.unwrap_or(30).max(1);
+    let nd = parse_date_opt(&b.next_date).unwrap_or_else(|| chrono::Utc::now().date_naive());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.maintenance_plans(tenant_id,client_id,site_id,contract_id,title,every_days,next_date) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        .bind(tid).bind(b.client_id).bind(b.site_id).bind(b.contract_id).bind(b.title.trim()).bind(ev).bind(nd)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn delete_plan(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.maintenance_plans WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+/// Genera l'appuntamento dalla ricorrenza e avanza la prossima data.
+pub async fn generate_plan_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    use chrono::TimeZone as _;
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let p = sqlx::query("SELECT title,client_id,site_id,contract_id,every_days,next_date FROM app.maintenance_plans WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let p = match p { Some(r)=>r, None=>{ return Err(err(StatusCode::NOT_FOUND,"piano non trovato")); } };
+    let nd: chrono::NaiveDate = p.get("next_date");
+    let start = chrono::Utc.from_utc_datetime(&nd.and_hms_opt(9,0,0).unwrap());
+    let oid: Uuid = sqlx::query_scalar(
+        "INSERT INTO app.work_orders(tenant_id,site_id,title,state,created_by,scheduled_start,priority,client_id,contract_id)
+         VALUES($1,$2,$3,'bozza',$4,$5,2,$6,$7) RETURNING id")
+        .bind(tid).bind(p.try_get::<Uuid,_>("site_id").ok()).bind(format!("{} (manutenzione)", p.get::<String,_>("title"))).bind(s.user_id)
+        .bind(start).bind(p.try_get::<Uuid,_>("client_id").ok()).bind(p.try_get::<Uuid,_>("contract_id").ok())
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    let ev: i32 = p.get("every_days");
+    let next = nd + chrono::Duration::days(ev as i64);
+    sqlx::query("UPDATE app.maintenance_plans SET next_date=$2,last_order=$3 WHERE id=$1").bind(id).bind(next).bind(oid).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":oid,"next_date":next.to_string()})))
+}
+// ===== Interventi A5: richieste/ticket =====
+#[derive(Deserialize)]
+pub struct RequestReq { pub title: String, #[serde(default)] pub description: Option<String>, #[serde(default)] pub client_id: Option<Uuid>,
+    #[serde(default)] pub priority: Option<i32>, #[serde(default)] pub requester: Option<String>, #[serde(default)] pub status: Option<String> }
+pub async fn list_requests(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT r.id,r.title,r.description,r.priority,r.status,r.requester,r.created_at,r.client_id,cl.name AS client_name,r.order_id FROM app.service_requests r LEFT JOIN app.clients cl ON cl.id=r.client_id ORDER BY (r.status IN ('convertita','chiusa')), r.created_at DESC").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"title":r.get::<String,_>("title"),"description":r.try_get::<String,_>("description").ok(),
+        "priority":r.get::<i32,_>("priority"),"status":r.get::<String,_>("status"),"requester":r.try_get::<String,_>("requester").ok(),
+        "created_at":r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
+        "client_id":r.try_get::<Uuid,_>("client_id").ok(),"client_name":r.try_get::<String,_>("client_name").ok(),
+        "order_id":r.try_get::<Uuid,_>("order_id").ok() })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn create_request(State(st): State<AppState>, h: HeaderMap, Json(b): Json<RequestReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?;
+    if b.title.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "titolo richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.service_requests(tenant_id,client_id,title,description,priority,requester,created_by) VALUES($1,$2,$3,$4,COALESCE($5,2),$6,$7) RETURNING id")
+        .bind(tid).bind(b.client_id).bind(b.title.trim()).bind(&b.description).bind(b.priority).bind(&b.requester).bind(s.user_id)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn update_request(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<RequestReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.service_requests SET title=COALESCE($2,title),description=$3,priority=COALESCE($4,priority),status=COALESCE($5,status),requester=$6,client_id=$7 WHERE id=$1")
+        .bind(id).bind(if b.title.trim().is_empty(){None}else{Some(b.title.trim())}).bind(&b.description).bind(b.priority).bind(&b.status).bind(&b.requester).bind(b.client_id)
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "richiesta non trovata")); }
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_request(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.service_requests WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+/// Converte la richiesta in un intervento (bozza) e la segna "convertita".
+pub async fn convert_request(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let r = sqlx::query("SELECT title,description,client_id,priority,status FROM app.service_requests WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let r = match r { Some(x)=>x, None=>{ return Err(err(StatusCode::NOT_FOUND,"richiesta non trovata")); } };
+    if r.get::<String,_>("status")=="convertita" { return Err(err(StatusCode::CONFLICT,"richiesta già convertita")); }
+    let oid: Uuid = sqlx::query_scalar(
+        "INSERT INTO app.work_orders(tenant_id,title,instructions,state,created_by,priority,client_id) VALUES($1,$2,$3,'bozza',$4,$5,$6) RETURNING id")
+        .bind(tid).bind(r.get::<String,_>("title")).bind(r.try_get::<String,_>("description").ok()).bind(s.user_id).bind(r.get::<i32,_>("priority")).bind(r.try_get::<Uuid,_>("client_id").ok())
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    sqlx::query("UPDATE app.service_requests SET status='convertita',order_id=$2 WHERE id=$1").bind(id).bind(oid).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":oid})))
+}
 
 #[derive(Deserialize)]
 pub struct OrderAction { pub version: i32, pub user_id: Option<Uuid>, #[serde(default)] pub group_id: Option<Uuid>, pub outcome: Option<String>, pub reason: Option<String> }

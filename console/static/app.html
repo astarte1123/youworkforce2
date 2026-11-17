@@ -46,6 +46,8 @@ const NAV = [
   {k:'clienti',   t:'Clienti', ico:'building', roles:['pianificatore','tenant_admin','auditor'], mod:['interventi'], grp:'work'},
   {k:'listino',   t:'Listino', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], mod:['interventi'], grp:'work'},
   {k:'dispatch',  t:'Agenda tecnici', ico:'calendar', roles:['pianificatore','tenant_admin'], mod:['interventi'], grp:'work'},
+  {k:'richieste', t:'Richieste', ico:'clipboard', roles:['pianificatore','tenant_admin','operatore','auditor'], mod:['interventi'], grp:'work'},
+  {k:'contratti', t:'Contratti', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], mod:['interventi'], grp:'work'},
   {k:'cantieri',  t:'Cantieri', ico:'building', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], grp:'work'},
   {k:'calendario',t:'Calendario', ico:'calendar', roles:['pianificatore','tenant_admin','lavoratore','reperibile','responsabile','auditor'], mod:['workforce','interventi','giri','cantieri'], grp:'work'},
   {k:'ronde',     t:'Ronde', ico:'route', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['giri'], grp:'work'},
@@ -352,7 +354,7 @@ function route(){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,cantieri:vCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,cantieri:vCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -2045,6 +2047,84 @@ async function vDispatch(v){
   <h2 style="margin:4px 0 8px">Carico del ${day}</h2>
   <div class="row" style="gap:12px;flex-wrap:wrap;align-items:flex-start">${lanes||'<div class="small mut">Nessun tecnico.</div>'}</div>`;
 }
+// ===== Interventi A5: Richieste / ticket =====
+const REQ_STATI={nuova:'Nuova',presa:'Presa in carico',convertita:'Convertita',chiusa:'Chiusa'};
+async function vRichieste(v){
+  const [R,clients]=await Promise.all([api('/requests').catch(()=>[]),api('/clients').catch(()=>[])]);
+  v._clients=clients; const canEdit=can(['pianificatore','tenant_admin']);
+  const row=r=>`<tr><td><b class="small">${esc(r.title)}</b>${r.requester?`<div class="small mut">da ${esc(r.requester)}</div>`:''}</td>
+    <td class="small">${esc(r.client_name||'—')}</td><td>${priBadge(r.priority)}</td><td><span class="chip">${esc(REQ_STATI[r.status]||r.status)}</span></td>
+    <td style="text-align:right">${canEdit&&r.status!=='convertita'?`<button class="btn ghost small" onclick="reqConvert('${r.id}')">→ intervento</button> `:''}${canEdit?`<button class="btn-ico btn ghost" onclick="reqDel('${r.id}')">${ICON.x}</button>`:''}</td></tr>`;
+  v.innerHTML=`<div class="page-h"><div><h1>Richieste</h1><div class="mut">${R.length} richieste · canale d'ingresso prima dell'intervento</div></div>
+    <button class="btn" onclick="reqNew()">+ Nuova richiesta</button></div>
+  <div class="card"><table class="table"><thead><tr><th>Richiesta</th><th>Cliente</th><th>Priorità</th><th>Stato</th><th></th></tr></thead>
+    <tbody>${R.map(row).join('')||`<tr><td colspan="5" class="empty">${ICON.clipboard}<div>Nessuna richiesta</div></td></tr>`}</tbody></table></div>`;
+}
+function reqNew(){ const v=$('#view'); const clients=v._clients||[];
+  drawer('Nuova richiesta',`<div class="col" style="gap:10px">
+    <label class="small mut">Titolo<input id="rqTitle" placeholder="Perdita acqua bagno"></label>
+    <label class="small mut">Cliente<select id="rqClient"><option value="">—</option>${clients.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
+    <div class="row" style="gap:8px"><label class="small mut grow">Priorità<select id="rqPri">${[1,2,3].map(p=>`<option value="${p}" ${p===2?'selected':''}>${PRI_LAB[p]}</option>`).join('')}</select></label>
+      <label class="small mut grow">Segnalato da<input id="rqBy" placeholder="nome / telefono"></label></div>
+    <label class="small mut">Descrizione<textarea id="rqDesc" style="width:100%;height:60px"></textarea></label>
+    <button class="btn" onclick="reqSave()">Crea</button><div class="cfg-msg small"></div></div>`); }
+async function reqSave(){ const m=$('.cfg-msg'); const t=$('#rqTitle').value.trim(); if(!t){m.textContent='titolo richiesto';m.style.color='var(--bad)';return;}
+  const b={title:t,client_id:$('#rqClient').value||null,priority:+$('#rqPri').value,requester:$('#rqBy').value||null,description:$('#rqDesc').value||null};
+  try{await api('/requests',{method:'POST',body:JSON.stringify(b)}); toast('Richiesta creata','ok'); closeDrawer(); route();}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
+async function reqConvert(id){ if(!await askConfirm('Convertire la richiesta in un intervento (bozza)?'))return;
+  try{await api('/requests/'+id+'/convert',{method:'POST',body:'{}'}); toast('Convertita in intervento','ok'); route();}catch(e){toast(e.message,'bad');} }
+async function reqDel(id){ if(!await askConfirm('Eliminare la richiesta?'))return;
+  try{await api('/requests/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
+// ===== Interventi A4: Contratti/SLA + piani di manutenzione =====
+async function vContratti(v){
+  const [C,P,clients,sites]=await Promise.all([api('/contracts').catch(()=>[]),api('/maintenance-plans').catch(()=>[]),api('/clients').catch(()=>[]),api('/sites').catch(()=>[])]);
+  v._clients=clients; v._sites=sites; const canEdit=can(['pianificatore','tenant_admin']);
+  const crow=c=>`<tr><td><b class="small">${esc(c.name)}</b></td><td class="small">${esc(c.client_name||'—')}</td>
+    <td class="small">${c.sla_hours!=null?c.sla_hours+'h':'—'}</td><td class="small">${c.hours_bundle!=null?c.hours_bundle+'h':'—'}</td>
+    <td>${c.active?'<span class="chip s-attivo">attivo</span>':'<span class="chip">chiuso</span>'}</td>
+    <td style="text-align:right">${canEdit?`<button class="btn ghost small" onclick='contrForm(${JSON.stringify(c).replace(/'/g,"&#39;")})'>modifica</button> <button class="btn-ico btn ghost" onclick="contrDel('${c.id}')">${ICON.x}</button>`:''}</td></tr>`;
+  const prow=p=>`<tr><td><b class="small">${esc(p.title)}</b></td><td class="small">${esc(p.client_name||'—')}${p.site?' · '+esc(p.site):''}</td>
+    <td class="small">ogni ${p.every_days} gg</td><td class="small">prossimo: ${esc(p.next_date)}</td>
+    <td style="text-align:right">${canEdit?`<button class="btn ghost small" onclick="planGen('${p.id}')">genera ora</button> <button class="btn-ico btn ghost" onclick="planDel('${p.id}')">${ICON.x}</button>`:''}</td></tr>`;
+  v.innerHTML=`<div class="page-h"><div><h1>Contratti</h1><div class="mut">${C.length} contratti · ${P.length} piani di manutenzione</div></div>
+    ${canEdit?`<span><button class="btn" onclick="contrForm()">+ Contratto</button> <button class="btn ghost" onclick="planForm()">+ Piano manutenzione</button></span>`:''}</div>
+  <div class="card"><div class="card-h"><h2>Contratti / SLA</h2></div>
+    <table class="table"><thead><tr><th>Contratto</th><th>Cliente</th><th>SLA</th><th>Monte ore</th><th>Stato</th><th></th></tr></thead>
+    <tbody>${C.map(crow).join('')||`<tr><td colspan="6" class="empty">Nessun contratto</td></tr>`}</tbody></table></div>
+  <div class="card" style="margin-top:16px"><div class="card-h"><h2>Piani di manutenzione ricorrente</h2></div>
+    <div class="small mut" style="padding:0 14px">«Genera ora» crea l'intervento alla data prevista e sposta avanti la prossima scadenza.</div>
+    <table class="table"><thead><tr><th>Piano</th><th>Cliente / sede</th><th>Cadenza</th><th>Prossimo</th><th></th></tr></thead>
+    <tbody>${P.map(prow).join('')||`<tr><td colspan="5" class="empty">Nessun piano</td></tr>`}</tbody></table></div>`;
+}
+function contrForm(c){ c=c||{}; const v=$('#view'); const clients=v._clients||[];
+  drawer(c.id?'Contratto · '+esc(c.name):'Nuovo contratto',`<div class="col" style="gap:10px">
+    <label class="small mut">Nome<input id="ctName" value="${esc(c.name||'')}"></label>
+    <label class="small mut">Cliente<select id="ctClient"><option value="">—</option>${clients.map(x=>`<option value="${x.id}" ${x.id===c.client_id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label>
+    <div class="row" style="gap:8px"><label class="small mut grow">SLA risposta (ore)<input id="ctSla" type="number" value="${c.sla_hours!=null?c.sla_hours:''}"></label>
+      <label class="small mut grow">Monte ore<input id="ctBundle" type="number" step="0.5" value="${c.hours_bundle!=null?c.hours_bundle:''}"></label></div>
+    <div class="row" style="gap:8px"><label class="small mut grow">Inizio<input id="ctStart" type="date" value="${c.start_date||''}"></label><label class="small mut grow">Fine<input id="ctEnd" type="date" value="${c.end_date||''}"></label></div>
+    ${c.id?`<label class="row small" style="gap:8px"><input type="checkbox" id="ctActive" ${c.active!==false?'checked':''}> Attivo</label>`:''}
+    <label class="small mut">Note<input id="ctNote" value="${esc(c.note||'')}"></label>
+    <button class="btn" onclick="contrSave('${c.id||''}')">Salva</button><div class="cfg-msg small"></div></div>`); }
+async function contrSave(id){ const m=$('.cfg-msg'); const name=$('#ctName').value.trim(); if(!name){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
+  const b={name,client_id:$('#ctClient').value||null,sla_hours:$('#ctSla').value!==''?+$('#ctSla').value:null,hours_bundle:$('#ctBundle').value!==''?Number($('#ctBundle').value):null,start_date:$('#ctStart').value||null,end_date:$('#ctEnd').value||null,note:$('#ctNote').value||null};
+  if(id&&$('#ctActive')) b.active=$('#ctActive').checked;
+  try{await api(id?('/contracts/'+id):'/contracts',{method:'POST',body:JSON.stringify(b)}); toast('Salvato','ok'); closeDrawer(); route();}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
+async function contrDel(id){ if(!await askConfirm('Eliminare il contratto?'))return;
+  try{await api('/contracts/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
+function planForm(){ const v=$('#view'); const clients=v._clients||[], sites=v._sites||[];
+  drawer('Nuovo piano di manutenzione',`<div class="col" style="gap:10px">
+    <label class="small mut">Titolo<input id="plTitle" placeholder="Manutenzione caldaia semestrale"></label>
+    <label class="small mut">Cliente<select id="plClient"><option value="">—</option>${clients.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></label>
+    <label class="small mut">Sede<select id="plSite"><option value="">—</option>${sites.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></label>
+    <div class="row" style="gap:8px"><label class="small mut grow">Ogni (giorni)<input id="plEvery" type="number" value="180"></label><label class="small mut grow">Prima data<input id="plNext" type="date" value="${new Date().toISOString().slice(0,10)}"></label></div>
+    <button class="btn" onclick="planSave()">Crea piano</button><div class="cfg-msg small"></div></div>`); }
+async function planSave(){ const m=$('.cfg-msg'); const t=$('#plTitle').value.trim(); if(!t){m.textContent='titolo richiesto';m.style.color='var(--bad)';return;}
+  const b={title:t,client_id:$('#plClient').value||null,site_id:$('#plSite').value||null,every_days:+$('#plEvery').value||30,next_date:$('#plNext').value||null};
+  try{await api('/maintenance-plans',{method:'POST',body:JSON.stringify(b)}); toast('Piano creato','ok'); closeDrawer(); route();}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
+async function planGen(id){ try{ const r=await api('/maintenance-plans/'+id+'/generate',{method:'POST',body:'{}'}); toast('Intervento generato · prossimo: '+r.next_date,'ok'); route();}catch(e){toast(e.message,'bad');} }
+async function planDel(id){ if(!await askConfirm('Eliminare il piano?'))return;
+  try{await api('/maintenance-plans/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
 function orderFormFields(o,sites,workers,groups,clients){ o=o||{}; groups=groups||[]; clients=clients||[]; return `
   <div class="field"><label>Titolo</label><input id="o_title" value="${esc(o.title||'')}" placeholder="Manutenzione quadro elettrico"></div>
   ${clients.length?`<div class="field"><label>Cliente</label><select id="o_client"><option value="">—</option>${clients.map(c=>`<option value="${c.id}" ${c.id===o.client_id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>`:''}
