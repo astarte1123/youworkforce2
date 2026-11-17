@@ -177,8 +177,14 @@ additivi, gated per modulo, isolati per tenant, con e2e verdi e UI comprensibile
 - ✅ **R4** export: stampa «dossier commessa» (lavorazioni/SAL/costi/fatture) via finestra di stampa
   del browser (→ PDF).
 
-Roadmap ulteriore (facoltativa): vista agenda-appuntamenti settimanale calendario, dipendenze
-multiple nel cronoprogramma, esportazioni CSV/Excel dedicate.
+**Ulteriori F1-F3 FATTI:**
+- ✅ **F1** agenda tecnici con toggle Giorno/Settimana (7 colonne lun→dom).
+- ✅ **F2** dipendenze multiple nel cronoprogramma (`commessa_lav_deps` M:N, mig 0103; checkbox
+  multi-dipendenza, guardia anti-ciclo). e2e `qa/cronoprogramma-deps-e2e.sh` 4/4.
+- ✅ **F3** export CSV (Listino, Commesse, Interventi).
+
+Rifiniture menu: "Agente AI" → Configurazione; "Mappa dispositivi" solo Lavoro sul campo; icona
+Cantieri = caschetto.
 
 ## 6. Criteri di "fatto" (definition of done) per slice
 
