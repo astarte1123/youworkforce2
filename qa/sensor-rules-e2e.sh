@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# IOT/THINGSBOARD — motore regole sensori parametrico (da YouWorkforce).
-#  regola metrica+operatore+soglia -> etype; sfora -> incidente (catena allarmi); ok -> telemetria.
-#  vale per ThingsBoard (/ingress/thingsboard) e IoT generico (/events, eleva l'etype).
+# IOT nativo — motore regole sensori parametrico (da YouWorkforce).
+#  regola metrica+operatore+soglia -> etype; sfora -> incidente (catena allarmi); ok -> solo telemetria.
+#  vale per l'ingest telemetria nativo (/ingress/telemetry) e IoT generico (/events, eleva l'etype).
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"
 PASS=0; FAIL=0
@@ -24,18 +24,21 @@ api -H 'content-type: application/json' -X POST "$BASE/api/sensor-rules" -d '{"m
 # etype non ammesso -> 400
 api -H 'content-type: application/json' -X POST "$BASE/api/sensor-rules" -d '{"metric":"x","op":"is_true","etype":"pippo"}' | grep -qi "etype" && ok "etype non ammesso respinto" || no "validazione etype assente" "-"
 
-# ThingsBoard: sfora -> incidente
+# device nativo per l'ingest telemetria (external_id=e2e); idempotente
+api -H 'content-type: application/json' -X POST "$BASE/api/devices" -d '{"external_id":"e2e","source":"iot","label":"E2E IoT"}' >/dev/null 2>&1 || true
+# IoT nativo: sfora -> incidente (ingress telemetria nativo, source 'iot')
 B=$(cnt)
-curl -s -X POST "$BASE/api/ingress/thingsboard?token=$TOK&device=e2e" -H 'content-type: application/json' -d '{"e2e_co":40}' >/dev/null
+curl -s -X POST "$BASE/api/ingress/telemetry?token=$TOK&id=e2e" -H 'content-type: application/json' -d '{"values":{"e2e_co":40}}' >/dev/null
 sleep 1; A=$(cnt)
-[ "$A" -eq "$((B+1))" ] && ok "TB: e2e_co=40 -> incidente sensore_critico" || no "TB sfora non ha aperto incidente" "$B->$A"
-# ThingsBoard: sotto soglia -> telemetria, niente incidente
+[ "$A" -eq "$((B+1))" ] && ok "IoT: e2e_co=40 -> incidente sensore_critico" || no "telemetria sopra soglia non ha aperto incidente" "$B->$A"
+# IoT nativo: sotto soglia -> solo telemetria time-series, nessun incidente
 B=$(cnt)
-curl -s -X POST "$BASE/api/ingress/thingsboard?token=$TOK&device=e2e" -H 'content-type: application/json' -d '{"e2e_co":5}' >/dev/null
+curl -s -X POST "$BASE/api/ingress/telemetry?token=$TOK&id=e2e" -H 'content-type: application/json' -d '{"values":{"e2e_co":5}}' >/dev/null
 sleep 1; A=$(cnt)
-[ "$A" -eq "$B" ] && ok "TB: e2e_co=5 -> telemetria (nessun incidente)" || no "sotto soglia ha aperto incidente" "$B->$A"
-LAST=$(sql "SELECT etype FROM app.events WHERE tenant_id=$TIDQ AND source='thingsboard' ORDER BY received_ts DESC LIMIT 1")
-[ "$LAST" = "telemetria" ] && ok "evento sotto soglia = telemetria" || no "etype sotto soglia errato" "$LAST"
+[ "$A" -eq "$B" ] && ok "IoT: e2e_co=5 -> nessun incidente" || no "sotto soglia ha aperto incidente" "$B->$A"
+# la lettura sotto soglia e' comunque persistita come telemetria time-series
+TELE=$(sql "SELECT count(*) FROM app.device_telemetry WHERE tenant_id=$TIDQ AND key='e2e_co' AND num=5")
+[ "${TELE:-0}" -ge 1 ] && ok "lettura sotto soglia persistita in device_telemetry" || no "telemetria non persistita" "$TELE"
 
 # IoT generico: etype telemetria ma payload sfora -> elevato
 IDEM="e2e-iot-$RANDOM"

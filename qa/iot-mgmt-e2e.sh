@@ -25,31 +25,34 @@ A "$BASE/api/connectors" | python -c "import sys,json;d=json.load(sys.stdin);t=n
 CREATED=$(A -X POST "$BASE/api/ingest-tokens" -d '{"source":"iot"}')
 TOK=$(echo "$CREATED" | jget 'd["token"]')      # secret: autentica l'ingest
 HANDLE=$(echo "$CREATED" | jget 'd["handle"]')   # handle: compare in lista e serve per delete/revoke
-[ -n "$TOK" ] && ok "ingest-token thingsboard creato" || no "create token" "$TOK"
+[ -n "$TOK" ] && ok "ingest-token IoT nativo creato" || no "create token" "$TOK"
 A "$BASE/api/ingest-tokens" | grep -q "$HANDLE" && ok "token (handle) in lista" || no "list tokens" "-"
 
-# 3) il nuovo token risolve il tenant: ingest thingsboard critico -> incidente
-INC=$(curl -s -X POST "$BASE/api/ingress/thingsboard?token=$TOK&device=SENSOR-$RUN" -H 'content-type: application/json' -d '{"temperature":120}' | jget 'd.get("incident_id")')
-[ -n "$INC" ] && [ "$INC" != "None" ] && ok "ingest col nuovo token -> incidente ($INC)" || no "ingest new token" "$INC"
+# 3) regola soglia + device registrato + nuovo token: telemetria critica -> incidente
+RID=$(A -X POST "$BASE/api/sensor-rules" -d '{"metric":"temperature","op":">=","threshold":100,"etype":"sensore_critico","label":"Temp E2E"}' | jget 'd.get("id","")')
+A -X POST "$BASE/api/devices" -d "{\"external_id\":\"SENSOR-$RUN\",\"source\":\"iot\",\"label\":\"Sensore\"}" >/dev/null
+INC=$(curl -s -X POST "$BASE/api/ingress/telemetry?token=$TOK&id=SENSOR-$RUN" -H 'content-type: application/json' -d '{"values":{"temperature":120}}' | jget 'json.dumps(d.get("incident"))')
+[ -n "$INC" ] && [ "$INC" != "null" ] && ok "ingest col nuovo token -> incidente" || no "ingest new token" "$INC"
 
-# 4) stato dispositivo: registra device + ingest -> ultimo contatto
-DID=$(A -X POST "$BASE/api/devices" -d "{\"external_id\":\"SENSOR-LS-$RUN\",\"source\":\"thingsboard\",\"label\":\"Sensore LS\"}" | jget 'd["id"]')
-curl -s -o /dev/null -X POST "$BASE/api/ingress/thingsboard?token=$TOK&device=SENSOR-LS-$RUN" -H 'content-type: application/json' -d '{"temperature":20}'
-A "$BASE/api/devices" | python -c "import sys,json;d=json.load(sys.stdin);dev=next(x for x in d if x['id']=='$DID');assert dev['last_seen'],dev;print('ok')" >/dev/null 2>&1 \
-  && ok "dispositivo: ultimo contatto registrato" || no "device last_seen" "-"
+# 4) stato dispositivo: registra device + ingest -> ultimo stato (last_attributes)
+DID=$(A -X POST "$BASE/api/devices" -d "{\"external_id\":\"SENSOR-LS-$RUN\",\"source\":\"iot\",\"label\":\"Sensore LS\"}" | jget 'd["id"]')
+curl -s -o /dev/null -X POST "$BASE/api/ingress/telemetry?token=$TOK&id=SENSOR-LS-$RUN" -H 'content-type: application/json' -d '{"values":{"temperature":20}}'
+A "$BASE/api/devices" | python -c "import sys,json;d=json.load(sys.stdin);dev=next(x for x in d if x['id']=='$DID');assert dev.get('last_attributes'),dev;print('ok')" >/dev/null 2>&1 \
+  && ok "dispositivo: ultimo stato registrato (last_attributes)" || no "device last_attributes" "-"
 
 # 5) elimina token
 A -X DELETE "$BASE/api/ingest-tokens/$HANDLE" | grep -q '"ok":true' && ok "token eliminato" || no "delete token" "-"
 # il token eliminato non autentica piu'
-C=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/ingress/thingsboard?token=$TOK" -H 'content-type: application/json' -d '{"temperature":10}')
+C=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/ingress/telemetry?token=$TOK&id=SENSOR-$RUN" -H 'content-type: application/json' -d '{"values":{"temperature":10}}')
 [ "$C" = "401" ] && ok "token revocato -> 401" || no "revoked token" "$C"
 
 # 6) RBAC: operatore non gestisce i token
 C=$(O -o /dev/null -w '%{http_code}' "$BASE/api/ingest-tokens")
 [ "$C" = "403" ] && ok "operatore non vede i token (403)" || no "rbac tokens" "$C"
 
-# cleanup device
+# cleanup device + regola
 A -X DELETE "$BASE/api/devices/$DID" >/dev/null 2>&1 || true
+[ -n "${RID:-}" ] && A -X DELETE "$BASE/api/sensor-rules/$RID" >/dev/null 2>&1 || true
 
 echo "== $PASS passed, $FAIL failed =="
 exit $FAIL

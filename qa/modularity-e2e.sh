@@ -12,11 +12,9 @@ code(){ curl -s -o /dev/null -w "%{http_code}" "$@"; }
 TBPAY='{"temperature":96}'
 TRPAY='{"event":{"id":1,"type":"alarm","attributes":{"alarm":"sos"}},"device":{"uniqueId":"X-1"},"position":{"latitude":45,"longitude":9}}'
 
-echo "== ingress rispetta i moduli spenti (globex: traccar/thingsboard OFF) =="
+echo "== ingress rispetta i moduli spenti (globex: traccar OFF) =="
 C=$(code -X POST "$BASE/api/ingress/traccar?token=globex-ingest-token" -H 'content-type: application/json' -d "$TRPAY")
 [ "$C" = "403" ] && ok "ingress Traccar su modulo spento -> 403" || no "traccar gated" "$C"
-C=$(code -X POST "$BASE/api/ingress/thingsboard?token=globex-ingest-token&device=X" -H 'content-type: application/json' -d "$TBPAY")
-[ "$C" = "403" ] && ok "ingress ThingsBoard su modulo spento -> 403" || no "tb gated" "$C"
 # loneworker è attivo per globex: /api/events deve funzionare
 C=$(code -X POST "$BASE/api/events" -H 'content-type: application/json' -H 'x-ingest-token: globex-ingest-token' \
   -d "{\"etype\":\"sos\",\"source_event\":\"mod-$(date +%s)\",\"correlation\":\"mod-$(date +%s)\"}")
