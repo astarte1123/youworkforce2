@@ -24,7 +24,7 @@
 let ME=null, SSE=null, CACHE={}, ACTIVE_MODS=new Set(), UI_FEAT={map_outdoor:true,map_indoor:false}, AI_FEAT={};
 const can = r => ME && r.includes(ME.role);
 // mod = modulo/i richiesti: la voce appare solo se ALMENO UNO è attivo sul tenant.
-const DEVICE_MODS=['loneworker','traccar','iot','thingsboard'];
+const DEVICE_MODS=['loneworker','traccar','iot']; // thingsboard ritirato: IoT industriale è nativo in 'iot'
 // Moduli dell'area "Lavoro sul campo": la Mappa dispositivi appartiene a questi, non a Lone Worker.
 const FIELD_MODS=['interventi','cantieri','giri','workforce','consuntivi'];
 // grp: sezione nav (op=Operatività, work=Lavoro sul campo, cfg=Configurazione)
@@ -75,7 +75,7 @@ const NAV_GROUPS=[['op','Operatività'],['safety','Sicurezza Lavoratore'],['iot'
 let SCENARIOS=[];
 // Le dashboard IoT (scenari/casi d'uso) compaiono SOLO se il modulo IoT è attivo (superadmin).
 // Senza modulo IoT attivo non devono vedersi né incidere sull'ambiente del tenant.
-function scenarioNavItems(){ if(!(ACTIVE_MODS.has('iot')||ACTIVE_MODS.has('thingsboard'))) return [];
+function scenarioNavItems(){ if(!ACTIVE_MODS.has('iot')) return [];
   return (SCENARIOS||[]).map(s=>({
     k:'scn_'+s.code, t:s.name, ico:'home', roles:['operatore','tenant_admin','auditor'], grp:'iot', scenario:s.code })); }
 function allNav(){ return NAV.concat(scenarioNavItems()); }
@@ -2884,7 +2884,7 @@ function devEdit(d){
       <div id="dokReady" class="small mut" style="margin-top:8px">carico…</div></div>`:''}
     <div class="col" style="gap:10px">
     <label class="small mut">ID esterno (uniqueId badge / nome sensore)<input id="dEx" value="${esc(d.external_id||'')}"></label>
-    <label class="small mut">Sorgente<select id="dSrc">${['manual','traccar','thingsboard','iot'].map(x=>`<option ${x===d.source?'selected':''}>${x}</option>`).join('')}</select></label>
+    <label class="small mut">Sorgente<select id="dSrc">${['manual','traccar','iot'].map(x=>`<option ${x===d.source?'selected':''}>${x}</option>`).join('')}</select></label>
     <label class="small mut">Etichetta<input id="dLab" value="${esc(d.label||'')}"></label>
     <label class="small mut">Sede (digita per cercare)<input id="dSite" list="dSiteList" autocomplete="off" placeholder="cerca sede…" value="${esc((sites.find(x=>x.id===d.site_id)||{}).name||'')}">
       <datalist id="dSiteList">${sites.map(x=>`<option value="${esc(x.name)}">`).join('')}</datalist></label>
@@ -3079,7 +3079,7 @@ async function vConnettori(v){
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Credenziali di ingest</h2></div>
     <div id="newTokBox"></div>
     <div class="row" style="gap:6px;flex-wrap:wrap;margin:8px 0">
-      <select id="tkSrc" class="small" title="sorgente">${['traccar','thingsboard','iot'].map(x=>`<option>${x}</option>`).join('')}</select>
+      <select id="tkSrc" class="small" title="sorgente">${['traccar','iot'].map(x=>`<option>${x}</option>`).join('')}</select>
       <select id="tkDev" class="small" title="lega a un dispositivo (opzionale)"><option value="">— tutti i device (tenant) —</option>${(DV||[]).map(d=>`<option value="${d.id}">${esc(d.name||d.external_id||d.id)}</option>`).join('')}</select>
       <input id="tkLabel" class="small" placeholder="etichetta (opz.)" style="width:150px">
       <input id="tkExp" type="number" min="0" max="3650" class="small" placeholder="scad. giorni (0=mai)" style="width:140px">

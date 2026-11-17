@@ -1,5 +1,12 @@
 # IoT / ThingsBoard — Manuale YouWorkforce
 
+> **SUPERATO (2026-11-17).** Il connettore ThingsBoard **esterno è stato ritirato**: l'IoT
+> industriale è ora **nativo** nel modulo `iot` ("Dispositivi e IoT industriale") — telemetria
+> time-series, attributi (client/shared/server), comandi/RPC, soglie→incidenti, tutto senza
+> server ThingsBoard. API native sotto `/api/iot/*` e ingest `/api/ingress/telemetry`,
+> `/api/ingress/pull`. Vedi `docs/iot-nativo.md` (e la memoria iot-thingsboard-audit). Questo
+> file resta come riferimento storico dell'integrazione esterna.
+
 Guida per l'amministratore. Come **configurare** e **usare** l'integrazione ThingsBoard da
 YouWorkforce. Split dei ruoli:
 - **Superadmin**: connessione (base URL + credenziali, cifrate).

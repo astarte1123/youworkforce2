@@ -87,12 +87,9 @@ pub const REGISTRY: &[Manifest] = &[
     Manifest{ code:"traccar", name:"Traccar (badge)", kind:"connector", requires:&["loneworker"], provides:&["gps","badge"],
         capabilities:&["iot.manage","devices.admin"], widgets:&["incidents"],
         description:"Tracciamento badge/GPS: posizioni ed eventi diventano incidenti." },
-    Manifest{ code:"iot", name:"Dispositivi e IoT", kind:"connector", requires:&[], provides:&["telemetry"],
+    Manifest{ code:"iot", name:"Dispositivi e IoT industriale", kind:"product", requires:&[], provides:&["telemetry","iot"],
         capabilities:&["iot.manage","devices.admin"], widgets:&["incidents"],
-        description:"Dispositivi e telemetria IoT generica + regole sensori." },
-    Manifest{ code:"thingsboard", name:"ThingsBoard (IoT industriale)", kind:"connector", requires:&[], provides:&["telemetry","tb"],
-        capabilities:&["iot.manage","devices.admin"], widgets:&["incidents"],
-        description:"Piattaforma IoT: pull telemetria/allarmi nativi." },
+        description:"Piattaforma IoT NATIVA: dispositivi, telemetria time-series, attributi, comandi/RPC, regole/soglie→incidenti, dashboard. (ThingsBoard esterno ritirato, tutto nativo.)" },
 ];
 
 pub fn manifest(code: &str) -> Option<&'static Manifest> {
@@ -129,7 +126,7 @@ mod tests {
     }
     #[test]
     fn standalone_modules_have_no_deps() {
-        for c in ["loneworker","iot","thingsboard","workforce","interventi","cantieri","consuntivi","assistant","qualifiche","prevenzione"] {
+        for c in ["loneworker","iot","workforce","interventi","cantieri","consuntivi","assistant","qualifiche","prevenzione"] {
             assert!(missing_deps(c, &set(&[])).is_empty(), "{c} dovrebbe essere standalone");
         }
     }

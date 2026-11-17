@@ -33,11 +33,14 @@ CORE="smoke.sh loneworker-e2e.sh acl-e2e.sh crypto-e2e.sh \
  ai-e2e.sh ai-agent-e2e.sh reports-e2e.sh workforce-e2e.sh interventi-e2e.sh \
  iot-mgmt-e2e.sh mgmt-e2e.sh outbox-resilience-e2e.sh prompt8-e2e.sh sse-scale.sh \
  field-intervention-e2e.sh field-intervention-slice1-e2e.sh patrols-e2e.sh \
- user-groups-e2e.sh capabilities-e2e.sh custom-roles-e2e.sh capabilities-granular-e2e.sh capabilities-admin-split-e2e.sh gdpr-audit-e2e.sh field-group-e2e.sh module-autonomy-e2e.sh dashboard-layout-e2e.sh teltonika-e2e.sh teltonika-gprs-e2e.sh"
+ user-groups-e2e.sh capabilities-e2e.sh custom-roles-e2e.sh capabilities-granular-e2e.sh capabilities-admin-split-e2e.sh gdpr-audit-e2e.sh field-group-e2e.sh module-autonomy-e2e.sh dashboard-layout-e2e.sh teltonika-e2e.sh teltonika-gprs-e2e.sh \
+ cantieri-e2e.sh cantieri-squadre-e2e.sh cantieri-cronoprogramma-e2e.sh cantieri-costi-e2e.sh cantieri-giornale-fatture-e2e.sh cronoprogramma-deps-e2e.sh \
+ clients-e2e.sh listino-e2e.sh dispatch-e2e.sh richieste-e2e.sh contratti-e2e.sh anagrafiche-e2e.sh commessa-allegati-e2e.sh \
+ vigilanza-e2e.sh vigilanza-piani-e2e.sh vigilanza-autopunch-e2e.sh \
+ iot-telemetry-e2e.sh iot-attr-cmd-e2e.sh iot-threshold-e2e.sh"
 GOALERT_OK="goalert-config-e2e.sh goalert-p123-e2e.sh goalert-parity-e2e.sh"
 TRACCAR_OK="traccar-e2e.sh traccar-config-e2e.sh traccar-p2-e2e.sh traccar-poll-e2e.sh \
  traccar-sync-e2e.sh traccar-cmd-e2e.sh traccar-battery-policy-e2e.sh traccar-degraded-e2e.sh traccar-parity-e2e.sh"
-TB_OK="thingsboard-conn-e2e.sh thingsboard-e2e.sh thingsboard-pull-e2e.sh thingsboard-parity-e2e.sh"
 # suite che richiedono setup esterno o acme appena seedato (escluse se RUN_SETUP=0)
 GOALERT_SETUP="goalert-e2e.sh goalert-delivery.sh goalert-p4-e2e.sh"
 TRACCAR_SETUP="traccar-p1-e2e.sh traccar-conndown-e2e.sh"
@@ -60,11 +63,6 @@ if [ "$MODE" = "engines" ] || [ "$MODE" = "all" ]; then
     for s in $TRACCAR_OK; do run "$s"; done
     [ "$RUN_SETUP" = "1" ] && for s in $TRACCAR_SETUP; do run "$s"; done
   else for s in $TRACCAR_OK; do skip "$s" "Traccar $TR giù"; done; fi
-
-  echo "== THINGSBOARD =="
-  if [ "$(up "$TB/api/auth/login")" != "000" ]; then
-    for s in $TB_OK; do run "$s"; done
-  else for s in $TB_OK; do skip "$s" "ThingsBoard $TB giù"; done; fi
 fi
 
 echo "=============================================="

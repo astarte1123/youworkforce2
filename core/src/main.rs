@@ -48,13 +48,7 @@ fn env(k: &str, d: &str) -> String { std::env::var(k).unwrap_or_else(|_| d.to_st
 // shared-attr, storico. Sub-router separato per contenere la profondità del tipo Router.
 fn tb_parity_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/thingsboard/devices", get(api::tb_devices_list))
-        .route("/api/thingsboard/sync", post(api::tb_sync_tenant))
-        .route("/api/thingsboard/alarm-policy", get(api::tb_alarm_policy_get).post(api::tb_alarm_policy_set))
-        .route("/api/thingsboard/devices/:dev/attributes", get(api::tb_device_attributes))
-        .route("/api/thingsboard/devices/:dev/shared-attributes", post(api::tb_shared_attr_set))
-        .route("/api/thingsboard/devices/:dev/rpc", post(api::tb_device_rpc))
-        .route("/api/thingsboard/devices/:dev/history", get(api::tb_device_history))
+        // (ThingsBoard esterno ritirato: le funzioni IoT industriali sono native sotto /api/iot/*)
         // #7 GDPR
         .route("/api/gdpr/export/:uid", get(privacy::gdpr_export))
         .route("/api/gdpr/anonymize/:uid", post(privacy::gdpr_anonymize))
@@ -194,9 +188,6 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/superadmin/tenants/:id/integrations", get(api::super_integrations_status))
         .route("/api/superadmin/tenants/:id/goalert/config", get(api::goalert_get_config).post(api::goalert_set_config))
         .route("/api/superadmin/tenants/:id/traccar/config", get(api::traccar_get_config).post(api::traccar_set_config))
-        .route("/api/superadmin/tenants/:id/thingsboard", get(api::super_get_thingsboard).post(api::super_set_thingsboard))
-        .route("/api/superadmin/tenants/:id/thingsboard/verify", post(api::thingsboard_verify))
-        .route("/api/superadmin/tenants/:id/thingsboard/sync", post(api::thingsboard_sync))
         .route("/api/superadmin/tenants/:id/ai", get(api::super_get_ai).post(api::super_set_ai))
         .route("/api/superadmin/tenants/:id/ai/verify", post(api::ai_verify))
         .route("/api/superadmin/scenarios", get(api::super_scenarios_list))
@@ -429,7 +420,6 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/floorplans/:id/devices", get(api::floorplan_devices))
         .route("/api/beacons/:id/place", post(api::place_beacon))
         .route("/api/devices/:id/place", post(api::place_device))
-        .route("/api/ingress/thingsboard", post(api::ingest_thingsboard))
         .route("/api/ingress/telemetry", post(api::ingest_telemetry))
         .route("/api/iot/devices/:id/telemetry", get(api::iot_telemetry_series))
         .route("/api/iot/devices/:id/telemetry/latest", get(api::iot_telemetry_latest))
@@ -492,7 +482,6 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/sensor-rules/suggest", post(api::sensor_rules_suggest))
         ;
     let app = app
-        .route("/api/thingsboard/status", get(api::thingsboard_status))
         // ThingsBoard parity: sub-router separato (merge).
         .merge(tb_parity_routes())
         .route("/api/scenarios", get(api::tenant_scenarios_list))
