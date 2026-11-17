@@ -35,7 +35,7 @@ const NAV = [
   {k:'piantine',  t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor', grp:'safety'},
   // Mappa dispositivi: i device (es. Teltonika GH-5200) generano allarmi E sono asset di campo,
   // quindi la voce compare in ENTRAMBI i gruppi (Sicurezza lavoratore + Lavoro sul campo).
-  {k:'mappa-dispositivi', t:'Mappa dispositivi', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grps:['safety','work']},
+  {k:'mappa-dispositivi', t:'Mappa dispositivi', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'work'},
   {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar'], grp:'safety'},
   {k:'dispositivi',t:'Dispositivi & App', ico:'shield', roles:['tenant_admin'], mod:DEVICE_MODS, grp:'safety'},
   {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
@@ -48,12 +48,12 @@ const NAV = [
   {k:'dispatch',  t:'Agenda tecnici', ico:'calendar', roles:['pianificatore','tenant_admin'], mod:['interventi'], grp:'work'},
   {k:'richieste', t:'Richieste', ico:'clipboard', roles:['pianificatore','tenant_admin','operatore','auditor'], mod:['interventi'], grp:'work'},
   {k:'contratti', t:'Contratti', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], mod:['interventi'], grp:'work'},
-  {k:'cantieri',  t:'Cantieri', ico:'building', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], grp:'work'},
+  {k:'cantieri',  t:'Cantieri', ico:'hardhat', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], grp:'work'},
   {k:'calendario',t:'Calendario', ico:'calendar', roles:['pianificatore','tenant_admin','lavoratore','reperibile','responsabile','auditor'], mod:['workforce','interventi','giri','cantieri'], grp:'work'},
   {k:'ronde',     t:'Ronde', ico:'route', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['giri'], grp:'work'},
   {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], mod:['consuntivi'], grp:'work'},
   {k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], mod:['workforce'], grp:'work'},
-  {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'work'},
+  {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'cfg'},
   // --- Configurazione generale (non specifica del perimetro sicurezza) ---
   {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','thingsboard','goalert','iot'], grp:'cfg'},
   {k:'utenti-ruoli',t:'Utenti e ruoli', ico:'shield', roles:['tenant_admin'], grp:'cfg'},
@@ -1751,7 +1751,7 @@ async function openCommessa(id){
   const lavDates=l=>{ if(!l.start_date&&!l.end_date)return ''; const a=l.start_date||'?',z=l.end_date||'?'; return `<span class="small mut">📅 ${esc(a)} → ${esc(z)}</span>`; };
   const lav=(c.lavorazioni||[]).map(l=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
     <div class="spread"><b class="small">${esc(l.name)}${l.late?' <span class="chip" style="background:var(--bad);color:#fff">in ritardo</span>':''}</b><span class="small mut">peso ${l.weight} · ${esc(LAV_STATI[l.status]||l.status)}</span></div>
-    <div class="small mut" style="margin-top:2px">${lavDates(l)}${l.depends_on&&lavById[l.depends_on]?` · dopo: ${esc(lavById[l.depends_on].name)}`:''}</div>
+    <div class="small mut" style="margin-top:2px">${lavDates(l)}${(l.deps&&l.deps.length)?` · dopo: ${l.deps.map(d=>esc((lavById[d]||{}).name||'?')).join(', ')}`:''}</div>
     <div class="row" style="gap:8px;align-items:center;margin-top:6px">${progBar(l.progress_pct)}
       ${planner?`<input type="range" min="0" max="100" value="${l.progress_pct}" style="flex:1" onchange="lavSetProgress('${l.id}',this.value)">
       <span class="small" style="width:38px;text-align:right">${l.progress_pct}%</span>
@@ -1953,16 +1953,18 @@ async function lavPlan(cid,lid){
   let c; try{ c=await api('/commesse/'+cid); }catch(e){ toast(e.message,'bad'); return; }
   const l=(c.lavorazioni||[]).find(x=>x.id===lid)||{};
   const others=(c.lavorazioni||[]).filter(x=>x.id!==lid);
-  const depOpts=others.map(x=>`<option value="${x.id}" ${x.id===l.depends_on?'selected':''}>${esc(x.name)}</option>`).join('');
+  const curDeps=new Set(l.deps||[]);
+  const depBoxes=others.length?others.map(x=>`<label class="row small" style="gap:6px"><input type="checkbox" class="lpDep" value="${x.id}" ${curDeps.has(x.id)?'checked':''}> ${esc(x.name)}</label>`).join(''):'<div class="small mut">Nessun\'altra lavorazione</div>';
   drawer('Pianifica · '+esc(l.name),`<div class="col" style="gap:10px">
     <div class="row" style="gap:8px"><label class="small mut grow">Inizio<input id="lpS" type="date" value="${l.start_date||''}"></label><label class="small mut grow">Fine<input id="lpE" type="date" value="${l.end_date||''}"></label></div>
-    <label class="small mut">Dipende da (inizia dopo che è finita)<select id="lpDep"><option value="">—</option>${depOpts}</select></label>
+    <div class="small mut">Dipende da (inizia dopo che sono finite):</div>
+    <div class="col" style="gap:4px;max-height:180px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px">${depBoxes}</div>
     <button class="btn" onclick="lavUpd('${cid}','${lid}')">Salva</button><div class="cfg-msg small"></div></div>`);
 }
 async function lavUpd(cid,lid){
-  const m=$('.cfg-msg'); const dep=$('#lpDep').value;
-  const b={start_date:$('#lpS').value||null,end_date:$('#lpE').value||null};
-  if(dep) b.depends_on=dep; else b.clear_dep=true;
+  const m=$('.cfg-msg');
+  const deps=Array.from(document.querySelectorAll('.lpDep:checked')).map(x=>x.value);
+  const b={start_date:$('#lpS').value||null,end_date:$('#lpE').value||null,deps};
   if(b.start_date&&b.end_date&&b.end_date<b.start_date){m.textContent='fine prima dell\'inizio';m.style.color='var(--bad)';return;}
   try{await api('/lavorazioni/'+lid,{method:'POST',body:JSON.stringify(b)}); toast('Cronoprogramma aggiornato','ok'); openCommessa(cid);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
 }

@@ -4828,6 +4828,7 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     let c = match c { Some(r)=>r, None=>{ return Err(err(StatusCode::NOT_FOUND, "commessa non trovata")); } };
     let lav = sqlx::query("SELECT id,name,position,weight::float8 AS weight,progress_pct,status,note,start_date,end_date,depends_on,
         (end_date IS NOT NULL AND end_date < current_date AND progress_pct<100) AS late FROM app.commessa_lavorazioni WHERE commessa_id=$1 ORDER BY position,name").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let deprows = sqlx::query("SELECT d.lav_id,d.depends_on_id FROM app.commessa_lav_deps d JOIN app.commessa_lavorazioni l ON l.id=d.lav_id WHERE l.commessa_id=$1").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let sal = sqlx::query("SELECT s.id,s.sal_date,s.pct,s.amount::float8 AS amount,s.note,s.created_at,u.email AS author FROM app.commessa_sal s LEFT JOIN app.users u ON u.id=s.created_by WHERE s.commessa_id=$1 ORDER BY s.sal_date DESC,s.created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let shifts = sqlx::query("SELECT p.id,p.starts_at,p.ends_at,p.state,u.email FROM app.shift_plans p JOIN app.users u ON u.id=p.user_id WHERE p.commessa_id=$1 AND p.state<>'annullato' ORDER BY p.starts_at").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let teams = sqlx::query("SELECT t.id,t.name,(SELECT count(*) FROM app.team_members m WHERE m.team_id=t.id)::int AS members FROM app.commessa_teams ct JOIN app.teams t ON t.id=ct.team_id WHERE ct.commessa_id=$1 ORDER BY t.name").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
@@ -4867,13 +4868,16 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
         "id":r.get::<Uuid,_>("id"),"email":r.get::<String,_>("email"),
         "clock_in":r.get::<chrono::DateTime<chrono::Utc>,_>("clock_in"),
         "clock_out":r.try_get::<chrono::DateTime<chrono::Utc>,_>("clock_out").ok() })).collect();
-    let lav_out: Vec<Value> = lav.iter().map(|r| json!({
-        "id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"position":r.get::<i32,_>("position"),
+    let mut deps_map: std::collections::HashMap<Uuid,Vec<Uuid>> = std::collections::HashMap::new();
+    for r in &deprows { deps_map.entry(r.get::<Uuid,_>("lav_id")).or_default().push(r.get::<Uuid,_>("depends_on_id")); }
+    let lav_out: Vec<Value> = lav.iter().map(|r| { let lid=r.get::<Uuid,_>("id"); json!({
+        "id":lid,"name":r.get::<String,_>("name"),"position":r.get::<i32,_>("position"),
         "weight":r.get::<f64,_>("weight"),"progress_pct":r.get::<i32,_>("progress_pct"),
         "status":r.get::<String,_>("status"),"note":r.try_get::<String,_>("note").ok(),
         "start_date":r.try_get::<chrono::NaiveDate,_>("start_date").ok().map(|d|d.to_string()),
         "end_date":r.try_get::<chrono::NaiveDate,_>("end_date").ok().map(|d|d.to_string()),
-        "depends_on":r.try_get::<Uuid,_>("depends_on").ok(),"late":r.try_get::<bool,_>("late").ok().unwrap_or(false) })).collect();
+        "depends_on":r.try_get::<Uuid,_>("depends_on").ok(),"deps":deps_map.get(&lid).cloned().unwrap_or_default(),
+        "late":r.try_get::<bool,_>("late").ok().unwrap_or(false) }) }).collect();
     let sal_out: Vec<Value> = sal.iter().map(|r| json!({
         "id":r.get::<Uuid,_>("id"),"sal_date":r.get::<chrono::NaiveDate,_>("sal_date").to_string(),
         "pct":r.get::<i32,_>("pct"),"amount":r.try_get::<f64,_>("amount").ok(),
@@ -4946,7 +4950,8 @@ pub async fn create_lavorazione(State(st): State<AppState>, h: HeaderMap, Path(c
 }
 #[derive(Deserialize)]
 pub struct LavorazionePatch { #[serde(default)] pub name: Option<String>, #[serde(default)] pub weight: Option<f64>, #[serde(default)] pub progress_pct: Option<i32>, #[serde(default)] pub status: Option<String>, #[serde(default)] pub note: Option<String>,
-    #[serde(default)] pub start_date: Option<String>, #[serde(default)] pub end_date: Option<String>, #[serde(default)] pub depends_on: Option<Uuid>, #[serde(default)] pub clear_dep: Option<bool> }
+    #[serde(default)] pub start_date: Option<String>, #[serde(default)] pub end_date: Option<String>, #[serde(default)] pub depends_on: Option<Uuid>, #[serde(default)] pub clear_dep: Option<bool>,
+    #[serde(default)] pub deps: Option<Vec<Uuid>> }
 pub async fn update_lavorazione(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<LavorazionePatch>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
@@ -4966,8 +4971,26 @@ pub async fn update_lavorazione(State(st): State<AppState>, h: HeaderMap, Path(i
         .bind(id).bind(&b.name).bind(b.weight).bind(b.progress_pct).bind(&b.status).bind(&b.note)
         .bind(sd).bind(ed).bind(clear_dep).bind(b.depends_on)
         .execute(&mut *tx).await.map_err(ise)?.rows_affected();
-    tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "lavorazione non trovata")); }
+    // dipendenze MULTIPLE: se passate, sostituiscono il set (no self, no 2-cicli)
+    if let Some(deps)=&b.deps {
+        let cm: Uuid = sqlx::query_scalar("SELECT commessa_id FROM app.commessa_lavorazioni WHERE id=$1").bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
+        sqlx::query("DELETE FROM app.commessa_lav_deps WHERE lav_id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+        for dep in deps {
+            if *dep==id { continue; }
+            // la dipendenza deve appartenere alla stessa commessa
+            let ok: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.commessa_lavorazioni WHERE id=$1 AND commessa_id=$2").bind(dep).bind(cm).fetch_optional(&mut *tx).await.map_err(ise)?;
+            if ok.is_none() { continue; }
+            // evita ciclo diretto: dep non deve già dipendere da id
+            let cyc: Option<(Uuid,Uuid)> = sqlx::query_as("SELECT lav_id,depends_on_id FROM app.commessa_lav_deps WHERE lav_id=$1 AND depends_on_id=$2").bind(dep).bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+            if cyc.is_some() { return Err(err(StatusCode::BAD_REQUEST, "dipendenza ciclica non ammessa")); }
+            sqlx::query("INSERT INTO app.commessa_lav_deps(tenant_id,lav_id,depends_on_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING").bind(tid).bind(id).bind(dep).execute(&mut *tx).await.map_err(ise)?;
+        }
+        // mantieni la colonna singola allineata (prima dipendenza) per retrocompatibilità
+        let first = deps.iter().find(|d| **d!=id).copied();
+        sqlx::query("UPDATE app.commessa_lavorazioni SET depends_on=$2 WHERE id=$1").bind(id).bind(first).execute(&mut *tx).await.map_err(ise)?;
+    }
+    tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_lavorazione(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
