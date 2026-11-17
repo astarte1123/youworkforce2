@@ -166,9 +166,19 @@ nello stesso commit. Nessun passo distrugge i dati o umilia il prodotto.
   e2e `qa/cantieri-giornale-fatture-e2e.sh` 8/8.
 
 **PIANO COMPLETO:** Fase 0 + A1-A5 + C1-C5 fatti (+ geocoding sedi/navigazione PWA). Tutti gli slice
-additivi, gated per modulo, isolati per tenant, con e2e verdi e UI comprensibile. Roadmap residua
-(evolutiva, non bloccante): anagrafica cliente/commessa più ricca, vista agenda-appuntamenti
-dedicata, cronoprogramma con dipendenze multiple, allegati su diario/fatture, export documenti.
+additivi, gated per modulo, isolati per tenant, con e2e verdi e UI comprensibile.
+
+**Evolutivi R1-R4 FATTI:**
+- ✅ **R1** anagrafiche più ricche — cliente (PEC/SDI/termini pagamento) + commessa↔cliente reale +
+  CIG/CUP (mig 0101). e2e `qa/anagrafiche-e2e.sh` 3/3.
+- ✅ **R2** agenda appuntamenti raggruppata per giorno nella pagina Interventi (UI).
+- ✅ **R3** allegati di commessa (foto/documenti, bytea self-contained; mig 0102). e2e
+  `qa/commessa-allegati-e2e.sh` 5/5.
+- ✅ **R4** export: stampa «dossier commessa» (lavorazioni/SAL/costi/fatture) via finestra di stampa
+  del browser (→ PDF).
+
+Roadmap ulteriore (facoltativa): vista agenda-appuntamenti settimanale calendario, dipendenze
+multiple nel cronoprogramma, esportazioni CSV/Excel dedicate.
 
 ## 6. Criteri di "fatto" (definition of done) per slice
 

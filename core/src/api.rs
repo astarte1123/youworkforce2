@@ -4839,7 +4839,12 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     let materials_cost: f64 = sqlx::query_scalar("SELECT COALESCE(sum(amount),0)::float8 FROM app.commessa_costi WHERE commessa_id=$1").bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
     let diario = sqlx::query("SELECT g.id,g.diary_date,g.weather,g.present_count,g.body,u.email AS author FROM app.commessa_diario g LEFT JOIN app.users u ON u.id=g.created_by WHERE g.commessa_id=$1 ORDER BY g.diary_date DESC,g.created_at DESC LIMIT 100").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let fatture = sqlx::query("SELECT f.id,f.number,f.amount::float8 AS amount,f.issue_date,f.status,f.note,f.sal_id FROM app.commessa_fatture f WHERE f.commessa_id=$1 ORDER BY f.issue_date DESC,f.created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let atts = sqlx::query("SELECT id,entity_kind,kind,filename,content_type,caption,created_by,created_at FROM app.commessa_attachments WHERE commessa_id=$1 ORDER BY created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    let att_out: Vec<Value> = atts.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"entity_kind":r.get::<String,_>("entity_kind"),"kind":r.get::<String,_>("kind"),
+        "filename":r.try_get::<String,_>("filename").ok(),"content_type":r.get::<String,_>("content_type"),
+        "caption":r.try_get::<String,_>("caption").ok(),"created_by":r.try_get::<String,_>("created_by").ok() })).collect();
     let diario_out: Vec<Value> = diario.iter().map(|r| json!({
         "id":r.get::<Uuid,_>("id"),"diary_date":r.get::<chrono::NaiveDate,_>("diary_date").to_string(),
         "weather":r.try_get::<String,_>("weather").ok(),"present_count":r.try_get::<i32,_>("present_count").ok(),
@@ -4891,7 +4896,7 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
         "labor_rate":labor_rate,"costi":costi_out,
         "cost":{"labor_hours":(labor_hours*100.0).round()/100.0,"labor_cost":labor_cost,"materials_cost":materials_cost,
                 "total_cost":total_cost,"budget":budget_v,"variance":variance},
-        "diario":diario_out,"fatture":fatture_out
+        "diario":diario_out,"fatture":fatture_out,"attachments":att_out
     })))
 }
 pub async fn update_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<CommessaPatch>) -> R {
@@ -5111,6 +5116,43 @@ pub async fn delete_commessa_fattura(State(st): State<AppState>, h: HeaderMap, P
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.commessa_fatture WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+// ----- Cantieri R3: allegati di commessa (bytea, self-contained) -----
+pub async fn commessa_attachment_add(State(st): State<AppState>, h: HeaderMap, Path(cid): Path<Uuid>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>, body: axum::body::Bytes) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?;
+    if body.len() < 4 { return Err(err(StatusCode::BAD_REQUEST, "file vuoto")); }
+    if body.len() > 10_000_000 { return Err(err(StatusCode::BAD_REQUEST, "file troppo grande (max 10MB)")); }
+    let kind = match q.get("kind").map(|s| s.as_str()) { Some("doc") => "doc", _ => "photo" };
+    let ek = q.get("entity_kind").map(|x| x.trim()).filter(|x| ["diario","fattura","sal","commessa"].contains(x)).unwrap_or("commessa");
+    let ct = h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream").to_string();
+    let filename = q.get("filename").map(|x| x.trim().to_string());
+    let caption = q.get("caption").map(|x| x.trim().to_string());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("INSERT INTO app.commessa_attachments(tenant_id,commessa_id,entity_kind,kind,filename,content_type,caption,data,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id")
+        .bind(tid).bind(cid).bind(ek).bind(kind).bind(&filename).bind(&ct).bind(&caption).bind(body.as_ref()).bind(&s.email)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id": row.get::<Uuid,_>("id")})))
+}
+pub async fn commessa_attachment_get(State(st): State<AppState>, h: HeaderMap, Path(aid): Path<Uuid>) -> Result<Response,(StatusCode,String)> {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    let row = sqlx::query("SELECT data,content_type FROM app.commessa_attachments WHERE id=$1 AND tenant_id=$2")
+        .bind(aid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "allegato inesistente"))?;
+    let data: Vec<u8> = row.get("data"); let ct: String = row.get("content_type");
+    Ok(([(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, "private, max-age=3600".to_string())], data).into_response())
+}
+pub async fn commessa_attachment_del(State(st): State<AppState>, h: HeaderMap, Path(aid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?;
+    let owner: Option<String> = sqlx::query_scalar("SELECT created_by FROM app.commessa_attachments WHERE id=$1 AND tenant_id=$2")
+        .bind(aid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "allegato inesistente"))?;
+    if !is_planner(&s) && owner.as_deref() != Some(s.email.as_str()) { return Err(err(StatusCode::FORBIDDEN, "non autorizzato")); }
+    sqlx::query("DELETE FROM app.commessa_attachments WHERE id=$1 AND tenant_id=$2").bind(aid).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)]

@@ -1812,7 +1812,17 @@ async function openCommessa(id){
     <div class="small mut" style="margin:4px 0">Usa «fattura» su una riga SAL per emettere il documento con l'importo maturato.</div>
     <table class="table"><thead><tr><th>Numero</th><th style="text-align:right">Importo</th><th>Stato</th><th></th></tr></thead>
     <tbody>${fattRows}</tbody><tfoot><tr><td style="text-align:right"><b>Fatturato</b></td><td style="text-align:right"><b>${eur(fatt_tot)}</b></td><td colspan="2"></td></tr></tfoot></table></div>`;
+  // R3 — allegati
+  const attRows=(c.attachments||[]).map(a=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin:4px 0">
+    <div style="min-width:0"><a href="/api/commessa-attachments/${a.id}" target="_blank" rel="noopener" class="small"><b>${esc(a.filename||a.kind)}</b></a>
+      <div class="small mut">${esc(a.entity_kind)}${a.caption?' · '+esc(a.caption):''}${a.created_by?' · '+esc(a.created_by):''}</div></div>
+    <button class="btn-ico btn ghost" onclick="comAttDel('${id}','${a.id}')">${ICON.x}</button></div>`).join('')
+    ||'<div class="small mut">Nessun allegato.</div>';
+  const attSection=`<div><div class="spread"><h3 style="margin:0">Documenti e allegati</h3>
+      <span><input type="file" id="cmFile" accept="image/*,application/pdf" style="font-size:12px"><button class="btn ghost small" onclick="comAttUpload('${id}')">⬆ Carica</button></span></div>
+    <div style="margin-top:8px">${attRows}</div></div>`;
   drawer('Commessa · '+esc(c.code),`<div class="col" style="gap:12px">
+    <div class="row" style="gap:6px"><button class="btn ghost small" onclick="comPrint('${id}')">📄 Stampa dossier</button></div>
     <div><div class="spread"><b>${esc(c.name)}</b>${statusSel}</div>
       <div class="small mut" style="margin-top:4px">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}${c.start_date?' · '+esc(c.start_date):''}${c.end_date?' → '+esc(c.end_date):''}${c.budget!=null?' · € '+c.budget.toLocaleString('it-IT'):''}${(c.cig||c.cup)?`<br>${c.cig?'CIG: '+esc(c.cig):''}${c.cup?' · CUP: '+esc(c.cup):''}`:''}</div>
       <div class="row" style="gap:8px;align-items:center;margin-top:8px">${progBar(c.progress)}<b>${c.progress}%</b><span class="small mut">avanzamento complessivo (media pesata)</span></div></div>
@@ -1829,6 +1839,7 @@ async function openCommessa(id){
     ${costiSection}
     ${giornaleSection}
     ${fattureSection}
+    ${attSection}
     ${planner?`<button class="btn ghost" onclick="comDel('${id}')">${ICON.x} Elimina commessa</button>`:''}</div>`);
 }
 async function comSetStatus(id,st){ try{await api('/commesse/'+id,{method:'POST',body:JSON.stringify({status:st})}); toast('Stato aggiornato','ok');}catch(e){toast(e.message,'bad');} }
@@ -1882,6 +1893,41 @@ async function fatturaSave(cid,salId){ const m=$('.cfg-msg'); const num=$('#fnNu
 async function fatturaStatus(cid,id,st){ try{await api('/commessa-fatture/'+id,{method:'POST',body:JSON.stringify({status:st})}); toast('Stato fattura aggiornato','ok'); openCommessa(cid);}catch(e){toast(e.message,'bad');} }
 async function fatturaDel(cid,id){ if(!await askConfirm('Eliminare la fattura?'))return;
   try{await api('/commessa-fatture/'+id,{method:'DELETE'}); toast('Eliminata','ok'); openCommessa(cid);}catch(e){toast(e.message,'bad');} }
+async function comAttUpload(cid){ const f=$('#cmFile'); if(!f||!f.files||!f.files[0])return toast('scegli un file','warn'); const file=f.files[0];
+  if(file.size>10e6)return toast('File troppo grande (max 10MB)','bad');
+  const kind=file.type.startsWith('image/')?'photo':'doc';
+  const q=new URLSearchParams({kind,filename:file.name});
+  try{ const res=await fetch('/api/commesse/'+cid+'/attachments?'+q.toString(),{method:'POST',credentials:'include',
+      headers:{'x-tenant-slug':store.slug,'x-csrf-token':csrfToken(),'content-type':file.type||'application/octet-stream'},body:file});
+    if(!res.ok) throw new Error('HTTP '+res.status); toast('Allegato caricato','ok'); openCommessa(cid);
+  }catch(e){ toast(e.message,'bad'); } }
+async function comAttDel(cid,id){ if(!await askConfirm('Eliminare l\'allegato?'))return;
+  try{await api('/commessa-attachments/'+id,{method:'DELETE'}); toast('Eliminato','ok'); openCommessa(cid);}catch(e){toast(e.message,'bad');} }
+// R4 — export: dossier commessa stampabile (apri finestra + stampa/PDF del browser).
+async function comPrint(id){
+  let c; try{ c=await api('/commesse/'+id); }catch(e){ return toast(e.message,'bad'); }
+  const cs=c.cost||{}; const esc2=s=>String(s==null?'':s).replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+  const tbl=(head,rows)=>`<table><thead><tr>${head.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows||'<tr><td colspan="9">—</td></tr>'}</tbody></table>`;
+  const lav=(c.lavorazioni||[]).map(l=>`<tr><td>${esc2(l.name)}</td><td>${l.weight}</td><td>${l.progress_pct}%</td><td>${esc2(LAV_STATI[l.status]||l.status)}</td><td>${esc2(l.start_date||'')}${l.end_date?' → '+esc2(l.end_date):''}</td></tr>`).join('');
+  const sal=(c.sal||[]).map(s=>`<tr><td>${esc2(s.sal_date)}</td><td>${s.pct}%</td><td>${s.amount!=null?'€ '+s.amount:''}</td><td>${esc2(s.note||'')}</td></tr>`).join('');
+  const costi=(c.costi||[]).map(k=>`<tr><td>${esc2(k.description)}</td><td>${esc2(COSTO_CAT[k.category]||k.category)}</td><td>€ ${k.amount}</td><td>${esc2(k.cost_date)}</td></tr>`).join('');
+  const fatt=(c.fatture||[]).map(f=>`<tr><td>${esc2(f.number)}</td><td>€ ${f.amount}</td><td>${esc2(f.status)}</td><td>${esc2(f.issue_date)}</td></tr>`).join('');
+  const html=`<!doctype html><html><head><meta charset="utf-8"><title>Commessa ${esc2(c.code)}</title>
+    <style>body{font:13px/1.4 system-ui,Arial;margin:28px;color:#111}h1{font-size:20px;margin:0 0 2px}h2{font-size:14px;margin:18px 0 6px;border-bottom:1px solid #ccc;padding-bottom:3px}
+    table{border-collapse:collapse;width:100%;margin-top:4px}th,td{border:1px solid #ddd;padding:4px 6px;text-align:left;font-size:12px}th{background:#f3f3f3}
+    .meta{color:#555;font-size:12px}.tot{margin-top:6px;font-size:13px}</style></head><body>
+    <h1>${esc2(c.name)}</h1><div class="meta">Commessa ${esc2(c.code)} · ${esc2(c.client_name||'')}${c.site?' · '+esc2(c.site):''}${c.cig?' · CIG '+esc2(c.cig):''}${c.cup?' · CUP '+esc2(c.cup):''}</div>
+    <div class="meta">Stato: ${esc2(COMM_STATI[c.status]||c.status)} · Avanzamento: ${c.progress}%${c.budget!=null?' · Budget € '+c.budget:''}${c.start_date?' · dal '+esc2(c.start_date):''}${c.end_date?' al '+esc2(c.end_date):''}</div>
+    <h2>Lavorazioni (WBS)</h2>${tbl(['Lavorazione','Peso','Avanz.','Stato','Periodo'],lav)}
+    <h2>SAL — stato avanzamento</h2>${tbl(['Data','%','Importo','Note'],sal)}
+    <h2>Costi</h2>${tbl(['Voce','Categoria','Importo','Data'],costi)}
+    <div class="tot">Manodopera: € ${cs.labor_cost||0} (${cs.labor_hours||0} h) · Materiali: € ${cs.materials_cost||0} · <b>Totale costi: € ${cs.total_cost||0}</b>${cs.variance!=null?' · Scostamento budget: € '+cs.variance:''}</div>
+    <h2>Fatture</h2>${tbl(['Numero','Importo','Stato','Data'],fatt)}
+    <div class="meta" style="margin-top:20px">Generato da YouWorkforce · ${new Date().toLocaleString('it-IT')}</div>
+    <script>window.onload=function(){window.print();}<\/script></body></html>`;
+  const w=window.open('','_blank'); if(!w){ toast('Abilita i popup per stampare','warn'); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+}
 async function comDel(id){ if(!await askConfirm('Eliminare la commessa? (rimuove lavorazioni e SAL; i turni restano, slegati)'))return;
   try{await api('/commesse/'+id,{method:'DELETE'}); toast('Eliminata','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 function lavNew(cid){
