@@ -42,7 +42,7 @@ const NAV = [
   {k:'profili',   t:'Profili di protezione', ico:'shield', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
   {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
   // --- Lavoro sul campo ---
-  {k:'ordini',    t:'Assistenza', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
+  {k:'ordini',    t:'Interventi', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
   {k:'clienti',   t:'Clienti', ico:'building', roles:['pianificatore','tenant_admin','auditor'], mod:['interventi'], grp:'work'},
   {k:'cantieri',  t:'Cantieri', ico:'building', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], grp:'work'},
   {k:'calendario',t:'Calendario', ico:'calendar', roles:['pianificatore','tenant_admin','lavoratore','reperibile','responsabile','auditor'], mod:['workforce','interventi','giri','cantieri'], grp:'work'},
@@ -1664,9 +1664,9 @@ async function vOrdini(v){
   const asgLabel=o=>o.assignee?esc(o.assignee):(o.group_name?('👥 '+esc(o.group_name)):'—');
   const row=o=>`<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b></td><td>${esc(o.site||'—')}</td>
     <td>${asgLabel(o)}</td><td class="small">${schedLabel(o)}</td><td>${priBadge(o.priority)}</td><td>${chip(o.state)}</td></tr>`;
-  v.innerHTML=`<div class="page-h"><div><h1>Assistenza</h1><div class="mut">${O.length} interventi · ${sched.length} pianificati · manutenzione a visite</div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>Interventi</h1><div class="mut">${O.length} interventi · ${sched.length} pianificati · assistenza/manutenzione a visite</div></div>
     ${canCreate?`<button class="btn" onclick="newOrder()">+ Nuovo intervento</button>`:''}</div>
-  <div class="small mut" style="margin:-4px 0 12px">🔧 Assistenza = il tecnico va dal cliente: appuntamenti con rapporto, firma, materiali e consuntivo per visita.</div>
+  <div class="small mut" style="margin:-4px 0 12px">🔧 Interventi = il tecnico va dal cliente: appuntamenti con rapporto, firma, materiali e consuntivo per visita.</div>
   <div class="card"><div class="card-h"><h2>Agenda appuntamenti</h2></div>
     <table class="table"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Quando</th><th>Priorità</th><th>Stato</th></tr></thead>
     <tbody>${sched.map(row).join('')||`<tr><td colspan="6" class="empty">Nessun appuntamento pianificato</td></tr>`}</tbody></table></div>
