@@ -4353,13 +4353,15 @@ async function vUtentiRuoli(v){
       ${agroups.length?`<div class="row" style="gap:6px;margin-top:6px"><select id="ugimp_${g.id}" class="grow small">${agroups.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>
         <button class="btn ghost small" onclick="ugImport('${g.id}')">→ importa in gruppo allarme</button></div>`:''}
       </div>`).join('')||'<div class="small mut">Nessun gruppo. Crea insiemi di persone da riusare ovunque.</div>'}</div></div>
-  ${caps?`<div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Permessi (capability)</h2><div class="small mut">cosa può fare ogni ruolo. Il default riproduce i ruoli di sempre; puoi aggiungere/togliere capability per questo tenant. <b>neretto</b> = modificato rispetto al default.</div></div><a onclick="capReset()">↺ ripristina default</a></div>
-    <div style="overflow-x:auto;margin-top:10px"><table class="table"><thead><tr><th>Ruolo</th>${caps.catalog.map(c=>`<th title="${esc(capLabel(c.code))}: ${esc(capHelp(c.code)||c.desc||'')}">${esc(capLabel(c.code))}</th>`).join('')}</tr></thead>
-    <tbody>${caps.roles.map(role=>`<tr><td><b title="${esc(role)}">${esc(roleLabel(role))}</b></td>${caps.matrix[role].map(x=>`<td style="text-align:center" title="${esc(capLabel(x.cap))}">
+  ${caps?(()=>{ const visCat=caps.catalog.filter(c=>c.relevant); const visSet=new Set(visCat.map(c=>c.code)); const hidden=caps.catalog.length-visCat.length;
+    return `<div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Permessi (capability)</h2><div class="small mut">cosa può fare ogni ruolo. Mostrati i permessi <b>di base</b> e quelli dei <b>moduli attivi</b>${hidden?` (${hidden} legati a moduli non attivi sono nascosti)`:''}. <b>neretto</b> = modificato rispetto al default.</div></div><a onclick="capReset()">↺ ripristina default</a></div>
+    <div style="overflow-x:auto;margin-top:10px"><table class="table"><thead><tr><th>Ruolo</th>${visCat.map(c=>`<th title="${esc(capLabel(c.code))}: ${esc(capHelp(c.code)||c.desc||'')}">${esc(capLabel(c.code))}${c.core?'':' <span class="small mut">▪</span>'}</th>`).join('')}</tr></thead>
+    <tbody>${caps.roles.map(role=>`<tr><td><b title="${esc(role)}">${esc(roleLabel(role))}</b></td>${caps.matrix[role].filter(x=>visSet.has(x.cap)).map(x=>`<td style="text-align:center" title="${esc(capLabel(x.cap))}">
       <input type="checkbox" ${x.granted?'checked':''} ${(role==='tenant_admin'&&x.cap==='admin')?'disabled title="sempre attivo (anti-lockout)"':''} onchange="capSet('${role}','${x.cap}',this.checked)">
       ${x.override?'<div class="small" style="color:var(--accent);font-weight:700">●</div>':''}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    <div class="small mut" style="margin-top:6px">▪ = permesso legato a un modulo</div>
     <details style="margin-top:10px"><summary class="small mut" style="cursor:pointer">Cosa significano i permessi →</summary>
-      <div class="col" style="gap:4px;margin-top:8px">${caps.catalog.map(c=>`<div class="small"><b>${esc(capLabel(c.code))}</b> — ${esc(capHelp(c.code)||c.desc||'')}</div>`).join('')}</div></details></div>`:''}`;
+      <div class="col" style="gap:4px;margin-top:8px">${visCat.map(c=>`<div class="small"><b>${esc(capLabel(c.code))}</b> — ${esc(capHelp(c.code)||c.desc||'')}</div>`).join('')}</div></details></div>`; })():''}`;
 }
 const AU_STATE={offset:0,limit:100};
 const GD_STATE={offset:0,limit:100};
@@ -4565,13 +4567,19 @@ async function crForm(r){
   try{ const c=await api('/capabilities'); cat=(c&&c.catalog)||[]; }catch(e){}
   if(!cat.length){ cat=Object.keys(CAP_LABELS).map(code=>({code})); }
   const cur=new Set(r.capabilities||[]);
-  const rows=cat.map(c=>{
-    const code=c.code; const checked=cur.has(code)?'checked':'';
+  const capRow=c=>{ const code=c.code; const checked=cur.has(code)?'checked':'';
     const warn = code==='admin' ? ' style="color:var(--bad)"' : '';
     return `<label class="row" style="gap:10px;align-items:flex-start;padding:8px;border:1px solid var(--line);border-radius:8px">
       <input type="checkbox" class="rcap" value="${code}" ${checked} style="margin-top:3px">
-      <span><b${warn}>${esc(capLabel(code))}</b><div class="small mut">${esc(capHelp(code)||c.desc||'')}</div></span></label>`;
-  }).join('');
+      <span><b${warn}>${esc(capLabel(code))}</b><div class="small mut">${esc(capHelp(code)||c.desc||'')}</div></span></label>`; };
+  // core sempre; i permessi dei moduli solo se il modulo è attivo (o se già assegnati, per non perderli)
+  const core=cat.filter(c=>c.core);
+  const modOn=cat.filter(c=>!c.core && c.relevant);
+  const modOff=cat.filter(c=>!c.core && !c.relevant && cur.has(c.code));
+  const sec=(title,list,hint)=> list.length?`<div class="small mut" style="margin:8px 0 2px;text-transform:uppercase;letter-spacing:.5px">${title}</div>${hint?`<div class="small mut" style="margin-bottom:4px">${hint}</div>`:''}${list.map(capRow).join('')}`:'';
+  const rows=sec('Permessi di base',core)
+    +sec('Permessi dei moduli attivi',modOn)
+    +sec('Moduli non attivi (assegnati in precedenza)',modOff,'Questi permessi restano perché già assegnati, ma il relativo modulo non è attivo.');
   drawer(r.id?('Ruolo · '+esc(r.name)):'Nuovo ruolo', `<div class="col" style="gap:10px">
     <label class="small mut">Nome del ruolo<input id="rName" value="${esc(r.name||'')}" placeholder="es. Capo turno"></label>
     <label class="small mut">Descrizione (facoltativa)<input id="rDesc" value="${esc(r.description||'')}" placeholder="a cosa serve questo ruolo"></label>

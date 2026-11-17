@@ -9,14 +9,29 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::state::AppState;
-use crate::api::{R, require_tenant, require_cap, ise, err, audit, CAPABILITIES, USER_ROLES, default_role_caps, effective_caps};
+use crate::api::{R, require_tenant, require_cap, ise, err, audit, CAPABILITIES, USER_ROLES, default_role_caps, effective_caps, cap_modules};
 use crate::db;
+
+/// Insieme dei moduli attivi del tenant (per annotare la rilevanza delle capability).
+async fn active_modules(st: &AppState, tid: Uuid) -> std::collections::HashSet<String> {
+    sqlx::query_scalar::<_,String>("SELECT module_code FROM app.tenant_modules WHERE tenant_id=$1 AND state='attivo'")
+        .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default().into_iter().collect()
+}
+/// Catalog capability annotato: ogni voce ha i moduli collegati e se è rilevante (core o modulo attivo).
+fn cap_catalog(active: &std::collections::HashSet<String>) -> Vec<Value> {
+    CAPABILITIES.iter().map(|(c,d)| {
+        let mods = cap_modules(c);
+        let relevant = mods.is_empty() || mods.iter().any(|m| active.contains(*m));
+        json!({"code":c,"desc":d,"modules":mods,"core":mods.is_empty(),"relevant":relevant})
+    }).collect()
+}
 
 // ---- Fase 2: gestione capability per ruolo (override per-tenant) ----
 pub async fn list_capabilities(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
-    let catalog: Vec<Value> = CAPABILITIES.iter().map(|(c,d)| json!({"code":c,"desc":d})).collect();
+    let active = active_modules(&st, tid).await;
+    let catalog = cap_catalog(&active);
     // matrice effettiva ruolo x capability + flag "override" (diverso dal default)
     let mut matrix = serde_json::Map::new();
     for role in USER_ROLES {
@@ -83,7 +98,8 @@ pub async fn list_custom_roles(State(st): State<AppState>, h: HeaderMap) -> R {
         let groups: Vec<Value> = gr.iter().filter(|x| x.get::<Uuid,_>("role_id")==rid).map(|x| json!({"group_id":x.get::<Uuid,_>("group_id"),"name":x.get::<String,_>("name")})).collect();
         json!({"id":rid,"name":r.get::<String,_>("name"),"description":r.try_get::<String,_>("description").ok(),"capabilities":caps,"users":users,"groups":groups})
     }).collect();
-    let catalog: Vec<Value> = CAPABILITIES.iter().map(|(c,d)| json!({"code":c,"desc":d})).collect();
+    let active = active_modules(&st, tid).await;
+    let catalog = cap_catalog(&active);
     Ok(Json(json!({"roles":out,"catalog":catalog})))
 }
 #[derive(Deserialize)] pub struct CustomRoleReq { pub name: String, #[serde(default)] pub description: Option<String>, #[serde(default)] pub capabilities: Vec<String> }

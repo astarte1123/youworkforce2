@@ -2690,6 +2690,19 @@ pub async fn alarm_group_import_members(State(st): State<AppState>, h: HeaderMap
 // ---- Fase 2/4: capability layer (granulare, module-neutral) --------------------
 // Catalogo capability. `admin` è SUPER: implica tutte le altre (vedi has_cap).
 // Fase 4 (Tappa 1): split per-modulo dei controlli basati su ruolo.
+/// Moduli a cui una capability è legata (vuoto = CORE, sempre rilevante).
+/// Serve alla UI permessi per mostrare solo i permessi dei moduli attivi + i core.
+pub fn cap_modules(cap: &str) -> &'static [&'static str] {
+    match cap {
+        "incidents.view" | "incidents.handle" => &["loneworker"],
+        "escalation.manage"                    => &["loneworker","goalert"],
+        "devices.manage" | "devices.admin"     => &["loneworker","traccar","iot","thingsboard"],
+        "iot.manage"                           => &["iot","traccar","thingsboard","goalert"],
+        "plan"                                 => &["interventi","cantieri","giri","workforce"],
+        "approve" | "timesheets.view_all"      => &["consuntivi"],
+        _ => &[], // core: utenti/ruoli/privacy/audit/dashboard/impostazioni/diagnostica
+    }
+}
 pub const CAPABILITIES: &[(&str,&str)] = &[
     ("admin",                "Amministrazione completa (super): implica tutte le capability"),
     ("incidents.view",       "Sicurezza: lettura centrale, mappe, dispositivi, report"),
