@@ -36,7 +36,8 @@ MA=$(echo "$D" | jq1 "print(json.load(sys.stdin)['summary']['mancanti'])")
 say "4 giorno escluso dal mask -> nessuno slot di quel giro"
 # metti mask tutto 0 tranne un giorno diverso da oggi: ricreo con mask che esclude oggi
 curl -s $H -X DELETE $BASE/api/patrol-schedules/$SID -o /dev/null
-TODOW=$(python -c "import datetime;print(datetime.date.today().weekday())")
+# weekday in UTC: il server valuta il mask con clock UTC (clock.rs), non ora locale -> allineati anche a cavallo di mezzanotte
+TODOW=$(python -c "import datetime;print(datetime.datetime.utcnow().weekday())")
 MASK=$(python -c "i=$TODOW;print(''.join('0' if k==i else '1' for k in range(7)))")
 SID2=$(curl -s $H -X POST $BASE/api/patrol-schedules -d "{\"route_id\":\"$RID\",\"days_mask\":\"$MASK\",\"from_time\":\"00:00\",\"to_time\":\"23:00\",\"every_minutes\":60}" | jq1 "print(json.load(sys.stdin).get('id',''))")
 NS2=$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/patrol-dashboard | jq1 "print(len([s for s in json.load(sys.stdin)['slots'] if s['route_name']=='$RN']))")

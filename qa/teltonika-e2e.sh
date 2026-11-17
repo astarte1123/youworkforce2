@@ -16,7 +16,7 @@ TR_PREV=$(one "SELECT COALESCE((SELECT state FROM app.tenant_modules WHERE tenan
 LW_PREV=$(one "SELECT COALESCE((SELECT state FROM app.tenant_modules WHERE tenant_id='$TID' AND module_code='loneworker'),'non_abilitato')")
 sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','traccar','attivo') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
 sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','loneworker','attivo') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
-R=$RANDOM; IMEI="35612300000$R"; IMEI=${IMEI:0:15}
+R=$RANDOM; IMEI=$(python -c "import random;print('356'+str(random.randint(10**11,10**12-1)))")  # 15 cifre uniche: niente collisioni su acme ri-usato
 # device con source=traccar (decode-edge) e external_id=IMEI
 DID=$(one "INSERT INTO app.devices(tenant_id,external_id,label,source) VALUES('$TID','$IMEI','GH5200 $R','traccar') RETURNING id")
 # event IO 1 => sos via mappa di DEFAULT built-in (nessuna config necessaria)

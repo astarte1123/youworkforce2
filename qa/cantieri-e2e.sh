@@ -45,7 +45,7 @@ NS=$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/commesse/$CID | jq1 "
 [ "$NS" = "1" ] && ok || no "sal count=$NS"
 
 say "6 turno legato alla commessa"
-D=$(python -c "import random;print(2060+random.randint(0,30))")
+D=$(python -c "import random;print(2100+random.randint(0,899))")  # anno unico per evitare collisioni overlap su acme ri-usato
 curl -s $H -X POST $BASE/api/shift-plans -d "{\"user_id\":\"$MARIO\",\"starts_at\":\"$D-05-04T08:00:00Z\",\"ends_at\":\"$D-05-04T16:00:00Z\",\"commessa_id\":\"$CID\"}" -o /dev/null
 NSH=$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/commesse/$CID | jq1 "print(len(json.load(sys.stdin).get('shifts',[])))")
 [ "$NSH" = "1" ] && ok || no "shifts=$NSH"

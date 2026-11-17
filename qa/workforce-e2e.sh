@@ -18,6 +18,7 @@ A(){ curl -s -b "$JA" -H 'x-tenant-slug: acme' -H "x-csrf-token: $CA" -H 'conten
 P(){ curl -s -b "$JP" -H 'x-tenant-slug: acme' -H "x-csrf-token: $CP" -H 'content-type: application/json' "$@"; }
 M(){ curl -s -b "$JM" -H 'x-tenant-slug: acme' -H "x-csrf-token: $CM" -H 'content-type: application/json' "$@"; }
 MARIO=$(A "$BASE/api/users" | python -c 'import sys,json;print(next(u["id"] for u in json.load(sys.stdin) if u["email"].startswith("mario@")))')
+YR=$(python -c "import random;print(2100+random.randint(0,899))")  # anno unico: evita collisioni overlap turni su acme ri-usato
 
 # --- Squadre ---
 TEAM=$(A -X POST "$BASE/api/teams" -d "{\"name\":\"Squadra $RUN\"}" | jget 'd["id"]')
@@ -26,15 +27,15 @@ A -X POST "$BASE/api/teams/$TEAM/members" -d "{\"user_id\":\"$MARIO\"}" | grep -
 A "$BASE/api/teams" | python -c "import sys,json;d=json.load(sys.stdin);assert any(t['id']=='$TEAM' and t['members'] for t in d);print('ok')" >/dev/null 2>&1 && ok "squadra con membri in lista" || no "list_teams" "-"
 
 # --- Turni pianificati ---
-SP=$(P -X POST "$BASE/api/shift-plans" -d "{\"user_id\":\"$MARIO\",\"starts_at\":\"2026-11-10T08:00:00Z\",\"ends_at\":\"2026-11-10T16:00:00Z\",\"note\":\"cantiere A\"}" | jget 'd["id"]')
+SP=$(P -X POST "$BASE/api/shift-plans" -d "{\"user_id\":\"$MARIO\",\"starts_at\":\"${YR}-11-10T08:00:00Z\",\"ends_at\":\"${YR}-11-10T16:00:00Z\",\"note\":\"cantiere A\"}" | jget 'd["id"]')
 [ -n "$SP" ] && ok "turno pianificato creato ($SP)" || no "create_shift_plan" "$SP"
 P "$BASE/api/shift-plans" | grep -q "$SP" && ok "pianificatore vede il turno" || no "list planner" "-"
 M "$BASE/api/shift-plans" | grep -q "$SP" && ok "lavoratore vede il proprio turno" || no "list worker own" "-"
 # validazione: fine<=inizio
-C=$(P -o /dev/null -w '%{http_code}' -X POST "$BASE/api/shift-plans" -d "{\"user_id\":\"$MARIO\",\"starts_at\":\"2026-11-10T16:00:00Z\",\"ends_at\":\"2026-11-10T08:00:00Z\"}")
+C=$(P -o /dev/null -w '%{http_code}' -X POST "$BASE/api/shift-plans" -d "{\"user_id\":\"$MARIO\",\"starts_at\":\"${YR}-11-10T16:00:00Z\",\"ends_at\":\"${YR}-11-10T08:00:00Z\"}")
 [ "$C" = "400" ] && ok "fine<=inizio -> 400" || no "date validation" "$C"
 # RBAC: lavoratore non pianifica
-C=$(M -o /dev/null -w '%{http_code}' -X POST "$BASE/api/shift-plans" -d "{\"user_id\":\"$MARIO\",\"starts_at\":\"2026-11-11T08:00:00Z\",\"ends_at\":\"2026-11-11T16:00:00Z\"}")
+C=$(M -o /dev/null -w '%{http_code}' -X POST "$BASE/api/shift-plans" -d "{\"user_id\":\"$MARIO\",\"starts_at\":\"${YR}-11-11T08:00:00Z\",\"ends_at\":\"${YR}-11-11T16:00:00Z\"}")
 [ "$C" = "403" ] && ok "lavoratore non pianifica (403)" || no "rbac shift" "$C"
 # lavoratore conferma il PROPRIO turno
 M -X POST "$BASE/api/shift-plans/$SP" -d '{"action":"confirm"}' | grep -q '"ok":true' && ok "lavoratore conferma turno" || no "confirm" "-"
@@ -43,7 +44,7 @@ M "$BASE/api/shift-plans" | python -c "import sys,json;d=json.load(sys.stdin);pr
 P -X POST "$BASE/api/shift-plans/$SP" -d '{"action":"cancel"}' | grep -q '"ok":true' && ok "pianificatore annulla" || no "cancel" "-"
 
 # --- Reperibilita' ---
-OC=$(P -X POST "$BASE/api/oncall" -d "{\"user_id\":\"$MARIO\",\"starts_at\":\"2026-11-12T20:00:00Z\",\"ends_at\":\"2026-11-13T06:00:00Z\",\"note\":\"notte\"}" | jget 'd["id"]')
+OC=$(P -X POST "$BASE/api/oncall" -d "{\"user_id\":\"$MARIO\",\"starts_at\":\"${YR}-11-12T20:00:00Z\",\"ends_at\":\"${YR}-11-13T06:00:00Z\",\"note\":\"notte\"}" | jget 'd["id"]')
 [ -n "$OC" ] && ok "reperibilita' creata ($OC)" || no "create_oncall" "$OC"
 P "$BASE/api/oncall" | grep -q "$OC" && ok "reperibilita' in lista" || no "list_oncall" "-"
 P -X DELETE "$BASE/api/oncall/$OC" | grep -q '"ok":true' && ok "reperibilita' eliminata" || no "delete_oncall" "-"
