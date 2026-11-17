@@ -1671,13 +1671,27 @@ async function vOrdini(v){
   v.innerHTML=`<div class="page-h"><div><h1>Interventi</h1><div class="mut">${O.length} interventi · ${sched.length} pianificati · assistenza/manutenzione a visite</div></div>
     ${canCreate?`<button class="btn" onclick="newOrder()">+ Nuovo intervento</button>`:''}</div>
   <div class="small mut" style="margin:-4px 0 12px">🔧 Interventi = il tecnico va dal cliente: appuntamenti con rapporto, firma, materiali e consuntivo per visita.</div>
-  <div class="card"><div class="card-h"><h2>Agenda appuntamenti</h2></div>
-    <table class="table"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Quando</th><th>Priorità</th><th>Stato</th></tr></thead>
-    <tbody>${sched.map(row).join('')||`<tr><td colspan="6" class="empty">Nessun appuntamento pianificato</td></tr>`}</tbody></table></div>
+  ${agendaByDay(sched)}
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Da pianificare</h2></div>
     <table class="table"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Quando</th><th>Priorità</th><th>Stato</th></tr></thead>
     <tbody>${unsched.map(row).join('')||`<tr><td colspan="6" class="empty">${ICON.clipboard}<div>Nessun intervento</div></td></tr>`}</tbody></table></div>`;
   bindRows(v);
+}
+// R2 — Agenda appuntamenti: raggruppa i pianificati per giorno, in ordine cronologico.
+function agendaByDay(sched){
+  const items=(sched||[]).slice().sort((a,b)=>new Date(a.scheduled_start)-new Date(b.scheduled_start));
+  if(!items.length) return `<div class="card"><div class="card-h"><h2>Agenda appuntamenti</h2></div><div class="small mut" style="padding:12px 14px">Nessun appuntamento pianificato.</div></div>`;
+  const byDay={}; items.forEach(o=>{ const d=new Date(o.scheduled_start).toISOString().slice(0,10); (byDay[d]=byDay[d]||[]).push(o); });
+  const today=new Date().toISOString().slice(0,10);
+  const dayLabel=d=>{ const dt=new Date(d+'T00:00:00'); const base=dt.toLocaleDateString('it-IT',{weekday:'long',day:'2-digit',month:'long'}); return d===today?base+' · oggi':base; };
+  const hhmm=o=>new Date(o.scheduled_start).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
+  const asg=o=>o.assignee?esc(o.assignee.split('@')[0]):(o.group_name?('👥 '+esc(o.group_name)):'<span style="color:var(--bad)">da assegnare</span>');
+  const blocks=Object.keys(byDay).sort().map(d=>`<div style="padding:8px 14px">
+    <div class="small" style="font-weight:600;text-transform:capitalize;margin-bottom:4px">${dayLabel(d)}</div>
+    ${byDay[d].map(o=>`<div class="spread clk" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin:4px 0">
+      <div style="min-width:0"><b class="small">${hhmm(o)}</b> · ${esc(o.title)}<div class="small mut">${esc(o.client_name||o.site||'—')} · ${asg(o)}</div></div>
+      ${priBadge(o.priority)}${chip(o.state)}</div>`).join('')}</div>`).join('');
+  return `<div class="card"><div class="card-h"><h2>Agenda appuntamenti</h2></div>${blocks}</div>`;
 }
 // ===== Modulo Cantieri: commessa (progetto) -> lavorazioni (WBS) -> SAL =====
 const COMM_STATI={pianificato:'Pianificato',in_corso:'In corso',sospeso:'Sospeso',chiuso:'Chiuso'};
