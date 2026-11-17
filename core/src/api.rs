@@ -7911,6 +7911,54 @@ pub async fn delete_order_line(State(st): State<AppState>, h: HeaderMap, Path(id
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
+// ===== Interventi A3: dispatch — suggerimento tecnico per un intervento =====
+// Grounded sui fatti del tenant: esclude gli assenti nel giorno dell'intervento, ordina per
+// carico (meno interventi quel giorno, poi meno aperti). youworker.ai opzionale per il riassunto.
+pub async fn suggest_order_tech(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    use chrono::TimeZone as _;
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let ord = sqlx::query("SELECT scheduled_start,title FROM app.work_orders WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let ord = match ord { Some(r)=>r, None=>{ return Err(err(StatusCode::NOT_FOUND,"intervento non trovato")); } };
+    let sched: Option<chrono::DateTime<chrono::Utc>> = ord.try_get("scheduled_start").ok();
+    let day = sched.map(|d| d.date_naive()).unwrap_or_else(|| chrono::Utc::now().date_naive());
+    let day_start = chrono::Utc.from_utc_datetime(&day.and_hms_opt(0,0,0).unwrap());
+    let day_end = day_start + chrono::Duration::days(1);
+    let workers = sqlx::query("SELECT id,email FROM app.users WHERE role IN ('lavoratore','operatore') ORDER BY email").fetch_all(&mut *tx).await.map_err(ise)?;
+    let loads = sqlx::query("SELECT assigned_user, count(*) FILTER (WHERE state IN ('assegnato','in_corso'))::int AS open_load, count(*) FILTER (WHERE scheduled_start::date=$1)::int AS day_load FROM app.work_orders WHERE assigned_user IS NOT NULL GROUP BY assigned_user")
+        .bind(day).fetch_all(&mut *tx).await.map_err(ise)?;
+    let absent = sqlx::query("SELECT DISTINCT user_id FROM app.worker_absences WHERE starts_at < $2 AND ends_at > $1")
+        .bind(day_start).bind(day_end).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    use std::collections::{HashMap,HashSet};
+    let mut open_m: HashMap<Uuid,i32>=HashMap::new(); let mut day_m: HashMap<Uuid,i32>=HashMap::new();
+    for r in &loads { let u:Uuid=r.get("assigned_user"); open_m.insert(u, r.get::<i32,_>("open_load")); day_m.insert(u, r.get::<i32,_>("day_load")); }
+    let absent_set: HashSet<Uuid> = absent.iter().map(|r| r.get::<Uuid,_>("user_id")).collect();
+    let mut cand: Vec<(Uuid,String,i32,i32,bool)> = workers.iter().map(|r| {
+        let u:Uuid=r.get("id"); (u, r.get::<String,_>("email"), *day_m.get(&u).unwrap_or(&0), *open_m.get(&u).unwrap_or(&0), absent_set.contains(&u))
+    }).collect();
+    cand.sort_by(|a,b| a.4.cmp(&b.4).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)).then(a.1.cmp(&b.1)));
+    let out: Vec<Value> = cand.iter().map(|(u,em,dl,ol,ab)| json!({
+        "user_id":u,"email":em,"day_load":dl,"open_load":ol,"absent":ab,
+        "reason": if *ab {format!("assente il {day}")} else {format!("{dl} interventi il {day} · {ol} aperti")} })).collect();
+    let det = {
+        let avail: Vec<&(Uuid,String,i32,i32,bool)> = cand.iter().filter(|c| !c.4).collect();
+        match avail.first() {
+            Some(top) => format!("Consiglio: {} (carico più basso: {} il {}, {} aperti). {} tecnici disponibili.", top.1, top.2, day, top.3, avail.len()),
+            None => "Nessun tecnico disponibile quel giorno (tutti assenti).".to_string(),
+        }
+    };
+    let mut summary = det.clone();
+    if module_active(&st, tid, "assistant").await && ai_feature_on(&st, tid, "assistant").await {
+        if let Some(c) = ai_conn(&st, tid).await {
+            let sys = "Assistente dispatch YouWorkforce. In UNA frase consiglia il tecnico migliore usando SOLO i fatti (carico, assenze). Italiano, conciso.";
+            let ctx = format!("Intervento: {}. Candidati: {}", ord.get::<String,_>("title"), serde_json::to_string(&out).unwrap_or_default());
+            if let Ok(ans) = ai_chat(&st, &c, sys, &ctx).await { if !ans.trim().is_empty() { summary = ans; } }
+        }
+    }
+    Ok(Json(json!({"day":day.to_string(),"candidates":out,"summary":summary,"provider": if summary==det {"deterministico"} else {"youworker.ai"}})))
+}
 
 #[derive(Deserialize)]
 pub struct OrderAction { pub version: i32, pub user_id: Option<Uuid>, #[serde(default)] pub group_id: Option<Uuid>, pub outcome: Option<String>, pub reason: Option<String> }

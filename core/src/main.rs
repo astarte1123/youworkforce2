@@ -313,6 +313,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/price-items/:id", post(api::update_price_item).delete(api::delete_price_item))
         .route("/api/orders/:id/lines", get(api::list_order_lines).post(api::add_order_line))
         .route("/api/order-lines/:id", delete(api::delete_order_line))
+        .route("/api/orders/:id/suggest-tech", get(api::suggest_order_tech))
         // Modulo Cantieri: commessa -> lavorazioni (WBS) -> SAL
         .route("/api/commesse", get(api::list_commesse).post(api::create_commessa))
         .route("/api/commesse/:id", get(api::get_commessa).post(api::update_commessa).delete(api::delete_commessa))

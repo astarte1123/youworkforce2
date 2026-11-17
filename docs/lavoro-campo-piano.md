@@ -150,7 +150,11 @@ nello stesso commit. Nessun passo distrugge i dati o umilia il prodotto.
   (mig 0096); ore da presenze chiuse × costo orario + materiali vs budget → **scostamento**.
   Scheda commessa: costo orario, voci di costo, riepilogo budget/consuntivo/scostamento.
   e2e `qa/cantieri-costi-e2e.sh` 7/7.
-- ⏳ prossimi: A3 (agenda dispatch, AI assegna tecnico); poi A4-A5 / C4-C5.
+- ✅ **A3 Agenda dispatch** — vista "Agenda tecnici" (da assegnare + carico per tecnico/giorno) +
+  **suggerimento tecnico** `GET /orders/:id/suggest-tech` (grounded: esclude assenti nel giorno,
+  ordina per carico; youworker.ai opzionale per il riassunto). Assegnazione diretta dal suggerimento.
+  e2e `qa/dispatch-e2e.sh` 6/6.
+- ⏳ prossimi: A4-A5 (contratti/SLA, ricorrenze, ticket) / C4-C5 (giornale, fatturazione SAL).
 
 ## 6. Criteri di "fatto" (definition of done) per slice
 
