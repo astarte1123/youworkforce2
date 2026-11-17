@@ -6711,7 +6711,20 @@ pub async fn ingest_telemetry(State(st): State<AppState>, h: HeaderMap,
         .bind(dev_id).bind(Value::Object(last)).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"telemetry","device_id":dev_id})}).await;
-    Ok(Json(json!({"ok":true,"device_id":dev_id,"stored":n})))
+    // F3: valuta le soglie (sensor_rules) sui valori; se superata -> incidente nativo
+    let mut incident = json!(null);
+    let payload = Value::Object(values.clone());
+    if let Some(etype) = eval_sensor_rules(&st, tid, &payload).await {
+        let ext: String = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1").bind(dev_id)
+            .fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_default();
+        let ev = format!("iot-telem-{}", Uuid::new_v4());
+        let r = persist_ingest(&st, tid, Normalized{
+            source: "iot".into(), source_event: ev.clone(), idem: ev.clone(), etype,
+            device_external_id: Some(ext), site_name: None, lat: None, lon: None, accuracy_m: None,
+            correlation: ev, payload, indoor: false, beacon_uid: None, zone: None }).await?;
+        incident = r.0;
+    }
+    Ok(Json(json!({"ok":true,"device_id":dev_id,"stored":n,"incident":incident})))
 }
 pub async fn iot_telemetry_latest(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
