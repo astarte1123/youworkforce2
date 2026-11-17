@@ -1693,9 +1693,19 @@ async function vVigilanza(v){
   const schRows=(scheds||[]).map(s=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin:4px 0">
     <div><b class="small">${esc(s.route_name)}</b><div class="small mut">${DOW_V.filter((_,i)=>s.days_mask[i]==='1').join(' ')} · ${esc(s.from_time)}–${esc(s.to_time)} · ogni ${s.every_minutes} min</div></div>
     <button class="btn-ico btn ghost" onclick="schDel('${s.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessun piano. Le ronde dovute si calcolano dai piani.</div>';
+  const liveGeo=(d&&d.live||[]).filter(r=>r.dev_lat!=null&&r.dev_lon!=null);
   v.innerHTML=`<div class="page-h"><div><h1>Cruscotto vigilanza</h1><div class="mut">ronde in corso, dovute di oggi e anomalie</div></div></div>
     <div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:14px">${tile(sm.svolte,'svolte oggi','var(--ok,#16a34a)')}${tile(sm.mancanti,'mancanti','var(--bad)')}${tile(sm.attese,'attese')}${tile(sm.anomalie_oggi,'anomalie oggi','var(--bad)')}</div>
-    <div class="card pad"><h2 style="margin:0 0 6px">Ronde in corso</h2>${live}</div>
+    ${liveGeo.length?`<div id="vigMap" style="height:300px;border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:14px"></div>`:''}
+    <div class="card pad"><h2 style="margin:0 0 6px">Ronde in corso</h2>${live}</div>`;
+  if(liveGeo.length){ setTimeout(()=>{ const el=document.getElementById('vigMap'); if(!el||typeof L==='undefined')return;
+    if(window.VIGMAP){ try{window.VIGMAP.remove();}catch(e){} }
+    window.VIGMAP=L.map(el,{zoomControl:true}); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(window.VIGMAP);
+    const pts=[]; liveGeo.forEach(r=>{ const m=L.marker([r.dev_lat,r.dev_lon]).addTo(window.VIGMAP);
+      m.bindPopup(`<b>👮 ${esc(r.email.split('@')[0])}</b><div class="small mut">${esc(r.route_name)} · ${r.done}/${r.total}</div>`); pts.push([r.dev_lat,r.dev_lon]); });
+    if(pts.length)window.VIGMAP.fitBounds(pts,{padding:[40,40],maxZoom:16}); setTimeout(()=>window.VIGMAP&&window.VIGMAP.invalidateSize(),120);
+  },60); }
+  v.innerHTML+=`
     <div class="card pad" style="margin-top:14px"><h2 style="margin:0 0 6px">Ronde dovute oggi</h2>${slotsHtml}</div>
     ${planner?`<div class="card pad" style="margin-top:14px"><div class="spread"><h2 style="margin:0">Pianificazione ronde</h2><a onclick="schNew()">+ piano</a></div>
       <div style="margin-top:8px">${schRows}</div></div>`:''}`;

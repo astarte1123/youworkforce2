@@ -4235,9 +4235,11 @@ pub async fn patrol_dashboard(State(st): State<AppState>, h: HeaderMap) -> R {
     let widx = today.weekday().num_days_from_monday() as usize;
     let win_start = chrono::Utc.from_utc_datetime(&today.and_hms_opt(0,0,0).unwrap()) - Duration::hours(12); // include la sera prima (notturni)
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let live = sqlx::query("SELECT ro.id,rt.name AS route_name,u.email,ro.started_at,
+    let live = sqlx::query("SELECT ro.id,ro.route_id,rt.name AS route_name,u.email,ro.started_at,
             (SELECT count(*) FROM app.patrol_checkpoints c WHERE c.route_id=ro.route_id)::int AS total,
-            (SELECT count(*) FROM app.patrol_punches p WHERE p.round_id=ro.id AND p.ok)::int AS done
+            (SELECT count(*) FROM app.patrol_punches p WHERE p.round_id=ro.id AND p.ok)::int AS done,
+            (SELECT d.last_lat FROM app.devices d WHERE d.assigned_user=ro.user_id AND d.last_lat IS NOT NULL ORDER BY d.last_pos_at DESC NULLS LAST LIMIT 1) AS dev_lat,
+            (SELECT d.last_lon FROM app.devices d WHERE d.assigned_user=ro.user_id AND d.last_lon IS NOT NULL ORDER BY d.last_pos_at DESC NULLS LAST LIMIT 1) AS dev_lon
          FROM app.patrol_rounds ro JOIN app.patrol_routes rt ON rt.id=ro.route_id JOIN app.users u ON u.id=ro.user_id
          WHERE ro.status='in_corso' ORDER BY ro.started_at").fetch_all(&mut *tx).await.map_err(ise)?;
     let rounds = sqlx::query("SELECT route_id,started_at FROM app.patrol_rounds WHERE started_at >= $1").bind(win_start).fetch_all(&mut *tx).await.map_err(ise)?;
@@ -4268,7 +4270,8 @@ pub async fn patrol_dashboard(State(st): State<AppState>, h: HeaderMap) -> R {
     let live_v: Vec<Value> = live.iter().map(|r| json!({
         "id":r.get::<Uuid,_>("id"),"route_name":r.get::<String,_>("route_name"),"email":r.get::<String,_>("email"),
         "started_at":r.get::<chrono::DateTime<chrono::Utc>,_>("started_at").to_rfc3339(),
-        "done":r.get::<i32,_>("done"),"total":r.get::<i32,_>("total") })).collect();
+        "done":r.get::<i32,_>("done"),"total":r.get::<i32,_>("total"),
+        "dev_lat":r.try_get::<f64,_>("dev_lat").ok(),"dev_lon":r.try_get::<f64,_>("dev_lon").ok() })).collect();
     Ok(Json(json!({"live":live_v,"slots":slots,"summary":{"svolte":done_n,"mancanti":miss_n,"attese":up_n,"anomalie_oggi":anom_today}})))
 }
 
@@ -6722,6 +6725,33 @@ pub async fn teltonika_ingest_one(st: &AppState, tid: Uuid, ext: &str, source: &
     }
 }
 
+/// Vigilanza: auto-punzonatura da posizione device. Se il device (dev_id) è assegnato a una
+/// guardia con una ronda in corso, e la posizione cade nel raggio di un checkpoint GPS non ancora
+/// punzonato, registra il punch automatico. Riusa il device-tracking nativo (OsmAnd/Teltonika/PWA).
+pub async fn patrol_auto_punch(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, tid: Uuid, dev_id: Uuid, lat: f64, lon: f64) -> Result<u32, sqlx::Error> {
+    let uid: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.devices WHERE id=$1").bind(dev_id).fetch_optional(&mut **tx).await?.flatten();
+    let Some(uid) = uid else { return Ok(0); };
+    let rnd = sqlx::query("SELECT id, route_id FROM app.patrol_rounds WHERE user_id=$1 AND status='in_corso' ORDER BY started_at DESC LIMIT 1")
+        .bind(uid).fetch_optional(&mut **tx).await?;
+    let Some(rnd) = rnd else { return Ok(0); };
+    let (round_id, route_id): (Uuid, Uuid) = (rnd.get("id"), rnd.get("route_id"));
+    let cps = sqlx::query("SELECT id,lat,lon,radius_m FROM app.patrol_checkpoints WHERE route_id=$1 AND kind='gps' AND lat IS NOT NULL AND lon IS NOT NULL \
+            AND NOT EXISTS(SELECT 1 FROM app.patrol_punches p WHERE p.round_id=$2 AND p.checkpoint_id=patrol_checkpoints.id AND p.ok)")
+        .bind(route_id).bind(round_id).fetch_all(&mut **tx).await?;
+    let mut n = 0u32;
+    for c in &cps {
+        let (clat, clon, rad): (f64,f64,i32) = (c.get("lat"), c.get("lon"), c.get("radius_m"));
+        if haversine_m(clat, clon, lat, lon) <= rad as f64 {
+            let cid: Uuid = c.get("id");
+            sqlx::query("INSERT INTO app.patrol_punches(tenant_id,round_id,checkpoint_id,user_id,method,lat,lon,ok,note) \
+                VALUES($1,$2,$3,$4,'gps',$5,$6,true,'auto da dispositivo') \
+                ON CONFLICT (round_id,checkpoint_id) DO UPDATE SET ok=true,method='gps',lat=EXCLUDED.lat,lon=EXCLUDED.lon,punched_at=now(),note='auto da dispositivo'")
+                .bind(tid).bind(round_id).bind(cid).bind(uid).bind(lat).bind(lon).execute(&mut **tx).await?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
 /// Pipeline posizione condivisa da webhook (push) e poller API (pull): filtri #7,
 /// storico, ultima posizione, presenza geofence #3, primo-fix->attivo. Idempotente
 /// per (tenant,device,source_id) cosi' push e pull convergono senza duplicare.
@@ -6796,6 +6826,8 @@ pub async fn process_traccar_position(st: &AppState, tid: Uuid, pos: &Value, ext
             presence_changes.push((gid, inside));
         }
     }
+    // Vigilanza: auto-punch se giri attivo e device legato a guardia in ronda
+    if module_active(st, tid, "giri").await { let _ = patrol_auto_punch(&mut tx, tid, dev_id, lat, lon).await; }
     tx.commit().await?;
     // Fase B: al primo fix il device diventa "attivo"
     let _ = sqlx::query("UPDATE app.device_provisioning SET step='attivo',updated_at=now() WHERE device_id=$1 AND step<>'attivo'")
@@ -7118,6 +7150,8 @@ pub async fn worker_position(State(st): State<AppState>, h: HeaderMap, Json(b): 
             changes.push((gid, inside));
         }
     }
+    // Vigilanza: auto-punch anche dalla posizione inviata dalla PWA della guardia
+    if module_active(&st, tid, "giri").await { let _ = patrol_auto_punch(&mut tx, tid, dev_id, lat, lon).await; }
     tx.commit().await.map_err(ise)?;
     publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"device_position","device_id":dev_id,"lat":lat,"lon":lon})}).await;
     for (gid, inside) in &changes {
