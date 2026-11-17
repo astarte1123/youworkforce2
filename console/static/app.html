@@ -1669,7 +1669,7 @@ async function vOrdini(v){
   const row=o=>`<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b></td><td>${esc(o.site||'—')}</td>
     <td>${asgLabel(o)}</td><td class="small">${schedLabel(o)}</td><td>${priBadge(o.priority)}</td><td>${chip(o.state)}</td></tr>`;
   v.innerHTML=`<div class="page-h"><div><h1>Interventi</h1><div class="mut">${O.length} interventi · ${sched.length} pianificati · assistenza/manutenzione a visite</div></div>
-    ${canCreate?`<button class="btn" onclick="newOrder()">+ Nuovo intervento</button>`:''}</div>
+    <span><button class="btn ghost" onclick="interventiCSV()">⬇ CSV</button> ${canCreate?`<button class="btn" onclick="newOrder()">+ Nuovo intervento</button>`:''}</span></div>
   <div class="small mut" style="margin:-4px 0 12px">🔧 Interventi = il tecnico va dal cliente: appuntamenti con rapporto, firma, materiali e consuntivo per visita.</div>
   ${agendaByDay(sched)}
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Da pianificare</h2></div>
@@ -1708,7 +1708,7 @@ async function vCantieri(v){
     <td><span class="chip">${esc(COMM_STATI[c.status]||c.status)}</span></td>
     <td><div class="row" style="gap:6px;align-items:center">${progBar(c.progress)}<span class="small">${c.progress}%</span></div><div class="small mut">${c.lav_count} lavorazioni · ${c.shift_count} turni</div></td></tr>`;
   v.innerHTML=`<div class="page-h"><div><h1>Cantieri e commesse</h1><div class="mut">${C.length} commesse · progetti di cantiere con lavorazioni e avanzamento</div></div>
-    ${planner?`<button class="btn" onclick="comNew()">+ Nuova commessa</button>`:''}</div>
+    <span><button class="btn ghost" onclick="commesseCSV()">⬇ CSV</button> ${planner?`<button class="btn" onclick="comNew()">+ Nuova commessa</button>`:''}</span></div>
   <div class="small mut" style="margin:-4px 0 12px">🏗️ Cantiere = progetto su un sito, scomposto in <b>lavorazioni</b> con avanzamento; lo stato complessivo è la media pesata. I <b>SAL</b> fotografano l'avanzamento nel tempo. I turni possono essere legati alla commessa.</div>
   <div class="card"><table class="table"><thead><tr><th>Commessa</th><th>Committente</th><th>Sede</th><th>Stato</th><th>Avanzamento</th></tr></thead>
     <tbody>${C.map(row).join('')||`<tr><td colspan="5" class="empty">${ICON.building}<div>Nessuna commessa</div></td></tr>`}</tbody></table></div>`;
@@ -2069,6 +2069,16 @@ async function contDel(id){ if(!await askConfirm('Eliminare il referente?'))retu
 const PRICE_CAT={manodopera:'Manodopera',materiale:'Materiale',trasferta:'Trasferta',forfait:'Forfait',altro:'Altro'};
 const PRICE_UNITS=['ora','pezzo','km','giorno','forfait'];
 function eur(n){ return '€ '+(Number(n)||0).toLocaleString('it-IT',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+// Export CSV (separatore ; per Excel IT; BOM per accenti)
+function toCSV(rows){ return rows.map(r=>r.map(c=>{ const s=String(c==null?'':c); return /[",\n;]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }).join(';')).join('\r\n'); }
+function downloadCSV(name,rows){ const blob=new Blob(['﻿'+toCSV(rows)],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),2000); }
+async function listinoCSV(){ const P=await api('/price-items').catch(()=>[]);
+  downloadCSV('listino.csv',[['Codice','Nome','Categoria','Unità','Prezzo','Attiva'],...P.map(p=>[p.code||'',p.name,PRICE_CAT[p.category]||p.category,p.unit,p.unit_price,p.active?'sì':'no'])]); toast('CSV listino scaricato','ok'); }
+async function commesseCSV(){ const C=await api('/commesse').catch(()=>[]);
+  downloadCSV('commesse.csv',[['Codice','Nome','Committente','Sede','Stato','Avanzamento%','Lavorazioni','Turni'],...C.map(c=>[c.code,c.name,c.client_name||'',c.site||'',COMM_STATI[c.status]||c.status,c.progress,c.lav_count,c.shift_count])]); toast('CSV commesse scaricato','ok'); }
+async function interventiCSV(){ const O=await api('/orders').catch(()=>[]);
+  downloadCSV('interventi.csv',[['Titolo','Cliente','Sede','Assegnatario','Quando','Priorità','Stato'],...O.map(o=>[o.title,o.client_name||'',o.site||'',o.assignee||o.group_name||'',o.scheduled_start?new Date(o.scheduled_start).toLocaleString('it-IT'):'',o.priority,o.state])]); toast('CSV interventi scaricato','ok'); }
 async function vListino(v){
   const P=await api('/price-items').catch(()=>[]);
   const canEdit=can(['pianificatore','tenant_admin']);
@@ -2078,7 +2088,7 @@ async function vListino(v){
     <td>${p.active?'<span class="chip s-attivo">attiva</span>':'<span class="chip">sospesa</span>'}</td>
     <td style="text-align:right">${canEdit?`<button class="btn ghost small" onclick='priceForm(${JSON.stringify(p).replace(/'/g,"&#39;")})'>modifica</button> <button class="btn-ico btn ghost" onclick="priceDel('${p.id}')">${ICON.x}</button>`:''}</td></tr>`;
   v.innerHTML=`<div class="page-h"><div><h1>Listino</h1><div class="mut">${P.length} voci · prezzi per valorizzare gli interventi</div></div>
-    ${canEdit?`<button class="btn" onclick="priceForm()">+ Nuova voce</button>`:''}</div>
+    <span><button class="btn ghost" onclick="listinoCSV()">⬇ CSV</button> ${canEdit?`<button class="btn" onclick="priceForm()">+ Nuova voce</button>`:''}</span></div>
   <div class="small mut" style="margin:-4px 0 12px">🧾 Il listino è il catalogo delle voci fatturabili (manodopera, materiali, trasferta). Si usa per valorizzare ogni intervento.</div>
   <div class="card"><table class="table"><thead><tr><th>Voce</th><th>Categoria</th><th>Unità</th><th style="text-align:right">Prezzo</th><th>Stato</th><th></th></tr></thead>
     <tbody>${P.map(row).join('')||`<tr><td colspan="6" class="empty">${ICON.receipt}<div>Nessuna voce di listino</div></td></tr>`}</tbody></table></div>`;
@@ -2156,11 +2166,32 @@ async function vDispatch(v){
   const lanes=workers.map(w=>{ const list=O.filter(o=>o.assignee===w.email && sameDay(o));
     return `<div class="card pad" style="min-width:220px;flex:1"><div class="spread"><b class="small">${esc(w.email.split('@')[0])}</b><span class="chip">${list.length}</span></div>
       ${list.map(tostr).join('')||'<div class="small mut" style="margin-top:6px">—</div>'}</div>`; }).join('');
-  v.innerHTML=`<div class="page-h"><div><h1>Agenda tecnici</h1><div class="mut">dispatch degli interventi per giornata</div></div>
-    <input type="date" value="${day}" onchange="(function(e){$('#view')._day=e;route();})(this.value)"></div>
+  // F1 — vista settimana: 7 colonne (lun→dom) con gli appuntamenti del giorno
+  const mode=v._dmode||'day';
+  const base=new Date(day+'T00:00:00'); const dow=(base.getDay()+6)%7; const mon=new Date(base); mon.setDate(base.getDate()-dow);
+  const weekDays=Array.from({length:7},(_,i)=>{ const d=new Date(mon); d.setDate(mon.getDate()+i); return d.toISOString().slice(0,10); });
+  const today=new Date().toISOString().slice(0,10);
+  const dnames=['lun','mar','mer','gio','ven','sab','dom'];
+  const schedOn=d=>O.filter(o=>o.scheduled_start && new Date(o.scheduled_start).toISOString().slice(0,10)===d && o.state!=='annullato')
+    .sort((a,b)=>new Date(a.scheduled_start)-new Date(b.scheduled_start));
+  const weekCols=weekDays.map((d,i)=>{ const list=schedOn(d);
+    return `<div class="card pad" style="min-width:150px;flex:1;${d===today?'outline:2px solid var(--brand)':''}">
+      <div class="small" style="font-weight:600">${dnames[i]} ${d.slice(8,10)}/${d.slice(5,7)}</div>
+      ${list.map(o=>`<div class="clk" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:6px;padding:4px 6px;margin:4px 0">
+        <b class="small">${new Date(o.scheduled_start).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}</b>
+        <div class="small" style="overflow:hidden;text-overflow:ellipsis">${esc(o.title)}</div>
+        <div class="small mut">${o.assignee?esc(o.assignee.split('@')[0]):'<span style="color:var(--bad)">—</span>'}</div></div>`).join('')||'<div class="small mut" style="margin-top:6px">—</div>'}
+    </div>`; }).join('');
+  const toggle=`<span class="row" style="gap:4px"><button class="btn ${mode==='day'?'':'ghost'} small" onclick="(function(){$('#view')._dmode='day';route();})()">Giorno</button><button class="btn ${mode==='week'?'':'ghost'} small" onclick="(function(){$('#view')._dmode='week';route();})()">Settimana</button></span>`;
+  v.innerHTML=`<div class="page-h"><div><h1>Agenda tecnici</h1><div class="mut">dispatch degli interventi</div></div>
+    <span class="row" style="gap:8px">${toggle}<input type="date" value="${day}" onchange="(function(e){$('#view')._day=e;route();})(this.value)"></span></div>
   <div class="card" style="margin-bottom:14px"><div class="card-h"><h2>Da assegnare (${unassigned.length})</h2></div><div style="padding:0 12px 12px">${unRows}</div></div>
-  <h2 style="margin:4px 0 8px">Carico del ${day}</h2>
-  <div class="row" style="gap:12px;flex-wrap:wrap;align-items:flex-start">${lanes||'<div class="small mut">Nessun tecnico.</div>'}</div>`;
+  ${mode==='week'
+    ? `<h2 style="margin:4px 0 8px">Settimana ${weekDays[0].slice(8,10)}/${weekDays[0].slice(5,7)} – ${weekDays[6].slice(8,10)}/${weekDays[6].slice(5,7)}</h2>
+       <div class="row" style="gap:8px;flex-wrap:nowrap;overflow-x:auto;align-items:flex-start">${weekCols}</div>`
+    : `<h2 style="margin:4px 0 8px">Carico del ${day}</h2>
+       <div class="row" style="gap:12px;flex-wrap:wrap;align-items:flex-start">${lanes||'<div class="small mut">Nessun tecnico.</div>'}</div>`}`;
+  bindRows(v);
 }
 // ===== Interventi A5: Richieste / ticket =====
 const REQ_STATI={nuova:'Nuova',presa:'Presa in carico',convertita:'Convertita',chiusa:'Chiusa'};
