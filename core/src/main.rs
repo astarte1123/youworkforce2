@@ -313,6 +313,10 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/commesse/:id", get(api::get_commessa).post(api::update_commessa).delete(api::delete_commessa))
         .route("/api/commesse/:id/lavorazioni", post(api::create_lavorazione))
         .route("/api/commesse/:id/sal", post(api::create_sal))
+        .route("/api/commesse/:id/teams", post(api::commessa_assign_team))
+        .route("/api/commesse/:cid/teams/:tid", delete(api::commessa_remove_team))
+        .route("/api/commesse/:id/presenze/in", post(api::commessa_clock_in))
+        .route("/api/commesse/:id/presenze/out", post(api::commessa_clock_out))
         .route("/api/lavorazioni/:id", post(api::update_lavorazione).delete(api::delete_lavorazione))
         ;
     // catena spezzata in più statement: una singola espressione .route()* troppo lunga

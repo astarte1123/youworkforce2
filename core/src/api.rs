@@ -4825,7 +4825,15 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     let lav = sqlx::query("SELECT id,name,position,weight::float8 AS weight,progress_pct,status,note FROM app.commessa_lavorazioni WHERE commessa_id=$1 ORDER BY position,name").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let sal = sqlx::query("SELECT s.id,s.sal_date,s.pct,s.amount::float8 AS amount,s.note,s.created_at,u.email AS author FROM app.commessa_sal s LEFT JOIN app.users u ON u.id=s.created_by WHERE s.commessa_id=$1 ORDER BY s.sal_date DESC,s.created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let shifts = sqlx::query("SELECT p.id,p.starts_at,p.ends_at,p.state,u.email FROM app.shift_plans p JOIN app.users u ON u.id=p.user_id WHERE p.commessa_id=$1 AND p.state<>'annullato' ORDER BY p.starts_at").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let teams = sqlx::query("SELECT t.id,t.name,(SELECT count(*) FROM app.team_members m WHERE m.team_id=t.id)::int AS members FROM app.commessa_teams ct JOIN app.teams t ON t.id=ct.team_id WHERE ct.commessa_id=$1 ORDER BY t.name").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let pres = sqlx::query("SELECT p.id,p.clock_in,p.clock_out,u.email FROM app.commessa_presenze p JOIN app.users u ON u.id=p.user_id WHERE p.commessa_id=$1 ORDER BY p.clock_in DESC LIMIT 50").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let my_open: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.commessa_presenze WHERE commessa_id=$1 AND user_id=$2 AND clock_out IS NULL").bind(id).bind(s.user_id).fetch_optional(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    let team_out: Vec<Value> = teams.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"members":r.get::<i32,_>("members")})).collect();
+    let pres_out: Vec<Value> = pres.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"email":r.get::<String,_>("email"),
+        "clock_in":r.get::<chrono::DateTime<chrono::Utc>,_>("clock_in"),
+        "clock_out":r.try_get::<chrono::DateTime<chrono::Utc>,_>("clock_out").ok() })).collect();
     let lav_out: Vec<Value> = lav.iter().map(|r| json!({
         "id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"position":r.get::<i32,_>("position"),
         "weight":r.get::<f64,_>("weight"),"progress_pct":r.get::<i32,_>("progress_pct"),
@@ -4846,7 +4854,8 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
         "end_date":c.try_get::<chrono::NaiveDate,_>("end_date").ok().map(|d|d.to_string()),
         "budget":c.try_get::<f64,_>("budget").ok(),"note":c.try_get::<String,_>("note").ok(),
         "progress":c.get::<i32,_>("progress"),
-        "lavorazioni":lav_out,"sal":sal_out,"shifts":sh_out
+        "lavorazioni":lav_out,"sal":sal_out,"shifts":sh_out,
+        "teams":team_out,"presenze":pres_out,"my_open":my_open.is_some()
     })))
 }
 pub async fn update_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<CommessaPatch>) -> R {
@@ -4930,6 +4939,49 @@ pub async fn create_sal(State(st): State<AppState>, h: HeaderMap, Path(cid): Pat
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "commessa_sal", json!({"commessa":cid,"pct":b.pct})).await;
     Ok(Json(json!({"id":id})))
+}
+// ----- Cantieri C1: squadre assegnate + presenze (timbrature) -----
+#[derive(Deserialize)] pub struct AssignTeamReq { pub team_id: Uuid }
+pub async fn commessa_assign_team(State(st): State<AppState>, h: HeaderMap, Path(cid): Path<Uuid>, Json(b): Json<AssignTeamReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.commessa_teams(tenant_id,commessa_id,team_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+        .bind(tid).bind(cid).bind(b.team_id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn commessa_remove_team(State(st): State<AppState>, h: HeaderMap, Path((cid,team)): Path<(Uuid,Uuid)>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.commessa_teams WHERE commessa_id=$1 AND team_id=$2").bind(cid).bind(team).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)] pub struct ClockReq { #[serde(default)] pub lat: Option<f64>, #[serde(default)] pub lon: Option<f64> }
+pub async fn commessa_clock_in(State(st): State<AppState>, h: HeaderMap, Path(cid): Path<Uuid>, Json(b): Json<ClockReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // niente doppia timbratura aperta sulla stessa commessa
+    let open: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.commessa_presenze WHERE commessa_id=$1 AND user_id=$2 AND clock_out IS NULL")
+        .bind(cid).bind(s.user_id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    if open.is_some() { return Err(err(StatusCode::CONFLICT, "hai già una presenza aperta su questa commessa")); }
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.commessa_presenze(tenant_id,commessa_id,user_id,lat,lon,source) VALUES($1,$2,$3,$4,$5,'manuale') RETURNING id")
+        .bind(tid).bind(cid).bind(s.user_id).bind(b.lat).bind(b.lon).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn commessa_clock_out(State(st): State<AppState>, h: HeaderMap, Path(cid): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.commessa_presenze SET clock_out=now() WHERE commessa_id=$1 AND user_id=$2 AND clock_out IS NULL")
+        .bind(cid).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::BAD_REQUEST, "nessuna presenza aperta")); }
+    Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)]
 pub struct ShiftPlanAction { pub action: String } // confirm|cancel

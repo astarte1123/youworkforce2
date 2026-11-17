@@ -1718,8 +1718,9 @@ async function comSave(){
 }
 async function openCommessa(id){
   const planner=can(['pianificatore','tenant_admin']);
-  let c; try{ c=await api('/commesse/'+id); }catch(e){ toast(e.message,'bad'); return; }
-  $('#view')._curCommessa=id;
+  let c, allTeams=[]; try{ c=await api('/commesse/'+id); }catch(e){ toast(e.message,'bad'); return; }
+  if(planner){ try{ allTeams=await api('/teams'); }catch(e){} }
+  $('#view')._curCommessa=id; $('#view')._allTeams=allTeams;
   const statusSel=planner?`<select id="cmStatus" onchange="comSetStatus('${id}',this.value)">${Object.entries(COMM_STATI).map(([k,l])=>`<option value="${k}" ${k===c.status?'selected':''}>${l}</option>`).join('')}</select>`:`<span class="chip">${esc(COMM_STATI[c.status]||c.status)}</span>`;
   const lav=(c.lavorazioni||[]).map(l=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
     <div class="spread"><b class="small">${esc(l.name)}</b><span class="small mut">peso ${l.weight} · ${esc(LAV_STATI[l.status]||l.status)}</span></div>
@@ -1732,6 +1733,24 @@ async function openCommessa(id){
     ||`<tr><td colspan="4" class="empty">Nessun SAL registrato</td></tr>`;
   const shifts=(c.shifts||[]).map(s=>`<tr><td class="small">${esc(s.email)}</td><td class="small">${dtLocal(s.starts_at)} → ${dtLocal(s.ends_at)}</td><td>${chip(s.state)}</td></tr>`).join('')
     ||`<tr><td colspan="3" class="empty">Nessun turno legato</td></tr>`;
+  // C1 — squadre assegnate
+  const assigned=c.teams||[]; const assignedIds=new Set(assigned.map(t=>t.id));
+  const freeTeams=(allTeams||[]).filter(t=>!assignedIds.has(t.id));
+  const teamRows=assigned.map(t=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:8px">
+    <div><b class="small">${esc(t.name)}</b> <span class="small mut">${t.members} persone</span></div>
+    ${planner?`<button class="btn-ico btn ghost" onclick="comRemoveTeam('${id}','${t.id}')">${ICON.x}</button>`:''}</div>`).join('')
+    ||'<div class="small mut">Nessuna squadra assegnata.</div>';
+  const teamAssign=(planner&&freeTeams.length)?`<div class="row" style="gap:8px;margin-top:8px"><select id="cmTeam" class="grow">${freeTeams.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select><button class="btn small" onclick="comAssignTeam('${id}')">assegna</button></div>`:'';
+  const squadreSection=`<div><h3 style="margin:0">Squadre assegnate</h3>
+    <div class="col" style="gap:6px;margin-top:8px">${teamRows}</div>${teamAssign}</div>`;
+  // C1 — presenze (timbrature)
+  const presRows=(c.presenze||[]).map(p=>`<tr><td class="small">${esc(p.email)}</td><td class="small">${dtLocal(p.clock_in)}</td><td class="small">${p.clock_out?dtLocal(p.clock_out):'<span style="color:var(--ok,green)">in cantiere</span>'}</td></tr>`).join('')
+    ||`<tr><td colspan="3" class="empty">Nessuna presenza</td></tr>`;
+  const clockBtn=c.my_open
+    ? `<button class="btn ok small" onclick="comClock('${id}','out')">Timbra uscita</button>`
+    : `<button class="btn small" onclick="comClock('${id}','in')">Timbra entrata</button>`;
+  const presenzeSection=`<div><div class="spread"><h3 style="margin:0">Presenze in cantiere</h3>${clockBtn}</div>
+    <table class="table" style="margin-top:6px"><thead><tr><th>Persona</th><th>Entrata</th><th>Uscita</th></tr></thead><tbody>${presRows}</tbody></table></div>`;
   drawer('Commessa · '+esc(c.code),`<div class="col" style="gap:12px">
     <div><div class="spread"><b>${esc(c.name)}</b>${statusSel}</div>
       <div class="small mut" style="margin-top:4px">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}${c.start_date?' · '+esc(c.start_date):''}${c.end_date?' → '+esc(c.end_date):''}${c.budget!=null?' · € '+c.budget.toLocaleString('it-IT'):''}</div>
@@ -1743,9 +1762,23 @@ async function openCommessa(id){
     <div><h3 style="margin:0">Turni legati</h3>
       <table class="table" style="margin-top:6px"><thead><tr><th>Lavoratore</th><th>Quando</th><th>Stato</th></tr></thead><tbody>${shifts}</tbody></table>
       <div class="small mut" style="margin-top:4px">Per legare un turno: pianificalo in <b>Turni</b> e scegli questa commessa.</div></div>
+    ${squadreSection}
+    ${presenzeSection}
     ${planner?`<button class="btn ghost" onclick="comDel('${id}')">${ICON.x} Elimina commessa</button>`:''}</div>`);
 }
 async function comSetStatus(id,st){ try{await api('/commesse/'+id,{method:'POST',body:JSON.stringify({status:st})}); toast('Stato aggiornato','ok');}catch(e){toast(e.message,'bad');} }
+async function comAssignTeam(id){ const sel=$('#cmTeam'); if(!sel||!sel.value)return;
+  try{await api('/commesse/'+id+'/teams',{method:'POST',body:JSON.stringify({team_id:sel.value})}); toast('Squadra assegnata','ok'); openCommessa(id);}catch(e){toast(e.message,'bad');} }
+async function comRemoveTeam(id,tid){ if(!await askConfirm('Togliere la squadra dalla commessa?'))return;
+  try{await api('/commesse/'+id+'/teams/'+tid,{method:'DELETE'}); toast('Rimossa','ok'); openCommessa(id);}catch(e){toast(e.message,'bad');} }
+async function comClock(id,dir){
+  try{ if(dir==='in'){ let body={};
+      if(navigator.geolocation){ try{ const pos=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{timeout:6000})); body={lat:pos.coords.latitude,lon:pos.coords.longitude}; }catch(e){} }
+      await api('/commesse/'+id+'/presenze/in',{method:'POST',body:JSON.stringify(body)}); toast('Entrata timbrata','ok');
+    } else { await api('/commesse/'+id+'/presenze/out',{method:'POST',body:JSON.stringify({})}); toast('Uscita timbrata','ok'); }
+    openCommessa(id);
+  }catch(e){toast(e.message,'bad');}
+}
 async function comDel(id){ if(!await askConfirm('Eliminare la commessa? (rimuove lavorazioni e SAL; i turni restano, slegati)'))return;
   try{await api('/commesse/'+id,{method:'DELETE'}); toast('Eliminata','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 function lavNew(cid){

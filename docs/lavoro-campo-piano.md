@@ -137,7 +137,10 @@ nello stesso commit. Nessun passo distrugge i dati o umilia il prodotto.
 - ✅ **A1 Cliente** — `clients` + `client_contacts` + `work_orders.client_id` (mig 0091); CRUD +
   referenti; menu "Clienti"; select cliente nell'intervento; scheda cliente con i suoi interventi.
   e2e `qa/clients-e2e.sh` 8/8.
-- ⏳ prossimi: C1 (squadre+presenze), poi A2 (listino) / C2 (cronoprogramma).
+- ✅ **C1 Squadre + presenze** — `commessa_teams` (riuso teams core) + `commessa_presenze`
+  (timbrature entrata/uscita, geofiltro GPS opz.) (mig 0092); assegna/rimuovi squadra; timbra
+  entrata/uscita; scheda commessa con squadre e presenze. e2e `qa/cantieri-squadre-e2e.sh` 9/9.
+- ⏳ prossimi: A2 (listino + valorizzazione visita) / C2 (cronoprogramma WBS).
 
 ## 6. Criteri di "fatto" (definition of done) per slice
 
