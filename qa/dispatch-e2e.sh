@@ -16,7 +16,7 @@ for m in interventi workforce; do curl -s -b "$J/sa" -H "x-csrf-token: $SC" -H '
 curl -s -c "$J/pl" -X POST $BASE/api/login -H 'content-type: application/json' -H 'x-tenant-slug: acme' -d '{"email":"pianificatore@acme.loneworker.eu","password":"demo"}' -o /dev/null
 CP=$(csrfh "$J/pl")
 H="-b $J/pl -H x-tenant-slug:acme -H x-csrf-token:$CP -H content-type:application/json"
-DAY="2040-07-0$((RANDOM%9+1))"
+DAY=$(python -c "import random;print(f'{2100+random.randint(0,899)}-07-0{random.randint(1,9)}')")  # anno unico: niente assenze/ordini fantasma accumulati su acme
 OID=$(curl -s $H -X POST $BASE/api/orders -d "{\"title\":\"Dispatch test\",\"scheduled_start\":\"${DAY}T09:00:00Z\",\"scheduled_end\":\"${DAY}T11:00:00Z\"}" | jq1 "print(json.load(sys.stdin).get('id',''))")
 
 say "1 suggerisci tecnico: candidati + giorno"
@@ -33,7 +33,7 @@ echo "$R" | jq1 "print('ok' if json.load(sys.stdin).get('summary') else '')" | g
 # primo candidato disponibile
 TOP=$(echo "$R" | jq1 "print(next(c['user_id'] for c in json.load(sys.stdin)['candidates'] if not c['absent']))")
 say "4 assenza del top -> risulta assente e in fondo"
-curl -s $H -X POST $BASE/api/absences -d "{\"user_id\":\"$TOP\",\"kind\":\"ferie\",\"starts_at\":\"${DAY}T00:00:00Z\",\"ends_at\":\"${DAY}T23:59:00Z\"}" -o /dev/null
+ABS_ID=$(curl -s $H -X POST $BASE/api/absences -d "{\"user_id\":\"$TOP\",\"kind\":\"ferie\",\"starts_at\":\"${DAY}T00:00:00Z\",\"ends_at\":\"${DAY}T23:59:00Z\"}" | jq1 "print(json.load(sys.stdin).get('id',''))")
 R2=$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/orders/$OID/suggest-tech)
 AB=$(echo "$R2" | jq1 "print(next(c['absent'] for c in json.load(sys.stdin)['candidates'] if c['user_id']=='$TOP'))")
 LAST=$(echo "$R2" | jq1 "print(json.load(sys.stdin)['candidates'][-1]['user_id'])")
@@ -50,6 +50,10 @@ curl -s -b "$J/sa" -H "x-csrf-token: $SC" -H 'content-type: application/json' -X
 c=$(curl -s -o /dev/null -w '%{http_code}' -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/orders/$OID/suggest-tech)
 [ "$c" = "403" ] && ok || no "got $c"
 curl -s -b "$J/sa" -H "x-csrf-token: $SC" -H 'content-type: application/json' -X POST $BASE/api/superadmin/tenants/$AID/modules -d '{"module_code":"interventi","state":"attivo"}' -o /dev/null
+
+# teardown: niente dato fantasma lasciato su acme (assenza eliminata, ordine annullato)
+[ -n "${ABS_ID:-}" ] && curl -s $H -X DELETE $BASE/api/absences/$ABS_ID -o /dev/null
+[ -n "${OID:-}" ] && curl -s $H -X POST $BASE/api/orders/$OID/cancel -d '{}' -o /dev/null
 
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" = 0 ]

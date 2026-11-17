@@ -2892,8 +2892,14 @@ pub async fn delete_device(State(st): State<AppState>, h: HeaderMap, Path(id): P
     let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // Elimina in modo completo: telemetria/attributi/comandi/posizioni/presenze/geofence/
+    // provisioning sono ON DELETE CASCADE; lo storico eventi resta con device_id azzerato
+    // (0109, ON DELETE SET NULL). Niente dispositivi "fantasma" non rimovibili.
     let n = sqlx::query("DELETE FROM app.devices WHERE id=$1").bind(id).execute(&mut *tx).await
-        .map_err(|_| err(StatusCode::CONFLICT, "dispositivo referenziato da eventi: disabilitalo invece di eliminarlo"))?.rows_affected();
+        .map_err(|e| match e.as_database_error().and_then(|d| d.code()) {
+            Some(c) if c == "23503" => err(StatusCode::CONFLICT, "dispositivo ancora referenziato: rimuovi prima i collegamenti"),
+            _ => ise(e),
+        })?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "dispositivo inesistente")); }
     audit(&st, tid, &s.email, "delete_device", json!({"id":id})).await;

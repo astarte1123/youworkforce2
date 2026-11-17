@@ -109,10 +109,12 @@ sleep 1
 INC=$(one "SELECT count(*) FROM app.incidents WHERE tenant_id='$TID' AND correlation LIKE 'telt-%'")
 [ "${INC:-0}" -ge 1 ] && ok "event IO mappato -> incidente (sos)" || no "alarm ko" "inc=$INC"
 
-# teardown
+# teardown + rigore: il device deve essere eliminabile COMPLETAMENTE anche con
+# eventi/incidenti collegati (0109: events.device_id ON DELETE SET NULL; le altre
+# dipendenti sono CASCADE). Nessun dispositivo "fantasma" non rimovibile.
 sql "DELETE FROM app.incidents WHERE tenant_id='$TID' AND correlation LIKE 'telt-%'" >/dev/null 2>&1 || true
-sql "DELETE FROM app.device_positions WHERE device_id='$DID'" >/dev/null 2>&1 || true
-sql "DELETE FROM app.devices WHERE id='$DID'" >/dev/null
+DELRC=$(sql "DELETE FROM app.devices WHERE id='$DID'; SELECT count(*) FROM app.devices WHERE id='$DID'")
+[ "$(echo "$DELRC" | tr -d '\r' | tail -1)" = "0" ] && ok "device eliminabile del tutto (no fantasma)" || no "device non eliminato" "$DELRC"
 # ripristino stato moduli
 sql "UPDATE app.tenant_modules SET state='$TR_PREV' WHERE tenant_id='$TID' AND module_code='traccar'" >/dev/null
 sql "UPDATE app.tenant_modules SET state='$LW_PREV' WHERE tenant_id='$TID' AND module_code='loneworker'" >/dev/null
