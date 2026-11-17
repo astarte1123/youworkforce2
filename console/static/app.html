@@ -34,7 +34,9 @@ const NAV = [
   {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
   {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
   {k:'mappa',     t:'Mappa allarmi', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'safety'},
-  {k:'piantine',  t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor', grp:'safety'},
+  // Piantine (indoor): servono sia alla Sicurezza sia al Lavoro sul campo (vigilanza indoor:
+  // dispositivi da posizionare, geofence/aree da gestire). Visibile in entrambi i gruppi.
+  {k:'piantine',  t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS.concat(FIELD_MODS), feat:'map_indoor', grps:['safety','work']},
   // Mappa dispositivi: i device (es. Teltonika GH-5200) generano allarmi E sono asset di campo,
   // quindi la voce compare in ENTRAMBI i gruppi (Sicurezza lavoratore + Lavoro sul campo).
   {k:'mappa-dispositivi', t:'Mappa dispositivi', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:FIELD_MODS, feat:'map_outdoor', grp:'work'},
