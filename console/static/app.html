@@ -2876,7 +2876,8 @@ function devEdit(d){
         <button class="btn ghost small" onclick="devTrail('${d.id}')">Percorso recente</button></div>
       <div id="trail" class="small mut" style="margin-top:8px"></div>
     </div>` : '';
-  drawer(isNew?'Nuovo dispositivo':'Modifica dispositivo', posBlock+`
+  const telemBlock = (!isNew && d.id) ? `<div class="card pad" style="margin-bottom:12px"><div class="spread"><b class="small">Telemetria</b><button class="btn ghost small" onclick="devTelem('${d.id}')">aggiorna</button></div><div id="telemBox" class="small mut" style="margin-top:6px">—</div></div>` : '';
+  drawer(isNew?'Nuovo dispositivo':'Modifica dispositivo', posBlock+telemBlock+`
     ${!isNew && d.id?`<div class="card pad" style="margin-bottom:12px"><div class="spread"><b class="small">Stato / readiness</b>
       <button class="btn ghost small" onclick="devTestSos('${d.id}')" title="Invia un SOS di prova sul percorso reale">🆘 SOS di prova</button></div>
       <div id="dokReady" class="small mut" style="margin-top:8px">carico…</div></div>`:''}
@@ -2918,7 +2919,14 @@ function devEdit(d){
   if(!isNew && d.last_lat!=null && d.last_lon!=null) loadAddr(d.last_lat,d.last_lon);
   if(!isNew && d.source==='traccar'){ devCmds(d.id); devCmdTypes(d.id); }
   if(!isNew && d.id) devReadiness(d.id);
+  if(!isNew && d.id) devTelem(d.id);
 }
+// Telemetria nativa (time-series YW): ultimi valori per chiave.
+async function devTelem(id){ const el=$('#telemBox'); if(!el)return; el.textContent='carico…';
+  try{ const t=await api('/iot/devices/'+id+'/telemetry/latest');
+    if(!t.length){ el.innerHTML='<span class="mut">Nessuna telemetria ricevuta.</span>'; return; }
+    el.innerHTML='<div class="row" style="flex-wrap:wrap;gap:6px">'+t.map(x=>`<span class="tag" title="${new Date(x.ts).toLocaleString('it-IT')}"><b>${esc(x.key)}</b>: ${x.num!=null?x.num:esc(x.str||'')}</span>`).join('')+'</div>';
+  }catch(e){ el.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
 // Readiness del device: 4 stati + segnali dichiarati/verificati (per tipologia d'uso).
 async function devReadiness(id){ const el=$('#dokReady'); if(!el)return;
   try{ const r=await api('/devices/'+id+'/readiness');

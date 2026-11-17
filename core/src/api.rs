@@ -6669,6 +6669,74 @@ pub async fn ingest_osmand(
     Ok(Json(json!({"ok":true,"external_id":ext,"position":position,"incident":incident})))
 }
 
+// ===== IoT nativo F1: telemetria time-series (native, nessun ThingsBoard) =====
+/// Ingest telemetria nativa (token device-bound): body {ts?, values:{key:val,...}} oppure {key:val,...}.
+pub async fn ingest_telemetry(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>, Json(b): Json<Value>) -> R {
+    let token = h.get("x-ingest-token").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+        .or_else(|| q.get("token").cloned()).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing ingest token"))?;
+    let cred = resolve_ingest_token(&st, &token).await.ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
+    let tid = cred.tenant_id;
+    let mut mod_ok=false; for m in DEVICE_MODS { if module_active(&st, tid, m).await { mod_ok=true; break; } }
+    if !mod_ok { return Err(err(StatusCode::FORBIDDEN, "nessun modulo dispositivi attivo")); }
+    // device: dal token (bound) o da external id in query
+    let dev_id: Uuid = match cred.device_id {
+        Some(d) => d,
+        None => { let ext = q.get("id").or_else(|| q.get("deviceid")).ok_or_else(|| err(StatusCode::BAD_REQUEST, "device id mancante"))?;
+            sqlx::query_scalar("SELECT id FROM app.devices WHERE tenant_id=$1 AND external_id=$2").bind(tid).bind(ext)
+                .fetch_optional(&st.owner_pool).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "device non registrato"))? }
+    };
+    let ts = b.get("ts").and_then(|v| v.as_str()).and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|d| d.with_timezone(&chrono::Utc)).unwrap_or_else(|| st.clock.now());
+    let values = b.get("values").and_then(|v| v.as_object()).cloned()
+        .unwrap_or_else(|| b.as_object().cloned().unwrap_or_default().into_iter().filter(|(k,_)| k!="ts").collect());
+    if values.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nessuna telemetria (values vuoto)")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let mut n=0; let mut last = serde_json::Map::new();
+    for (k,v) in &values {
+        let (num, s) = match v { Value::Number(x)=>(x.as_f64(), None), Value::Bool(x)=>(None, Some(x.to_string())), Value::String(x)=>(x.parse::<f64>().ok().map(Some).unwrap_or(None), Some(x.clone())), _=>(None, Some(v.to_string())) };
+        sqlx::query("INSERT INTO app.device_telemetry(tenant_id,device_id,key,ts,num,str) VALUES($1,$2,$3,$4,$5,$6)")
+            .bind(tid).bind(dev_id).bind(k).bind(ts).bind(num).bind(&s).execute(&mut *tx).await.map_err(ise)?;
+        last.insert(k.clone(), v.clone()); n+=1;
+    }
+    // ultimo stato negli attributi del device (per vista rapida) + visto ora
+    sqlx::query("UPDATE app.devices SET last_attributes=COALESCE(last_attributes,'{}'::jsonb)||$2::jsonb, updated_at=now() WHERE id=$1")
+        .bind(dev_id).bind(Value::Object(last)).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"telemetry","device_id":dev_id})}).await;
+    Ok(Json(json!({"ok":true,"device_id":dev_id,"stored":n})))
+}
+pub async fn iot_telemetry_latest(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, DEVICE_MODS).await?;
+    if !has_cap(&s,"incidents.view") && !has_cap(&s,"config.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT DISTINCT ON (key) key,ts,num,str FROM app.device_telemetry WHERE device_id=$1 ORDER BY key,ts DESC").bind(dev).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({"key":r.get::<String,_>("key"),
+        "ts":r.get::<chrono::DateTime<chrono::Utc>,_>("ts").to_rfc3339(),
+        "num":r.try_get::<f64,_>("num").ok(),"str":r.try_get::<String,_>("str").ok() })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn iot_telemetry_series(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, DEVICE_MODS).await?;
+    if !has_cap(&s,"incidents.view") && !has_cap(&s,"config.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let key = q.get("key").cloned();
+    let from = q.get("from").and_then(|x| chrono::DateTime::parse_from_rfc3339(x).ok()).map(|d| d.with_timezone(&chrono::Utc));
+    let to = q.get("to").and_then(|x| chrono::DateTime::parse_from_rfc3339(x).ok()).map(|d| d.with_timezone(&chrono::Utc));
+    let lim: i64 = q.get("limit").and_then(|x| x.parse().ok()).unwrap_or(500).min(5000);
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT key,ts,num,str FROM app.device_telemetry WHERE device_id=$1 \
+            AND ($2::text IS NULL OR key=$2) AND ($3::timestamptz IS NULL OR ts>=$3) AND ($4::timestamptz IS NULL OR ts<=$4) \
+            ORDER BY ts DESC LIMIT $5")
+        .bind(dev).bind(&key).bind(from).bind(to).bind(lim).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({"key":r.get::<String,_>("key"),
+        "ts":r.get::<chrono::DateTime<chrono::Utc>,_>("ts").to_rfc3339(),
+        "num":r.try_get::<f64,_>("num").ok(),"str":r.try_get::<String,_>("str").ok() })).collect();
+    Ok(Json(json!(out)))
+}
 // ---- Teltonika: comando GPRS (codec12) verso un device connesso ----
 #[derive(Deserialize)] pub struct GprsCmdReq { pub command: String }
 pub async fn device_gprs_command(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GprsCmdReq>) -> R {
