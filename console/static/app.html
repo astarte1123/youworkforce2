@@ -25,6 +25,8 @@ let ME=null, SSE=null, CACHE={}, ACTIVE_MODS=new Set(), UI_FEAT={map_outdoor:tru
 const can = r => ME && r.includes(ME.role);
 // mod = modulo/i richiesti: la voce appare solo se ALMENO UNO è attivo sul tenant.
 const DEVICE_MODS=['loneworker','traccar','iot','thingsboard'];
+// Moduli dell'area "Lavoro sul campo": la Mappa dispositivi appartiene a questi, non a Lone Worker.
+const FIELD_MODS=['interventi','cantieri','giri','workforce','consuntivi'];
 // grp: sezione nav (op=Operatività, work=Lavoro sul campo, cfg=Configurazione)
 const NAV = [
   {k:'dashboard', t:'Dashboard', ico:'home', roles:null, grp:'op'},
@@ -35,7 +37,7 @@ const NAV = [
   {k:'piantine',  t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor', grp:'safety'},
   // Mappa dispositivi: i device (es. Teltonika GH-5200) generano allarmi E sono asset di campo,
   // quindi la voce compare in ENTRAMBI i gruppi (Sicurezza lavoratore + Lavoro sul campo).
-  {k:'mappa-dispositivi', t:'Mappa dispositivi', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'work'},
+  {k:'mappa-dispositivi', t:'Mappa dispositivi', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:FIELD_MODS, feat:'map_outdoor', grp:'work'},
   {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar'], grp:'safety'},
   {k:'dispositivi',t:'Dispositivi & App', ico:'shield', roles:['tenant_admin'], mod:DEVICE_MODS, grp:'safety'},
   {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
