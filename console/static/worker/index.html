@@ -195,6 +195,7 @@ async function loadOrders(){
     <div class="spread"><b>${esc(o.title)}</b>${chip(o.state)}</div>
     ${sched(o)?`<div class="small" style="margin-top:4px">🕑 ${sched(o)}${o.priority>=3?' · <b style="color:var(--bad,#c0392b)">priorità alta</b>':''}</div>`:''}
     <div class="small mut" style="margin:4px 0 10px">${esc(o.site||'—')}${o.site_address?' · '+esc(o.site_address):''} ${o.instructions?'· '+esc(o.instructions):''}</div>
+    ${navUrl(o)?`<a class="small" href="${navUrl(o)}" target="_blank" rel="noopener" style="display:inline-block;margin-bottom:8px">🧭 Naviga</a>`:''}
     ${localStorage.getItem('yw_draft_'+o.id)?'<div class="small" style="color:var(--warn,#b45309);margin-bottom:6px">⏳ bozza in attesa di invio</div>':''}
     <button class="btn block" onclick='openOrderExec(${JSON.stringify(o).replace(/'/g,"&#39;")})'>Apri intervento</button>
   </div>`).join('');
@@ -286,6 +287,13 @@ async function closeRound(){ try{ const r=await api('/patrol-rounds/'+PATROL_ROU
   PATROL_ROUND=null; loadPatrols(); }catch(e){toast(e.message,'bad');} }
 // --- Esecuzione intervento (PWA «Oggi») ---
 let _exMat=[];
+// Navigazione verso il luogo: usa le coordinate se presenti (precise), altrimenti l'indirizzo.
+// Link universale Google Maps (apre l'app di navigazione su Android/iOS).
+function navUrl(o){
+  if(o.site_lat!=null && o.site_lon!=null) return 'https://www.google.com/maps/dir/?api=1&destination='+o.site_lat+','+o.site_lon;
+  if(o.site_address) return 'https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(o.site_address);
+  return null;
+}
 function openOrderExec(o){
   _exMat=(o.materials||[]).slice();
   const m=document.createElement('div'); m.className='modal'; m.onclick=e=>{ if(e.target===m) m.remove(); };
@@ -294,6 +302,7 @@ function openOrderExec(o){
   m.innerHTML=`<div class="sheet" style="max-height:88vh;overflow:auto">
     <div class="spread"><b>${esc(o.title)}</b>${chip(o.state)}</div>
     <div class="small mut" style="margin:4px 0">${esc(o.site||'—')}${o.site_address?' · '+esc(o.site_address):''}</div>
+    ${navUrl(o)?`<a class="btn block" style="margin:4px 0" href="${navUrl(o)}" target="_blank" rel="noopener">🧭 Naviga verso il luogo</a>`:''}
     ${o.site_access?`<div class="card pad" style="background:#fdf0d4;border-left:3px solid #c7820a;margin:6px 0"><b class="small">🔑 Accesso</b><div class="small">${esc(o.site_access)}</div></div>`:''}
     ${o.instructions?`<div class="small" style="margin:6px 0"><b>Istruzioni:</b> ${esc(o.instructions)}</div>`:''}
     <div class="row" style="gap:6px;margin:8px 0">

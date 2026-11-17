@@ -4253,14 +4253,48 @@ async function userSave(id,scoped){
 async function userDel(id){ if(!await askConfirm('Eliminare utente?'))return;
   try{await api('/users/'+id,{method:'DELETE'}); toast('Eliminato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 // Form sede: nome + indirizzo + coordinate + indicazioni d'accesso (opzionali).
+let STMAP=null, STMARK=null;
 function siteForm(s){ s=s||{};
   drawer(s.id?'Sede · '+esc(s.name):'Nuova sede', `<div class="col" style="gap:10px">
     <label class="small mut">Nome<input id="stName" value="${esc(s.name||'')}"></label>
-    <label class="small mut">Indirizzo (facoltativo)<input id="stAddr" value="${esc(s.address||'')}" placeholder="Via, civico, città"></label>
-    <div class="row" style="gap:8px"><label class="small mut grow">Lat<input id="stLat" type="number" step="any" value="${s.lat!=null?s.lat:''}"></label>
-      <label class="small mut grow">Lon<input id="stLon" type="number" step="any" value="${s.lon!=null?s.lon:''}"></label></div>
+    <label class="small mut">Indirizzo<input id="stAddr" value="${esc(s.address||'')}" placeholder="Via Roma 10, Milano"></label>
+    <button class="btn ghost small" type="button" onclick="siteGeocode()">📍 Trova sulla mappa dall'indirizzo</button>
+    <div id="stMap" style="height:220px;border:1px solid var(--line);border-radius:10px;overflow:hidden"></div>
+    <div class="small mut">Trascina il segnaposto per correggere la posizione esatta (cancello, ingresso cantiere).</div>
+    <div class="row" style="gap:8px"><label class="small mut grow">Lat<input id="stLat" type="number" step="any" value="${s.lat!=null?s.lat:''}" oninput="siteSyncMarker()"></label>
+      <label class="small mut grow">Lon<input id="stLon" type="number" step="any" value="${s.lon!=null?s.lon:''}" oninput="siteSyncMarker()"></label></div>
     <label class="small mut">Indicazioni d'accesso (visibili solo agli autorizzati)<textarea id="stAcc" style="width:100%;height:60px" placeholder="es. chiave in portineria, codice cancello…">${esc(s.access_notes||'')}</textarea></label>
     <button class="btn" onclick="siteSave('${s.id||''}')">Salva</button><div class="cfg-msg small"></div></div>`);
+  setTimeout(siteMapInit,60);
+}
+function siteMapInit(){
+  const el=document.getElementById('stMap'); if(!el||typeof L==='undefined')return;
+  const lat=parseFloat($('#stLat').value), lon=parseFloat($('#stLon').value);
+  const has=!isNaN(lat)&&!isNaN(lon);
+  STMAP=L.map(el,{zoomControl:true}).setView(has?[lat,lon]:[41.9,12.5], has?16:5);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(STMAP);
+  STMARK=L.marker(has?[lat,lon]:[41.9,12.5],{draggable:true}).addTo(STMAP);
+  STMARK.on('dragend',()=>{ const p=STMARK.getLatLng(); $('#stLat').value=p.lat.toFixed(6); $('#stLon').value=p.lng.toFixed(6); });
+  // clic sulla mappa = posiziona
+  STMAP.on('click',e=>{ STMARK.setLatLng(e.latlng); $('#stLat').value=e.latlng.lat.toFixed(6); $('#stLon').value=e.latlng.lng.toFixed(6); });
+  setTimeout(()=>STMAP&&STMAP.invalidateSize(),120);
+}
+function siteSyncMarker(){ const lat=parseFloat($('#stLat').value), lon=parseFloat($('#stLon').value);
+  if(STMAP&&STMARK&&!isNaN(lat)&&!isNaN(lon)){ STMARK.setLatLng([lat,lon]); STMAP.setView([lat,lon],16); } }
+// Geocodifica LATO BROWSER (client -> Nominatim/OSM): il server YW resta self-contained.
+async function siteGeocode(){
+  const m=$('.cfg-msg'); const q=$('#stAddr').value.trim();
+  if(!q){ if(m){m.textContent='inserisci prima l\'indirizzo';m.style.color='var(--bad)';} return; }
+  if(m){ m.textContent='cerco l\'indirizzo…'; m.style.color=''; }
+  try{
+    const r=await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(q),{headers:{'Accept':'application/json'}});
+    const j=await r.json();
+    if(!j.length){ if(m){m.textContent='indirizzo non trovato: trascina il segnaposto a mano';m.style.color='var(--bad)';} return; }
+    const lat=parseFloat(j[0].lat), lon=parseFloat(j[0].lon);
+    $('#stLat').value=lat.toFixed(6); $('#stLon').value=lon.toFixed(6);
+    if(STMAP&&STMARK){ STMARK.setLatLng([lat,lon]); STMAP.setView([lat,lon],17); }
+    if(m){ m.textContent='posizione trovata ✓ — controlla e correggi col segnaposto se serve'; m.style.color='var(--ok,green)'; }
+  }catch(e){ if(m){m.textContent='geocodifica non disponibile: inserisci lat/lon o trascina il segnaposto';m.style.color='var(--bad)';} }
 }
 async function siteSave(id){ const m=$('.cfg-msg'); const name=$('#stName').value.trim(); if(!name){ m.textContent='nome richiesto'; m.style.color='var(--bad)'; return; }
   const b={name, address:$('#stAddr').value.trim()||null, lat:$('#stLat').value!==''?Number($('#stLat').value):null, lon:$('#stLon').value!==''?Number($('#stLon').value):null, access_notes:$('#stAcc').value.trim()||null};
