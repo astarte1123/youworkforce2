@@ -33,15 +33,14 @@ const NAV = [
   // --- Sicurezza Lavoratore (perimetro man-down/SOS): operatività allarmi + config del perimetro ---
   {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
   {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
-  {k:'mappa',     t:'Mappa allarmi', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'safety'},
+  {k:'mappa',     t:'Mappa allarmi', ico:'map', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'safety'},
   // Piantine (indoor): due voci separate, ciascuna legata al PROPRIO perimetro, così non si
   // duplica. In Sicurezza solo se c'è un modulo dispositivi/allarmi; in Lavoro sul campo solo se
   // c'è un modulo di campo (es. giri/vigilanza indoor: dispositivi da posizionare, geofence/aree).
-  {k:'piantine-safety', t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor', grp:'safety'},
-  {k:'piantine',  t:'Piantine', ico:'shield', roles:['operatore','tenant_admin','auditor'], mod:FIELD_MODS, feat:'map_indoor', grp:'work'},
-  // Mappa dispositivi: i device (es. Teltonika GH-5200) generano allarmi E sono asset di campo,
-  // quindi la voce compare in ENTRAMBI i gruppi (Sicurezza lavoratore + Lavoro sul campo).
-  {k:'mappa-dispositivi', t:'Mappa dispositivi', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:FIELD_MODS, feat:'map_outdoor', grp:'work'},
+  {k:'piantine-safety', t:'Piantine Indoor', ico:'floorplan', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor', grp:'safety'},
+  {k:'piantine',  t:'Piantine Indoor', ico:'floorplan', roles:['operatore','tenant_admin','auditor'], mod:FIELD_MODS, feat:'map_indoor', grp:'work'},
+  // Mappa dispositivi: i device (es. Teltonika GH-5200) generano allarmi E sono asset di campo.
+  {k:'mappa-dispositivi', t:'Mappa dispositivi', ico:'map', roles:['operatore','tenant_admin','auditor'], mod:FIELD_MODS, feat:'map_outdoor', grp:'work'},
   {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar'], grp:'safety'},
   {k:'dispositivi',t:'Dispositivi & App', ico:'shield', roles:['tenant_admin'], mod:DEVICE_MODS, grp:'safety'},
   {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
@@ -55,7 +54,7 @@ const NAV = [
   {k:'richieste', t:'Richieste', ico:'clipboard', roles:['pianificatore','tenant_admin','operatore','auditor'], mod:['interventi'], grp:'work'},
   {k:'contratti', t:'Contratti', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], mod:['interventi'], grp:'work'},
   {k:'cantieri',  t:'Cantieri', ico:'hardhat', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], grp:'work'},
-  {k:'mappa-cantieri', t:'Mappa cantieri', ico:'home', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], feat:'map_outdoor', grp:'work'},
+  {k:'mappa-cantieri', t:'Mappa cantieri', ico:'map', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], feat:'map_outdoor', grp:'work'},
   {k:'calendario',t:'Calendario', ico:'calendar', roles:['pianificatore','tenant_admin','lavoratore','reperibile','responsabile','auditor'], mod:['workforce','interventi','giri','cantieri'], grp:'work'},
   {k:'ronde',     t:'Ronde', ico:'route', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['giri'], grp:'work'},
   {k:'vigilanza', t:'Cruscotto vigilanza', ico:'shield', roles:['pianificatore','tenant_admin','operatore','auditor'], mod:['giri'], grp:'work'},
