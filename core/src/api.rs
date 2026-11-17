@@ -4775,7 +4775,7 @@ pub async fn list_commesse(State(st): State<AppState>, h: HeaderMap) -> R {
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let rows = sqlx::query(
         "SELECT c.id,c.code,c.name,c.status,COALESCE(cl.name,c.client_name) AS client_name,c.start_date,c.end_date,c.budget_amount::float8 AS budget,
-                si.name AS site,
+                si.name AS site,si.id AS site_id,si.lat AS site_lat,si.lon AS site_lon,
                 COALESCE((SELECT CASE WHEN sum(weight)>0 THEN round(sum(weight*progress_pct)/sum(weight)) ELSE 0 END
                           FROM app.commessa_lavorazioni l WHERE l.commessa_id=c.id),0)::int AS progress,
                 (SELECT count(*) FROM app.commessa_lavorazioni l WHERE l.commessa_id=c.id)::int AS lav_count,
@@ -4786,7 +4786,8 @@ pub async fn list_commesse(State(st): State<AppState>, h: HeaderMap) -> R {
     let out: Vec<Value> = rows.iter().map(|r| json!({
         "id":r.get::<Uuid,_>("id"),"code":r.get::<String,_>("code"),"name":r.get::<String,_>("name"),
         "status":r.get::<String,_>("status"),"client_name":r.try_get::<String,_>("client_name").ok(),
-        "site":r.try_get::<String,_>("site").ok(),
+        "site":r.try_get::<String,_>("site").ok(),"site_id":r.try_get::<Uuid,_>("site_id").ok(),
+        "site_lat":r.try_get::<f64,_>("site_lat").ok(),"site_lon":r.try_get::<f64,_>("site_lon").ok(),
         "start_date":r.try_get::<chrono::NaiveDate,_>("start_date").ok().map(|d|d.to_string()),
         "end_date":r.try_get::<chrono::NaiveDate,_>("end_date").ok().map(|d|d.to_string()),
         "budget":r.try_get::<f64,_>("budget").ok(),

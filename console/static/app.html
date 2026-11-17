@@ -49,6 +49,7 @@ const NAV = [
   {k:'richieste', t:'Richieste', ico:'clipboard', roles:['pianificatore','tenant_admin','operatore','auditor'], mod:['interventi'], grp:'work'},
   {k:'contratti', t:'Contratti', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], mod:['interventi'], grp:'work'},
   {k:'cantieri',  t:'Cantieri', ico:'hardhat', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], grp:'work'},
+  {k:'mappa-cantieri', t:'Mappa cantieri', ico:'home', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], feat:'map_outdoor', grp:'work'},
   {k:'calendario',t:'Calendario', ico:'calendar', roles:['pianificatore','tenant_admin','lavoratore','reperibile','responsabile','auditor'], mod:['workforce','interventi','giri','cantieri'], grp:'work'},
   {k:'ronde',     t:'Ronde', ico:'route', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['giri'], grp:'work'},
   {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], mod:['consuntivi'], grp:'work'},
@@ -354,7 +355,7 @@ function route(){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,cantieri:vCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -1713,6 +1714,65 @@ async function vCantieri(v){
   <div class="card"><table class="table"><thead><tr><th>Commessa</th><th>Committente</th><th>Sede</th><th>Stato</th><th>Avanzamento</th></tr></thead>
     <tbody>${C.map(row).join('')||`<tr><td colspan="5" class="empty">${ICON.building}<div>Nessuna commessa</div></td></tr>`}</tbody></table></div>`;
   v.querySelectorAll('tr[data-com]').forEach(tr=>tr.onclick=()=>openCommessa(tr.dataset.com));
+}
+// Mappa cantieri: pin caschetto per i cantieri aperti + dispositivi nei siti + (se Lone Worker) allarmi.
+let CANTMAP=null;
+function hardhatDivIcon(color){ return L.divIcon({className:'',iconSize:[30,30],iconAnchor:[15,15],
+  html:`<div style="width:30px;height:30px;border-radius:50%;background:${color};display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);font-size:16px">🪖</div>`}); }
+async function vMappaCantieri(v){
+  v.innerHTML=`<div class="page-h"><div><h1>Mappa cantieri</h1><div class="mut">cantieri aperti, dispositivi e (se attivo) allarmi Lone Worker</div></div></div>
+    <div class="row" style="gap:12px;align-items:flex-start;flex-wrap:wrap">
+      <div id="cantMap" style="height:70vh;flex:1 1 60%;min-width:300px;border:1px solid var(--line);border-radius:12px;overflow:hidden"></div>
+      <div id="cantSide" style="flex:1 1 280px;min-width:260px"><div class="small mut">Clicca un caschetto sulla mappa.</div></div>
+    </div>`;
+  const loneOn=ACTIVE_MODS.has('loneworker');
+  const [C,D0]=await Promise.all([api('/commesse').catch(()=>[]), api('/devices').catch(()=>[])]);
+  const open=C.filter(c=>c.status!=='chiuso' && c.site_lat!=null && c.site_lon!=null);
+  const siteIds=new Set(C.map(c=>c.site_id).filter(Boolean));
+  const devs=(D0||[]).filter(d=>d.last_lat!=null&&d.last_lon!=null&&d.site_id&&siteIds.has(d.site_id));
+  setTimeout(async()=>{
+    const el=document.getElementById('cantMap'); if(!el||typeof L==='undefined')return;
+    CANTMAP=L.map(el,{zoomControl:true}).setView([41.9,12.5],5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(CANTMAP);
+    const pts=[];
+    const statusCol={pianificato:'#6b7280',in_corso:'#2563eb',sospeso:'#d97706'};
+    open.forEach(c=>{ const m=L.marker([c.site_lat,c.site_lon],{icon:hardhatDivIcon(statusCol[c.status]||'#2563eb')}).addTo(CANTMAP);
+      m.bindPopup(`<div style="min-width:180px"><b>${esc(c.code)} · ${esc(c.name)}</b>
+        <div class="small">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}</div>
+        <div class="small">Stato: ${esc(COMM_STATI[c.status]||c.status)} · Avanz. ${c.progress}%</div>
+        <button class="btn small" style="margin-top:6px" onclick="openCommessa('${c.id}')">Apri scheda completa</button></div>`);
+      m.on('click',()=>cantSide(c));
+      pts.push([c.site_lat,c.site_lon]); });
+    // dispositivi nei siti dei cantieri
+    devs.forEach(d=>{ const m=L.marker([d.last_lat,d.last_lon]).addTo(CANTMAP);
+      m.bindPopup(`<b>📟 ${esc(d.label||d.external_id||'Dispositivo')}</b><div class="small mut">${esc(d.site_name||'')}${d.last_battery!=null?' · 🔋'+d.last_battery+'%':''}</div>`);
+      pts.push([d.last_lat,d.last_lon]); });
+    // integrazione Lone Worker: allarmi aperti
+    if(loneOn){ try{
+      const to=new Date().toISOString(), from=new Date(Date.now()-30*864e5).toISOString();
+      const ad=await api('/alarms/map?from='+from+'&to='+to+'&etype=');
+      (ad.alarms||[]).forEach(a=>{ if(a.lat==null||a.lon==null)return;
+        const m=(typeof alarmIcon==='function')?L.marker([a.lat,a.lon],{icon:alarmIcon(a)}):L.marker([a.lat,a.lon]);
+        m.addTo(CANTMAP); if(typeof alarmPopup==='function')m.bindPopup(alarmPopup(a)); pts.push([a.lat,a.lon]); });
+    }catch(e){} }
+    if(pts.length) CANTMAP.fitBounds(pts,{padding:[40,40],maxZoom:15});
+    setTimeout(()=>CANTMAP&&CANTMAP.invalidateSize(),150);
+  },60);
+  const list=open.map(c=>`<div class="spread clk" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px" onclick='cantSide(${JSON.stringify(c).replace(/'/g,"&#39;")})'>
+    <div><b class="small">${esc(c.code)}</b> <span class="small mut">${esc(c.name)}</span><div class="small mut">${esc(c.client_name||'—')} · ${c.progress}%</div></div>
+    <span class="chip">${esc(COMM_STATI[c.status]||c.status)}</span></div>`).join('')||'<div class="small mut">Nessun cantiere aperto geolocalizzato.</div>';
+  const side=document.getElementById('cantSide'); if(side) side.innerHTML=`<h2 style="margin:0 0 8px">Cantieri aperti (${open.length})</h2>${list}
+    <div class="small mut" style="margin-top:8px">📟 ${devs.length} dispositivi nei siti${loneOn?' · 🚨 allarmi Lone Worker integrati':''}</div>`;
+}
+function cantSide(c){
+  const side=document.getElementById('cantSide'); if(!side)return;
+  if(CANTMAP&&c.site_lat!=null) CANTMAP.setView([c.site_lat,c.site_lon],15);
+  side.innerHTML=`<div class="card pad"><div class="spread"><b>${esc(c.code)} · ${esc(c.name)}</b><span class="chip">${esc(COMM_STATI[c.status]||c.status)}</span></div>
+    <div class="small mut" style="margin-top:4px">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}</div>
+    <div class="row" style="gap:8px;align-items:center;margin-top:8px">${progBar(c.progress)}<b>${c.progress}%</b></div>
+    <div class="small mut" style="margin-top:6px">${c.lav_count} lavorazioni · ${c.shift_count} turni</div>
+    <button class="btn block" style="margin-top:10px" onclick="openCommessa('${c.id}')">Apri scheda completa →</button></div>
+    <a class="small" style="display:inline-block;margin-top:8px" onclick="route()">← torna all'elenco</a>`;
 }
 function comNew(){
   const v=$('#view'); const sites=v._sites||[], clients=v._clients||[];
