@@ -565,5 +565,22 @@ async fn bootstrap(pool: &sqlx::PgPool) -> anyhow::Result<()> {
             .bind(t2).execute(pool).await?;
         tracing::info!("seeded demo tenants acme + globex");
     }
+    // Idempotente a OGNI boot: riallinea gli stati dei moduli dei tenant demo
+    // all'insieme atteso. Serve perche' YW_SEED_DEMO crea i tenant solo se assenti,
+    // ma un ywdb persistente puo' avere stati moduli vecchi (deriva seed). In dev i
+    // tenant demo sono usa-e-getta, quindi li riportiamo sempre allo stato canonico.
+    for (slug, active) in [
+        ("acme",   "loneworker,iot,consuntivi,interventi,workforce,assistant,giri,cantieri,traccar"),
+        ("globex", "loneworker,interventi,giri"),
+    ] {
+        let codes: Vec<String> = active.split(',').map(|s| s.to_string()).collect();
+        sqlx::query(
+            "INSERT INTO app.tenant_modules(tenant_id,module_code,state)
+             SELECT t.id, m.code, CASE WHEN m.code = ANY($2) THEN 'attivo' ELSE 'non_abilitato' END
+             FROM app.tenants t CROSS JOIN app.modules_catalog m
+             WHERE t.slug=$1
+             ON CONFLICT (tenant_id,module_code) DO UPDATE SET state=EXCLUDED.state, updated_at=now()")
+            .bind(slug).bind(&codes).execute(pool).await?;
+    }
     Ok(())
 }

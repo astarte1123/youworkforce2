@@ -25,13 +25,13 @@ run(){ local s=$1
 skip(){ echo "SKIP  $1   ($2)"; SKIP=$((SKIP+1)); }
 
 # ---- liste per tier ----
-CORE="smoke.sh loneworker-e2e.sh acl-e2e.sh crypto-e2e.sh \
+CORE="smoke.sh loneworker-e2e.sh acl-e2e.sh \
  auth-hardening.sh csrf-hardening.sh ratelimit-hardening.sh session-hardening.sh \
  module-gating-e2e.sh modularity-e2e.sh module-config-e2e.sh config-consumers-e2e.sh \
  geofence-e2e.sh floorplans-e2e.sh alarms-indoor-e2e.sh geocode-e2e.sh posfilter-e2e.sh \
  device-attrs-e2e.sh device-onboarding-e2e.sh sensor-rules-e2e.sh scenarios-e2e.sh \
  ai-e2e.sh ai-agent-e2e.sh reports-e2e.sh workforce-e2e.sh interventi-e2e.sh \
- iot-mgmt-e2e.sh mgmt-e2e.sh outbox-resilience-e2e.sh prompt8-e2e.sh sse-scale.sh \
+ iot-mgmt-e2e.sh mgmt-e2e.sh prompt8-e2e.sh sse-scale.sh \
  field-intervention-e2e.sh field-intervention-slice1-e2e.sh patrols-e2e.sh \
  user-groups-e2e.sh capabilities-e2e.sh custom-roles-e2e.sh capabilities-granular-e2e.sh capabilities-admin-split-e2e.sh gdpr-audit-e2e.sh field-group-e2e.sh module-autonomy-e2e.sh dashboard-layout-e2e.sh teltonika-e2e.sh teltonika-gprs-e2e.sh \
  cantieri-e2e.sh cantieri-squadre-e2e.sh cantieri-cronoprogramma-e2e.sh cantieri-costi-e2e.sh cantieri-giornale-fatture-e2e.sh cronoprogramma-deps-e2e.sh \
@@ -40,9 +40,11 @@ CORE="smoke.sh loneworker-e2e.sh acl-e2e.sh crypto-e2e.sh \
  iot-telemetry-e2e.sh iot-attr-cmd-e2e.sh iot-threshold-e2e.sh"
 GOALERT_OK="goalert-config-e2e.sh goalert-p123-e2e.sh goalert-parity-e2e.sh"
 TRACCAR_OK="traccar-e2e.sh traccar-config-e2e.sh traccar-p2-e2e.sh traccar-poll-e2e.sh \
- traccar-sync-e2e.sh traccar-cmd-e2e.sh traccar-battery-policy-e2e.sh traccar-degraded-e2e.sh traccar-parity-e2e.sh"
+ traccar-sync-e2e.sh traccar-cmd-e2e.sh traccar-battery-policy-e2e.sh traccar-degraded-e2e.sh traccar-parity-e2e.sh \
+ crypto-e2e.sh"
 # suite che richiedono setup esterno o acme appena seedato (escluse se RUN_SETUP=0)
-GOALERT_SETUP="goalert-e2e.sh goalert-delivery.sh goalert-p4-e2e.sh"
+# outbox-resilience: serve un receiver GoAlert che fallisca in modo deterministico + recovery
+GOALERT_SETUP="goalert-e2e.sh goalert-delivery.sh goalert-p4-e2e.sh outbox-resilience-e2e.sh"
 TRACCAR_SETUP="traccar-p1-e2e.sh traccar-conndown-e2e.sh"
 
 [ "$(up "$BASE/health")" = "200" ] || { echo "core down ($BASE) — abort"; exit 2; }
