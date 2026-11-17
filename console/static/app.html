@@ -128,7 +128,7 @@ try{ LANG=localStorage.getItem('yw_lang')|| (navigator.language||'it').slice(0,2
 if(LANG!=='en') LANG='it';
 function t(k, itFallback){ if(LANG==='en' && I18N.en[k]!=null) return I18N.en[k]; return itFallback!=null?itFallback:(I18N.it&&I18N.it[k])||k; }
 function fmtDT(d){ try{ return new Date(d).toLocaleString(LANG==='en'?'en-GB':'it-IT'); }catch(e){ return ''+d; } }
-function fmtD(d){ try{ return new Date(d).toLocaleDateString(LANG==='en'?'en-GB':'it-IT'); }catch(e){ return ''+d; } }
+// NB: fmtD è definita più sotto (versione datetime con fallback '—'); evitata la ridefinizione qui.
 function setLang(l){ LANG=(l==='en')?'en':'it'; try{localStorage.setItem('yw_lang',LANG);}catch(e){} try{document.documentElement.lang=LANG;}catch(e){} location.reload(); }
 function langSelect(){ return `<select class="small" onchange="setLang(this.value)" title="${t('lang','Lingua')}" style="width:auto">
   <option value="it" ${LANG==='it'?'selected':''}>IT</option><option value="en" ${LANG==='en'?'selected':''}>EN</option></select>`; }
