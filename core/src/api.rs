@@ -4822,7 +4822,8 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
          FROM app.commesse c LEFT JOIN app.sites si ON si.id=c.site_id WHERE c.id=$1")
         .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
     let c = match c { Some(r)=>r, None=>{ return Err(err(StatusCode::NOT_FOUND, "commessa non trovata")); } };
-    let lav = sqlx::query("SELECT id,name,position,weight::float8 AS weight,progress_pct,status,note FROM app.commessa_lavorazioni WHERE commessa_id=$1 ORDER BY position,name").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let lav = sqlx::query("SELECT id,name,position,weight::float8 AS weight,progress_pct,status,note,start_date,end_date,depends_on,
+        (end_date IS NOT NULL AND end_date < current_date AND progress_pct<100) AS late FROM app.commessa_lavorazioni WHERE commessa_id=$1 ORDER BY position,name").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let sal = sqlx::query("SELECT s.id,s.sal_date,s.pct,s.amount::float8 AS amount,s.note,s.created_at,u.email AS author FROM app.commessa_sal s LEFT JOIN app.users u ON u.id=s.created_by WHERE s.commessa_id=$1 ORDER BY s.sal_date DESC,s.created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let shifts = sqlx::query("SELECT p.id,p.starts_at,p.ends_at,p.state,u.email FROM app.shift_plans p JOIN app.users u ON u.id=p.user_id WHERE p.commessa_id=$1 AND p.state<>'annullato' ORDER BY p.starts_at").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let teams = sqlx::query("SELECT t.id,t.name,(SELECT count(*) FROM app.team_members m WHERE m.team_id=t.id)::int AS members FROM app.commessa_teams ct JOIN app.teams t ON t.id=ct.team_id WHERE ct.commessa_id=$1 ORDER BY t.name").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
@@ -4837,7 +4838,10 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     let lav_out: Vec<Value> = lav.iter().map(|r| json!({
         "id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"position":r.get::<i32,_>("position"),
         "weight":r.get::<f64,_>("weight"),"progress_pct":r.get::<i32,_>("progress_pct"),
-        "status":r.get::<String,_>("status"),"note":r.try_get::<String,_>("note").ok() })).collect();
+        "status":r.get::<String,_>("status"),"note":r.try_get::<String,_>("note").ok(),
+        "start_date":r.try_get::<chrono::NaiveDate,_>("start_date").ok().map(|d|d.to_string()),
+        "end_date":r.try_get::<chrono::NaiveDate,_>("end_date").ok().map(|d|d.to_string()),
+        "depends_on":r.try_get::<Uuid,_>("depends_on").ok(),"late":r.try_get::<bool,_>("late").ok().unwrap_or(false) })).collect();
     let sal_out: Vec<Value> = sal.iter().map(|r| json!({
         "id":r.get::<Uuid,_>("id"),"sal_date":r.get::<chrono::NaiveDate,_>("sal_date").to_string(),
         "pct":r.get::<i32,_>("pct"),"amount":r.try_get::<f64,_>("amount").ok(),
@@ -4884,33 +4888,44 @@ pub async fn delete_commessa(State(st): State<AppState>, h: HeaderMap, Path(id):
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)]
-pub struct LavorazioneReq { pub name: String, #[serde(default)] pub weight: Option<f64>, #[serde(default)] pub position: Option<i32>, #[serde(default)] pub note: Option<String> }
+pub struct LavorazioneReq { pub name: String, #[serde(default)] pub weight: Option<f64>, #[serde(default)] pub position: Option<i32>, #[serde(default)] pub note: Option<String>,
+    #[serde(default)] pub start_date: Option<String>, #[serde(default)] pub end_date: Option<String> }
 pub async fn create_lavorazione(State(st): State<AppState>, h: HeaderMap, Path(cid): Path<Uuid>, Json(b): Json<LavorazioneReq>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let (sd,ed)=(parse_date_opt(&b.start_date),parse_date_opt(&b.end_date));
+    if let (Some(a),Some(z))=(sd,ed) { if z<a { return Err(err(StatusCode::BAD_REQUEST, "fine prima dell'inizio")); } }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let pos = match b.position { Some(p)=>p, None=> sqlx::query_scalar::<_,Option<i32>>("SELECT max(position) FROM app.commessa_lavorazioni WHERE commessa_id=$1").bind(cid).fetch_one(&mut *tx).await.map_err(ise)?.unwrap_or(0)+1 };
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO app.commessa_lavorazioni(tenant_id,commessa_id,name,position,weight,note) VALUES($1,$2,$3,$4,COALESCE($5::numeric,1),$6) RETURNING id")
-        .bind(tid).bind(cid).bind(b.name.trim()).bind(pos).bind(b.weight).bind(&b.note)
+        "INSERT INTO app.commessa_lavorazioni(tenant_id,commessa_id,name,position,weight,note,start_date,end_date) VALUES($1,$2,$3,$4,COALESCE($5::numeric,1),$6,$7,$8) RETURNING id")
+        .bind(tid).bind(cid).bind(b.name.trim()).bind(pos).bind(b.weight).bind(&b.note).bind(sd).bind(ed)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":id})))
 }
 #[derive(Deserialize)]
-pub struct LavorazionePatch { #[serde(default)] pub name: Option<String>, #[serde(default)] pub weight: Option<f64>, #[serde(default)] pub progress_pct: Option<i32>, #[serde(default)] pub status: Option<String>, #[serde(default)] pub note: Option<String> }
+pub struct LavorazionePatch { #[serde(default)] pub name: Option<String>, #[serde(default)] pub weight: Option<f64>, #[serde(default)] pub progress_pct: Option<i32>, #[serde(default)] pub status: Option<String>, #[serde(default)] pub note: Option<String>,
+    #[serde(default)] pub start_date: Option<String>, #[serde(default)] pub end_date: Option<String>, #[serde(default)] pub depends_on: Option<Uuid>, #[serde(default)] pub clear_dep: Option<bool> }
 pub async fn update_lavorazione(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<LavorazionePatch>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
     if let Some(p)=b.progress_pct { if !(0..=100).contains(&p) { return Err(err(StatusCode::BAD_REQUEST, "avanzamento 0..100")); } }
+    if b.depends_on==Some(id) { return Err(err(StatusCode::BAD_REQUEST, "una lavorazione non può dipendere da sé stessa")); }
+    let (sd,ed)=(parse_date_opt(&b.start_date),parse_date_opt(&b.end_date));
+    let clear_dep=b.clear_dep.unwrap_or(false);
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    // se status='fatto' porta a 100; se 'da_fare' e nessun progress esplicito, lascia
+    // se status='fatto' porta a 100; date e dipendenza con COALESCE (clear_dep azzera la dipendenza)
     let n = sqlx::query(
         "UPDATE app.commessa_lavorazioni SET name=COALESCE($2,name),weight=COALESCE($3::numeric,weight),
          progress_pct=CASE WHEN $5='fatto' THEN 100 ELSE COALESCE($4,progress_pct) END,
-         status=COALESCE($5,status),note=COALESCE($6,note) WHERE id=$1")
+         status=COALESCE($5,status),note=COALESCE($6,note),
+         start_date=COALESCE($7,start_date),end_date=COALESCE($8,end_date),
+         depends_on=CASE WHEN $9 THEN NULL ELSE COALESCE($10,depends_on) END
+         WHERE id=$1")
         .bind(id).bind(&b.name).bind(b.weight).bind(b.progress_pct).bind(&b.status).bind(&b.note)
+        .bind(sd).bind(ed).bind(clear_dep).bind(b.depends_on)
         .execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "lavorazione non trovata")); }

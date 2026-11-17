@@ -1722,13 +1722,18 @@ async function openCommessa(id){
   if(planner){ try{ allTeams=await api('/teams'); }catch(e){} }
   $('#view')._curCommessa=id; $('#view')._allTeams=allTeams;
   const statusSel=planner?`<select id="cmStatus" onchange="comSetStatus('${id}',this.value)">${Object.entries(COMM_STATI).map(([k,l])=>`<option value="${k}" ${k===c.status?'selected':''}>${l}</option>`).join('')}</select>`:`<span class="chip">${esc(COMM_STATI[c.status]||c.status)}</span>`;
+  const lavById={}; (c.lavorazioni||[]).forEach(l=>lavById[l.id]=l);
+  const lavDates=l=>{ if(!l.start_date&&!l.end_date)return ''; const a=l.start_date||'?',z=l.end_date||'?'; return `<span class="small mut">📅 ${esc(a)} → ${esc(z)}</span>`; };
   const lav=(c.lavorazioni||[]).map(l=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
-    <div class="spread"><b class="small">${esc(l.name)}</b><span class="small mut">peso ${l.weight} · ${esc(LAV_STATI[l.status]||l.status)}</span></div>
+    <div class="spread"><b class="small">${esc(l.name)}${l.late?' <span class="chip" style="background:var(--bad);color:#fff">in ritardo</span>':''}</b><span class="small mut">peso ${l.weight} · ${esc(LAV_STATI[l.status]||l.status)}</span></div>
+    <div class="small mut" style="margin-top:2px">${lavDates(l)}${l.depends_on&&lavById[l.depends_on]?` · dopo: ${esc(lavById[l.depends_on].name)}`:''}</div>
     <div class="row" style="gap:8px;align-items:center;margin-top:6px">${progBar(l.progress_pct)}
       ${planner?`<input type="range" min="0" max="100" value="${l.progress_pct}" style="flex:1" onchange="lavSetProgress('${l.id}',this.value)">
       <span class="small" style="width:38px;text-align:right">${l.progress_pct}%</span>
+      <button class="btn ghost small" onclick="lavPlan('${id}','${l.id}')">pianifica</button>
       <button class="btn-ico btn ghost" onclick="lavDel('${l.id}')">${ICON.x}</button>`:`<span class="small">${l.progress_pct}%</span>`}</div></div>`).join('')
     ||'<div class="small mut">Nessuna lavorazione. Aggiungine per misurare l\'avanzamento.</div>';
+  const gantt=ganttHtml(c.lavorazioni||[]);
   const sal=(c.sal||[]).map(s=>`<tr><td class="small">${esc(s.sal_date)}</td><td>${s.pct}%</td><td class="small">${s.amount!=null?'€ '+s.amount.toLocaleString('it-IT'):'—'}</td><td class="small mut">${esc(s.note||'')}</td></tr>`).join('')
     ||`<tr><td colspan="4" class="empty">Nessun SAL registrato</td></tr>`;
   const shifts=(c.shifts||[]).map(s=>`<tr><td class="small">${esc(s.email)}</td><td class="small">${dtLocal(s.starts_at)} → ${dtLocal(s.ends_at)}</td><td>${chip(s.state)}</td></tr>`).join('')
@@ -1757,6 +1762,7 @@ async function openCommessa(id){
       <div class="row" style="gap:8px;align-items:center;margin-top:8px">${progBar(c.progress)}<b>${c.progress}%</b><span class="small mut">avanzamento complessivo (media pesata)</span></div></div>
     <div><div class="spread"><h3 style="margin:0">Lavorazioni (WBS)</h3>${planner?`<a onclick="lavNew('${id}')">+ aggiungi</a>`:''}</div>
       <div style="margin-top:8px">${lav}</div></div>
+    ${gantt}
     <div><div class="spread"><h3 style="margin:0">SAL — stato avanzamento</h3>${planner?`<a onclick="salNew('${id}')">+ registra SAL</a>`:''}</div>
       <table class="table" style="margin-top:6px"><thead><tr><th>Data</th><th>%</th><th>Importo</th><th>Note</th></tr></thead><tbody>${sal}</tbody></table></div>
     <div><h3 style="margin:0">Turni legati</h3>
@@ -1785,19 +1791,59 @@ function lavNew(cid){
   drawer('Nuova lavorazione',`<div class="col" style="gap:10px">
     <label class="small mut">Nome<input id="lvName" placeholder="Scavo e fondazioni"></label>
     <label class="small mut">Peso (quanto incide sul totale)<input id="lvW" type="number" step="0.5" value="1" style="width:120px"></label>
+    <div class="row" style="gap:8px"><label class="small mut grow">Inizio (cronoprogramma)<input id="lvS" type="date"></label><label class="small mut grow">Fine<input id="lvE" type="date"></label></div>
     <label class="small mut">Note<input id="lvNote"></label>
     <button class="btn" onclick="lavSave('${cid}')">Aggiungi</button><div class="cfg-msg small"></div></div>`);
 }
 async function lavSave(cid){
   const m=$('.cfg-msg'); const name=$('#lvName').value.trim();
   if(!name){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
-  try{await api('/commesse/'+cid+'/lavorazioni',{method:'POST',body:JSON.stringify({name,weight:Number($('#lvW').value)||1,note:$('#lvNote').value||null})});
+  try{await api('/commesse/'+cid+'/lavorazioni',{method:'POST',body:JSON.stringify({name,weight:Number($('#lvW').value)||1,note:$('#lvNote').value||null,start_date:$('#lvS').value||null,end_date:$('#lvE').value||null})});
     toast('Lavorazione aggiunta','ok'); closeDrawer(); openCommessa(cid);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
 }
 async function lavSetProgress(id,val){ const p=Number(val)||0; const st=p>=100?'fatto':p>0?'in_corso':'da_fare';
   try{await api('/lavorazioni/'+id,{method:'POST',body:JSON.stringify({progress_pct:p,status:st})}); const cid=$('#view')._curCommessa; if(cid)openCommessa(cid);}catch(e){toast(e.message,'bad');} }
 async function lavDel(id){ if(!await askConfirm('Eliminare la lavorazione?'))return; const cid=$('#view')._curCommessa;
   try{await api('/lavorazioni/'+id,{method:'DELETE'}); toast('Eliminata','ok'); if(cid)openCommessa(cid);}catch(e){toast(e.message,'bad');} }
+// C2 — pianifica cronoprogramma: date + dipendenza (finish-to-start)
+async function lavPlan(cid,lid){
+  let c; try{ c=await api('/commesse/'+cid); }catch(e){ toast(e.message,'bad'); return; }
+  const l=(c.lavorazioni||[]).find(x=>x.id===lid)||{};
+  const others=(c.lavorazioni||[]).filter(x=>x.id!==lid);
+  const depOpts=others.map(x=>`<option value="${x.id}" ${x.id===l.depends_on?'selected':''}>${esc(x.name)}</option>`).join('');
+  drawer('Pianifica · '+esc(l.name),`<div class="col" style="gap:10px">
+    <div class="row" style="gap:8px"><label class="small mut grow">Inizio<input id="lpS" type="date" value="${l.start_date||''}"></label><label class="small mut grow">Fine<input id="lpE" type="date" value="${l.end_date||''}"></label></div>
+    <label class="small mut">Dipende da (inizia dopo che è finita)<select id="lpDep"><option value="">—</option>${depOpts}</select></label>
+    <button class="btn" onclick="lavUpd('${cid}','${lid}')">Salva</button><div class="cfg-msg small"></div></div>`);
+}
+async function lavUpd(cid,lid){
+  const m=$('.cfg-msg'); const dep=$('#lpDep').value;
+  const b={start_date:$('#lpS').value||null,end_date:$('#lpE').value||null};
+  if(dep) b.depends_on=dep; else b.clear_dep=true;
+  if(b.start_date&&b.end_date&&b.end_date<b.start_date){m.textContent='fine prima dell\'inizio';m.style.color='var(--bad)';return;}
+  try{await api('/lavorazioni/'+lid,{method:'POST',body:JSON.stringify(b)}); toast('Cronoprogramma aggiornato','ok'); openCommessa(cid);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
+}
+// Gantt leggero: barre posizionate sull'intervallo min→max delle lavorazioni con date.
+function ganttHtml(lavs){
+  const withD=(lavs||[]).filter(l=>l.start_date&&l.end_date);
+  if(!withD.length) return '<div class="small mut">Cronoprogramma: assegna date alle lavorazioni (pulsante «pianifica») per vedere il Gantt.</div>';
+  const toT=d=>new Date(d+'T00:00:00').getTime();
+  let min=Math.min(...withD.map(l=>toT(l.start_date))), max=Math.max(...withD.map(l=>toT(l.end_date)));
+  const span=Math.max(1,max-min); const fmt=t=>new Date(t).toLocaleDateString('it-IT',{day:'2-digit',month:'2-digit'});
+  const rows=(lavs||[]).map(l=>{
+    if(!l.start_date||!l.end_date) return `<div class="row" style="gap:8px;align-items:center;margin:3px 0"><div class="small mut" style="width:130px;overflow:hidden;text-overflow:ellipsis">${esc(l.name)}</div><div class="small mut" style="flex:1">— senza date —</div></div>`;
+    const a=toT(l.start_date),z=toT(l.end_date);
+    const left=(a-min)/span*100, w=Math.max(2,(z-a)/span*100);
+    const col=l.late?'var(--bad)':(l.progress_pct>=100?'var(--ok,#16a34a)':'var(--brand,#2563eb)');
+    return `<div class="row" style="gap:8px;align-items:center;margin:3px 0">
+      <div class="small" style="width:130px;overflow:hidden;text-overflow:ellipsis" title="${esc(l.name)}">${esc(l.name)}</div>
+      <div style="flex:1;position:relative;height:18px;background:var(--line);border-radius:4px">
+        <div style="position:absolute;left:${left}%;width:${w}%;top:0;bottom:0;background:${col};border-radius:4px" title="${esc(l.start_date)} → ${esc(l.end_date)} · ${l.progress_pct}%">
+          <div style="height:100%;width:${l.progress_pct}%;background:rgba(255,255,255,.35);border-radius:4px"></div></div></div></div>`;
+  }).join('');
+  return `<div><h3 style="margin:0 0 6px">Cronoprogramma</h3>
+    <div class="small mut" style="margin-bottom:4px">${fmt(min)} → ${fmt(max)}</div>${rows}</div>`;
+}
 function salNew(cid){
   drawer('Registra SAL',`<div class="col" style="gap:10px">
     <div class="small mut">Fotografia dell'avanzamento a una data (per fatturazione a milestone).</div>
