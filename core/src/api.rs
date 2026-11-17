@@ -4765,7 +4765,7 @@ pub struct CommessaPatch {
     #[serde(default)] pub name: Option<String>, #[serde(default)] pub status: Option<String>,
     #[serde(default)] pub client_name: Option<String>, #[serde(default)] pub start_date: Option<String>,
     #[serde(default)] pub end_date: Option<String>, #[serde(default)] pub budget_amount: Option<f64>,
-    #[serde(default)] pub note: Option<String>,
+    #[serde(default)] pub note: Option<String>, #[serde(default)] pub labor_cost_hour: Option<f64>,
 }
 pub async fn list_commesse(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
@@ -4816,6 +4816,7 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let c = sqlx::query(
         "SELECT c.id,c.code,c.name,c.status,c.client_name,c.start_date,c.end_date,c.budget_amount::float8 AS budget,
+                c.labor_cost_hour::float8 AS labor_rate,
                 c.note,c.site_id,si.name AS site,
                 COALESCE((SELECT CASE WHEN sum(weight)>0 THEN round(sum(weight*progress_pct)/sum(weight)) ELSE 0 END
                           FROM app.commessa_lavorazioni l WHERE l.commessa_id=c.id),0)::int AS progress
@@ -4829,7 +4830,20 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     let teams = sqlx::query("SELECT t.id,t.name,(SELECT count(*) FROM app.team_members m WHERE m.team_id=t.id)::int AS members FROM app.commessa_teams ct JOIN app.teams t ON t.id=ct.team_id WHERE ct.commessa_id=$1 ORDER BY t.name").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let pres = sqlx::query("SELECT p.id,p.clock_in,p.clock_out,u.email FROM app.commessa_presenze p JOIN app.users u ON u.id=p.user_id WHERE p.commessa_id=$1 ORDER BY p.clock_in DESC LIMIT 50").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let my_open: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.commessa_presenze WHERE commessa_id=$1 AND user_id=$2 AND clock_out IS NULL").bind(id).bind(s.user_id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    // C3 — costi: voci (materiali/noli/...) + ore di presenza chiuse valorizzate al costo orario
+    let costi = sqlx::query("SELECT k.id,k.description,k.category,k.amount::float8 AS amount,k.cost_date,u.email AS author FROM app.commessa_costi k LEFT JOIN app.users u ON u.id=k.created_by WHERE k.commessa_id=$1 ORDER BY k.cost_date DESC,k.created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let labor_hours: f64 = sqlx::query_scalar("SELECT COALESCE(sum(EXTRACT(EPOCH FROM (clock_out-clock_in))/3600.0),0)::float8 FROM app.commessa_presenze WHERE commessa_id=$1 AND clock_out IS NOT NULL").bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
+    let materials_cost: f64 = sqlx::query_scalar("SELECT COALESCE(sum(amount),0)::float8 FROM app.commessa_costi WHERE commessa_id=$1").bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    let labor_rate: f64 = c.try_get::<f64,_>("labor_rate").ok().unwrap_or(0.0);
+    let labor_cost = (labor_hours*labor_rate*100.0).round()/100.0;
+    let total_cost = ((labor_cost+materials_cost)*100.0).round()/100.0;
+    let budget_v = c.try_get::<f64,_>("budget").ok();
+    let variance = budget_v.map(|b| ((b-total_cost)*100.0).round()/100.0);
+    let costi_out: Vec<Value> = costi.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"description":r.get::<String,_>("description"),"category":r.get::<String,_>("category"),
+        "amount":r.get::<f64,_>("amount"),"cost_date":r.get::<chrono::NaiveDate,_>("cost_date").to_string(),
+        "author":r.try_get::<String,_>("author").ok() })).collect();
     let team_out: Vec<Value> = teams.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"members":r.get::<i32,_>("members")})).collect();
     let pres_out: Vec<Value> = pres.iter().map(|r| json!({
         "id":r.get::<Uuid,_>("id"),"email":r.get::<String,_>("email"),
@@ -4859,7 +4873,10 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
         "budget":c.try_get::<f64,_>("budget").ok(),"note":c.try_get::<String,_>("note").ok(),
         "progress":c.get::<i32,_>("progress"),
         "lavorazioni":lav_out,"sal":sal_out,"shifts":sh_out,
-        "teams":team_out,"presenze":pres_out,"my_open":my_open.is_some()
+        "teams":team_out,"presenze":pres_out,"my_open":my_open.is_some(),
+        "labor_rate":labor_rate,"costi":costi_out,
+        "cost":{"labor_hours":(labor_hours*100.0).round()/100.0,"labor_cost":labor_cost,"materials_cost":materials_cost,
+                "total_cost":total_cost,"budget":budget_v,"variance":variance}
     })))
 }
 pub async fn update_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<CommessaPatch>) -> R {
@@ -4869,9 +4886,9 @@ pub async fn update_commessa(State(st): State<AppState>, h: HeaderMap, Path(id):
     let n = sqlx::query(
         "UPDATE app.commesse SET name=COALESCE($2,name),status=COALESCE($3,status),client_name=COALESCE($4,client_name),
          start_date=COALESCE($5,start_date),end_date=COALESCE($6,end_date),budget_amount=COALESCE($7::numeric,budget_amount),
-         note=COALESCE($8,note) WHERE id=$1")
+         note=COALESCE($8,note),labor_cost_hour=COALESCE($9::numeric,labor_cost_hour) WHERE id=$1")
         .bind(id).bind(&b.name).bind(&b.status).bind(&b.client_name)
-        .bind(parse_date_opt(&b.start_date)).bind(parse_date_opt(&b.end_date)).bind(b.budget_amount).bind(&b.note)
+        .bind(parse_date_opt(&b.start_date)).bind(parse_date_opt(&b.end_date)).bind(b.budget_amount).bind(&b.note).bind(b.labor_cost_hour)
         .execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "commessa non trovata")); }
@@ -4996,6 +5013,29 @@ pub async fn commessa_clock_out(State(st): State<AppState>, h: HeaderMap, Path(c
         .bind(cid).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::BAD_REQUEST, "nessuna presenza aperta")); }
+    Ok(Json(json!({"ok":true})))
+}
+// ----- Cantieri C3: costi di commessa -----
+#[derive(Deserialize)]
+pub struct CostoReq { pub description: String, #[serde(default)] pub category: Option<String>, pub amount: f64, #[serde(default)] pub cost_date: Option<String> }
+pub async fn add_commessa_costo(State(st): State<AppState>, h: HeaderMap, Path(cid): Path<Uuid>, Json(b): Json<CostoReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    if b.description.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "descrizione richiesta")); }
+    let d = parse_date_opt(&b.cost_date).unwrap_or_else(|| chrono::Utc::now().date_naive());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.commessa_costi(tenant_id,commessa_id,description,category,amount,cost_date,created_by) VALUES($1,$2,$3,COALESCE($4,'materiale'),$5::numeric,$6,$7) RETURNING id")
+        .bind(tid).bind(cid).bind(b.description.trim()).bind(&b.category).bind(b.amount).bind(d).bind(s.user_id)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn delete_commessa_costo(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.commessa_costi WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)]

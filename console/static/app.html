@@ -1679,6 +1679,7 @@ async function vOrdini(v){
 // ===== Modulo Cantieri: commessa (progetto) -> lavorazioni (WBS) -> SAL =====
 const COMM_STATI={pianificato:'Pianificato',in_corso:'In corso',sospeso:'Sospeso',chiuso:'Chiuso'};
 const LAV_STATI={da_fare:'Da fare',in_corso:'In corso',fatto:'Fatto'};
+const COSTO_CAT={materiale:'Materiale',nolo:'Nolo',subappalto:'Subappalto',altro:'Altro'};
 function progBar(pct){ pct=Math.max(0,Math.min(100,pct||0)); const col=pct>=100?'var(--ok,#16a34a)':pct>0?'var(--brand,#2563eb)':'var(--line)';
   return `<div style="background:var(--line);border-radius:6px;height:8px;overflow:hidden;min-width:90px"><div style="width:${pct}%;height:100%;background:${col}"></div></div>`; }
 async function vCantieri(v){
@@ -1757,6 +1758,20 @@ async function openCommessa(id){
     : `<button class="btn small" onclick="comClock('${id}','in')">Timbra entrata</button>`;
   const presenzeSection=`<div><div class="spread"><h3 style="margin:0">Presenze in cantiere</h3>${clockBtn}</div>
     <table class="table" style="margin-top:6px"><thead><tr><th>Persona</th><th>Entrata</th><th>Uscita</th></tr></thead><tbody>${presRows}</tbody></table></div>`;
+  // C3 — costi vs budget
+  const cs=c.cost||{}; const costiRows=(c.costi||[]).map(k=>`<tr><td class="small">${esc(k.description)}<div class="small mut">${esc(COSTO_CAT[k.category]||k.category)} · ${esc(k.cost_date)}</div></td><td style="text-align:right">${eur(k.amount)}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="costoDel('${id}','${k.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')||`<tr><td colspan="3" class="empty">Nessun costo</td></tr>`;
+  const vClass=cs.variance==null?'':(cs.variance>=0?'color:var(--ok,#16a34a)':'color:var(--bad)');
+  const costiSection=`<div><div class="spread"><h3 style="margin:0">Costi e budget</h3>${planner?`<a onclick="costoNew('${id}')">+ costo</a>`:''}</div>
+    <div class="row" style="gap:8px;align-items:center;margin:8px 0">${planner?`<label class="small mut">Costo orario manodopera (€)<input id="cmRate" type="number" step="0.01" value="${c.labor_rate||0}" style="width:110px"> <button class="btn ghost small" onclick="comRate('${id}')">salva</button></label>`:`<span class="small mut">Costo orario: ${eur(c.labor_rate)}</span>`}</div>
+    <table class="table"><tbody>
+      <tr><td class="small">Manodopera (${cs.labor_hours||0} h × ${eur(c.labor_rate)})</td><td style="text-align:right">${eur(cs.labor_cost)}</td><td></td></tr>
+      <tr><td class="small">Materiali / noli / varie</td><td style="text-align:right">${eur(cs.materials_cost)}</td><td></td></tr>
+      <tr><td class="small"><b>Costo totale</b></td><td style="text-align:right"><b>${eur(cs.total_cost)}</b></td><td></td></tr>
+      <tr><td class="small">Budget</td><td style="text-align:right">${cs.budget!=null?eur(cs.budget):'—'}</td><td></td></tr>
+      <tr><td class="small"><b>Scostamento</b></td><td style="text-align:right;${vClass}"><b>${cs.variance!=null?eur(cs.variance):'—'}</b></td><td></td></tr>
+    </tbody></table>
+    <div class="small mut" style="margin:6px 0 4px">Voci di costo</div>
+    <table class="table"><tbody>${costiRows}</tbody></table></div>`;
   drawer('Commessa · '+esc(c.code),`<div class="col" style="gap:12px">
     <div><div class="spread"><b>${esc(c.name)}</b>${statusSel}</div>
       <div class="small mut" style="margin-top:4px">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}${c.start_date?' · '+esc(c.start_date):''}${c.end_date?' → '+esc(c.end_date):''}${c.budget!=null?' · € '+c.budget.toLocaleString('it-IT'):''}</div>
@@ -1771,6 +1786,7 @@ async function openCommessa(id){
       <div class="small mut" style="margin-top:4px">Per legare un turno: pianificalo in <b>Turni</b> e scegli questa commessa.</div></div>
     ${squadreSection}
     ${presenzeSection}
+    ${costiSection}
     ${planner?`<button class="btn ghost" onclick="comDel('${id}')">${ICON.x} Elimina commessa</button>`:''}</div>`);
 }
 async function comSetStatus(id,st){ try{await api('/commesse/'+id,{method:'POST',body:JSON.stringify({status:st})}); toast('Stato aggiornato','ok');}catch(e){toast(e.message,'bad');} }
@@ -1786,6 +1802,19 @@ async function comClock(id,dir){
     openCommessa(id);
   }catch(e){toast(e.message,'bad');}
 }
+async function comRate(id){ const r=Number($('#cmRate').value)||0;
+  try{await api('/commesse/'+id,{method:'POST',body:JSON.stringify({labor_cost_hour:r})}); toast('Costo orario salvato','ok'); openCommessa(id);}catch(e){toast(e.message,'bad');} }
+function costoNew(cid){ drawer('Nuovo costo',`<div class="col" style="gap:10px">
+    <label class="small mut">Descrizione<input id="koDesc" placeholder="Cemento, nolo gru…"></label>
+    <div class="row" style="gap:8px"><label class="small mut grow">Categoria<select id="koCat">${Object.entries(COSTO_CAT).map(([k,l])=>`<option value="${k}">${l}</option>`).join('')}</select></label>
+      <label class="small mut grow">Importo (€)<input id="koAmt" type="number" step="0.01" value="0"></label></div>
+    <label class="small mut">Data<input id="koDate" type="date" value="${new Date().toISOString().slice(0,10)}"></label>
+    <button class="btn" onclick="costoSave('${cid}')">Aggiungi</button><div class="cfg-msg small"></div></div>`); }
+async function costoSave(cid){ const m=$('.cfg-msg'); const d=$('#koDesc').value.trim(); if(!d){m.textContent='descrizione richiesta';m.style.color='var(--bad)';return;}
+  try{await api('/commesse/'+cid+'/costi',{method:'POST',body:JSON.stringify({description:d,category:$('#koCat').value,amount:Number($('#koAmt').value)||0,cost_date:$('#koDate').value||null})});
+    toast('Costo aggiunto','ok'); closeDrawer(); openCommessa(cid);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
+async function costoDel(cid,id){ if(!await askConfirm('Eliminare il costo?'))return;
+  try{await api('/commessa-costi/'+id,{method:'DELETE'}); toast('Eliminato','ok'); openCommessa(cid);}catch(e){toast(e.message,'bad');} }
 async function comDel(id){ if(!await askConfirm('Eliminare la commessa? (rimuove lavorazioni e SAL; i turni restano, slegati)'))return;
   try{await api('/commesse/'+id,{method:'DELETE'}); toast('Eliminata','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 function lavNew(cid){

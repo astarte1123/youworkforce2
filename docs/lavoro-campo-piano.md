@@ -146,7 +146,11 @@ nello stesso commit. Nessun passo distrugge i dati o umilia il prodotto.
 - ✅ **A2 Listino + valorizzazione** — `price_list_items` (catalogo voci: categoria, unità,
   prezzo) + `work_order_lines` (righe valorizzate sull'intervento, da listino o a mano) (mig 0095);
   menu "Listino"; sezione "Valorizzazione" nell'intervento con totale. e2e `qa/listino-e2e.sh` 7/7.
-- ⏳ prossimi: A3 (agenda dispatch) / C3 (costi vs budget); poi A4-A5 / C4-C5.
+- ✅ **C3 Costi vs budget** — `commessa_costi` (materiali/noli/subappalti) + `commesse.labor_cost_hour`
+  (mig 0096); ore da presenze chiuse × costo orario + materiali vs budget → **scostamento**.
+  Scheda commessa: costo orario, voci di costo, riepilogo budget/consuntivo/scostamento.
+  e2e `qa/cantieri-costi-e2e.sh` 7/7.
+- ⏳ prossimi: A3 (agenda dispatch, AI assegna tecnico); poi A4-A5 / C4-C5.
 
 ## 6. Criteri di "fatto" (definition of done) per slice
 
