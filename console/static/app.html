@@ -1687,8 +1687,8 @@ function progBar(pct){ pct=Math.max(0,Math.min(100,pct||0)); const col=pct>=100?
   return `<div style="background:var(--line);border-radius:6px;height:8px;overflow:hidden;min-width:90px"><div style="width:${pct}%;height:100%;background:${col}"></div></div>`; }
 async function vCantieri(v){
   const planner=can(['pianificatore','tenant_admin']);
-  const [C,sites]=await Promise.all([api('/commesse').catch(()=>[]), planner?api('/sites').catch(()=>[]):Promise.resolve([])]);
-  v._sites=sites;
+  const [C,sites,clients]=await Promise.all([api('/commesse').catch(()=>[]), planner?api('/sites').catch(()=>[]):Promise.resolve([]), planner?api('/clients').catch(()=>[]):Promise.resolve([])]);
+  v._sites=sites; v._clients=clients;
   const row=c=>`<tr class="clk" data-com="${c.id}"><td><b>${esc(c.code)}</b><div class="small mut">${esc(c.name)}</div></td>
     <td class="small">${esc(c.client_name||'—')}</td><td class="small">${esc(c.site||'—')}</td>
     <td><span class="chip">${esc(COMM_STATI[c.status]||c.status)}</span></td>
@@ -1701,21 +1701,27 @@ async function vCantieri(v){
   v.querySelectorAll('tr[data-com]').forEach(tr=>tr.onclick=()=>openCommessa(tr.dataset.com));
 }
 function comNew(){
-  const v=$('#view'); const sites=v._sites||[];
+  const v=$('#view'); const sites=v._sites||[], clients=v._clients||[];
+  const clientField=clients.length
+    ? `<label class="small mut grow">Committente<select id="cmClientId"><option value="">—</option>${clients.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>`
+    : `<label class="small mut grow">Committente<input id="cmClient" placeholder="Azienda XY"></label>`;
   drawer('Nuova commessa',`<div class="col" style="gap:10px">
     <div class="row" style="gap:8px"><label class="small mut grow">Codice<input id="cmCode" placeholder="C-2026-014"></label>
-      <label class="small mut grow">Committente<input id="cmClient" placeholder="Azienda XY"></label></div>
+      ${clientField}</div>
     <label class="small mut">Nome / descrizione<input id="cmName" placeholder="Ristrutturazione capannone"></label>
     <label class="small mut">Sede / cantiere<select id="cmSite"><option value="">—</option>${sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
     <div class="row" style="gap:8px"><label class="small mut grow">Inizio<input id="cmStart" type="date"></label><label class="small mut grow">Fine prevista<input id="cmEnd" type="date"></label></div>
     <label class="small mut">Importo contratto (€, facoltativo)<input id="cmBudget" type="number" step="0.01" style="width:160px"></label>
+    <div class="row" style="gap:8px"><label class="small mut grow">CIG (appalto pubblico)<input id="cmCig"></label><label class="small mut grow">CUP<input id="cmCup"></label></div>
     <label class="small mut">Note<input id="cmNote"></label>
     <button class="btn" onclick="comSave()">Crea commessa</button><div class="cfg-msg small"></div></div>`);
 }
 async function comSave(){
   const m=$('.cfg-msg');
   const b={code:$('#cmCode').value.trim(),name:$('#cmName').value.trim(),site_id:$('#cmSite').value||null,
-    client_name:$('#cmClient').value||null,start_date:$('#cmStart').value||null,end_date:$('#cmEnd').value||null,
+    client_id:($('#cmClientId')&&$('#cmClientId').value)||null,client_name:($('#cmClient')&&$('#cmClient').value)||null,
+    cig:$('#cmCig').value||null,cup:$('#cmCup').value||null,
+    start_date:$('#cmStart').value||null,end_date:$('#cmEnd').value||null,
     budget_amount:$('#cmBudget').value?Number($('#cmBudget').value):null,note:$('#cmNote').value||null};
   if(!b.code||!b.name){m.textContent='codice e nome richiesti';m.style.color='var(--bad)';return;}
   try{await api('/commesse',{method:'POST',body:JSON.stringify(b)}); toast('Commessa creata','ok'); closeDrawer(); route();}
@@ -1794,7 +1800,7 @@ async function openCommessa(id){
     <tbody>${fattRows}</tbody><tfoot><tr><td style="text-align:right"><b>Fatturato</b></td><td style="text-align:right"><b>${eur(fatt_tot)}</b></td><td colspan="2"></td></tr></tfoot></table></div>`;
   drawer('Commessa · '+esc(c.code),`<div class="col" style="gap:12px">
     <div><div class="spread"><b>${esc(c.name)}</b>${statusSel}</div>
-      <div class="small mut" style="margin-top:4px">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}${c.start_date?' · '+esc(c.start_date):''}${c.end_date?' → '+esc(c.end_date):''}${c.budget!=null?' · € '+c.budget.toLocaleString('it-IT'):''}</div>
+      <div class="small mut" style="margin-top:4px">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}${c.start_date?' · '+esc(c.start_date):''}${c.end_date?' → '+esc(c.end_date):''}${c.budget!=null?' · € '+c.budget.toLocaleString('it-IT'):''}${(c.cig||c.cup)?`<br>${c.cig?'CIG: '+esc(c.cig):''}${c.cup?' · CUP: '+esc(c.cup):''}`:''}</div>
       <div class="row" style="gap:8px;align-items:center;margin-top:8px">${progBar(c.progress)}<b>${c.progress}%</b><span class="small mut">avanzamento complessivo (media pesata)</span></div></div>
     <div><div class="spread"><h3 style="margin:0">Lavorazioni (WBS)</h3>${planner?`<a onclick="lavNew('${id}')">+ aggiungi</a>`:''}</div>
       <div style="margin-top:8px">${lav}</div></div>
@@ -1955,9 +1961,14 @@ function cliForm(c){ c=c||{}; return `<div class="col" style="gap:10px">
       <label class="small mut grow">Telefono<input id="clPhone" value="${esc(c.phone||'')}"></label></div>
     <label class="small mut">Email<input id="clEmail" value="${esc(c.email||'')}"></label>
     <label class="small mut">Indirizzo<input id="clAddr" value="${esc(c.address||'')}"></label>
+    <div class="small mut" style="margin-top:2px">Fatturazione elettronica</div>
+    <div class="row" style="gap:8px"><label class="small mut grow">PEC<input id="clPec" value="${esc(c.pec||'')}"></label>
+      <label class="small mut grow">Codice SDI<input id="clSdi" value="${esc(c.sdi||'')}" placeholder="7 caratteri"></label></div>
+    <label class="small mut">Termini di pagamento<input id="clPay" value="${esc(c.payment_terms||'')}" placeholder="es. 30 gg data fattura"></label>
     <label class="small mut">Note<input id="clNote" value="${esc(c.notes||'')}"></label>`; }
 function cliBody(){ return {name:$('#clName').value.trim(),vat:$('#clVat').value||null,phone:$('#clPhone').value||null,
-    email:$('#clEmail').value||null,address:$('#clAddr').value||null,notes:$('#clNote').value||null}; }
+    email:$('#clEmail').value||null,address:$('#clAddr').value||null,notes:$('#clNote').value||null,
+    pec:$('#clPec').value||null,sdi:$('#clSdi').value||null,payment_terms:$('#clPay').value||null}; }
 function cliNew(){ drawer('Nuovo cliente',`${cliForm()}<button class="btn" onclick="cliSave()">Crea</button><div class="cfg-msg small"></div></div>`); }
 async function cliSave(){ const m=$('.cfg-msg'); const b=cliBody(); if(!b.name){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
   try{await api('/clients',{method:'POST',body:JSON.stringify(b)}); toast('Cliente creato','ok'); closeDrawer(); route();}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
@@ -1971,7 +1982,7 @@ async function openClient(id){
   const orders=(c.orders||[]).map(o=>`<tr><td class="small">${esc(o.title)}</td><td>${chip(o.state)}</td><td class="small mut">${o.scheduled_start?dtLocal(o.scheduled_start):'—'}</td></tr>`).join('')||`<tr><td colspan="3" class="empty">Nessun intervento</td></tr>`;
   drawer('Cliente · '+esc(c.name),`<div class="col" style="gap:12px">
     ${canEdit?`<a onclick="cliEdit('${id}')" class="small">✎ modifica anagrafica</a>`:''}
-    <div class="small mut">${esc(c.vat||'')}${c.address?' · '+esc(c.address):''}<br>${esc(c.phone||'')} ${esc(c.email||'')}${c.notes?'<br>'+esc(c.notes):''}</div>
+    <div class="small mut">${esc(c.vat||'')}${c.address?' · '+esc(c.address):''}<br>${esc(c.phone||'')} ${esc(c.email||'')}${(c.pec||c.sdi)?`<br>PEC: ${esc(c.pec||'—')} · SDI: ${esc(c.sdi||'—')}`:''}${c.payment_terms?'<br>Pagamento: '+esc(c.payment_terms):''}${c.notes?'<br>'+esc(c.notes):''}</div>
     <div><div class="spread"><h3 style="margin:0">Referenti</h3>${canEdit?`<a onclick="contNew('${id}')">+ aggiungi</a>`:''}</div>
       <div class="col" style="gap:6px;margin-top:8px">${contacts}</div></div>
     <div><h3 style="margin:0">Interventi del cliente</h3>

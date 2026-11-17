@@ -4756,6 +4756,7 @@ fn parse_date_opt(s: &Option<String>) -> Option<chrono::NaiveDate> {
 pub struct CommessaReq {
     pub code: String, pub name: String,
     #[serde(default)] pub site_id: Option<Uuid>, #[serde(default)] pub client_name: Option<String>,
+    #[serde(default)] pub client_id: Option<Uuid>, #[serde(default)] pub cig: Option<String>, #[serde(default)] pub cup: Option<String>,
     #[serde(default)] pub start_date: Option<String>, #[serde(default)] pub end_date: Option<String>,
     #[serde(default)] pub budget_amount: Option<f64>, #[serde(default)] pub status: Option<String>,
     #[serde(default)] pub note: Option<String>,
@@ -4766,19 +4767,20 @@ pub struct CommessaPatch {
     #[serde(default)] pub client_name: Option<String>, #[serde(default)] pub start_date: Option<String>,
     #[serde(default)] pub end_date: Option<String>, #[serde(default)] pub budget_amount: Option<f64>,
     #[serde(default)] pub note: Option<String>, #[serde(default)] pub labor_cost_hour: Option<f64>,
+    #[serde(default)] pub client_id: Option<Uuid>, #[serde(default)] pub cig: Option<String>, #[serde(default)] pub cup: Option<String>,
 }
 pub async fn list_commesse(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "cantieri").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let rows = sqlx::query(
-        "SELECT c.id,c.code,c.name,c.status,c.client_name,c.start_date,c.end_date,c.budget_amount::float8 AS budget,
+        "SELECT c.id,c.code,c.name,c.status,COALESCE(cl.name,c.client_name) AS client_name,c.start_date,c.end_date,c.budget_amount::float8 AS budget,
                 si.name AS site,
                 COALESCE((SELECT CASE WHEN sum(weight)>0 THEN round(sum(weight*progress_pct)/sum(weight)) ELSE 0 END
                           FROM app.commessa_lavorazioni l WHERE l.commessa_id=c.id),0)::int AS progress,
                 (SELECT count(*) FROM app.commessa_lavorazioni l WHERE l.commessa_id=c.id)::int AS lav_count,
                 (SELECT count(*) FROM app.shift_plans p WHERE p.commessa_id=c.id AND p.state<>'annullato')::int AS shift_count
-         FROM app.commesse c LEFT JOIN app.sites si ON si.id=c.site_id ORDER BY c.created_at DESC")
+         FROM app.commesse c LEFT JOIN app.sites si ON si.id=c.site_id LEFT JOIN app.clients cl ON cl.id=c.client_id ORDER BY c.created_at DESC")
         .fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({
@@ -4800,11 +4802,11 @@ pub async fn create_commessa(State(st): State<AppState>, h: HeaderMap, Json(b): 
     let dup: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.commesse WHERE code=$1").bind(b.code.trim()).fetch_optional(&mut *tx).await.map_err(ise)?;
     if dup.is_some() { return Err(err(StatusCode::CONFLICT, "codice commessa già esistente")); }
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO app.commesse(tenant_id,code,name,site_id,client_name,start_date,end_date,budget_amount,status,note,created_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8::numeric,COALESCE($9,'pianificato'),$10,$11) RETURNING id")
+        "INSERT INTO app.commesse(tenant_id,code,name,site_id,client_name,start_date,end_date,budget_amount,status,note,created_by,client_id,cig,cup)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8::numeric,COALESCE($9,'pianificato'),$10,$11,$12,$13,$14) RETURNING id")
         .bind(tid).bind(b.code.trim()).bind(b.name.trim()).bind(b.site_id).bind(&b.client_name)
         .bind(parse_date_opt(&b.start_date)).bind(parse_date_opt(&b.end_date)).bind(b.budget_amount)
-        .bind(&b.status).bind(&b.note).bind(s.user_id)
+        .bind(&b.status).bind(&b.note).bind(s.user_id).bind(b.client_id).bind(&b.cig).bind(&b.cup)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "commessa_create", json!({"code":b.code,"name":b.name})).await;
@@ -4815,12 +4817,13 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     require_module(&st, tid, "cantieri").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let c = sqlx::query(
-        "SELECT c.id,c.code,c.name,c.status,c.client_name,c.start_date,c.end_date,c.budget_amount::float8 AS budget,
+        "SELECT c.id,c.code,c.name,c.status,COALESCE(cl.name,c.client_name) AS client_name,c.client_id,c.cig,c.cup,
+                c.start_date,c.end_date,c.budget_amount::float8 AS budget,
                 c.labor_cost_hour::float8 AS labor_rate,
                 c.note,c.site_id,si.name AS site,
                 COALESCE((SELECT CASE WHEN sum(weight)>0 THEN round(sum(weight*progress_pct)/sum(weight)) ELSE 0 END
                           FROM app.commessa_lavorazioni l WHERE l.commessa_id=c.id),0)::int AS progress
-         FROM app.commesse c LEFT JOIN app.sites si ON si.id=c.site_id WHERE c.id=$1")
+         FROM app.commesse c LEFT JOIN app.sites si ON si.id=c.site_id LEFT JOIN app.clients cl ON cl.id=c.client_id WHERE c.id=$1")
         .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
     let c = match c { Some(r)=>r, None=>{ return Err(err(StatusCode::NOT_FOUND, "commessa non trovata")); } };
     let lav = sqlx::query("SELECT id,name,position,weight::float8 AS weight,progress_pct,status,note,start_date,end_date,depends_on,
@@ -4881,6 +4884,7 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
         "start_date":c.try_get::<chrono::NaiveDate,_>("start_date").ok().map(|d|d.to_string()),
         "end_date":c.try_get::<chrono::NaiveDate,_>("end_date").ok().map(|d|d.to_string()),
         "budget":c.try_get::<f64,_>("budget").ok(),"note":c.try_get::<String,_>("note").ok(),
+        "client_id":c.try_get::<Uuid,_>("client_id").ok(),"cig":c.try_get::<String,_>("cig").ok(),"cup":c.try_get::<String,_>("cup").ok(),
         "progress":c.get::<i32,_>("progress"),
         "lavorazioni":lav_out,"sal":sal_out,"shifts":sh_out,
         "teams":team_out,"presenze":pres_out,"my_open":my_open.is_some(),
@@ -4897,9 +4901,11 @@ pub async fn update_commessa(State(st): State<AppState>, h: HeaderMap, Path(id):
     let n = sqlx::query(
         "UPDATE app.commesse SET name=COALESCE($2,name),status=COALESCE($3,status),client_name=COALESCE($4,client_name),
          start_date=COALESCE($5,start_date),end_date=COALESCE($6,end_date),budget_amount=COALESCE($7::numeric,budget_amount),
-         note=COALESCE($8,note),labor_cost_hour=COALESCE($9::numeric,labor_cost_hour) WHERE id=$1")
+         note=COALESCE($8,note),labor_cost_hour=COALESCE($9::numeric,labor_cost_hour),
+         client_id=COALESCE($10,client_id),cig=COALESCE($11,cig),cup=COALESCE($12,cup) WHERE id=$1")
         .bind(id).bind(&b.name).bind(&b.status).bind(&b.client_name)
         .bind(parse_date_opt(&b.start_date)).bind(parse_date_opt(&b.end_date)).bind(b.budget_amount).bind(&b.note).bind(b.labor_cost_hour)
+        .bind(b.client_id).bind(&b.cig).bind(&b.cup)
         .execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "commessa non trovata")); }
@@ -7797,7 +7803,8 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
 // ===== Assistenza A1: anagrafica Cliente + referenti =====
 #[derive(Deserialize)]
 pub struct ClientReq { pub name: String, #[serde(default)] pub vat: Option<String>, #[serde(default)] pub address: Option<String>,
-    #[serde(default)] pub phone: Option<String>, #[serde(default)] pub email: Option<String>, #[serde(default)] pub notes: Option<String> }
+    #[serde(default)] pub phone: Option<String>, #[serde(default)] pub email: Option<String>, #[serde(default)] pub notes: Option<String>,
+    #[serde(default)] pub pec: Option<String>, #[serde(default)] pub sdi: Option<String>, #[serde(default)] pub payment_terms: Option<String> }
 pub async fn list_clients(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "interventi").await?;
@@ -7821,8 +7828,8 @@ pub async fn create_client(State(st): State<AppState>, h: HeaderMap, Json(b): Js
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO app.clients(tenant_id,name,vat,address,phone,email,notes,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id")
-        .bind(tid).bind(b.name.trim()).bind(&b.vat).bind(&b.address).bind(&b.phone).bind(&b.email).bind(&b.notes).bind(s.user_id)
+        "INSERT INTO app.clients(tenant_id,name,vat,address,phone,email,notes,pec,sdi,payment_terms,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(&b.vat).bind(&b.address).bind(&b.phone).bind(&b.email).bind(&b.notes).bind(&b.pec).bind(&b.sdi).bind(&b.payment_terms).bind(s.user_id)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "client_create", json!({"name":b.name})).await;
@@ -7832,7 +7839,7 @@ pub async fn get_client(State(st): State<AppState>, h: HeaderMap, Path(id): Path
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "interventi").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let c = sqlx::query("SELECT id,name,vat,address,phone,email,notes,active FROM app.clients WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let c = sqlx::query("SELECT id,name,vat,address,phone,email,notes,active,pec,sdi,payment_terms FROM app.clients WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
     let c = match c { Some(r)=>r, None=>{ return Err(err(StatusCode::NOT_FOUND, "cliente non trovato")); } };
     let ks = sqlx::query("SELECT id,name,role,phone,email FROM app.client_contacts WHERE client_id=$1 ORDER BY name").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let orders = sqlx::query("SELECT o.id,o.title,o.state,o.scheduled_start FROM app.work_orders o WHERE o.client_id=$1 ORDER BY o.scheduled_start NULLS LAST, o.updated_at DESC LIMIT 50").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
@@ -7843,14 +7850,16 @@ pub async fn get_client(State(st): State<AppState>, h: HeaderMap, Path(id): Path
         "state":r.get::<String,_>("state"),"scheduled_start":r.try_get::<chrono::DateTime<chrono::Utc>,_>("scheduled_start").ok()})).collect();
     Ok(Json(json!({"id":c.get::<Uuid,_>("id"),"name":c.get::<String,_>("name"),"vat":c.try_get::<String,_>("vat").ok(),
         "address":c.try_get::<String,_>("address").ok(),"phone":c.try_get::<String,_>("phone").ok(),"email":c.try_get::<String,_>("email").ok(),
-        "notes":c.try_get::<String,_>("notes").ok(),"active":c.get::<bool,_>("active"),"contacts":kout,"orders":oout})))
+        "notes":c.try_get::<String,_>("notes").ok(),"active":c.get::<bool,_>("active"),
+        "pec":c.try_get::<String,_>("pec").ok(),"sdi":c.try_get::<String,_>("sdi").ok(),"payment_terms":c.try_get::<String,_>("payment_terms").ok(),
+        "contacts":kout,"orders":oout})))
 }
 pub async fn update_client(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<ClientReq>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.clients SET name=COALESCE($2,name),vat=$3,address=$4,phone=$5,email=$6,notes=$7 WHERE id=$1")
-        .bind(id).bind(if b.name.trim().is_empty(){None}else{Some(b.name.trim())}).bind(&b.vat).bind(&b.address).bind(&b.phone).bind(&b.email).bind(&b.notes)
+    let n = sqlx::query("UPDATE app.clients SET name=COALESCE($2,name),vat=$3,address=$4,phone=$5,email=$6,notes=$7,pec=$8,sdi=$9,payment_terms=$10 WHERE id=$1")
+        .bind(id).bind(if b.name.trim().is_empty(){None}else{Some(b.name.trim())}).bind(&b.vat).bind(&b.address).bind(&b.phone).bind(&b.email).bind(&b.notes).bind(&b.pec).bind(&b.sdi).bind(&b.payment_terms)
         .execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "cliente non trovato")); }
