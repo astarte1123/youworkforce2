@@ -6698,6 +6698,14 @@ pub async fn ingest_telemetry(State(st): State<AppState>, h: HeaderMap,
             .bind(tid).bind(dev_id).bind(k).bind(ts).bind(num).bind(&s).execute(&mut *tx).await.map_err(ise)?;
         last.insert(k.clone(), v.clone()); n+=1;
     }
+    // attributi client riportati dal device (opz.)
+    if let Some(attrs) = b.get("attributes").and_then(|v| v.as_object()) {
+        for (k,v) in attrs {
+            sqlx::query("INSERT INTO app.device_attributes(tenant_id,device_id,scope,key,value) VALUES($1,$2,'client',$3,$4)
+                         ON CONFLICT (device_id,scope,key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()")
+                .bind(tid).bind(dev_id).bind(k).bind(v).execute(&mut *tx).await.map_err(ise)?;
+        }
+    }
     // ultimo stato negli attributi del device (per vista rapida) + visto ora
     sqlx::query("UPDATE app.devices SET last_attributes=COALESCE(last_attributes,'{}'::jsonb)||$2::jsonb, updated_at=now() WHERE id=$1")
         .bind(dev_id).bind(Value::Object(last)).execute(&mut *tx).await.map_err(ise)?;
@@ -6736,6 +6744,87 @@ pub async fn iot_telemetry_series(State(st): State<AppState>, h: HeaderMap, Path
         "ts":r.get::<chrono::DateTime<chrono::Utc>,_>("ts").to_rfc3339(),
         "num":r.try_get::<f64,_>("num").ok(),"str":r.try_get::<String,_>("str").ok() })).collect();
     Ok(Json(json!(out)))
+}
+// ===== IoT nativo F2: attributi (client/shared/server) + comandi/RPC =====
+pub async fn iot_attributes_get(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, DEVICE_MODS).await?;
+    if !has_cap(&s,"incidents.view") && !has_cap(&s,"config.view") && !has_cap(&s,"iot.manage") { return Err(err(StatusCode::FORBIDDEN,"ruolo non abilitato")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT scope,key,value,updated_at FROM app.device_attributes WHERE device_id=$1 ORDER BY scope,key").bind(dev).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let mut client=serde_json::Map::new(); let mut shared=serde_json::Map::new(); let mut server=serde_json::Map::new();
+    for r in &rows { let sc:String=r.get("scope"); let k:String=r.get("key"); let v:Value=r.get("value");
+        match sc.as_str() { "shared"=>{shared.insert(k,v);}, "server"=>{server.insert(k,v);}, _=>{client.insert(k,v);} } }
+    Ok(Json(json!({"client":client,"shared":shared,"server":server})))
+}
+#[derive(Deserialize)] pub struct AttrSetReq { pub scope: String, pub values: serde_json::Map<String,Value> }
+pub async fn iot_attributes_set(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>, Json(b): Json<AttrSetReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "iot").await?; require_cap(&s,"iot.manage")?;
+    if !["client","shared","server"].contains(&b.scope.as_str()) { return Err(err(StatusCode::BAD_REQUEST,"scope client|shared|server")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    for (k,v) in &b.values {
+        sqlx::query("INSERT INTO app.device_attributes(tenant_id,device_id,scope,key,value) VALUES($1,$2,$3,$4,$5)
+                     ON CONFLICT (device_id,scope,key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()")
+            .bind(tid).bind(dev).bind(&b.scope).bind(k).bind(v).execute(&mut *tx).await.map_err(ise)?;
+    }
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "iot_attributes_set", json!({"device":dev,"scope":b.scope})).await;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)] pub struct RpcReq { pub method: String, #[serde(default)] pub params: Option<Value> }
+pub async fn iot_command_post(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>, Json(b): Json<RpcReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "iot").await?; require_cap(&s,"devices.manage")?;
+    if b.method.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST,"metodo richiesto")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let drow = sqlx::query("SELECT source,external_id FROM app.devices WHERE id=$1").bind(dev).fetch_optional(&mut *tx).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND,"device inesistente"))?;
+    let (src, ext): (String, String) = (drow.get("source"), drow.try_get::<String,_>("external_id").unwrap_or_default());
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.iot_commands(tenant_id,device_id,method,params,created_by) VALUES($1,$2,$3,$4,$5) RETURNING id")
+        .bind(tid).bind(dev).bind(b.method.trim()).bind(&b.params).bind(s.user_id).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    // consegna immediata se il device è su edge Teltonika; altrimenti resta in coda (il device fa pull)
+    let mut status="pending"; let mut result: Option<String> = None;
+    if src=="teltonika" && !ext.is_empty() {
+        match crate::teltonika::send_command(&ext, b.method.trim()).await {
+            Ok(r)=>{ status="done"; result=Some(r); }, Err(e)=>{ status="error"; result=Some(e); }
+        }
+        let mut tx2 = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+        sqlx::query("UPDATE app.iot_commands SET status=$2,result=$3,sent_at=now() WHERE id=$1").bind(id).bind(status).bind(&result).execute(&mut *tx2).await.map_err(ise)?;
+        tx2.commit().await.map_err(ise)?;
+    }
+    Ok(Json(json!({"id":id,"status":status,"result":result})))
+}
+pub async fn iot_commands_list(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, DEVICE_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT id,method,params,status,result,created_at,sent_at FROM app.iot_commands WHERE device_id=$1 ORDER BY created_at DESC LIMIT 50").bind(dev).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"method":r.get::<String,_>("method"),
+        "params":r.try_get::<Value,_>("params").ok(),"status":r.get::<String,_>("status"),"result":r.try_get::<String,_>("result").ok(),
+        "created_at":r.get::<chrono::DateTime<chrono::Utc>,_>("created_at").to_rfc3339() })).collect();
+    Ok(Json(json!(out)))
+}
+/// Pull del device (via token): config shared da applicare + comandi pending (li marca 'sent').
+pub async fn iot_device_pull(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let token = h.get("x-ingest-token").and_then(|v| v.to_str().ok()).map(|s| s.to_string()).or_else(|| q.get("token").cloned())
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing ingest token"))?;
+    let cred = resolve_ingest_token(&st, &token).await.ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
+    let tid = cred.tenant_id;
+    let dev_id: Uuid = match cred.device_id { Some(d)=>d, None=>{ let ext=q.get("id").ok_or_else(|| err(StatusCode::BAD_REQUEST,"device id mancante"))?;
+        sqlx::query_scalar("SELECT id FROM app.devices WHERE tenant_id=$1 AND external_id=$2").bind(tid).bind(ext).fetch_optional(&st.owner_pool).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND,"device"))? } };
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let sh = sqlx::query("SELECT key,value FROM app.device_attributes WHERE device_id=$1 AND scope='shared'").bind(dev_id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let cmds = sqlx::query("SELECT id,method,params FROM app.iot_commands WHERE device_id=$1 AND status='pending' ORDER BY created_at").bind(dev_id).fetch_all(&mut *tx).await.map_err(ise)?;
+    sqlx::query("UPDATE app.iot_commands SET status='sent',sent_at=now() WHERE device_id=$1 AND status='pending'").bind(dev_id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let mut shared=serde_json::Map::new(); for r in &sh { shared.insert(r.get::<String,_>("key"), r.get::<Value,_>("value")); }
+    let cmd_v: Vec<Value> = cmds.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"method":r.get::<String,_>("method"),"params":r.try_get::<Value,_>("params").ok()})).collect();
+    Ok(Json(json!({"shared":shared,"commands":cmd_v})))
 }
 // ---- Teltonika: comando GPRS (codec12) verso un device connesso ----
 #[derive(Deserialize)] pub struct GprsCmdReq { pub command: String }

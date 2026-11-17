@@ -2877,7 +2877,8 @@ function devEdit(d){
       <div id="trail" class="small mut" style="margin-top:8px"></div>
     </div>` : '';
   const telemBlock = (!isNew && d.id) ? `<div class="card pad" style="margin-bottom:12px"><div class="spread"><b class="small">Telemetria</b><button class="btn ghost small" onclick="devTelem('${d.id}')">aggiorna</button></div><div id="telemBox" class="small mut" style="margin-top:6px">—</div></div>` : '';
-  drawer(isNew?'Nuovo dispositivo':'Modifica dispositivo', posBlock+telemBlock+`
+  const iotBlock = (!isNew && d.id) ? `<div class="card pad" style="margin-bottom:12px"><b class="small">Attributi & comandi (IoT)</b><div id="iotBox" class="small mut" style="margin-top:6px">carico…</div></div>` : '';
+  drawer(isNew?'Nuovo dispositivo':'Modifica dispositivo', posBlock+telemBlock+iotBlock+`
     ${!isNew && d.id?`<div class="card pad" style="margin-bottom:12px"><div class="spread"><b class="small">Stato / readiness</b>
       <button class="btn ghost small" onclick="devTestSos('${d.id}')" title="Invia un SOS di prova sul percorso reale">🆘 SOS di prova</button></div>
       <div id="dokReady" class="small mut" style="margin-top:8px">carico…</div></div>`:''}
@@ -2920,7 +2921,28 @@ function devEdit(d){
   if(!isNew && d.source==='traccar'){ devCmds(d.id); devCmdTypes(d.id); }
   if(!isNew && d.id) devReadiness(d.id);
   if(!isNew && d.id) devTelem(d.id);
+  if(!isNew && d.id) devIot(d.id);
 }
+// Attributi (client/shared/server) + comandi IoT nativi.
+async function devIot(id){ const el=$('#iotBox'); if(!el)return; el.textContent='carico…';
+  try{ const [a,cmds]=await Promise.all([api('/iot/devices/'+id+'/attributes'),api('/iot/devices/'+id+'/commands').catch(()=>[])]);
+    const chips=o=>Object.keys(o||{}).length?Object.entries(o).map(([k,v])=>`<span class="tag"><b>${esc(k)}</b>: ${esc(typeof v==='object'?JSON.stringify(v):String(v))}</span>`).join(' '):'<span class="mut">—</span>';
+    const sharedStr=JSON.stringify(a.shared||{},null,0);
+    const cmdRows=(cmds||[]).map(c=>`<div class="small"><span class="chip ${c.status==='done'?'s-attivo':(c.status==='error'?'s-critico':'')}">${esc(c.status)}</span> <b>${esc(c.method)}</b>${c.result?' · '+esc(c.result):''}</div>`).join('')||'<div class="small mut">nessun comando</div>';
+    el.innerHTML=`<div class="small mut" style="margin-top:4px">Riportati dal device (client)</div>${chips(a.client)}
+      <div class="small mut" style="margin-top:8px">Interni (server)</div>${chips(a.server)}
+      <div class="small mut" style="margin-top:8px">Config verso il device (shared) — JSON</div>
+      <textarea id="iotShared" style="width:100%;height:54px">${esc(sharedStr)}</textarea>
+      <button class="btn ghost small" onclick="devSharedSave('${id}')">Salva config shared</button>
+      <div class="small mut" style="margin-top:10px">Comando / RPC</div>
+      <div class="row" style="gap:6px"><input id="iotCmd" class="grow small" placeholder="metodo (es. setOutput)"><input id="iotParams" class="grow small" placeholder='params JSON (opz.)'><button class="btn ghost small" onclick="devCmdSend('${id}')">invia</button></div>
+      <div style="margin-top:6px">${cmdRows}</div>`;
+  }catch(e){ el.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function devSharedSave(id){ let vals; try{ vals=JSON.parse($('#iotShared').value||'{}'); }catch(e){ return toast('JSON non valido','bad'); }
+  try{ await api('/iot/devices/'+id+'/attributes',{method:'POST',body:JSON.stringify({scope:'shared',values:vals})}); toast('Config salvata','ok'); devIot(id);}catch(e){toast(e.message,'bad');} }
+async function devCmdSend(id){ const method=$('#iotCmd').value.trim(); if(!method)return toast('metodo richiesto','warn');
+  let params=null; const pr=$('#iotParams').value.trim(); if(pr){ try{ params=JSON.parse(pr); }catch(e){ return toast('params JSON non valido','bad'); } }
+  try{ const r=await api('/iot/devices/'+id+'/command',{method:'POST',body:JSON.stringify({method,params})}); toast('Comando '+(r.status||'inviato'),'ok'); devIot(id);}catch(e){toast(e.message,'bad');} }
 // Telemetria nativa (time-series YW): ultimi valori per chiave.
 async function devTelem(id){ const el=$('#telemBox'); if(!el)return; el.textContent='carico…';
   try{ const t=await api('/iot/devices/'+id+'/telemetry/latest');
