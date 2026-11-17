@@ -54,6 +54,7 @@ const NAV = [
   {k:'mappa-cantieri', t:'Mappa cantieri', ico:'home', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], feat:'map_outdoor', grp:'work'},
   {k:'calendario',t:'Calendario', ico:'calendar', roles:['pianificatore','tenant_admin','lavoratore','reperibile','responsabile','auditor'], mod:['workforce','interventi','giri','cantieri'], grp:'work'},
   {k:'ronde',     t:'Ronde', ico:'route', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['giri'], grp:'work'},
+  {k:'vigilanza', t:'Cruscotto vigilanza', ico:'shield', roles:['pianificatore','tenant_admin','operatore','auditor'], mod:['giri'], grp:'work'},
   {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], mod:['consuntivi'], grp:'work'},
   {k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], mod:['workforce'], grp:'work'},
   {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'cfg'},
@@ -360,7 +361,7 @@ function route(){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- SSE ----------------
@@ -1672,6 +1673,49 @@ async function ronView(id){ const r=await api('/patrol-rounds/'+id).catch(()=>nu
       <td>${c.punched?(`<span class="chip ${c.punched.ok?'ok':'bad'}">${c.punched.ok?'OK':'KO'}</span> <span class="small mut">${new Date(c.punched.at).toLocaleTimeString()} · ${c.punched.method}</span>`):'<span class="small mut">—</span>'}</td></tr>`).join('')}</tbody></table>
   </div>`);
 }
+// ===== Vigilanza V2: cruscotto (live + ronde dovute) + pianificazione ronde =====
+const SLOT_LAB={svolta:'svolta',mancante:'MANCANTE',attesa:'attesa'};
+const DOW_V=['lun','mar','mer','gio','ven','sab','dom'];
+async function vVigilanza(v){
+  const planner=can(['pianificatore','tenant_admin']);
+  const [d,routes,scheds]=await Promise.all([api('/patrol-dashboard').catch(()=>null), api('/patrol-routes').catch(()=>[]), planner?api('/patrol-schedules').catch(()=>[]):Promise.resolve([])]);
+  v._vroutes=routes;
+  const sm=(d&&d.summary)||{svolte:0,mancanti:0,attese:0,anomalie_oggi:0};
+  const tile=(n,l,col)=>`<div class="card pad" style="flex:1;min-width:110px;text-align:center"><div style="font-size:26px;font-weight:700;${col?'color:'+col:''}">${n}</div><div class="small mut">${l}</div></div>`;
+  const live=(d&&d.live||[]).map(r=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin:4px 0">
+    <div><b class="small">${esc(r.route_name)}</b><div class="small mut">👤 ${esc(r.email.split('@')[0])} · dalle ${new Date(r.started_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}</div></div>
+    <span class="chip">${r.done}/${r.total}</span></div>`).join('')||'<div class="small mut">Nessuna ronda in corso.</div>';
+  // slot dovuti raggruppati per giro
+  const byR={}; (d&&d.slots||[]).forEach(s=>{(byR[s.route_name]=byR[s.route_name]||[]).push(s);});
+  const slotsHtml=Object.keys(byR).map(rn=>`<div style="margin-bottom:6px"><div class="small" style="font-weight:600">${esc(rn)}</div>
+    <div class="row" style="gap:4px;flex-wrap:wrap">${byR[rn].map(s=>{const col=s.status==='mancante'?'background:var(--bad);color:#fff':(s.status==='svolta'?'background:var(--ok,#16a34a);color:#fff':'');return `<span class="chip" style="${col}" title="${esc(s.status)}">${new Date(s.at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}</span>`;}).join('')}</div></div>`).join('')
+    ||'<div class="small mut">Nessuna ronda pianificata per oggi. Crea un piano qui sotto.</div>';
+  const schRows=(scheds||[]).map(s=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin:4px 0">
+    <div><b class="small">${esc(s.route_name)}</b><div class="small mut">${DOW_V.filter((_,i)=>s.days_mask[i]==='1').join(' ')} · ${esc(s.from_time)}–${esc(s.to_time)} · ogni ${s.every_minutes} min</div></div>
+    <button class="btn-ico btn ghost" onclick="schDel('${s.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessun piano. Le ronde dovute si calcolano dai piani.</div>';
+  v.innerHTML=`<div class="page-h"><div><h1>Cruscotto vigilanza</h1><div class="mut">ronde in corso, dovute di oggi e anomalie</div></div></div>
+    <div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:14px">${tile(sm.svolte,'svolte oggi','var(--ok,#16a34a)')}${tile(sm.mancanti,'mancanti','var(--bad)')}${tile(sm.attese,'attese')}${tile(sm.anomalie_oggi,'anomalie oggi','var(--bad)')}</div>
+    <div class="card pad"><h2 style="margin:0 0 6px">Ronde in corso</h2>${live}</div>
+    <div class="card pad" style="margin-top:14px"><h2 style="margin:0 0 6px">Ronde dovute oggi</h2>${slotsHtml}</div>
+    ${planner?`<div class="card pad" style="margin-top:14px"><div class="spread"><h2 style="margin:0">Pianificazione ronde</h2><a onclick="schNew()">+ piano</a></div>
+      <div style="margin-top:8px">${schRows}</div></div>`:''}`;
+}
+function schNew(){ const routes=$('#view')._vroutes||[];
+  if(!routes.length){ toast('Crea prima un giro in Ronde','warn'); return; }
+  drawer('Nuovo piano ronde',`<div class="col" style="gap:10px">
+    <label class="small mut">Giro<select id="scR">${routes.map(r=>`<option value="${r.id}">${esc(r.name)}</option>`).join('')}</select></label>
+    <label class="small mut">Giorni</label>
+    <div class="row" style="gap:6px;flex-wrap:wrap">${DOW_V.map((d,i)=>`<label class="row small" style="gap:3px"><input type="checkbox" class="scD" data-i="${i}" checked>${d}</label>`).join('')}</div>
+    <div class="row" style="gap:8px"><label class="small mut grow">Dalle<input id="scF" type="time" value="22:00"></label><label class="small mut grow">Alle<input id="scT" type="time" value="06:00"></label>
+      <label class="small mut" style="width:120px">Ogni (min)<input id="scE" type="number" value="60" min="5"></label></div>
+    <button class="btn" onclick="schSave()">Crea piano</button><div class="cfg-msg small"></div></div>`);
+}
+async function schSave(){ const m=$('.cfg-msg'); let mask=''; for(let i=0;i<7;i++){ mask+=document.querySelector('.scD[data-i="'+i+'"]')?.checked?'1':'0'; }
+  if(mask==='0000000'){m.textContent='scegli almeno un giorno';m.style.color='var(--bad)';return;}
+  const b={route_id:$('#scR').value,days_mask:mask,from_time:$('#scF').value,to_time:$('#scT').value,every_minutes:parseInt($('#scE').value||'60')};
+  try{await api('/patrol-schedules',{method:'POST',body:JSON.stringify(b)}); toast('Piano creato','ok'); closeDrawer(); route();}catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
+}
+async function schDel(id){ if(!await askConfirm('Eliminare il piano?'))return; try{await api('/patrol-schedules/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
 // Assistenza / manutenzione a visite: appuntamenti dal cliente, rapporto, firma, (listino/consuntivo).
 async function vOrdini(v){
   const O=await api('/orders').catch(()=>[]);

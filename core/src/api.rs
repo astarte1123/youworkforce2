@@ -4185,6 +4185,92 @@ pub async fn close_round(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     audit(&st, tid, &s.email, "close_round", json!({"round":id,"status":status,"done":done,"total":total,"anomalies":anom_count})).await;
     Ok(Json(json!({"status":status,"in_window":in_window,"anomalies":anom_count,"round":v})))
 }
+// ===== Vigilanza V2: ronde pianificate/ricorrenti + cruscotto =====
+#[derive(Deserialize)] pub struct ScheduleReq { pub route_id: Uuid, #[serde(default)] pub days_mask: Option<String>, #[serde(default)] pub from_time: Option<String>, #[serde(default)] pub to_time: Option<String>, #[serde(default)] pub every_minutes: Option<i32> }
+fn parse_time(s:&Option<String>, def:&str)->chrono::NaiveTime {
+    let v=s.as_deref().unwrap_or(def);
+    chrono::NaiveTime::parse_from_str(v,"%H:%M").or_else(|_| chrono::NaiveTime::parse_from_str(v,"%H:%M:%S")).unwrap_or_else(|_| chrono::NaiveTime::from_hms_opt(22,0,0).unwrap())
+}
+pub async fn list_patrol_schedules(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT sc.id,sc.route_id,rt.name AS route_name,sc.days_mask,sc.from_time,sc.to_time,sc.every_minutes,sc.active FROM app.patrol_schedules sc JOIN app.patrol_routes rt ON rt.id=sc.route_id ORDER BY rt.name").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"route_id":r.get::<Uuid,_>("route_id"),"route_name":r.get::<String,_>("route_name"),
+        "days_mask":r.get::<String,_>("days_mask"),
+        "from_time":r.get::<chrono::NaiveTime,_>("from_time").format("%H:%M").to_string(),
+        "to_time":r.get::<chrono::NaiveTime,_>("to_time").format("%H:%M").to_string(),
+        "every_minutes":r.get::<i32,_>("every_minutes"),"active":r.get::<bool,_>("active") })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn create_patrol_schedule(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ScheduleReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?; if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN,"solo pianificatore/admin")); }
+    let dm = b.days_mask.clone().unwrap_or_else(|| "1111111".to_string());
+    if dm.len()!=7 || !dm.chars().all(|c| c=='0'||c=='1') { return Err(err(StatusCode::BAD_REQUEST,"days_mask 7 cifre 0/1")); }
+    let ev = b.every_minutes.unwrap_or(60).max(5);
+    let (ft,tt)=(parse_time(&b.from_time,"22:00"), parse_time(&b.to_time,"06:00"));
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.patrol_schedules(tenant_id,route_id,days_mask,from_time,to_time,every_minutes) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
+        .bind(tid).bind(b.route_id).bind(&dm).bind(ft).bind(tt).bind(ev).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"id":id})))
+}
+pub async fn delete_patrol_schedule(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?; if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN,"solo pianificatore/admin")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.patrol_schedules WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+/// Cruscotto vigilanza: ronde in corso (live), ronde dovute vs svolte oggi, anomalie di giornata.
+pub async fn patrol_dashboard(State(st): State<AppState>, h: HeaderMap) -> R {
+    use chrono::{TimeZone as _, Datelike, Duration};
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?;
+    let now = chrono::Utc::now(); let today = now.date_naive();
+    let widx = today.weekday().num_days_from_monday() as usize;
+    let win_start = chrono::Utc.from_utc_datetime(&today.and_hms_opt(0,0,0).unwrap()) - Duration::hours(12); // include la sera prima (notturni)
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let live = sqlx::query("SELECT ro.id,rt.name AS route_name,u.email,ro.started_at,
+            (SELECT count(*) FROM app.patrol_checkpoints c WHERE c.route_id=ro.route_id)::int AS total,
+            (SELECT count(*) FROM app.patrol_punches p WHERE p.round_id=ro.id AND p.ok)::int AS done
+         FROM app.patrol_rounds ro JOIN app.patrol_routes rt ON rt.id=ro.route_id JOIN app.users u ON u.id=ro.user_id
+         WHERE ro.status='in_corso' ORDER BY ro.started_at").fetch_all(&mut *tx).await.map_err(ise)?;
+    let rounds = sqlx::query("SELECT route_id,started_at FROM app.patrol_rounds WHERE started_at >= $1").bind(win_start).fetch_all(&mut *tx).await.map_err(ise)?;
+    let scheds = sqlx::query("SELECT sc.route_id,rt.name AS route_name,sc.days_mask,sc.from_time,sc.to_time,sc.every_minutes FROM app.patrol_schedules sc JOIN app.patrol_routes rt ON rt.id=sc.route_id WHERE sc.active").fetch_all(&mut *tx).await.map_err(ise)?;
+    let anom_today: i64 = sqlx::query_scalar("SELECT count(*) FROM app.patrol_anomalies WHERE created_at >= $1").bind(win_start).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let round_times: Vec<(Uuid, chrono::DateTime<chrono::Utc>)> = rounds.iter().map(|r| (r.get("route_id"), r.get("started_at"))).collect();
+    let mut slots: Vec<Value> = Vec::new();
+    let (mut done_n, mut miss_n, mut up_n) = (0i64,0i64,0i64);
+    for sc in &scheds {
+        let dm: String = sc.get("days_mask");
+        let ft: chrono::NaiveTime = sc.get("from_time"); let tt: chrono::NaiveTime = sc.get("to_time");
+        let ev: i32 = sc.get("every_minutes");
+        let rid: Uuid = sc.get("route_id"); let rname: String = sc.get("route_name");
+        if dm.chars().nth(widx) != Some('1') { continue; }
+        let start = chrono::Utc.from_utc_datetime(&today.and_time(ft));
+        let mut end = chrono::Utc.from_utc_datetime(&today.and_time(tt));
+        if end <= start { end = end + Duration::days(1); } // notturno
+        let step = Duration::minutes(ev.max(5) as i64);
+        let mut slot = start;
+        while slot <= end {
+            let covered = round_times.iter().any(|(r,t)| *r==rid && *t >= slot - step/2 && *t < slot + step);
+            let status = if covered { done_n+=1; "svolta" } else if slot + step < now { miss_n+=1; "mancante" } else { up_n+=1; "attesa" };
+            slots.push(json!({"route_id":rid,"route_name":rname,"at":slot.to_rfc3339(),"status":status}));
+            slot = slot + step;
+        }
+    }
+    let live_v: Vec<Value> = live.iter().map(|r| json!({
+        "id":r.get::<Uuid,_>("id"),"route_name":r.get::<String,_>("route_name"),"email":r.get::<String,_>("email"),
+        "started_at":r.get::<chrono::DateTime<chrono::Utc>,_>("started_at").to_rfc3339(),
+        "done":r.get::<i32,_>("done"),"total":r.get::<i32,_>("total") })).collect();
+    Ok(Json(json!({"live":live_v,"slots":slots,"summary":{"svolte":done_n,"mancanti":miss_n,"attese":up_n,"anomalie_oggi":anom_today}})))
+}
 
 // ============================ Fase 2 — Forza lavoro + turni ============================
 fn parse_ts(s: &str) -> Result<chrono::DateTime<chrono::Utc>, (StatusCode, String)> {
