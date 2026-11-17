@@ -69,8 +69,11 @@ const NAV_GROUPS=[['op','Operatività'],['safety','Sicurezza Lavoratore'],['iot'
 // Cruscotti IoT attivi (ambienti/casi d'uso applicati al tenant): voci di menu dinamiche sotto
 // "IoT Dashboard". Se vuoto, il gruppo (e quindi il menu) non compare affatto.
 let SCENARIOS=[];
-function scenarioNavItems(){ return (SCENARIOS||[]).map(s=>({
-  k:'scn_'+s.code, t:s.name, ico:'home', roles:['operatore','tenant_admin','auditor'], grp:'iot', scenario:s.code })); }
+// Le dashboard IoT (scenari/casi d'uso) compaiono SOLO se il modulo IoT è attivo (superadmin).
+// Senza modulo IoT attivo non devono vedersi né incidere sull'ambiente del tenant.
+function scenarioNavItems(){ if(!(ACTIVE_MODS.has('iot')||ACTIVE_MODS.has('thingsboard'))) return [];
+  return (SCENARIOS||[]).map(s=>({
+    k:'scn_'+s.code, t:s.name, ico:'home', roles:['operatore','tenant_admin','auditor'], grp:'iot', scenario:s.code })); }
 function allNav(){ return NAV.concat(scenarioNavItems()); }
 // nav raggruppata: intestazioni di sezione, salta i gruppi vuoti dopo i filtri ruolo/modulo.
 // ---- i18n (chrome): IT sorgente, EN opzionale. Le viste restano IT finché migrate. ----
