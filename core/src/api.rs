@@ -3293,15 +3293,18 @@ pub async fn dok_build(st: &AppState, tid: Uuid, actor: &str, b: DokReq) -> Resu
 
     audit(st, tid, actor, "device_onboarding_kit", json!({"device":dev_id,"model":b.model_code,"category":category,"etypes":etypes,"profile":profile_id})).await;
     let base = dok_ingress_base();
+    let tport = std::env::var("YW_TELTONIKA_PORT").ok().filter(|p| p!="off" && p!="0").unwrap_or_else(|| "5027".into());
+    let host = { let h = base.trim_start_matches("https://").trim_start_matches("http://"); h.split(['/',':']).next().unwrap_or(h).to_string() };
     Ok(json!({
         "device_id": dev_id, "external_id": b.external_id.trim(), "model_code": b.model_code,
         "manufacturer": manufacturer, "model_name": model_name, "protocol": protocol,
         "category": category, "category_label": plan.label, "capabilities": caps,
         "etypes": etypes, "routed_etypes": routed, "routed_group": b.group_id, "profile_id": profile_id,
         "token": secret, "handle": handle,
+        // Dati per la guida di collegamento (la console costruisce i passi per protocollo).
+        "server_host": host, "teltonika_port": tport,
         "ingress_url": format!("{base}/api/ingress/traccar?token={secret}"),
         "osmand_url": format!("{base}/api/ingress/osmand?token={secret}&id={}&lat={{lat}}&lon={{lon}}&timestamp={{unix}}", b.external_id.trim()),
-        "note": "Copia il token adesso: non sarà più mostrato. Due canali: Traccar (event forwarding verso ingress_url) OPPURE nativo OsmAnd/HTTP (osmand_url: smartphone/tracker che parlano OsmAnd, senza server Traccar)."
     }))
 }
 

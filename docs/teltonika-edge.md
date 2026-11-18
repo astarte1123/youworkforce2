@@ -47,6 +47,20 @@ Ogni record entra nella **pipeline nativa** (la stessa di OsmAnd/HTTP):
 - **Device**: censire il tracker con **`external_id = IMEI`** e `source = traccar`, poi puntare il
   device (config APN/server Teltonika) a `host:5027`.
 
+## Onboarding guidato (console)
+
+Dopo l'onboarding (Dispositivi & App → *Aggiungi guidato* → Onboarding Kit) la console mostra una
+**guida di collegamento specifica per protocollo**, non i token/URL grezzi:
+
+- **Teltonika** (TCP, identità = IMEI): passi numerati con **Server dati = `host:5027` (TCP)** da
+  impostare sul tracker (app Teltonika Configurator o SMS). **Nessun token** da copiare — il device si
+  identifica con l'IMEI, già registrato → appena si collega i dati arrivano da soli.
+- **Smartphone/OsmAnd**: indirizzo server pronto da incollare nell'app Traccar Client (contiene già
+  la credenziale).
+- Token di ingest e inoltro da un server Traccar esistente restano disponibili sotto **«Altre opzioni»**
+  (avanzate), chiusi di default. L'endpoint `POST /api/devices/onboarding-kit` ritorna `server_host` +
+  `teltonika_port` per costruire la guida.
+
 ## Perimetro e sicurezza
 
 Decode-edge: il perimetro Traccar resta solo la decodifica. Nessun server Traccar richiesto.

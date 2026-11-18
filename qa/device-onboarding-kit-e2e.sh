@@ -22,6 +22,9 @@ D1=$(echo "$K1" | jq "d['device_id']")
 echo "$ET" | grep -q "man_down" && echo "$ET" | grep -q "sos" && ok "personale: etype sos+man_down dedotti" || no "etype" "$ET"
 [ "$PROF" != "None" ] && [ -n "$PROF" ] && ok "personale: profilo di protezione creato" || no "profilo" "$PROF"
 [ -n "$TOK" ] && ok "personale: credenziale di ingest generata" || no "token" "-"
+# guida di collegamento: per un Teltonika (TCP, identità=IMEI) l'onboarding dà server+porta nativa
+PROTO=$(echo "$K1" | jq "d.get('protocol')"); SH=$(echo "$K1" | jq "d.get('server_host')"); TP=$(echo "$K1" | jq "d.get('teltonika_port')")
+{ [ "$PROTO" = "teltonika" ] && [ -n "$SH" ] && [ "$SH" != "None" ] && [ "$TP" = "5027" ]; } && ok "guida collegamento Teltonika: server_host + porta nativa 5027 (no token necessario)" || no "guida collegamento" "proto=$PROTO host=$SH port=$TP"
 
 # --- Veicolo (Teltonika FMB920): nessun sos/man_down, nessun profilo ---
 K2=$(api -H 'content-type: application/json' -X POST "$BASE/api/devices/onboarding-kit" -d "{\"model_code\":\"teltonika-fmb920\",\"external_id\":\"IMEI-V-$RANDOM\",\"group_id\":\"$GID\"}")

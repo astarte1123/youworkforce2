@@ -2950,6 +2950,39 @@ async function dokBulkRun(){
       <div style="max-height:200px;overflow:auto;margin-top:6px">${r.results.map(x=>`<div class="small" style="border-bottom:1px solid var(--line);padding:3px 0">${x.ok?'✓':'<span style="color:var(--bad)">✗</span>'} <span class="mono">${esc(x.external_id)}</span> ${x.ok?('· '+esc(x.category||'')):'· <span style="color:var(--bad)">'+esc(x.error||'')+'</span>'}</div>`).join('')}</div></div>`;
     toast(r.created+' device censiti','ok'); route();
   }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+// Guida di collegamento GUIDATA per protocollo: l'utente deve capire in pochi secondi cosa fare,
+// senza gergo. Per i device NATIVI (Teltonika TCP, identità = IMEI già registrato) niente token.
+function iotSetupGuide(r){
+  const host=r.server_host||location.hostname;
+  const ext=r.external_id||'';
+  if(r.protocol==='teltonika'){ const port=r.teltonika_port||5027;
+    return { title:'Configura il tracker Teltonika (2 minuti)', token_needed:false,
+      primary:{label:'Server dati (dominio : porta)', value:host+':'+port},
+      steps:[
+        'Apri il dispositivo con l\'app Teltonika Configurator (via cavo) oppure mandagli il comando SMS del server.',
+        'Imposta il SERVER dati → Dominio/IP: '+host+'  ·  Porta: '+port+'  ·  Protocollo: TCP.',
+        'Salva. L\'IMEI '+ext+' è già registrato: appena il tracker si collega i dati compaiono da soli (Mappa / Centrale).',
+      ],
+      note:'Nessun token da copiare: il Teltonika si identifica con l\'IMEI.' };
+  }
+  if(r.protocol==='osmand'){
+    return { title:'Configura l\'app sul telefono (1 minuto)', token_needed:true,
+      primary:{label:'Indirizzo server (incollalo nell\'app)', value:(location.origin+'/api/ingress/osmand?token='+(r.token||'')+'&id='+ext)},
+      steps:[
+        'Installa l\'app Traccar Client (Android o iOS).',
+        'Incolla l\'indirizzo server qui sopra e imposta l\'identificativo uguale a quello del dispositivo.',
+        'Avvia il servizio nell\'app: la posizione inizia ad arrivare.',
+      ],
+      note:'L\'indirizzo contiene già la credenziale: non condividerlo.' };
+  }
+  return { title:'Punta il dispositivo al server', token_needed:false,
+    primary:{label:'Server dati', value:host},
+    steps:[
+      'Configura il dispositivo (SMS o configuratore) perché invii i dati a '+host+' (protocollo '+(r.protocol||'-')+').',
+      'L\'identificativo '+ext+' è già registrato in YouWorkforce.',
+    ],
+    note:'Decodifica nativa pronta per Teltonika e smartphone (OsmAnd); altri protocolli richiedono il motore Traccar.' };
+}
 // Device Onboarding Kit: genera device + credenziale + routing + profilo in un colpo.
 async function wizardKit(model_code){
   const m=$('.cfg-msg'); const k=$('#wzKind').value;
@@ -2963,25 +2996,39 @@ async function wizardKit(model_code){
   if(!b.external_id){ m.textContent='IMEI/uniqueId richiesto'; m.style.color='var(--bad)'; return; }
   try{ const r=await api('/devices/onboarding-kit',{method:'POST',body:JSON.stringify(b)});
     const et=(r.etypes||[]).map(e=>`<span class="tag">${esc(e)}</span>`).join('')||'<span class="small mut">nessun segnale di sicurezza</span>';
-    drawer('⚙ Onboarding Kit · '+esc(r.category_label||''), `<div class="col" style="gap:10px">
-      <div class="card pad"><div class="spread"><b>${esc(r.manufacturer||'')} ${esc(r.model_name||'')}</b><span class="chip">${esc(r.category_label||r.category)}</span></div>
-        <div class="small mut" style="margin-top:4px">external_id <span class="mono">${esc(r.external_id)}</span> · protocollo ${esc(r.protocol||'-')}</div>
-        <div class="row" style="flex-wrap:wrap;gap:4px;margin-top:6px">${et}</div>
-        ${r.routed_group?`<div class="small mut" style="margin-top:4px">Allarmi instradati al gruppo selezionato.</div>`:'<div class="small mut" style="margin-top:4px">Nessun gruppo scelto: usa routing globale/default.</div>'}
-        ${r.profile_id?`<div class="small" style="margin-top:4px;color:var(--ok,green)">✓ Profilo di protezione creato/aggiornato.</div>`:''}</div>
-      <div class="card pad" style="border-left:4px solid var(--warn);background:var(--warn-soft)">
+    const S=iotSetupGuide(r);
+    const steps=(S.steps||[]).map((s,i)=>`<div class="row" style="gap:8px;align-items:flex-start;margin:4px 0"><span class="chip s-attivo" style="min-width:20px;text-align:center">${i+1}</span><div class="small">${esc(s)}</div></div>`).join('');
+    const prim=S.primary?`<div class="row" style="gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <div><div class="small mut">${esc(S.primary.label||'')}</div><div class="mono" style="word-break:break-all">${esc(S.primary.value||'')}</div></div>
+        <button class="btn" onclick="navigator.clipboard.writeText('${esc(S.primary.value||'')}');toast('Copiato','ok')">📋 Copia</button></div>`:'';
+    // canali grezzi SOLO come ripiego avanzato, nascosti di default
+    const adv=`<details style="margin-top:4px"><summary class="small mut" style="cursor:pointer">Altre opzioni (avanzate: token / inoltro Traccar)</summary>
+      <div class="card pad" style="margin-top:6px">
         <div class="small mut">Credenziale di ingest (mostrata una sola volta)</div>
         <div class="mono small" style="word-break:break-all;margin:4px 0">${esc(r.token)}</div>
         <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.token)}');toast('Token copiato','ok')">copia token</button>
-        <div class="small mut" style="margin-top:8px">URL ingress (Traccar event forwarding)</div>
+        <div class="small mut" style="margin-top:8px">Inoltro eventi da un server Traccar esistente</div>
         <div class="mono small" style="word-break:break-all;margin:4px 0">${esc(r.ingress_url)}</div>
         <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.ingress_url)}');toast('URL copiato','ok')">copia URL</button>
-        ${r.osmand_url?`<div class="small mut" style="margin-top:8px">URL nativo OsmAnd/HTTP (senza server Traccar)</div>
+        ${r.osmand_url?`<div class="small mut" style="margin-top:8px">HTTP OsmAnd manuale (template)</div>
         <div class="mono small" style="word-break:break-all;margin:4px 0">${esc(r.osmand_url)}</div>
-        <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.osmand_url)}');toast('URL OsmAnd copiato','ok')">copia URL OsmAnd</button>`:''}</div>
-      <div class="small mut">${esc(r.note||'')}</div>
+        <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.osmand_url)}');toast('URL OsmAnd copiato','ok')">copia URL OsmAnd</button>`:''}
+      </div></details>`;
+    drawer('✅ Dispositivo pronto · '+esc(r.manufacturer||'')+' '+esc(r.model_name||''), `<div class="col" style="gap:10px">
+      <div class="card pad"><div class="spread"><b>${esc(r.manufacturer||'')} ${esc(r.model_name||'')}</b><span class="chip">${esc(r.category_label||r.category)}</span></div>
+        <div class="small mut" style="margin-top:4px">Identificativo <span class="mono">${esc(r.external_id)}</span> · già registrato in YouWorkforce</div>
+        <div class="row" style="flex-wrap:wrap;gap:4px;margin-top:6px">${et}</div>
+        ${r.routed_group?`<div class="small mut" style="margin-top:4px">Allarmi instradati al gruppo selezionato.</div>`:'<div class="small mut" style="margin-top:4px">Allarmi su routing globale/default.</div>'}
+        ${r.profile_id?`<div class="small" style="margin-top:4px;color:var(--ok,green)">✓ Profilo di protezione creato/aggiornato.</div>`:''}</div>
+      <div class="card pad" style="border-left:4px solid var(--ok,green)">
+        <b>${esc(S.title||'Come collegarlo')}</b>
+        ${steps}
+        ${prim}
+        ${S.note?`<div class="small mut" style="margin-top:8px">${esc(S.note)}</div>`:''}
+      </div>
+      ${adv}
       <button class="btn" onclick="closeDrawer();route()">Fatto</button></div>`);
-    toast('Onboarding Kit generato','ok');
+    toast('Dispositivo pronto','ok');
   }catch(e){ m.textContent=e.message; m.style.color='var(--bad)'; }
 }
 
