@@ -47,4 +47,4 @@ Assegnare = pianificatore (`plan`); eseguire = membro del gruppo. I gruppi si ge
 `qa/field-group-e2e.sh` — **13/13**: ordine/giro assegnati a gruppo, visibilità membro vs
 non-membro, ACL esecuzione (arrive 200/403, round 200/403), `assign-group` (planner 200 /
 non-planner 403), e giro **senza** gruppo aperto a tutti (default preservato). In CORE di
-`qa/run-all.sh`. Regressione `MODE=core` 41/41 (2 fail noti ambientali crypto/outbox).
+`qa/run-all.sh`. Regressione `MODE=core` 66/66 (crypto/outbox spostati nei tier engines).
