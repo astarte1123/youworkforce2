@@ -6700,6 +6700,17 @@ pub async fn ingest_telemetry(State(st): State<AppState>, h: HeaderMap,
     let values = b.get("values").and_then(|v| v.as_object()).cloned()
         .unwrap_or_else(|| b.as_object().cloned().unwrap_or_default().into_iter().filter(|(k,_)| k!="ts").collect());
     if values.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nessuna telemetria (values vuoto)")); }
+    let attrs = b.get("attributes").and_then(|v| v.as_object()).cloned();
+    let (n, incident) = persist_telemetry(&st, tid, dev_id, ts, &values, attrs.as_ref()).await?;
+    Ok(Json(json!({"ok":true,"device_id":dev_id,"stored":n,"incident":incident})))
+}
+
+/// Cuore telemetria riusabile: normalizza (mappa device -> metrica canonica + unità + trasformazione),
+/// persiste la serie, aggiorna l'ultimo stato, valuta le soglie (su chiavi canoniche + grezze).
+/// Usato dall'ingest HTTP nativo e dai webhook di protocollo (LoRaWAN/TTN, ...).
+pub async fn persist_telemetry(st: &AppState, tid: Uuid, dev_id: Uuid,
+    ts: chrono::DateTime<chrono::Utc>, values: &serde_json::Map<String,Value>,
+    attrs: Option<&serde_json::Map<String,Value>>) -> Result<(usize, Value),(StatusCode,String)> {
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // NORMALIZZAZIONE: mappa del device (chiave grezza -> metrica canonica + trasformazione lineare)
     // e unità delle metriche canoniche. Senza mappa il valore resta grezzo (retro-compatibile).
@@ -6717,12 +6728,11 @@ pub async fn ingest_telemetry(State(st): State<AppState>, h: HeaderMap,
     // canon: payload per le regole/soglie con le CHIAVI CANONICHE (oltre a quelle grezze) -> una regola
     // su 'temperature' scatta a prescindere dalla chiave grezza del device ('t'/'temp'/...).
     let mut canon = values.clone();
-    for (k,v) in &values {
+    for (k,v) in values {
         let (mut num, s) = match v { Value::Number(x)=>(x.as_f64(), None), Value::Bool(x)=>(None, Some(x.to_string())), Value::String(x)=>(x.parse::<f64>().ok().map(Some).unwrap_or(None), Some(x.clone())), _=>(None, Some(v.to_string())) };
         let (metric, unit): (Option<String>, Option<String>) = match kmap.get(k) {
             Some((m, sc, off)) => {
                 if let Some(x) = num { num = Some(sc*x + off); }
-                // chiave canonica nel payload regole: numerico trasformato, altrimenti valore originale
                 let cv = match num { Some(x) => serde_json::Number::from_f64(x).map(Value::Number).unwrap_or_else(|| v.clone()), None => v.clone() };
                 canon.insert(m.clone(), cv);
                 (Some(m.clone()), units.get(m).cloned())
@@ -6733,32 +6743,65 @@ pub async fn ingest_telemetry(State(st): State<AppState>, h: HeaderMap,
             .bind(tid).bind(dev_id).bind(k).bind(ts).bind(num).bind(&s).bind(&metric).bind(&unit).execute(&mut *tx).await.map_err(ise)?;
         last.insert(k.clone(), v.clone()); n+=1;
     }
-    // attributi client riportati dal device (opz.)
-    if let Some(attrs) = b.get("attributes").and_then(|v| v.as_object()) {
+    if let Some(attrs) = attrs {
         for (k,v) in attrs {
             sqlx::query("INSERT INTO app.device_attributes(tenant_id,device_id,scope,key,value) VALUES($1,$2,'client',$3,$4)
                          ON CONFLICT (device_id,scope,key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()")
                 .bind(tid).bind(dev_id).bind(k).bind(v).execute(&mut *tx).await.map_err(ise)?;
         }
     }
-    // ultimo stato negli attributi del device (per vista rapida) + visto ora
     sqlx::query("UPDATE app.devices SET last_attributes=COALESCE(last_attributes,'{}'::jsonb)||$2::jsonb, updated_at=now() WHERE id=$1")
         .bind(dev_id).bind(Value::Object(last)).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"telemetry","device_id":dev_id})}).await;
-    // F3: valuta le soglie (sensor_rules) sui valori CANONICI (+ grezzi); se superata -> incidente nativo
+    publish_event(st, TenantEvent{tenant_id:tid,payload:json!({"type":"telemetry","device_id":dev_id})}).await;
     let mut incident = json!(null);
     let payload = Value::Object(canon.clone());
-    if let Some(etype) = eval_sensor_rules(&st, tid, &payload).await {
+    if let Some(etype) = eval_sensor_rules(st, tid, &payload).await {
         let ext: String = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1").bind(dev_id)
             .fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_default();
         let ev = format!("iot-telem-{}", Uuid::new_v4());
-        let r = persist_ingest(&st, tid, Normalized{
+        let r = persist_ingest(st, tid, Normalized{
             source: "iot".into(), source_event: ev.clone(), idem: ev.clone(), etype,
             device_external_id: Some(ext), site_name: None, lat: None, lon: None, accuracy_m: None,
             correlation: ev, payload, indoor: false, beacon_uid: None, zone: None }).await?;
         incident = r.0;
     }
+    Ok((n, incident))
+}
+
+/// Webhook LoRaWAN/TTN (The Things Network v3) e compatibili (ChirpStack): uplink JSON ->
+/// payload decodificato -> pipeline telemetria nativa (stessa normalizzazione dell'HTTP).
+/// Token device-bound o `?id=`/`end_device_ids.device_id`. CSRF-exempt (macchina).
+pub async fn ingest_lorawan(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>, Json(b): Json<Value>) -> R {
+    let token = h.get("x-ingest-token").and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+        .or_else(|| q.get("token").cloned()).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing ingest token"))?;
+    let cred = resolve_ingest_token(&st, &token).await.ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
+    let tid = cred.tenant_id;
+    let mut mod_ok=false; for m in DEVICE_MODS { if module_active(&st, tid, m).await { mod_ok=true; break; } }
+    if !mod_ok { return Err(err(StatusCode::FORBIDDEN, "nessun modulo dispositivi attivo")); }
+    // payload decodificato: TTN v3 = uplink_message.decoded_payload; ChirpStack = object/objectJSON.
+    let decoded = b.pointer("/uplink_message/decoded_payload")
+        .or_else(|| b.get("object")).or_else(|| b.get("objectJSON")).or_else(|| b.get("decoded_payload"))
+        .and_then(|v| v.as_object()).cloned()
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "payload decodificato assente (serve un decoder a monte)"))?;
+    if decoded.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "payload decodificato vuoto")); }
+    // device: token bound, oppure ?id=, oppure end_device_ids.device_id (TTN)
+    let dev_id: Uuid = match cred.device_id {
+        Some(d) => d,
+        None => {
+            let ext = q.get("id").cloned()
+                .or_else(|| b.pointer("/end_device_ids/device_id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "device id mancante"))?;
+            sqlx::query_scalar("SELECT id FROM app.devices WHERE tenant_id=$1 AND external_id=$2").bind(tid).bind(&ext)
+                .fetch_optional(&st.owner_pool).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "device non registrato"))?
+        }
+    };
+    let ts = b.pointer("/uplink_message/received_at").and_then(|v| v.as_str())
+        .or_else(|| b.get("time").and_then(|v| v.as_str()))
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|d| d.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|| st.clock.now());
+    let (n, incident) = persist_telemetry(&st, tid, dev_id, ts, &decoded, None).await?;
     Ok(Json(json!({"ok":true,"device_id":dev_id,"stored":n,"incident":incident})))
 }
 pub async fn iot_telemetry_latest(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>) -> R {
@@ -6826,6 +6869,109 @@ pub async fn device_map_set(State(st): State<AppState>, h: HeaderMap, Path(dev):
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "device_map_set", json!({"device":dev,"n":b.rows.len()})).await;
     Ok(Json(json!({"ok":true,"n":b.rows.len()})))
+}
+
+// ---- IoT Fase 2: Blueprint (profilo-lavoro) + attivazione zero-touch ----
+/// Catalogo dei blueprint: "che lavoro deve fare il device". L'admin ne sceglie uno e l'attivazione
+/// configura tutto da sola (device + token + normalizzazione + soglie + istruzioni di collegamento).
+pub async fn iot_blueprints_list(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, DEVICE_MODS).await?;
+    let rows = sqlx::query("SELECT code,name,job,category,protocol,key_map,default_rules,icon FROM app.iot_blueprints ORDER BY sort,code")
+        .fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "code":r.get::<String,_>("code"),"name":r.get::<String,_>("name"),"job":r.get::<String,_>("job"),
+        "category":r.get::<String,_>("category"),"protocol":r.get::<String,_>("protocol"),"icon":r.get::<String,_>("icon"),
+        "metrics": r.get::<Value,_>("key_map").as_array().map(|a| a.iter().filter_map(|x| x.get("metric").and_then(|m| m.as_str())).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>()).unwrap_or_default(),
+        "rules": r.get::<Value,_>("default_rules") })).collect();
+    Ok(Json(json!(out)))
+}
+
+#[derive(Deserialize)]
+pub struct ActivateReq { pub blueprint: String, pub external_id: String, #[serde(default)] pub label: Option<String>, #[serde(default)] pub site_id: Option<Uuid> }
+/// Attivazione zero-touch: da un blueprint crea il device + token device-bound + mappa di
+/// normalizzazione + soglie di default, e restituisce le istruzioni di collegamento per il protocollo.
+/// "L'admin dice quale device per quale lavoro; tutto il resto si sistema."
+pub async fn iot_activate(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ActivateReq>) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
+    let tid = s.tenant_id.unwrap();
+    if !module_active(&st, tid, "iot").await { return Err(err(StatusCode::FORBIDDEN, "modulo IoT non attivo")); }
+    let ext = b.external_id.trim();
+    if ext.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "identificativo dispositivo richiesto")); }
+    // blueprint
+    let bp = sqlx::query("SELECT name,protocol,key_map,default_rules FROM app.iot_blueprints WHERE code=$1")
+        .bind(&b.blueprint).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "blueprint sconosciuto"))?;
+    let bp_name: String = bp.get("name");
+    let protocol: String = bp.get("protocol");
+    let key_map: Value = bp.get("key_map");
+    let default_rules: Value = bp.get("default_rules");
+
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // device (source 'iot'); external_id unico per tenant
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app.devices WHERE tenant_id=$1 AND external_id=$2)")
+        .bind(tid).bind(ext).fetch_one(&mut *tx).await.map_err(ise)?;
+    if exists { return Err(err(StatusCode::CONFLICT, "esiste già un dispositivo con questo identificativo")); }
+    let label = b.label.clone().unwrap_or_else(|| bp_name.clone());
+    let cfg = json!({"blueprint": b.blueprint, "protocol": protocol});
+    let dev_id: Uuid = sqlx::query_scalar("INSERT INTO app.devices(tenant_id,external_id,source,label,site_id,config) VALUES($1,$2,'iot',$3,$4,$5) RETURNING id")
+        .bind(tid).bind(ext).bind(&label).bind(b.site_id).bind(&cfg).fetch_one(&mut *tx).await.map_err(ise)?;
+    // mappa di normalizzazione dal blueprint
+    if let Some(arr) = key_map.as_array() {
+        for m in arr {
+            let (Some(rk), Some(mt)) = (m.get("raw_key").and_then(|x| x.as_str()), m.get("metric").and_then(|x| x.as_str())) else { continue };
+            let sc = m.get("scale").and_then(|x| x.as_f64()).unwrap_or(1.0);
+            let off = m.get("offset").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            sqlx::query("INSERT INTO app.device_metric_map(tenant_id,device_id,raw_key,metric,scale,offset_v) VALUES($1,$2,$3,$4,$5,$6)
+                         ON CONFLICT (device_id,raw_key) DO UPDATE SET metric=EXCLUDED.metric,scale=EXCLUDED.scale,offset_v=EXCLUDED.offset_v")
+                .bind(tid).bind(dev_id).bind(rk).bind(mt).bind(sc).bind(off).execute(&mut *tx).await.map_err(ise)?;
+        }
+    }
+    // soglie di default (idempotenti: non duplica una regola uguale già presente nel tenant)
+    let mut rules_added = 0;
+    if let Some(arr) = default_rules.as_array() {
+        for r in arr {
+            let metric = r.get("metric").and_then(|x| x.as_str()).unwrap_or("");
+            let op = r.get("op").and_then(|x| x.as_str()).unwrap_or("");
+            let etype = r.get("etype").and_then(|x| x.as_str()).unwrap_or("");
+            if metric.is_empty() || !RULE_OPS.contains(&op) || !RULE_ETYPES.contains(&etype) { continue; }
+            let threshold = r.get("threshold").and_then(|x| x.as_f64());
+            let label_r = r.get("label").and_then(|x| x.as_str());
+            let dup: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app.sensor_rules WHERE metric=$1 AND op=$2 AND etype=$3 AND threshold IS NOT DISTINCT FROM $4)")
+                .bind(metric).bind(op).bind(etype).bind(threshold).fetch_one(&mut *tx).await.map_err(ise)?;
+            if dup { continue; }
+            sqlx::query("INSERT INTO app.sensor_rules(tenant_id,metric,op,threshold,etype,label,sort) VALUES($1,$2,$3,$4,$5,$6,100)")
+                .bind(tid).bind(metric).bind(op).bind(threshold).bind(etype).bind(label_r).execute(&mut *tx).await.map_err(ise)?;
+            rules_added += 1;
+        }
+    }
+    tx.commit().await.map_err(ise)?;
+    // token device-bound (segreto mostrato UNA volta)
+    let secret = format!("iot-{}", &auth::new_token()[..24]);
+    let hash = hash_token(&secret);
+    let handle = format!("iot-{}", &secret[4..12]);
+    sqlx::query("INSERT INTO app.ingest_tokens(token,token_hash,tenant_id,source,device_id,label) VALUES($1,$2,$3,'iot',$4,$5)")
+        .bind(&handle).bind(&hash).bind(tid).bind(dev_id).bind(&label).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, &s.email, "iot_activate", json!({"blueprint":b.blueprint,"device":dev_id,"external_id":ext})).await;
+    // istruzioni di collegamento per protocollo (il segreto va nell'URL/credenziale)
+    let connect = match protocol.as_str() {
+        "lorawan" => json!({"protocol":"lorawan",
+            "webhook_url": format!("/api/ingress/lorawan?token={secret}"),
+            "note":"Imposta questo URL come webhook di uplink su TTN/ChirpStack (serve un decoder a monte che produca il payload decodificato)."}),
+        "mqtt" => json!({"protocol":"mqtt",
+            "topic": format!("yw/{tid}/{ext}/telemetry"),
+            "username": secret,
+            "body_example": {"values":{"co2":650,"temperature":22.4}},
+            "note":"Broker MQTT nativo YW (porta 1883). Pubblica JSON {values:{...}} sul topic; usa il token come username."}),
+        _ => json!({"protocol":"http",
+            "url": format!("/api/ingress/telemetry?token={secret}"),
+            "method":"POST",
+            "body_example": {"values":{"temperature":4.2}},
+            "note":"Invia una POST JSON a questo URL ad ogni misura."}),
+    };
+    Ok(Json(json!({"ok":true,"device_id":dev_id,"external_id":ext,"blueprint":b.blueprint,
+        "token":secret,"rules_added":rules_added,"connect":connect,
+        "note":"Copia il token adesso: non sarà più mostrato."})))
 }
 pub async fn iot_telemetry_series(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {

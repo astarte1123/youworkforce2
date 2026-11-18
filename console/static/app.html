@@ -2677,7 +2677,8 @@ async function vDispositivi(v){
   const who=d=> d.asset_name?('🚚 '+esc(d.asset_name)) : d.user_email?('👤 '+esc(d.user_email)) : '—';
   const model=d=> d.model_code?esc((d.manufacturer||'')+' '+(d.model_name||'')):'<span class="mut">generico</span>';
   v.innerHTML=`<div class="page-h"><div><h1>${t('dev_title','Dispositivi')}</h1><div class="mut">${D.length} ${t('dev_count','dispositivi')} · ${t('dev_sub','catalogo, flotta')}</div></div>
-    <div class="row" style="gap:8px"><button class="btn" onclick="wizardStart()">${t('dev_add_guided','+ Aggiungi (guidato)')}</button>
+    <div class="row" style="gap:8px"><button class="btn" onclick="iotActivateStart()">⚡ Attiva per un lavoro (IoT)</button>
+      <button class="btn ghost" onclick="wizardStart()">${t('dev_add_guided','+ Aggiungi (guidato)')}</button>
       <button class="btn ghost" onclick="dokBulkStart()">⇪ Import massivo</button>
       <button class="btn ghost" onclick="devEdit(null)">${t('dev_add_manual','manuale')}</button></div></div>
   <div class="card pad" style="margin-bottom:10px"><div class="row" style="gap:8px;align-items:center">
@@ -2789,6 +2790,43 @@ async function wizardSave(model_code){
   }catch(e){ m.textContent=e.message; m.style.color='var(--bad)'; }
 }
 // DOK massivo: censisce N device da una lista (un IMEI per riga, opz. ,email-lavoratore).
+// ⚡ Attivazione IoT zero-touch: scegli il LAVORO (blueprint) -> tutto si configura da solo.
+async function iotActivateStart(){
+  let bps=[]; try{ bps=await api('/iot/blueprints'); }catch(e){ toast(e.message,'bad'); return; }
+  if(!bps.length){ toast('Nessun blueprint disponibile','bad'); return; }
+  const proto={http:'HTTP',mqtt:'MQTT',lorawan:'LoRaWAN'};
+  const opt=b=>`<option value="${b.code}">${esc(b.name)} — ${proto[b.protocol]||b.protocol}</option>`;
+  drawer('⚡ Attiva un dispositivo per un lavoro', `<div class="col" style="gap:10px">
+      <div class="small mut">Scegli <b>che lavoro</b> deve fare il dispositivo: la piattaforma crea tutto da sola (credenziale, normalizzazione dei dati, soglie) e ti dà le istruzioni per collegarlo.</div>
+      <label class="small">Lavoro<select id="bpSel" class="in" onchange="iotBpInfo()">${bps.map(opt).join('')}</select></label>
+      <div id="bpInfo" class="small mut"></div>
+      <label class="small">Identificativo dispositivo (IMEI / DevEUI / seriale)<input id="bpExt" class="in" placeholder="es. sensore-cella-1"></label>
+      <label class="small">Etichetta (opzionale)<input id="bpLbl" class="in" placeholder="es. Cella frigo cucina"></label>
+      <div class="row" style="gap:8px"><button class="btn" onclick="iotActivateRun()">Attiva</button></div>
+      <div id="bpOut" class="small"></div></div>`);
+  window._BPS=bps; iotBpInfo();
+}
+function iotBpInfo(){ const el=document.getElementById('bpInfo'); if(!el)return; const b=(window._BPS||[]).find(x=>x.code===document.getElementById('bpSel').value); if(!b)return;
+  el.innerHTML=`${esc(b.job)}<br><span class="mut">Misura: ${(b.metrics||[]).join(', ')||'—'}</span>`; }
+async function iotActivateRun(){
+  const blueprint=document.getElementById('bpSel').value, external_id=document.getElementById('bpExt').value.trim(), label=document.getElementById('bpLbl').value.trim();
+  if(!external_id){ toast('Indica l\'identificativo del dispositivo','bad'); return; }
+  try{ const r=await api('/iot/activate',{method:'POST',body:JSON.stringify({blueprint,external_id,label:label||undefined})});
+    const c=r.connect||{}; const origin=location.origin;
+    let how='';
+    if(c.protocol==='lorawan'){ how=`<div class="small">Imposta su TTN/ChirpStack il <b>webhook di uplink</b>:</div><code class="small" style="display:block;word-break:break-all;margin:3px 0;padding:4px 6px;background:var(--panel2,#0002);border-radius:4px">${origin}${esc(c.webhook_url)}</code>`; }
+    else if(c.protocol==='mqtt'){ how=`<div class="small">Broker MQTT nativo YW (porta 1883). Pubblica <code>{"values":{…}}</code>.</div>
+        <div class="small">Topic: <code>${esc(c.topic)}</code><br>Username: <code>${esc(c.username)}</code></div>`; }
+    else { how=`<div class="small">Invia una <b>POST JSON</b> ad ogni misura:</div><code class="small" style="display:block;word-break:break-all;margin:3px 0;padding:4px 6px;background:var(--panel2,#0002);border-radius:4px">${origin}${esc(c.url)}</code>
+        <div class="small mut">corpo es.: <code>${esc(JSON.stringify(c.body_example||{values:{}}))}</code></div>`; }
+    document.getElementById('bpOut').innerHTML=`<div class="card pad" style="margin-top:8px;border-color:var(--ok,green)">
+        <b>✓ Attivato.</b> Dispositivo pronto a ricevere dati normalizzati${r.rules_added?` · ${r.rules_added} soglia/e di default`:''}.
+        <div class="small" style="margin-top:6px">🔑 Token (copialo ora, non sarà più mostrato):</div>
+        <code class="small" style="display:block;word-break:break-all;margin:3px 0;padding:4px 6px;background:var(--panel2,#0002);border-radius:4px">${esc(r.token)}</code>
+        <div class="small" style="margin-top:6px">Come collegarlo:</div>${how}</div>`;
+    toast('Dispositivo attivato','ok'); if(typeof loadDevices==='function') loadDevices();
+  }catch(e){ toast(e.message,'bad'); }
+}
 let DOKB={model:null};
 async function dokBulkStart(){
   DOKB={model:null};

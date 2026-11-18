@@ -18,6 +18,13 @@ esterno** (coerente con la direzione self-contained; unica integrazione esterna 
 - **Comandi / RPC** (`iot_commands`): consegna diretta (edge Teltonika) o in coda (il device fa pull).
 - **Soglie → incidenti**: le regole sensori (`sensor_rules`) valutate sulla telemetria creano
   incidenti nativi (centrale + escalation con Lone Worker attivo).
+- **Blueprint / attivazione zero-touch** (Fase 2): l'admin sceglie *che lavoro* deve fare il device
+  (`iot_blueprints`: catena del freddo, livello serbatoio, energia, qualità aria, varchi, conteggio,
+  ambiente LoRaWAN) e `POST /api/iot/activate` configura TUTTO da solo — device + token device-bound
+  + mappa di normalizzazione + soglie di default — e restituisce le **istruzioni di collegamento** per
+  il protocollo (HTTP / MQTT / LoRaWAN). "Quale device per quale lavoro; il resto si sistema."
+- **Protocolli di ingest**: HTTP nativo (`/api/ingress/telemetry`), webhook **LoRaWAN/TTN**
+  (`/api/ingress/lorawan`, payload decodificato → stessa pipeline), MQTT nativo (in arrivo).
 - **Scenari/Dashboard IoT**: casi d'uso applicabili per tenant.
 
 ## API native
@@ -33,6 +40,9 @@ esterno** (coerente con la direzione self-contained; unica integrazione esterna 
 | Attributi | `GET/POST /api/iot/devices/:id/attributes` (`{scope, values}`) |
 | Comando/RPC | `POST /api/iot/devices/:id/command` (`{method, params?}`) · `GET …/commands` |
 | Soglie | `GET/POST /api/sensor-rules` (regole metric/op/threshold/etype) |
+| Blueprint (lavori) | `GET /api/iot/blueprints` |
+| Attivazione zero-touch | `POST /api/iot/activate` (`{blueprint, external_id, label?}`) → device+token+mappa+soglie+istruzioni |
+| Webhook LoRaWAN/TTN | `POST /api/ingress/lorawan?token=…` (uplink con payload decodificato) |
 
 ## Perimetro / integrazione
 
