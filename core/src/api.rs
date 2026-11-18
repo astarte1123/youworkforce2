@@ -6701,11 +6701,36 @@ pub async fn ingest_telemetry(State(st): State<AppState>, h: HeaderMap,
         .unwrap_or_else(|| b.as_object().cloned().unwrap_or_default().into_iter().filter(|(k,_)| k!="ts").collect());
     if values.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nessuna telemetria (values vuoto)")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // NORMALIZZAZIONE: mappa del device (chiave grezza -> metrica canonica + trasformazione lineare)
+    // e unità delle metriche canoniche. Senza mappa il valore resta grezzo (retro-compatibile).
+    let map_rows = sqlx::query("SELECT raw_key,metric,scale,offset_v FROM app.device_metric_map WHERE device_id=$1")
+        .bind(dev_id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let mut kmap: std::collections::HashMap<String,(String,f64,f64)> = std::collections::HashMap::new();
+    for r in &map_rows { kmap.insert(r.get::<String,_>("raw_key"), (r.get::<String,_>("metric"), r.get::<f64,_>("scale"), r.get::<f64,_>("offset_v"))); }
+    let mut units: std::collections::HashMap<String,String> = std::collections::HashMap::new();
+    if !kmap.is_empty() {
+        for r in &sqlx::query("SELECT metric,unit FROM app.iot_metrics").fetch_all(&mut *tx).await.map_err(ise)? {
+            units.insert(r.get::<String,_>("metric"), r.get::<String,_>("unit"));
+        }
+    }
     let mut n=0; let mut last = serde_json::Map::new();
+    // canon: payload per le regole/soglie con le CHIAVI CANONICHE (oltre a quelle grezze) -> una regola
+    // su 'temperature' scatta a prescindere dalla chiave grezza del device ('t'/'temp'/...).
+    let mut canon = values.clone();
     for (k,v) in &values {
-        let (num, s) = match v { Value::Number(x)=>(x.as_f64(), None), Value::Bool(x)=>(None, Some(x.to_string())), Value::String(x)=>(x.parse::<f64>().ok().map(Some).unwrap_or(None), Some(x.clone())), _=>(None, Some(v.to_string())) };
-        sqlx::query("INSERT INTO app.device_telemetry(tenant_id,device_id,key,ts,num,str) VALUES($1,$2,$3,$4,$5,$6)")
-            .bind(tid).bind(dev_id).bind(k).bind(ts).bind(num).bind(&s).execute(&mut *tx).await.map_err(ise)?;
+        let (mut num, s) = match v { Value::Number(x)=>(x.as_f64(), None), Value::Bool(x)=>(None, Some(x.to_string())), Value::String(x)=>(x.parse::<f64>().ok().map(Some).unwrap_or(None), Some(x.clone())), _=>(None, Some(v.to_string())) };
+        let (metric, unit): (Option<String>, Option<String>) = match kmap.get(k) {
+            Some((m, sc, off)) => {
+                if let Some(x) = num { num = Some(sc*x + off); }
+                // chiave canonica nel payload regole: numerico trasformato, altrimenti valore originale
+                let cv = match num { Some(x) => serde_json::Number::from_f64(x).map(Value::Number).unwrap_or_else(|| v.clone()), None => v.clone() };
+                canon.insert(m.clone(), cv);
+                (Some(m.clone()), units.get(m).cloned())
+            }
+            None => (None, None),
+        };
+        sqlx::query("INSERT INTO app.device_telemetry(tenant_id,device_id,key,ts,num,str,metric,unit) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+            .bind(tid).bind(dev_id).bind(k).bind(ts).bind(num).bind(&s).bind(&metric).bind(&unit).execute(&mut *tx).await.map_err(ise)?;
         last.insert(k.clone(), v.clone()); n+=1;
     }
     // attributi client riportati dal device (opz.)
@@ -6721,9 +6746,9 @@ pub async fn ingest_telemetry(State(st): State<AppState>, h: HeaderMap,
         .bind(dev_id).bind(Value::Object(last)).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"telemetry","device_id":dev_id})}).await;
-    // F3: valuta le soglie (sensor_rules) sui valori; se superata -> incidente nativo
+    // F3: valuta le soglie (sensor_rules) sui valori CANONICI (+ grezzi); se superata -> incidente nativo
     let mut incident = json!(null);
-    let payload = Value::Object(values.clone());
+    let payload = Value::Object(canon.clone());
     if let Some(etype) = eval_sensor_rules(&st, tid, &payload).await {
         let ext: String = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1").bind(dev_id)
             .fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_default();
@@ -6741,12 +6766,66 @@ pub async fn iot_telemetry_latest(State(st): State<AppState>, h: HeaderMap, Path
     require_any_module(&st, tid, DEVICE_MODS).await?;
     if !has_cap(&s,"incidents.view") && !has_cap(&s,"config.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT DISTINCT ON (key) key,ts,num,str FROM app.device_telemetry WHERE device_id=$1 ORDER BY key,ts DESC").bind(dev).fetch_all(&mut *tx).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT DISTINCT ON (key) key,ts,num,str,metric,unit FROM app.device_telemetry WHERE device_id=$1 ORDER BY key,ts DESC").bind(dev).fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({"key":r.get::<String,_>("key"),
         "ts":r.get::<chrono::DateTime<chrono::Utc>,_>("ts").to_rfc3339(),
-        "num":r.try_get::<f64,_>("num").ok(),"str":r.try_get::<String,_>("str").ok() })).collect();
+        "num":r.try_get::<f64,_>("num").ok(),"str":r.try_get::<String,_>("str").ok(),
+        "metric":r.try_get::<String,_>("metric").ok(),"unit":r.try_get::<String,_>("unit").ok() })).collect();
     Ok(Json(json!(out)))
+}
+
+// ---- IoT Fase 1: metriche canoniche + mappa di normalizzazione per-device ----
+/// Catalogo delle metriche canoniche (etichetta IT + unità). Serve ai picker della UI.
+pub async fn iot_metrics_list(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, DEVICE_MODS).await?;
+    let rows = sqlx::query("SELECT metric,label,unit,kind,category,sort FROM app.iot_metrics ORDER BY sort,metric")
+        .fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({"metric":r.get::<String,_>("metric"),"label":r.get::<String,_>("label"),
+        "unit":r.get::<String,_>("unit"),"kind":r.get::<String,_>("kind"),"category":r.get::<String,_>("category")})).collect();
+    Ok(Json(json!(out)))
+}
+/// Mappa di normalizzazione del device: chiave grezza -> metrica canonica (+ trasformazione lineare).
+pub async fn device_map_get(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, DEVICE_MODS).await?;
+    if !has_cap(&s,"config.view") && !has_cap(&s,"iot.manage") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT m.raw_key,m.metric,m.scale,m.offset_v,im.label,im.unit
+        FROM app.device_metric_map m JOIN app.iot_metrics im ON im.metric=m.metric
+        WHERE m.device_id=$1 ORDER BY m.raw_key").bind(dev).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({"raw_key":r.get::<String,_>("raw_key"),"metric":r.get::<String,_>("metric"),
+        "scale":r.get::<f64,_>("scale"),"offset":r.get::<f64,_>("offset_v"),
+        "label":r.get::<String,_>("label"),"unit":r.get::<String,_>("unit")})).collect();
+    Ok(Json(json!({"map":out})))
+}
+#[derive(Deserialize)]
+pub struct MapRow { pub raw_key: String, pub metric: String, #[serde(default)] pub scale: Option<f64>, #[serde(default)] pub offset: Option<f64> }
+#[derive(Deserialize)]
+pub struct MapReq { pub rows: Vec<MapRow> }
+/// Sostituisce la mappa del device (set completo). Normalizza la telemetria futura.
+pub async fn device_map_set(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>, Json(b): Json<MapReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, DEVICE_MODS).await?; require_cap(&s, "iot.manage")?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // il device deve esistere nel tenant (RLS); valida le metriche canoniche contro il catalogo
+    let dev_ok: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app.devices WHERE id=$1)").bind(dev).fetch_one(&mut *tx).await.map_err(ise)?;
+    if !dev_ok { return Err(err(StatusCode::NOT_FOUND, "device inesistente")); }
+    sqlx::query("DELETE FROM app.device_metric_map WHERE device_id=$1").bind(dev).execute(&mut *tx).await.map_err(ise)?;
+    for row in &b.rows {
+        if row.raw_key.trim().is_empty() || row.metric.trim().is_empty() { continue; }
+        let known: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app.iot_metrics WHERE metric=$1)").bind(&row.metric).fetch_one(&mut *tx).await.map_err(ise)?;
+        if !known { let _=tx.rollback().await; return Err(err(StatusCode::BAD_REQUEST, &format!("metrica sconosciuta: {}", row.metric))); }
+        sqlx::query("INSERT INTO app.device_metric_map(tenant_id,device_id,raw_key,metric,scale,offset_v) VALUES($1,$2,$3,$4,$5,$6)
+                     ON CONFLICT (device_id,raw_key) DO UPDATE SET metric=EXCLUDED.metric,scale=EXCLUDED.scale,offset_v=EXCLUDED.offset_v")
+            .bind(tid).bind(dev).bind(row.raw_key.trim()).bind(row.metric.trim()).bind(row.scale.unwrap_or(1.0)).bind(row.offset.unwrap_or(0.0))
+            .execute(&mut *tx).await.map_err(ise)?;
+    }
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "device_map_set", json!({"device":dev,"n":b.rows.len()})).await;
+    Ok(Json(json!({"ok":true,"n":b.rows.len()})))
 }
 pub async fn iot_telemetry_series(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
@@ -6758,14 +6837,16 @@ pub async fn iot_telemetry_series(State(st): State<AppState>, h: HeaderMap, Path
     let to = q.get("to").and_then(|x| chrono::DateTime::parse_from_rfc3339(x).ok()).map(|d| d.with_timezone(&chrono::Utc));
     let lim: i64 = q.get("limit").and_then(|x| x.parse().ok()).unwrap_or(500).min(5000);
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT key,ts,num,str FROM app.device_telemetry WHERE device_id=$1 \
-            AND ($2::text IS NULL OR key=$2) AND ($3::timestamptz IS NULL OR ts>=$3) AND ($4::timestamptz IS NULL OR ts<=$4) \
+    // filtro per `key`: accetta sia la chiave grezza sia la metrica canonica (uniformità viste)
+    let rows = sqlx::query("SELECT key,ts,num,str,metric,unit FROM app.device_telemetry WHERE device_id=$1 \
+            AND ($2::text IS NULL OR key=$2 OR metric=$2) AND ($3::timestamptz IS NULL OR ts>=$3) AND ($4::timestamptz IS NULL OR ts<=$4) \
             ORDER BY ts DESC LIMIT $5")
         .bind(dev).bind(&key).bind(from).bind(to).bind(lim).fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({"key":r.get::<String,_>("key"),
         "ts":r.get::<chrono::DateTime<chrono::Utc>,_>("ts").to_rfc3339(),
-        "num":r.try_get::<f64,_>("num").ok(),"str":r.try_get::<String,_>("str").ok() })).collect();
+        "num":r.try_get::<f64,_>("num").ok(),"str":r.try_get::<String,_>("str").ok(),
+        "metric":r.try_get::<String,_>("metric").ok(),"unit":r.try_get::<String,_>("unit").ok() })).collect();
     Ok(Json(json!(out)))
 }
 // ===== IoT nativo F2: attributi (client/shared/server) + comandi/RPC =====

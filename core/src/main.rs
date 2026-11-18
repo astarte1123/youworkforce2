@@ -426,6 +426,8 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/iot/devices/:id/attributes", get(api::iot_attributes_get).post(api::iot_attributes_set))
         .route("/api/iot/devices/:id/command", post(api::iot_command_post))
         .route("/api/iot/devices/:id/commands", get(api::iot_commands_list))
+        .route("/api/iot/metrics", get(api::iot_metrics_list))
+        .route("/api/iot/devices/:id/map", get(api::device_map_get).put(api::device_map_set))
         .route("/api/ingress/pull", get(api::iot_device_pull))
         .route("/api/incidents", get(api::list_incidents))
         .route("/api/incidents/:id/timeline", get(api::incident_timeline))

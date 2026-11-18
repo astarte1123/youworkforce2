@@ -38,7 +38,7 @@ CORE="smoke.sh loneworker-e2e.sh acl-e2e.sh \
  clients-e2e.sh listino-e2e.sh dispatch-e2e.sh richieste-e2e.sh contratti-e2e.sh anagrafiche-e2e.sh commessa-allegati-e2e.sh \
  vigilanza-e2e.sh vigilanza-piani-e2e.sh vigilanza-autopunch-e2e.sh \
  escalation-decouple-e2e.sh escalation-setactive-e2e.sh escalation-rest-e2e.sh escalation-schedules-e2e.sh \
- iot-telemetry-e2e.sh iot-attr-cmd-e2e.sh iot-threshold-e2e.sh"
+ iot-telemetry-e2e.sh iot-attr-cmd-e2e.sh iot-threshold-e2e.sh iot-normalize-e2e.sh"
 GOALERT_OK="goalert-config-e2e.sh goalert-p123-e2e.sh goalert-parity-e2e.sh"
 TRACCAR_OK="traccar-e2e.sh traccar-config-e2e.sh traccar-p2-e2e.sh traccar-poll-e2e.sh \
  traccar-sync-e2e.sh traccar-cmd-e2e.sh traccar-battery-policy-e2e.sh traccar-degraded-e2e.sh traccar-parity-e2e.sh \

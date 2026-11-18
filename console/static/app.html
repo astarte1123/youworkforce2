@@ -2877,8 +2877,9 @@ function devEdit(d){
       <div id="trail" class="small mut" style="margin-top:8px"></div>
     </div>` : '';
   const telemBlock = (!isNew && d.id) ? `<div class="card pad" style="margin-bottom:12px"><div class="spread"><b class="small">Telemetria</b><button class="btn ghost small" onclick="devTelem('${d.id}')">aggiorna</button></div><div id="telemBox" class="small mut" style="margin-top:6px">—</div></div>` : '';
+  const mapBlock = (!isNew && d.id) ? `<div class="card pad" style="margin-bottom:12px"><div class="spread"><b class="small">Mappa dati (normalizzazione)</b><button class="btn ghost small" onclick="devMap('${d.id}')">modifica</button></div><div class="small mut" style="margin:4px 0 0">Collega le chiavi grezze del dispositivo alle <b>metriche standard</b> (con unità): i dati arrivano uniformi e le soglie funzionano a prescindere da come il device nomina i valori.</div><div id="mapBox" class="small" style="margin-top:6px">—</div></div>` : '';
   const iotBlock = (!isNew && d.id) ? `<div class="card pad" style="margin-bottom:12px"><b class="small">Attributi & comandi (IoT)</b><div id="iotBox" class="small mut" style="margin-top:6px">carico…</div></div>` : '';
-  drawer(isNew?'Nuovo dispositivo':'Modifica dispositivo', posBlock+telemBlock+iotBlock+`
+  drawer(isNew?'Nuovo dispositivo':'Modifica dispositivo', posBlock+telemBlock+mapBlock+iotBlock+`
     ${!isNew && d.id?`<div class="card pad" style="margin-bottom:12px"><div class="spread"><b class="small">Stato / readiness</b>
       <button class="btn ghost small" onclick="devTestSos('${d.id}')" title="Invia un SOS di prova sul percorso reale">🆘 SOS di prova</button></div>
       <div id="dokReady" class="small mut" style="margin-top:8px">carico…</div></div>`:''}
@@ -2921,6 +2922,7 @@ function devEdit(d){
   if(!isNew && d.source==='traccar'){ devCmds(d.id); devCmdTypes(d.id); }
   if(!isNew && d.id) devReadiness(d.id);
   if(!isNew && d.id) devTelem(d.id);
+  if(!isNew && d.id) devMap(d.id);
   if(!isNew && d.id) devIot(d.id);
 }
 // Attributi (client/shared/server) + comandi IoT nativi.
@@ -2947,8 +2949,32 @@ async function devCmdSend(id){ const method=$('#iotCmd').value.trim(); if(!metho
 async function devTelem(id){ const el=$('#telemBox'); if(!el)return; el.textContent='carico…';
   try{ const t=await api('/iot/devices/'+id+'/telemetry/latest');
     if(!t.length){ el.innerHTML='<span class="mut">Nessuna telemetria ricevuta.</span>'; return; }
-    el.innerHTML='<div class="row" style="flex-wrap:wrap;gap:6px">'+t.map(x=>`<span class="tag" title="${new Date(x.ts).toLocaleString('it-IT')}"><b>${esc(x.key)}</b>: ${x.num!=null?x.num:esc(x.str||'')}</span>`).join('')+'</div>';
+    el.innerHTML='<div class="row" style="flex-wrap:wrap;gap:6px">'+t.map(x=>{const v=x.num!=null?x.num:esc(x.str||'');const u=x.unit?' '+esc(x.unit):'';const m=x.metric?` <span class="mut">→ ${esc(x.metric)}</span>`:'';return `<span class="tag" title="${new Date(x.ts).toLocaleString('it-IT')}"><b>${esc(x.key)}</b>: ${v}${u}${m}</span>`;}).join('')+'</div>';
   }catch(e){ el.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+// Mappa di normalizzazione: chiave grezza del device -> metrica standard (con unità) + scala/offset.
+let _iotMetrics=null;
+async function devMap(id){ const el=$('#mapBox'); if(!el)return; el.textContent='carico…';
+  try{ if(!_iotMetrics) _iotMetrics=await api('/iot/metrics');
+    const r=await api('/iot/devices/'+id+'/map'); const rows=r.map||[];
+    const opts=m=>_iotMetrics.map(x=>`<option value="${x.metric}"${x.metric===m?' selected':''}>${esc(x.label)}${x.unit?' ('+esc(x.unit)+')':''}</option>`).join('');
+    const line=(rk,m,sc,of)=>`<div class="row mapRow" style="gap:6px;margin-bottom:4px;align-items:center">
+        <input class="in small mapRaw" placeholder="chiave grezza (es. t)" value="${esc(rk||'')}" style="width:140px">
+        <span class="mut">→</span>
+        <select class="in small mapMet">${opts(m)}</select>
+        <input class="in small mapScale" title="scala" value="${sc!=null?sc:1}" style="width:60px">
+        <input class="in small mapOff" title="offset" value="${of!=null?of:0}" style="width:60px">
+        <button class="btn ghost small" onclick="this.closest('.mapRow').remove()">✕</button></div>`;
+    el.innerHTML=`<div id="mapRows">${rows.map(x=>line(x.raw_key,x.metric,x.scale,x.offset)).join('')||''}</div>
+      <div class="row" style="gap:6px;margin-top:6px">
+        <button class="btn ghost small" onclick="document.getElementById('mapRows').insertAdjacentHTML('beforeend',\`${line('', _iotMetrics[0]&&_iotMetrics[0].metric,1,0).replace(/`/g,'\\`')}\`)">+ riga</button>
+        <button class="btn small" onclick="devMapSave('${id}')">Salva mappa</button></div>
+      <div class="small mut" style="margin-top:4px">valore_standard = scala × valore_grezzo + offset (es. 255 con scala 0.1 → 25.5)</div>`;
+  }catch(e){ el.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
+async function devMapSave(id){ const rows=[...document.querySelectorAll('#mapRows .mapRow')].map(r=>({
+      raw_key:r.querySelector('.mapRaw').value.trim(), metric:r.querySelector('.mapMet').value,
+      scale:parseFloat(r.querySelector('.mapScale').value)||1, offset:parseFloat(r.querySelector('.mapOff').value)||0
+    })).filter(x=>x.raw_key);
+  try{ await api('/iot/devices/'+id+'/map',{method:'PUT',body:JSON.stringify({rows})}); toast('Mappa salvata','ok'); devMap(id); devTelem(id);}catch(e){toast(e.message,'bad');} }
 // Readiness del device: 4 stati + segnali dichiarati/verificati (per tipologia d'uso).
 async function devReadiness(id){ const el=$('#dokReady'); if(!el)return;
   try{ const r=await api('/devices/'+id+'/readiness');
