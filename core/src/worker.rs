@@ -42,6 +42,8 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     if n % 30 == 11 { Box::pin(api::slack_announce_scan(st)).await; }
     // S1 heartbeat monitor nativo: ~ogni 30s controlla i monitor scaduti
     if n % 15 == 3 { Box::pin(api::heartbeat_watchdog(st)).await; }
+    // IoT Fase 3: watchdog offline dei device IoT (alert in vista separata) ~ogni 6s
+    if n % 3 == 1 { if let Err(e) = Box::pin(api::iot_offline_watchdog(st)).await { tracing::warn!("iot watchdog: {e}"); } }
     Ok(())
 }
 

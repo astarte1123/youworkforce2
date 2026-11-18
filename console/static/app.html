@@ -46,6 +46,8 @@ const NAV = [
   {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
   {k:'profili',   t:'Profili di protezione', ico:'shield', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
   {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
+  // --- IoT: alert di processo (soglia/offline/ripristino) in VISTA SEPARATA dalla Centrale sicurezza ---
+  {k:'iot-alerts',t:'Alert IoT', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['iot'], grp:'iot'},
   // --- Lavoro sul campo ---
   {k:'ordini',    t:'Interventi', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
   {k:'clienti',   t:'Clienti', ico:'building', roles:['pianificatore','tenant_admin','auditor'], mod:['interventi'], grp:'work'},
@@ -87,7 +89,7 @@ const I18N={ en:{
   login_password:"Password", login_signin:"Sign in", login_quick:"Quick demo access (password <b>demo</b>):",
   grp_op:"Operations", grp_safety:"Worker Safety", grp_iot:"IoT Dashboard", grp_work:"Field work", grp_cfg:"Configuration",
   "nav_dashboard":"Dashboard","nav_centrale":"Alarm center","nav_miei-allarmi":"My alarms",
-  "nav_mappa":"Alarm map","nav_mappa-dispositivi":"Device map","nav_piantine":"Floor plans","nav_cruscotti":"IoT dashboards","nav_report":"Reports",
+  "nav_mappa":"Alarm map","nav_mappa-dispositivi":"Device map","nav_piantine":"Floor plans","nav_cruscotti":"IoT dashboards","nav_report":"Reports","nav_iot-alerts":"IoT alerts",
   "nav_ordini":"Work orders","nav_consuntivi":"Timesheets","nav_turni":"Shifts","nav_agente":"AI agent",
   "nav_dispositivi":"Devices & Apps","nav_trigger":"Safety triggers","nav_profili":"Protection profiles","nav_connettori":"Connectors","nav_gruppi":"Escalation & on-call",
   "nav_anagrafiche":"Users & sites","nav_ai":"AI · youworker.ai","nav_moduli":"Modules",
@@ -363,7 +365,7 @@ function route(){
   setActive(k); const v=$('#view'); v.innerHTML='<div class="col"><div class="skel" style="height:90px"></div><div class="skel" style="height:260px"></div></div>';
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
-  ({dashboard:vDashboard,centrale:vCentrale,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
+  ({dashboard:vDashboard,centrale:vCentrale,'iot-alerts':vIotAlerts,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
     dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
@@ -382,6 +384,10 @@ function connectSSE(){
     // mappa allarmi = solo non gestiti: aggiorna live quando un incidente si apre/gestisce/chiude
     if(k==='mappa' && (d.type==='incident_opened'||d.type==='incident_ack'||d.type==='incident_closed'||d.type==='incident_updated')) route();
     if(k==='centrale'||k==='dashboard') route();
+    // Alert IoT (vista separata): notifica nativa live + refresh della vista
+    if(d.type==='iot_alert'){ const a=d.alert||{}; const sev=a.severity==='critical'?'bad':(a.severity==='info'?'':'warn');
+      toast('Alert IoT: '+(a.message||a.kind||''), sev==='bad'?'bad':'warn'); if(sev==='bad') alarmBeep(); }
+    if((d.type==='iot_alert'||d.type==='iot_alert_update') && k==='iot-alerts') route();
   };
 }
 // ---- Allarme: suono + popup quando un dispositivo apre un incidente ----
@@ -523,6 +529,41 @@ function bindRows(v){
   $$('[data-ord]',v).forEach(r=>r.onclick=()=>openOrder(r.dataset.ord));
   $$('[data-ts]',v).forEach(r=>r.onclick=()=>openTimesheet(r.dataset.ts));
 }
+
+// ---------------- Alert IoT (vista separata dalla Centrale sicurezza) ----------------
+// Alert di PROCESSO IoT: soglia superata, device offline, ripristino. Ciclo di vita proprio
+// (aperto -> preso in carico -> chiuso), distinto dagli incidenti di sicurezza del lavoratore.
+let IOTA={tab:'aperti'};
+const IOTA_KIND={soglia:'Soglia superata',offline:'Dispositivo offline',ripristino:'Ripristino'};
+const IOTA_SEV={critical:['Critico','#e2001a'],warning:['Attenzione','#b45309'],info:['Info','#64748b']};
+function iotaSevBadge(s){ const m=IOTA_SEV[s]||[s||'?','#64748b']; return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;color:#fff;background:${m[1]}">${m[0]}</span>`; }
+async function vIotAlerts(v){
+  const state = IOTA.tab==='aperti' ? 'aperto' : (IOTA.tab==='presi' ? 'preso_in_carico' : '');
+  let list=[], sum={open:0,critical:0,warning:0,info:0,unacked:0};
+  try{ sum=await api('/iot/alerts/summary'); }catch(e){}
+  try{ list=await api('/iot/alerts'+(state?('?state='+state):'')); }catch(e){ v.innerHTML='<div class="card">Impossibile caricare gli alert IoT.</div>'; return; }
+  const tab=(k,lab)=>`<button class="btn ${IOTA.tab===k?'':'ghost'}" onclick="IOTA.tab='${k}';route()">${lab}</button>`;
+  const rows = list.map(a=>{
+    const kind=IOTA_KIND[a.kind]||a.kind;
+    const val=(a.last_value!=null)?(' · '+(a.metric?a.metric+' ':'')+a.last_value+(a.threshold!=null?(' (soglia '+a.threshold+')'):'')):'';
+    const when=new Date(a.opened_at).toLocaleString('it-IT');
+    const occ=(a.occurrences>1)?` ·×${a.occurrences}`:'';
+    const act = a.state==='chiuso' ? '<span class="mut">chiuso</span>'
+      : `${a.state==='aperto'?`<button class="btn" onclick="iotAlertAck('${a.id}')">Prendi in carico</button> `:''}<button class="btn ghost" onclick="iotAlertClose('${a.id}')">Chiudi</button>`;
+    return `<tr>
+      <td>${iotaSevBadge(a.severity)}</td>
+      <td><b>${kind}</b>${occ}<div class="mut" style="font-size:12px">${(a.message||'').replace(/</g,'&lt;')}${val}</div></td>
+      <td>${(a.device_name||'').replace(/</g,'&lt;')}</td>
+      <td class="mut" style="font-size:12px">${when}</td>
+      <td style="text-align:right">${act}</td></tr>`;
+  }).join('') || `<tr><td colspan="5" class="mut" style="padding:16px">Nessun alert in questa vista.</td></tr>`;
+  v.innerHTML=`<div class="page-h"><div><h1>Alert IoT</h1>
+      <div class="mut">Alert di processo dei dispositivi (soglia, offline, ripristino) — separati dalla Centrale sicurezza. ${sum.open} aperti · ${sum.critical} critici · ${sum.unacked} da prendere in carico · live</div></div>
+      <div class="row" style="gap:6px">${tab('aperti','Aperti')}${tab('presi','Presi in carico')}${tab('tutti','Tutti')}</div></div>
+    <div class="card"><table class="tbl"><thead><tr><th>Gravità</th><th>Alert</th><th>Dispositivo</th><th>Aperto</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+async function iotAlertAck(id){ try{ await api('/iot/alerts/'+id+'/ack',{method:'POST'}); route(); }catch(e){ toast(e.message||'errore','bad'); } }
+async function iotAlertClose(id){ try{ await api('/iot/alerts/'+id+'/close',{method:'POST'}); route(); }catch(e){ toast(e.message||'errore','bad'); } }
 
 // ---------------- Centrale ----------------
 let CEN={all:[],tab:'aperti',q:'',page:1,size:25};

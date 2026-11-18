@@ -48,8 +48,8 @@ NC=$(sql "SELECT metric||'|'||num FROM app.device_telemetry WHERE device_id='$DI
 NTemp=$(sql "SELECT metric FROM app.device_telemetry WHERE device_id='$DID' AND key='t' ORDER BY ts DESC LIMIT 1")
 [ "$NTemp" = "temperature" ] && ok "chiave grezza 't' normalizzata a temperature" || no "normalizzazione temperature ko" "$NTemp"
 # soglia co2>=1000 -> incidente nativo
-for i in $(seq 1 20); do INC=$(sql "SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE e.device_id='$DID' AND i.etype='sensore_critico'"); [ "${INC:-0}" -ge 1 ] && break; sleep 0.3; done
-[ "${INC:-0}" -ge 1 ] && ok "soglia MQTT scatta incidente (co2>=1000)" || no "soglia mqtt non scatta" "$INC"
+for i in $(seq 1 20); do INC=$(sql "SELECT count(*) FROM app.iot_alerts WHERE device_id='$DID' AND kind='soglia' AND metric='co2'"); [ "${INC:-0}" -ge 1 ] && break; sleep 0.3; done
+[ "${INC:-0}" -ge 1 ] && ok "soglia MQTT scatta alert IoT (co2>=1000)" || no "soglia mqtt non scatta" "$INC"
 
 # 4) ISOLAMENTO: PUBLISH su topic di un ALTRO tenant -> scartato (nessuna telemetria col marcatore)
 FAKE="00000000-0000-0000-0000-000000000000"

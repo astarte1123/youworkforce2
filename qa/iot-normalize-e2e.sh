@@ -59,7 +59,7 @@ SER=$(api "$BASE/api/iot/devices/$DID/telemetry?key=temperature" | jq1 "print(le
 
 # regola su metrica CANONICA scatta anche con chiave grezza
 api -H 'content-type: application/json' -X POST "$BASE/api/sensor-rules" -d '{"metric":"temperature","op":">=","threshold":5,"etype":"sensore_critico","label":"e2e temp alta"}' >/dev/null
-INC=$(curl -s -X POST "$BASE/api/ingress/telemetry?token=$TOK" -H 'content-type: application/json' -d '{"values":{"t":8}}' | jq1 "d=json.load(sys.stdin);print(1 if d.get('incident') and d['incident'].get('incident_id') else 0)")
+INC=$(curl -s -X POST "$BASE/api/ingress/telemetry?token=$TOK" -H 'content-type: application/json' -d '{"values":{"t":8}}' | jq1 "d=json.load(sys.stdin);a=d.get('alert');print(1 if isinstance(a,dict) and a.get('id') else 0)")
 [ "$INC" = 1 ] && ok "regola su metrica canonica scatta da chiave grezza 't'" || no "regola canonica non scattata" "$INC"
 
 # ---- teardown COMPLETO ----

@@ -40,8 +40,8 @@ SR=$(sql "SELECT count(*) FROM app.sensor_rules sr JOIN app.tenants t ON t.id=sr
 [ "${SR:-0}" -ge 1 ] && ok "soglia di default creata dal blueprint" || no "soglia non creata" "$SR"
 
 # dato grezzo 't' arriva normalizzato e la soglia scatta
-INC=$(curl -s -X POST "$BASE/api/ingress/telemetry?token=$TOK" -H 'content-type: application/json' -d '{"values":{"t":12}}' | jq1 "d=json.load(sys.stdin);print(1 if d.get('incident') and d['incident'].get('incident_id') else 0)")
-[ "$INC" = 1 ] && ok "telemetria HTTP normalizzata + soglia scatta (t=12 -> temperature>=8)" || no "flusso http end-to-end ko" "$INC"
+INC=$(curl -s -X POST "$BASE/api/ingress/telemetry?token=$TOK" -H 'content-type: application/json' -d '{"values":{"t":12}}' | jq1 "d=json.load(sys.stdin);a=d.get('alert');print(1 if isinstance(a,dict) and a.get('id') else 0)")
+[ "$INC" = 1 ] && ok "telemetria HTTP normalizzata + alert IoT scatta (t=12 -> temperature>=8)" || no "flusso http end-to-end ko" "$INC"
 NT=$(sql "SELECT metric||'|'||num FROM app.device_telemetry WHERE device_id='$DID' AND key='t' ORDER BY ts DESC LIMIT 1")
 [ "$NT" = "temperature|12" ] && ok "valore grezzo salvato come metrica canonica" || no "normalizzazione http ko" "$NT"
 

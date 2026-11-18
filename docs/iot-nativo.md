@@ -16,8 +16,12 @@ esterno** (coerente con la direzione self-contained; unica integrazione esterna 
 - **Attributi** (`device_attributes`): `client` (dal device), `shared` (config verso il device),
   `server` (interni).
 - **Comandi / RPC** (`iot_commands`): consegna diretta (edge Teltonika) o in coda (il device fa pull).
-- **Soglie → incidenti**: le regole sensori (`sensor_rules`) valutate sulla telemetria creano
-  incidenti nativi (centrale + escalation con Lone Worker attivo).
+- **Soglie → alert IoT** (Fase 3): le regole sensori (`sensor_rules`) valutate sulla telemetria
+  alzano un **alert IoT** in **vista separata** (`iot_alerts`, non la Centrale sicurezza). In
+  **coesistenza** col modulo Lone Worker la soglia alza **anche** un incidente di sicurezza
+  (centrale + escalation); un tenant puramente IoT resta nel solo mondo alert.
+- **Alert IoT in vista separata** (Fase 3, vedi sotto): soglia / offline / ripristino, con ciclo
+  di vita proprio (aperto → preso in carico → chiuso) e **watchdog offline** nativo.
 - **Blueprint / attivazione zero-touch** (Fase 2): l'admin sceglie *che lavoro* deve fare il device
   (`iot_blueprints`: catena del freddo, livello serbatoio, energia, qualità aria, varchi, conteggio,
   ambiente LoRaWAN) e `POST /api/iot/activate` configura TUTTO da solo — device + token device-bound
@@ -45,6 +49,28 @@ esterno** (coerente con la direzione self-contained; unica integrazione esterna 
 | Attivazione zero-touch | `POST /api/iot/activate` (`{blueprint, external_id, label?}`) → device+token+mappa+soglie+istruzioni |
 | Webhook LoRaWAN/TTN | `POST /api/ingress/lorawan?token=…` (uplink con payload decodificato) |
 | Broker MQTT nativo | TCP **1883** · PUBLISH su `yw/{tid}/{ext}/telemetry` · SUBSCRIBE a `yw/{tid}/{ext}/command` |
+| Alert IoT (lista) | `GET /api/iot/alerts?state=&device=&severity=` · `GET /api/iot/alerts/summary` |
+| Alert IoT (azioni) | `POST /api/iot/alerts/:id/ack` · `POST /api/iot/alerts/:id/close` |
+
+## Alert IoT in vista separata (Fase 3)
+
+Gli alert di **processo IoT** vivono in `app.iot_alerts`, **separati** dagli incidenti di sicurezza
+del lavoratore (SOS/man down + escalation): un tenant puramente IoT li gestisce senza toccare il
+mondo sicurezza. In console: menu **IoT Dashboard → Alert IoT** (notifica nativa live via SSE).
+
+- **Tipi** (`kind`): `soglia` (regola sensori superata), `offline` (device muto oltre la soglia),
+  `ripristino` (device tornato online).
+- **Gravità** (`severity`): `critical` (`*_critico`, `perdita_alimentazione`), `warning` (batteria,
+  offline, generico), `info` (ripristino/telemetria).
+- **Ciclo di vita**: `aperto` → `preso_in_carico` (ack) → `chiuso`. Anti-spam: mentre un alert è
+  aperto, nuove osservazioni ne incrementano le occorrenze senza duplicarlo né ri-notificare.
+- **Watchdog offline**: per-device `offline_after_s` (impostato dal blueprint all'attivazione);
+  il worker confronta `last_telemetry_at` con l'orologio controllabile (coerente, pilotabile in
+  test). Alla ripresa della telemetria l'alert offline si chiude e nasce un `ripristino`.
+- **Notifica nativa**: evento SSE `iot_alert` (nessun GoAlert: self-contained). Il record in
+  `iot_alerts` è il registro persistente consultabile dalla vista.
+- **Coesistenza**: con Lone Worker attivo la soglia alza **anche** l'incidente di sicurezza (bridge
+  in `persist_telemetry`), così i due perimetri restano autonomi ma collaborano.
 
 ## Broker MQTT nativo (porta 1883)
 

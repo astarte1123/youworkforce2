@@ -432,6 +432,11 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/iot/devices/:id/map", get(api::device_map_get).put(api::device_map_set))
         .route("/api/iot/blueprints", get(api::iot_blueprints_list))
         .route("/api/iot/activate", post(api::iot_activate))
+        // Fase 3: alert IoT in vista separata (soglia/offline/ripristino)
+        .route("/api/iot/alerts", get(api::iot_alerts_list))
+        .route("/api/iot/alerts/summary", get(api::iot_alerts_summary))
+        .route("/api/iot/alerts/:id/ack", post(api::iot_alert_ack))
+        .route("/api/iot/alerts/:id/close", post(api::iot_alert_close))
         .route("/api/ingress/lorawan", post(api::ingest_lorawan))
         .route("/api/ingress/pull", get(api::iot_device_pull))
         .route("/api/incidents", get(api::list_incidents))
@@ -501,6 +506,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/diary/transcribe", post(api::diary_transcribe))
         .route("/api/stream", get(api::stream))
         .route("/api/_test/advance", post(api::test_advance))
+        .route("/api/_test/iot-watchdog", post(api::test_iot_watchdog))
         .layer(axum::middleware::from_fn(api::csrf_guard))
         .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024)) // upload piantine indoor
         .with_state(st);

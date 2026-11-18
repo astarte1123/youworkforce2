@@ -178,7 +178,7 @@ pub async fn csrf_guard(req: axum::extract::Request, next: axum::middleware::Nex
     let exempt = safe
         || path == "/api/login" || path == "/api/superadmin/login" || path == "/api/logout"
         || path == "/api/events" || path.starts_with("/api/ingress/")
-        || path == "/api/_test/advance" || path == "/health";
+        || path == "/api/_test/advance" || path == "/api/_test/iot-watchdog" || path == "/health";
     if exempt { return next.run(req).await; }
     let raw = req.headers().get(header::COOKIE).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
     if cookie_val(&raw, "yw_session").is_none() {
@@ -6701,16 +6701,18 @@ pub async fn ingest_telemetry(State(st): State<AppState>, h: HeaderMap,
         .unwrap_or_else(|| b.as_object().cloned().unwrap_or_default().into_iter().filter(|(k,_)| k!="ts").collect());
     if values.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nessuna telemetria (values vuoto)")); }
     let attrs = b.get("attributes").and_then(|v| v.as_object()).cloned();
-    let (n, incident) = persist_telemetry(&st, tid, dev_id, ts, &values, attrs.as_ref()).await?;
-    Ok(Json(json!({"ok":true,"device_id":dev_id,"stored":n,"incident":incident})))
+    let (n, alert, incident) = persist_telemetry(&st, tid, dev_id, ts, &values, attrs.as_ref()).await?;
+    Ok(Json(json!({"ok":true,"device_id":dev_id,"stored":n,"alert":alert,"incident":incident})))
 }
 
 /// Cuore telemetria riusabile: normalizza (mappa device -> metrica canonica + unità + trasformazione),
 /// persiste la serie, aggiorna l'ultimo stato, valuta le soglie (su chiavi canoniche + grezze).
 /// Usato dall'ingest HTTP nativo e dai webhook di protocollo (LoRaWAN/TTN, ...).
+/// Ritorna (record salvati, alert IoT, incidente sicurezza). L'alert IoT (vista separata) è SEMPRE
+/// alzato se una soglia scatta; l'incidente di sicurezza SOLO in coesistenza col modulo Lone Worker.
 pub async fn persist_telemetry(st: &AppState, tid: Uuid, dev_id: Uuid,
     ts: chrono::DateTime<chrono::Utc>, values: &serde_json::Map<String,Value>,
-    attrs: Option<&serde_json::Map<String,Value>>) -> Result<(usize, Value),(StatusCode,String)> {
+    attrs: Option<&serde_json::Map<String,Value>>) -> Result<(usize, Value, Value),(StatusCode,String)> {
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // NORMALIZZAZIONE: mappa del device (chiave grezza -> metrica canonica + trasformazione lineare)
     // e unità delle metriche canoniche. Senza mappa il valore resta grezzo (retro-compatibile).
@@ -6750,23 +6752,34 @@ pub async fn persist_telemetry(st: &AppState, tid: Uuid, dev_id: Uuid,
                 .bind(tid).bind(dev_id).bind(k).bind(v).execute(&mut *tx).await.map_err(ise)?;
         }
     }
-    sqlx::query("UPDATE app.devices SET last_attributes=COALESCE(last_attributes,'{}'::jsonb)||$2::jsonb, updated_at=now() WHERE id=$1")
-        .bind(dev_id).bind(Value::Object(last)).execute(&mut *tx).await.map_err(ise)?;
+    // last_telemetry_at sull'orologio controllabile (= ts): il watchdog offline lo confronta con
+    // lo stesso orologio, quindi è coerente e pilotabile in test (TEST_CLOCK).
+    sqlx::query("UPDATE app.devices SET last_attributes=COALESCE(last_attributes,'{}'::jsonb)||$2::jsonb, last_telemetry_at=$3, updated_at=now() WHERE id=$1")
+        .bind(dev_id).bind(Value::Object(last)).bind(ts).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     publish_event(st, TenantEvent{tenant_id:tid,payload:json!({"type":"telemetry","device_id":dev_id})}).await;
+    // RIPRISTINO: il device ha parlato -> se c'era un alert offline aperto, chiudilo e segnala il rientro.
+    iot_recover_online(st, tid, dev_id).await;
     let mut incident = json!(null);
+    let mut alert = json!(null);
     let payload = Value::Object(canon.clone());
     if let Some(etype) = eval_sensor_rules(st, tid, &payload).await {
-        let ext: String = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1").bind(dev_id)
-            .fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_default();
-        let ev = format!("iot-telem-{}", Uuid::new_v4());
-        let r = persist_ingest(st, tid, Normalized{
-            source: "iot".into(), source_event: ev.clone(), idem: ev.clone(), etype,
-            device_external_id: Some(ext), site_name: None, lat: None, lon: None, accuracy_m: None,
-            correlation: ev, payload, indoor: false, beacon_uid: None, zone: None }).await?;
-        incident = r.0;
+        // 1) alert IoT in VISTA SEPARATA (sempre): è il mestiere IoT, non la sicurezza del lavoratore.
+        alert = raise_iot_soglia_alert(st, tid, dev_id, &etype, &canon).await;
+        // 2) COESISTENZA: se il tenant ha anche Lone Worker, la soglia alza ANCHE l'incidente di
+        //    sicurezza (centrale + escalation), come prima. Un tenant puramente IoT non lo fa.
+        if module_active(st, tid, "loneworker").await {
+            let ext: String = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1").bind(dev_id)
+                .fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_default();
+            let ev = format!("iot-telem-{}", Uuid::new_v4());
+            let r = persist_ingest(st, tid, Normalized{
+                source: "iot".into(), source_event: ev.clone(), idem: ev.clone(), etype,
+                device_external_id: Some(ext), site_name: None, lat: None, lon: None, accuracy_m: None,
+                correlation: ev, payload, indoor: false, beacon_uid: None, zone: None }).await?;
+            incident = r.0;
+        }
     }
-    Ok((n, incident))
+    Ok((n, alert, incident))
 }
 
 /// Webhook LoRaWAN/TTN (The Things Network v3) e compatibili (ChirpStack): uplink JSON ->
@@ -6801,8 +6814,8 @@ pub async fn ingest_lorawan(State(st): State<AppState>, h: HeaderMap,
         .or_else(|| b.get("time").and_then(|v| v.as_str()))
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|d| d.with_timezone(&chrono::Utc))
         .unwrap_or_else(|| st.clock.now());
-    let (n, incident) = persist_telemetry(&st, tid, dev_id, ts, &decoded, None).await?;
-    Ok(Json(json!({"ok":true,"device_id":dev_id,"stored":n,"incident":incident})))
+    let (n, alert, incident) = persist_telemetry(&st, tid, dev_id, ts, &decoded, None).await?;
+    Ok(Json(json!({"ok":true,"device_id":dev_id,"stored":n,"alert":alert,"incident":incident})))
 }
 pub async fn iot_telemetry_latest(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
@@ -6899,13 +6912,14 @@ pub async fn iot_activate(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     let ext = b.external_id.trim();
     if ext.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "identificativo dispositivo richiesto")); }
     // blueprint
-    let bp = sqlx::query("SELECT name,protocol,key_map,default_rules FROM app.iot_blueprints WHERE code=$1")
+    let bp = sqlx::query("SELECT name,protocol,key_map,default_rules,offline_after_s FROM app.iot_blueprints WHERE code=$1")
         .bind(&b.blueprint).fetch_optional(&st.owner_pool).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "blueprint sconosciuto"))?;
     let bp_name: String = bp.get("name");
     let protocol: String = bp.get("protocol");
     let key_map: Value = bp.get("key_map");
     let default_rules: Value = bp.get("default_rules");
+    let offline_after_s: Option<i32> = bp.try_get("offline_after_s").ok().flatten();
 
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // device (source 'iot'); external_id unico per tenant
@@ -6914,8 +6928,8 @@ pub async fn iot_activate(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     if exists { return Err(err(StatusCode::CONFLICT, "esiste già un dispositivo con questo identificativo")); }
     let label = b.label.clone().unwrap_or_else(|| bp_name.clone());
     let cfg = json!({"blueprint": b.blueprint, "protocol": protocol});
-    let dev_id: Uuid = sqlx::query_scalar("INSERT INTO app.devices(tenant_id,external_id,source,label,site_id,config) VALUES($1,$2,'iot',$3,$4,$5) RETURNING id")
-        .bind(tid).bind(ext).bind(&label).bind(b.site_id).bind(&cfg).fetch_one(&mut *tx).await.map_err(ise)?;
+    let dev_id: Uuid = sqlx::query_scalar("INSERT INTO app.devices(tenant_id,external_id,source,label,site_id,config,offline_after_s) VALUES($1,$2,'iot',$3,$4,$5,$6) RETURNING id")
+        .bind(tid).bind(ext).bind(&label).bind(b.site_id).bind(&cfg).bind(offline_after_s).fetch_one(&mut *tx).await.map_err(ise)?;
     // mappa di normalizzazione dal blueprint
     if let Some(arr) = key_map.as_array() {
         for m in arr {
@@ -7131,7 +7145,7 @@ pub async fn mqtt_ingest(st: &AppState, tid: Uuid, bound: Option<Uuid>, topic: &
         .unwrap_or_else(|| b.as_object().cloned().unwrap_or_default().into_iter().filter(|(k,_)| k!="ts").collect());
     if values.is_empty() { return Err("nessuna telemetria (values vuoto)".into()); }
     let attrs = b.get("attributes").and_then(|v| v.as_object()).cloned();
-    let (n, _incident) = persist_telemetry(st, tid, dev_id, ts, &values, attrs.as_ref()).await.map_err(|(_,m)| m)?;
+    let (n, _alert, _incident) = persist_telemetry(st, tid, dev_id, ts, &values, attrs.as_ref()).await.map_err(|(_,m)| m)?;
     Ok(n)
 }
 /// Flush dei comandi pending per il device sottoscritto (`yw/{tid}/{ext}/command`): li ritorna
@@ -7148,6 +7162,176 @@ pub async fn mqtt_flush_commands(st: &AppState, tid: Uuid, bound: Option<Uuid>, 
     }
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(cmds.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"method":r.get::<String,_>("method"),"params":r.try_get::<Value,_>("params").ok()})).collect())
+}
+
+// ================= IoT Fase 3 — alert IoT in VISTA SEPARATA =================
+// Gli alert di processo IoT (soglia / offline / ripristino) vivono in app.iot_alerts, con un ciclo
+// di vita PROPRIO e distinto dagli incidenti di sicurezza (SOS/man_down + escalation). Notifica
+// nativa = SSE 'iot_alert' + record persistente consultabile dalla vista "Alert IoT".
+fn iot_severity_for(etype: &str) -> &'static str {
+    if etype.ends_with("_critico") || matches!(etype, "sensore_critico"|"perdita_alimentazione") { "critical" }
+    else if etype.contains("batteria") { "warning" }
+    else if etype == "telemetria" { "info" }
+    else { "warning" }
+}
+/// Alza (o aggiorna se già aperto) un alert IoT. owner_pool + tenant_id ESPLICITO (bypassa RLS:
+/// usato sia dal path utente sia dal watchdog di sistema -> isolamento garantito dal filtro esplicito).
+/// Dedup su (device,kind,metric) non-chiuso: aggiorna valore+occorrenze senza nuova notifica
+/// (anti-spam). Ritorna Some(alert) se NUOVO (e notifica via SSE), None se duplicato.
+#[allow(clippy::too_many_arguments)]
+pub async fn raise_iot_alert(st: &AppState, tid: Uuid, device_id: Uuid, kind: &str, severity: &str,
+    metric: Option<&str>, value: Option<f64>, threshold: Option<f64>, rule_etype: Option<&str>, message: &str) -> Option<Value> {
+    let existing: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM app.iot_alerts WHERE tenant_id=$1 AND device_id=$2 AND kind=$3 AND state<>'chiuso' AND metric IS NOT DISTINCT FROM $4 ORDER BY opened_at DESC LIMIT 1")
+        .bind(tid).bind(device_id).bind(kind).bind(metric).fetch_optional(&st.owner_pool).await.ok().flatten();
+    if let Some(id) = existing {
+        let _ = sqlx::query("UPDATE app.iot_alerts SET occurrences=occurrences+1, last_value=COALESCE($2,last_value), updated_at=now() WHERE id=$1")
+            .bind(id).bind(value).execute(&st.owner_pool).await;
+        return None;
+    }
+    let row = sqlx::query(
+        "INSERT INTO app.iot_alerts(tenant_id,device_id,kind,severity,metric,last_value,threshold,rule_etype,message)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id")
+        .bind(tid).bind(device_id).bind(kind).bind(severity).bind(metric).bind(value).bind(threshold).bind(rule_etype).bind(message)
+        .fetch_optional(&st.owner_pool).await.ok().flatten()?;
+    let id: Uuid = row.get("id");
+    let alert = json!({"id":id,"device_id":device_id,"kind":kind,"severity":severity,"metric":metric,"value":value,"threshold":threshold,"message":message});
+    publish_event(st, TenantEvent{tenant_id:tid, payload:json!({"type":"iot_alert","alert":alert})}).await;
+    Some(alert)
+}
+/// Soglia telemetria -> alert IoT. Ritrova la regola che ha fatto scattare (metric/threshold/label)
+/// e costruisce un alert leggibile. Ritorna l'alert (o {deduplicated} / null) per la risposta d'ingest.
+async fn raise_iot_soglia_alert(st: &AppState, tid: Uuid, device_id: Uuid, etype: &str, canon: &serde_json::Map<String,Value>) -> Value {
+    let rules = sqlx::query("SELECT metric,op,threshold,label FROM app.sensor_rules WHERE tenant_id=$1 AND etype=$2 AND enabled=true ORDER BY sort,created_at")
+        .bind(tid).bind(etype).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let mut metric=String::new(); let mut threshold:Option<f64>=None; let mut value:Option<f64>=None; let mut label:Option<String>=None;
+    for r in &rules {
+        let m: String = r.get("metric"); let op: String = r.get("op"); let thr: Option<f64> = r.try_get("threshold").ok();
+        if let Some(v) = canon.get(&m) { if rule_matches(&op, thr, v) { value=v.as_f64(); metric=m; threshold=thr; label=r.try_get("label").ok(); break; } }
+    }
+    let severity = iot_severity_for(etype);
+    let msg = label.filter(|s| !s.is_empty()).unwrap_or_else(|| {
+        let ml = if metric.is_empty() { etype.to_string() } else { metric.clone() };
+        match (value, threshold) { (Some(v),Some(t)) => format!("{ml} fuori soglia ({v} vs {t})"), _ => format!("{ml} fuori soglia") }
+    });
+    let m_opt = (!metric.is_empty()).then_some(metric.as_str());
+    match raise_iot_alert(st, tid, device_id, "soglia", severity, m_opt, value, threshold, Some(etype), &msg).await {
+        Some(a) => a, None => json!({"deduplicated":true}),
+    }
+}
+/// Ripristino: il device ha ripreso a parlare -> chiude gli alert offline aperti e segnala il rientro.
+pub async fn iot_recover_online(st: &AppState, tid: Uuid, device_id: Uuid) {
+    let closed = sqlx::query_scalar::<_,Uuid>(
+        "UPDATE app.iot_alerts SET state='chiuso', closed_at=now(), closed_by='watchdog', updated_at=now()
+         WHERE tenant_id=$1 AND device_id=$2 AND kind='offline' AND state<>'chiuso' RETURNING id")
+        .bind(tid).bind(device_id).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    if !closed.is_empty() {
+        let name = sqlx::query_scalar::<_,Option<String>>("SELECT COALESCE(label,external_id) FROM app.devices WHERE id=$1")
+            .bind(device_id).fetch_optional(&st.owner_pool).await.ok().flatten().flatten().unwrap_or_else(|| "device".into());
+        let _ = raise_iot_alert(st, tid, device_id, "ripristino", "info", None, None, None, None, &format!("{name} è tornato online")).await;
+    }
+}
+/// Watchdog offline: per ogni device IoT con soglia di silenzio superata alza un alert 'offline'.
+/// Orologio controllabile (coerente con last_telemetry_at, scritto dallo stesso orologio) -> testabile.
+pub async fn iot_offline_watchdog(st: &AppState) -> anyhow::Result<()> {
+    let now = st.clock.now();
+    let rows = sqlx::query(
+        "SELECT d.id,d.tenant_id,d.offline_after_s,d.last_telemetry_at,COALESCE(d.label,d.external_id) AS name
+         FROM app.devices d JOIN app.tenant_modules m ON m.tenant_id=d.tenant_id AND m.module_code='iot' AND m.state='attivo'
+         WHERE d.offline_after_s IS NOT NULL AND d.offline_after_s>0 AND d.last_telemetry_at IS NOT NULL")
+        .fetch_all(&st.owner_pool).await?;
+    for r in rows {
+        let after: i32 = r.get("offline_after_s");
+        let last: chrono::DateTime<chrono::Utc> = r.get("last_telemetry_at");
+        let secs = (now - last).num_seconds();
+        if secs <= after as i64 { continue; }
+        let tid: Uuid = r.get("tenant_id"); let dev: Uuid = r.get("id");
+        let name: Option<String> = r.try_get("name").ok();
+        let msg = format!("{} silenzioso da {}s (soglia {}s)", name.unwrap_or_else(|| "device".into()), secs, after);
+        let _ = raise_iot_alert(st, tid, dev, "offline", "warning", None, None, Some(after as f64), Some("offline"), &msg).await;
+    }
+    Ok(())
+}
+/// Hook di test (solo TEST_CLOCK): forza una passata del watchdog offline per e2e deterministici.
+pub async fn test_iot_watchdog(State(st): State<AppState>) -> R {
+    if !st.clock.test_mode { return Err(err(StatusCode::FORBIDDEN,"test clock disabled")); }
+    iot_offline_watchdog(&st).await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+// ---- API vista "Alert IoT" (separata dalla Centrale sicurezza) ----
+#[derive(Deserialize)] pub struct IotAlertQuery { pub state: Option<String>, pub device: Option<Uuid>, pub severity: Option<String> }
+pub async fn iot_alerts_list(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<IotAlertQuery>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, CONNECTOR_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query(
+        "SELECT a.id,a.device_id,COALESCE(d.label,d.external_id) AS device_name,a.kind,a.severity,a.state,
+                a.metric,a.last_value,a.threshold,a.rule_etype,a.message,a.occurrences,a.opened_at,a.updated_at,
+                a.ack_at,a.ack_by,a.closed_at,a.closed_by
+         FROM app.iot_alerts a LEFT JOIN app.devices d ON d.id=a.device_id
+         WHERE ($1::text IS NULL OR a.state=$1) AND ($2::uuid IS NULL OR a.device_id=$2) AND ($3::text IS NULL OR a.severity=$3)
+         ORDER BY (a.state<>'chiuso') DESC, a.opened_at DESC LIMIT 500")
+        .bind(&q.state).bind(q.device).bind(&q.severity).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id": r.get::<Uuid,_>("id"), "device_id": r.get::<Uuid,_>("device_id"),
+        "device_name": r.try_get::<Option<String>,_>("device_name").ok().flatten(),
+        "kind": r.get::<String,_>("kind"), "severity": r.get::<String,_>("severity"), "state": r.get::<String,_>("state"),
+        "metric": r.try_get::<Option<String>,_>("metric").ok().flatten(),
+        "last_value": r.try_get::<Option<f64>,_>("last_value").ok().flatten(),
+        "threshold": r.try_get::<Option<f64>,_>("threshold").ok().flatten(),
+        "rule_etype": r.try_get::<Option<String>,_>("rule_etype").ok().flatten(),
+        "message": r.get::<String,_>("message"), "occurrences": r.get::<i32,_>("occurrences"),
+        "opened_at": r.get::<chrono::DateTime<chrono::Utc>,_>("opened_at"),
+        "updated_at": r.get::<chrono::DateTime<chrono::Utc>,_>("updated_at"),
+        "ack_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("ack_at").ok().flatten(),
+        "ack_by": r.try_get::<Option<String>,_>("ack_by").ok().flatten(),
+        "closed_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("closed_at").ok().flatten(),
+        "closed_by": r.try_get::<Option<String>,_>("closed_by").ok().flatten(),
+    })).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn iot_alerts_summary(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, CONNECTOR_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let r = sqlx::query(
+        "SELECT count(*) FILTER (WHERE state<>'chiuso') AS open,
+                count(*) FILTER (WHERE state<>'chiuso' AND severity='critical') AS critical,
+                count(*) FILTER (WHERE state<>'chiuso' AND severity='warning') AS warning,
+                count(*) FILTER (WHERE state<>'chiuso' AND severity='info') AS info,
+                count(*) FILTER (WHERE state='aperto') AS unacked
+         FROM app.iot_alerts").fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({
+        "open": r.get::<i64,_>("open"), "critical": r.get::<i64,_>("critical"),
+        "warning": r.get::<i64,_>("warning"), "info": r.get::<i64,_>("info"), "unacked": r.get::<i64,_>("unacked") })))
+}
+pub async fn iot_alert_ack(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.iot_alerts SET state='preso_in_carico', ack_at=now(), ack_by=$2, updated_at=now() WHERE id=$1 AND state='aperto'")
+        .bind(id).bind(&s.email).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "alert inesistente o non più aperto")); }
+    audit(&st, tid, &s.email, "iot_alert_ack", json!({"id":id})).await;
+    publish_event(&st, TenantEvent{tenant_id:tid, payload:json!({"type":"iot_alert_update","id":id,"state":"preso_in_carico"})}).await;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn iot_alert_close(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
+    let tid = s.tenant_id.unwrap();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.iot_alerts SET state='chiuso', closed_at=now(), closed_by=$2, updated_at=now() WHERE id=$1 AND state<>'chiuso'")
+        .bind(id).bind(&s.email).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "alert inesistente o già chiuso")); }
+    audit(&st, tid, &s.email, "iot_alert_close", json!({"id":id})).await;
+    publish_event(&st, TenantEvent{tenant_id:tid, payload:json!({"type":"iot_alert_update","id":id,"state":"chiuso"})}).await;
+    Ok(Json(json!({"ok":true})))
 }
 
 // ---- Teltonika: comando GPRS (codec12) verso un device connesso ----
