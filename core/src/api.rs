@@ -3049,18 +3049,26 @@ pub async fn list_catalog(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
     let s = require_tenant(&st, &h).await?;
     require_any_module(&st, s.tenant_id.unwrap(), DEVICE_MODS).await?;
-    let term = q.get("q").map(|s| format!("%{}%", s.to_lowercase()));
+    let term = q.get("q").filter(|s| !s.is_empty()).map(|s| format!("%{}%", s.to_lowercase()));
     let manu = q.get("manufacturer").filter(|s| !s.is_empty()).cloned();
     let cat = q.get("category").filter(|s| !s.is_empty()).cloned();
+    // scope = perimetro: 'iot' -> solo sensori; 'safety' -> tracker sicurezza/campo (il dump GPS
+    // 'altro', 2174 modelli Traccar, compare solo se si CERCA, per non annegare il catalogo curato).
+    let scope = q.get("scope").filter(|s| !s.is_empty()).cloned();
     let rows = sqlx::query(
         "SELECT model_code,manufacturer,model_name,protocol,default_port,category,capabilities,osmand,recommended,notes,blueprint
          FROM app.device_models
          WHERE ($1::text IS NULL OR lower(manufacturer||' '||model_name) LIKE $1)
            AND ($2::text IS NULL OR manufacturer=$2)
            AND ($3::text IS NULL OR category=$3)
+           AND (CASE
+                  WHEN $4='iot'    THEN category='sensore'
+                  WHEN $4='safety' THEN category IN ('personale','smartphone','veicolo','asset') OR ($1 IS NOT NULL AND category='altro')
+                  ELSE ($1 IS NOT NULL OR category<>'altro')
+                END)
          ORDER BY recommended DESC, manufacturer, model_name
          LIMIT 300")
-        .bind(term).bind(manu).bind(cat).fetch_all(&st.owner_pool).await.map_err(ise)?;
+        .bind(term).bind(manu).bind(cat).bind(scope).fetch_all(&st.owner_pool).await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({
         "model_code":r.get::<String,_>("model_code"),"manufacturer":r.get::<String,_>("manufacturer"),
         "model_name":r.get::<String,_>("model_name"),"protocol":r.get::<String,_>("protocol"),
@@ -3070,12 +3078,26 @@ pub async fn list_catalog(State(st): State<AppState>, h: HeaderMap,
         "blueprint":r.try_get::<Option<String>,_>("blueprint").ok().flatten() })).collect();
     Ok(Json(json!(out)))
 }
-pub async fn catalog_facets(State(st): State<AppState>, h: HeaderMap) -> R {
+pub async fn catalog_facets(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
     let _ = require_tenant(&st, &h).await?;
-    let manu: Vec<String> = sqlx::query_scalar("SELECT DISTINCT manufacturer FROM app.device_models ORDER BY manufacturer")
-        .fetch_all(&st.owner_pool).await.map_err(ise)?;
-    let cats: Vec<String> = sqlx::query_scalar("SELECT DISTINCT category FROM app.device_models ORDER BY category")
-        .fetch_all(&st.owner_pool).await.map_err(ise)?;
+    // facets coerenti col perimetro; il bucket 'altro' (dump GPS Traccar) è sempre escluso dai filtri
+    // per non proporre centinaia di produttori-rumore (resta comunque cercabile per testo).
+    let scope = q.get("scope").filter(|s| !s.is_empty()).cloned();
+    let manu: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT manufacturer FROM app.device_models WHERE category<>'altro'
+           AND (CASE WHEN $1='iot' THEN category='sensore'
+                     WHEN $1='safety' THEN category IN ('personale','smartphone','veicolo','asset')
+                     ELSE true END)
+         ORDER BY manufacturer")
+        .bind(&scope).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let cats: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT category FROM app.device_models WHERE category<>'altro'
+           AND (CASE WHEN $1='iot' THEN category='sensore'
+                     WHEN $1='safety' THEN category IN ('personale','smartphone','veicolo','asset')
+                     ELSE true END)
+         ORDER BY category")
+        .bind(&scope).fetch_all(&st.owner_pool).await.map_err(ise)?;
     Ok(Json(json!({"manufacturers":manu,"categories":cats})))
 }
 

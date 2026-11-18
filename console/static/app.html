@@ -2784,23 +2784,32 @@ function devFilter(q){
 }
 // ---- Wizard onboarding dispositivo (Fase A+B+C) ----
 let WZ={q:'',manufacturer:'',category:''};
+// Etichette leggibili delle "tipologie d'uso" (category) del catalogo sicurezza/campo.
+const CAT_LABELS={personale:'Lavoratore (SOS/uomo a terra)',smartphone:'Smartphone / app',veicolo:'Veicolo / flotta',asset:'Asset / attrezzatura',sensore:'Sensore IoT',altro:'Altro (GPS)'};
+const catLabel=c=>CAT_LABELS[c]||c;
+// Wizard "Aggiungi dispositivo": PERIMETRO SICUREZZA/CAMPO (tracker). I sensori IoT hanno il loro
+// percorso dedicato ("⚡ Attiva per un lavoro"). Il dump GPS Traccar (2174 modelli) non compare in
+// elenco: emerge solo se si digita una ricerca, così il catalogo curato non viene annegato.
 async function wizardStart(){
   WZ={q:'',manufacturer:'',category:''};
-  let facets={manufacturers:[],categories:[]}; try{ facets=await api('/catalog/facets'); }catch(e){}
+  let facets={manufacturers:[],categories:[]}; try{ facets=await api('/catalog/facets?scope=safety'); }catch(e){}
   drawer('Aggiungi dispositivo · 1/2 catalogo', `
+    <div class="small mut" style="margin-bottom:8px">Tracker per <b>Sicurezza Lavoratore</b> e <b>Lavoro sul campo</b>. Per i <b>sensori IoT</b> usa invece “⚡ Attiva per un lavoro”.</div>
     <div class="row" style="gap:6px;flex-wrap:wrap">
-      <input id="wzQ" class="grow" placeholder="Cerca modello / produttore…">
+      <input id="wzQ" class="grow" placeholder="Cerca modello / produttore… (digita per includere tutto il catalogo GPS)">
       <select id="wzMan"><option value="">Tutti i produttori</option>${facets.manufacturers.map(m=>`<option>${esc(m)}</option>`).join('')}</select>
-      <select id="wzCat"><option value="">Tutti gli scopi</option>${facets.categories.map(c=>`<option>${esc(c)}</option>`).join('')}</select>
+      <select id="wzCat"><option value="">Tutti gli scopi</option>${facets.categories.map(c=>`<option value="${esc(c)}">${esc(catLabel(c))}</option>`).join('')}</select>
     </div>
     <div id="wzList" class="col" style="gap:8px;margin-top:12px"></div>`);
-  const run=async()=>{ const p=new URLSearchParams({q:$('#wzQ').value,manufacturer:$('#wzMan').value,category:$('#wzCat').value});
-    const L=await api('/catalog/devices?'+p).catch(()=>[]); const box=$('#wzList');
+  const run=async()=>{ const p=new URLSearchParams({q:$('#wzQ').value,manufacturer:$('#wzMan').value,category:$('#wzCat').value,scope:'safety'});
+    let L; try{ L=await api('/catalog/devices?'+p); }catch(e){ $('#wzList').innerHTML=`<div class="small" style="color:var(--bad)">Errore nel caricare il catalogo: ${esc(e.message)}</div>`; return; }
+    const box=$('#wzList');
     box.innerHTML=L.map(m=>`<div class="card pad clk" onclick='wizardStep2(${JSON.stringify(m).replace(/'/g,"&#39;")})'>
       <div class="spread"><b>${esc(m.manufacturer)} ${esc(m.model_name)}</b>${m.recommended?'<span class="chip s-attivo">consigliato</span>':''}</div>
-      <div class="small mut" style="margin:3px 0">${esc(m.category)} · ${esc(m.protocol)}${m.default_port?':'+m.default_port:''}${m.osmand?' · OsmAnd':''}</div>
+      <div class="small mut" style="margin:3px 0">${esc(catLabel(m.category))} · ${esc(m.protocol)}${m.default_port?':'+m.default_port:''}${m.osmand?' · OsmAnd':''}</div>
       <div class="row" style="flex-wrap:wrap;gap:4px">${(m.capabilities||[]).map(c=>`<span class="tag">${esc(c)}</span>`).join('')}</div>
-      ${m.notes?`<div class="small mut" style="margin-top:4px">${esc(m.notes)}</div>`:''}</div>`).join('')||'<div class="small mut">Nessun modello. Prova "Generico (OsmAnd)".</div>';
+      ${m.notes?`<div class="small mut" style="margin-top:4px">${esc(m.notes)}</div>`:''}</div>`).join('')
+      || `<div class="small mut">Nessun modello per questo filtro. ${$('#wzQ').value?'Prova un altro termine.':'Digita un produttore/modello per cercare in tutto il catalogo, oppure usa “manuale”.'}</div>`;
   };
   $('#wzQ').oninput=run; $('#wzMan').onchange=run; $('#wzCat').onchange=run; run();
 }

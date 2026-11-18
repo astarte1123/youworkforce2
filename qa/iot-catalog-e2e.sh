@@ -27,6 +27,21 @@ PROTO=$(echo "$CAT" | jq1 "d=json.load(sys.stdin);print(1 if any(m.get('protocol
 CAP=$(echo "$CAT" | jq1 "d=json.load(sys.stdin);m=next((x for x in d if x['model_code']=='dragino-lht65'),{});print(1 if 'temperature' in (m.get('capabilities') or []) and m.get('blueprint')=='cold-chain' else 0)")
 [ "$CAP" = 1 ] && ok "modello reale mappa capability canoniche (LHT65→temperature, cold-chain)" || no "capability/blueprint modello errati" "$CAP"
 
+# 1b) SEPARAZIONE PER PERIMETRO (divisione netta IoT vs Sicurezza/Campo)
+cats(){ api "$1" | jq1 "import sys,json;print(','.join(sorted({m['category'] for m in json.load(sys.stdin)})))"; }
+SIOT=$(cats "$BASE/api/catalog/devices?scope=iot")
+[ "$SIOT" = "sensore" ] && ok "scope=iot → SOLO sensori" || no "scope iot non pulito" "$SIOT"
+SSAF=$(cats "$BASE/api/catalog/devices?scope=safety")
+echo "$SSAF" | grep -qv "sensore" && [ -n "$SSAF" ] && ! echo "$SSAF" | grep -q "sensore\|altro" && ok "scope=safety → niente sensori né dump GPS ($SSAF)" || no "scope safety non pulito" "$SSAF"
+# il dump GPS 'altro' NON compare di default, ma emerge cercando
+DEF=$(api "$BASE/api/catalog/devices" | jq1 "print(sum(1 for m in json.load(sys.stdin) if m['category']=='altro'))")
+[ "${DEF:-x}" = 0 ] && ok "default: dump GPS 'altro' nascosto" || no "altro non nascosto" "$DEF"
+SRCH=$(api "$BASE/api/catalog/devices?q=teltonika" | jq1 "print(len(json.load(sys.stdin)))")
+[ "${SRCH:-0}" -ge 10 ] && ok "ricerca testuale include tutto il catalogo ($SRCH)" || no "ricerca non trova nulla" "$SRCH"
+# facets coerenti col perimetro
+FS=$(api "$BASE/api/catalog/facets?scope=iot" | jq1 "print(json.load(sys.stdin)['categories'])")
+[ "$FS" = "['sensore']" ] && ok "facets scope=iot → solo 'sensore'" || no "facets iot errate" "$FS"
+
 # 2) blueprint elenca i sensori consigliati
 BP=$(api "$BASE/api/iot/blueprints")
 MODS=$(echo "$BP" | jq1 "d=json.load(sys.stdin);b=next((x for x in d if x['code']=='air-quality'),{});print(len(b.get('models',[])))")

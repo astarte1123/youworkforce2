@@ -51,7 +51,7 @@ esterno** (coerente con la direzione self-contained; unica integrazione esterna 
 | Comando/RPC | `POST /api/iot/devices/:id/command` (`{method, params?}`) · `GET …/commands` |
 | Soglie | `GET/POST /api/sensor-rules` (regole metric/op/threshold/etype) |
 | Blueprint (lavori) | `GET /api/iot/blueprints` (ogni blueprint include i `models` reali consigliati) |
-| Catalogo modelli | `GET /api/catalog/devices?category=sensore` (include `blueprint` + `capabilities` canoniche) |
+| Catalogo modelli | `GET /api/catalog/devices?scope=iot` (o `safety`) — include `blueprint` + `capabilities`; `scope=iot` ritorna solo sensori |
 | Attivazione zero-touch | `POST /api/iot/activate` (`{blueprint? | model_code?, external_id, label?}`) → device+token+mappa+soglie+istruzioni |
 | Webhook LoRaWAN/TTN | `POST /api/ingress/lorawan?token=…` (uplink con payload decodificato) |
 | Broker MQTT nativo | TCP **1883** · PUBLISH su `yw/{tid}/{ext}/telemetry` · SUBSCRIBE a `yw/{tid}/{ext}/command` |
@@ -111,6 +111,18 @@ canoniche** misurate, e una colonna **`blueprint`** che li aggancia al profilo-l
 - `GET /api/iot/blueprints` restituisce per ogni lavoro l'elenco dei **sensori consigliati**
   (`models`), così il picker "Attiva per un lavoro" propone l'hardware giusto. Il device salva
   `model_code` (visibile in catalogo/monitoraggio).
+
+### Separazione netta dei cataloghi (per perimetro)
+
+Il catalogo `device_models` è unico ma **segmentato per perimetro** via il parametro `scope`:
+
+- `scope=iot` → **solo** sensori IoT (`category='sensore'`): è ciò che vede il percorso
+  "Attiva per un lavoro".
+- `scope=safety` → tracker di **Sicurezza Lavoratore / Lavoro sul campo**
+  (`personale/smartphone/veicolo/asset`): è ciò che vede "Aggiungi dispositivo (guidato)".
+- Il bucket `altro` (2174 modelli GPS importati da Traccar) **non compare in elenco**: emerge
+  **solo** quando si digita una ricerca testuale, così il catalogo curato non viene annegato.
+  `GET /api/catalog/facets?scope=…` restituisce produttori/scopi coerenti col perimetro.
 
 ## Broker MQTT nativo (porta 1883)
 
