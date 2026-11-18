@@ -3,6 +3,7 @@ mod state; mod clock; mod auth; mod db; mod goalert; mod worker; mod api; mod cr
 mod delivery; // #4 FASE 2: adapter di consegna in ombra (sink di prova; GoAlert resta il motore)
 mod modules; // #3 FASE 1: registry manifest moduli (dipendenze + metadata)
 mod teltonika; // edge nativo Teltonika Codec8/8E su TCP (decode-edge senza Traccar)
+mod mqtt; // broker MQTT nativo (IoT): ingest telemetria + downlink comandi su TCP 1883
 mod dashboard; // servizio core: dashboard unica configurabile (widget + layout per-tenant)
 mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
 mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
@@ -144,6 +145,7 @@ async fn run() -> anyhow::Result<()> {
 
     tokio::spawn(worker::run(st.clone()));
     tokio::spawn(teltonika::serve(st.clone())); // edge nativo Teltonika (TCP Codec8/8E)
+    tokio::spawn(mqtt::serve(st.clone())); // broker MQTT nativo IoT (TCP 1883)
 
     // Multi-instance live events: re-broadcast Postgres NOTIFY('yw_events') into the
     // local SSE bus, so SSE clients on ANY core instance receive events from all.

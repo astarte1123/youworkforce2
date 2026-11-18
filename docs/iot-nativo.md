@@ -24,7 +24,8 @@ esterno** (coerente con la direzione self-contained; unica integrazione esterna 
   + mappa di normalizzazione + soglie di default — e restituisce le **istruzioni di collegamento** per
   il protocollo (HTTP / MQTT / LoRaWAN). "Quale device per quale lavoro; il resto si sistema."
 - **Protocolli di ingest**: HTTP nativo (`/api/ingress/telemetry`), webhook **LoRaWAN/TTN**
-  (`/api/ingress/lorawan`, payload decodificato → stessa pipeline), MQTT nativo (in arrivo).
+  (`/api/ingress/lorawan`, payload decodificato → stessa pipeline), **MQTT nativo** (broker YW
+  su TCP 1883, vedi sotto). Tutti confluiscono nella stessa pipeline `persist_telemetry`.
 - **Scenari/Dashboard IoT**: casi d'uso applicabili per tenant.
 
 ## API native
@@ -43,6 +44,24 @@ esterno** (coerente con la direzione self-contained; unica integrazione esterna 
 | Blueprint (lavori) | `GET /api/iot/blueprints` |
 | Attivazione zero-touch | `POST /api/iot/activate` (`{blueprint, external_id, label?}`) → device+token+mappa+soglie+istruzioni |
 | Webhook LoRaWAN/TTN | `POST /api/ingress/lorawan?token=…` (uplink con payload decodificato) |
+| Broker MQTT nativo | TCP **1883** · PUBLISH su `yw/{tid}/{ext}/telemetry` · SUBSCRIBE a `yw/{tid}/{ext}/command` |
+
+## Broker MQTT nativo (porta 1883)
+
+Broker MQTT 3.1.1 **integrato** (nessun broker esterno). Il sensore si connette con l'**ingest
+token come username** della CONNECT e:
+
+- **pubblica** la telemetria JSON `{"values":{…}}` sul topic `yw/{tid}/{ext}/telemetry` → stessa
+  normalizzazione + soglie + incidenti dell'HTTP (QoS 0 e 1 supportati; PUBACK sui QoS 1);
+- **sottoscrive** `yw/{tid}/{ext}/command` per ricevere i comandi in coda (downlink): al momento
+  della SUBSCRIBE il broker consegna i comandi `pending` del device e li marca `sent`.
+
+**Isolamento multi-tenant**: il tenant è sempre quello del token; se il topic porta un `{tid}`,
+deve combaciare, altrimenti la PUBLISH viene scartata. Un token vincolato a un device deve
+combaciare con l'`{ext}` del topic (difesa in profondità).
+
+Perimetro volutamente ristretto (no QoS 2, no messaggi *retained*/persistenza, no *will*): copre
+l'ingest dei sensori e il downlink dei comandi. Disattivabile con `YW_MQTT_PORT=off`.
 
 ## Perimetro / integrazione
 

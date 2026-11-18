@@ -6959,10 +6959,12 @@ pub async fn iot_activate(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
             "webhook_url": format!("/api/ingress/lorawan?token={secret}"),
             "note":"Imposta questo URL come webhook di uplink su TTN/ChirpStack (serve un decoder a monte che produca il payload decodificato)."}),
         "mqtt" => json!({"protocol":"mqtt",
+            "host": "il server YouWorkforce", "port": 1883,
             "topic": format!("yw/{tid}/{ext}/telemetry"),
+            "command_topic": format!("yw/{tid}/{ext}/command"),
             "username": secret,
             "body_example": {"values":{"co2":650,"temperature":22.4}},
-            "note":"Broker MQTT nativo YW (porta 1883). Pubblica JSON {values:{...}} sul topic; usa il token come username."}),
+            "note":"Broker MQTT nativo YW (porta 1883). Connetti con il token come username; pubblica JSON {values:{...}} sul topic telemetria. Sottoscrivi il topic comandi per ricevere i comandi in coda."}),
         _ => json!({"protocol":"http",
             "url": format!("/api/ingress/telemetry?token={secret}"),
             "method":"POST",
@@ -7076,6 +7078,78 @@ pub async fn iot_device_pull(State(st): State<AppState>, h: HeaderMap,
     let cmd_v: Vec<Value> = cmds.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"method":r.get::<String,_>("method"),"params":r.try_get::<Value,_>("params").ok()})).collect();
     Ok(Json(json!({"shared":shared,"commands":cmd_v})))
 }
+// ---- MQTT nativo (broker YW porta 1883): helper d'ingest/comandi riusabili ----
+// Il broker vive in mqtt.rs; qui stanno le funzioni che toccano DEVICE_MODS/persist_telemetry
+// (private a questo modulo) e che impongono l'ISOLAMENTO TENANT a partire dal topic.
+/// Risolve token+device da una CONNECT MQTT. Ritorna (tenant, source, device-bound?).
+/// Rifiuta se il token è invalido o nessun modulo dispositivi è attivo.
+pub async fn mqtt_auth(st: &AppState, token: &str) -> Result<(Uuid, Option<Uuid>), String> {
+    let cred = resolve_ingest_token(st, token).await.ok_or("credenziale di ingest non valida")?;
+    let tid = cred.tenant_id;
+    let mut mod_ok=false; for m in DEVICE_MODS { if module_active(st, tid, m).await { mod_ok=true; break; } }
+    if !mod_ok { return Err("nessun modulo dispositivi attivo per questo tenant".into()); }
+    Ok((tid, cred.device_id))
+}
+/// Dal topic `yw/{tid}/{ext}/...` ricava l'external_id, imponendo che il tenant del topic
+/// combaci con quello autenticato (ISOLAMENTO). Ritorna None se il topic non è nel formato YW.
+fn mqtt_topic_ext(topic: &str, tid: Uuid) -> Result<Option<String>, String> {
+    let p: Vec<&str> = topic.split('/').collect();
+    if p.len() >= 3 && p[0] == "yw" {
+        if p[1] != tid.to_string() { return Err("il tenant del topic non combacia con la credenziale".into()); }
+        return Ok(Some(p[2].to_string()));
+    }
+    Ok(None)
+}
+/// Risolve il device dal token (bound) o dall'external_id del topic, con difesa in profondità:
+/// se il token è vincolato a un device E il topic porta un external_id, DEVONO combaciare.
+async fn mqtt_device(st: &AppState, tid: Uuid, bound: Option<Uuid>, ext_topic: Option<&str>) -> Result<Uuid, String> {
+    match bound {
+        Some(d) => {
+            if let Some(ext) = ext_topic {
+                if let Some(be) = bound_device_external(st, d).await {
+                    if be != ext { return Err("l'external_id del topic non combacia con il device del token".into()); }
+                }
+            }
+            Ok(d)
+        }
+        None => {
+            let ext = ext_topic.ok_or("device non identificabile: token non vincolato e topic senza external_id")?;
+            sqlx::query_scalar("SELECT id FROM app.devices WHERE tenant_id=$1 AND external_id=$2").bind(tid).bind(ext)
+                .fetch_optional(&st.owner_pool).await.map_err(|e| e.to_string())?.ok_or_else(|| "device non registrato".into())
+        }
+    }
+}
+/// Ingest di una PUBLISH MQTT: topic `yw/{tid}/{ext}/telemetry`, payload JSON `{values:{...}}`.
+/// Stessa pipeline di normalizzazione+soglie dell'HTTP. Ritorna i record salvati.
+pub async fn mqtt_ingest(st: &AppState, tid: Uuid, bound: Option<Uuid>, topic: &str, payload: &[u8]) -> Result<usize, String> {
+    let ext = mqtt_topic_ext(topic, tid)?;
+    let dev_id = mqtt_device(st, tid, bound, ext.as_deref()).await?;
+    let b: Value = serde_json::from_slice(payload).map_err(|_| "payload non è JSON valido".to_string())?;
+    let ts = b.get("ts").and_then(|v| v.as_str()).and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&chrono::Utc)).unwrap_or_else(|| st.clock.now());
+    let values = b.get("values").and_then(|v| v.as_object()).cloned()
+        .unwrap_or_else(|| b.as_object().cloned().unwrap_or_default().into_iter().filter(|(k,_)| k!="ts").collect());
+    if values.is_empty() { return Err("nessuna telemetria (values vuoto)".into()); }
+    let attrs = b.get("attributes").and_then(|v| v.as_object()).cloned();
+    let (n, _incident) = persist_telemetry(st, tid, dev_id, ts, &values, attrs.as_ref()).await.map_err(|(_,m)| m)?;
+    Ok(n)
+}
+/// Flush dei comandi pending per il device sottoscritto (`yw/{tid}/{ext}/command`): li ritorna
+/// come JSON e li marca 'sent' (stessa semantica del pull HTTP). Il broker li pubblica al client.
+pub async fn mqtt_flush_commands(st: &AppState, tid: Uuid, bound: Option<Uuid>, topic: &str) -> Result<Vec<Value>, String> {
+    let ext = mqtt_topic_ext(topic, tid)?;
+    let dev_id = mqtt_device(st, tid, bound, ext.as_deref()).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(|e| e.to_string())?;
+    let cmds = sqlx::query("SELECT id,method,params FROM app.iot_commands WHERE device_id=$1 AND status='pending' ORDER BY created_at")
+        .bind(dev_id).fetch_all(&mut *tx).await.map_err(|e| e.to_string())?;
+    if !cmds.is_empty() {
+        sqlx::query("UPDATE app.iot_commands SET status='sent',sent_at=now() WHERE device_id=$1 AND status='pending'")
+            .bind(dev_id).execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(cmds.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"method":r.get::<String,_>("method"),"params":r.try_get::<Value,_>("params").ok()})).collect())
+}
+
 // ---- Teltonika: comando GPRS (codec12) verso un device connesso ----
 #[derive(Deserialize)] pub struct GprsCmdReq { pub command: String }
 pub async fn device_gprs_command(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GprsCmdReq>) -> R {
