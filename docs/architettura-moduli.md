@@ -123,6 +123,22 @@ moduli-feature.
 I moduli product/connector e il resto dei servizi vivono ancora in `api.rs` e migreranno con lo
 stesso pattern quando utile. ThingsBoard è il prossimo candidato (vedi sotto).
 
+## Riferimento temporale: orologio unico controllabile
+
+Esiste **un solo** riferimento di tempo applicativo: `st.clock.now()` (`core/src/clock.rs`),
+pari a `Utc::now() + offset`. In produzione l'offset è sempre `0` → identico al wall-clock; con
+`TEST_CLOCK=1` l'endpoint `POST /api/_test/advance {seconds}` sposta l'offset, rendendo testabili
+i percorsi basati sul tempo **senza attese reali**. Regola:
+
+- **Logica/visualizzazione calcolata in Rust dalla configurazione** (slot ronde, rotazioni e
+  turni di reperibilità, finestre calendario/iCal, default "oggi" di date utente, e il **motore di
+  escalation nativo** — `step_fired_at` è scritto e confrontato con lo stesso `now`, quindi
+  auto-coerente) usa `st.clock.now()`.
+- **Confronti contro timestamp scritti da `now()` SQL** (throttle login, elapsed ronda/turno vs
+  `started_at`, watchdog heartbeat vs `last_ping_at`) e **interazioni con sistemi esterni** (shadow
+  GoAlert, annunci Slack, suffissi-ID univoci) restano su `chrono::Utc::now()` (wall-clock), con
+  commento esplicito nel codice: mescolare clock di test e `now()` SQL falserebbe gli elapsed.
+
 ## Nota per ThingsBoard (prossimo lavoro)
 
 Il codice TB vive oggi in `api.rs` (~102 funzioni, cluster ~1162–1413 e ~9513–9680). Fase B3 lo

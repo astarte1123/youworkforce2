@@ -209,6 +209,8 @@ async fn rl_check(st: &AppState, key: &str) -> Option<u64> {
         sqlx::query_scalar("SELECT blocked_until FROM app.login_throttle WHERE key=$1")
             .bind(key).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
     if let Some(b) = b {
+        // wall-clock DI PROPOSITO: blocked_until e' scritto con `now()` SQL (wall); il TEST_CLOCK
+        // non deve poter aggirare il throttle di login. NON usare st.clock.now() qui.
         let now = chrono::Utc::now();
         if b > now { return Some((b - now).num_seconds().max(0) as u64 + 1); }
     }
@@ -4146,6 +4148,8 @@ pub async fn close_round(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     let mut in_window = true;
     if let Ok(win) = round.try_get::<i32,_>("window_minutes") {
         let started: chrono::DateTime<chrono::Utc> = round.get("started_at");
+        // wall-clock: started_at e' il DEFAULT now() SQL (wall), quindi l'elapsed si misura sul wall
+        // per restare coerente con come e' stato scritto. NON usare st.clock.now() qui.
         let elapsed = (chrono::Utc::now() - started).num_minutes();
         in_window = elapsed <= win as i64;
     }
@@ -5157,7 +5161,7 @@ pub async fn create_sal(State(st): State<AppState>, h: HeaderMap, Path(cid): Pat
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
     if !(0..=100).contains(&b.pct) { return Err(err(StatusCode::BAD_REQUEST, "pct 0..100")); }
-    let d = parse_date_opt(&b.sal_date).unwrap_or_else(|| chrono::Utc::now().date_naive());
+    let d = parse_date_opt(&b.sal_date).unwrap_or_else(|| st.clock.now().date_naive());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let id: Uuid = sqlx::query_scalar(
         "INSERT INTO app.commessa_sal(tenant_id,commessa_id,sal_date,pct,amount,note,created_by) VALUES($1,$2,$3,$4,$5::numeric,$6,$7) RETURNING id")
@@ -5217,7 +5221,7 @@ pub async fn add_commessa_costo(State(st): State<AppState>, h: HeaderMap, Path(c
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
     if b.description.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "descrizione richiesta")); }
-    let d = parse_date_opt(&b.cost_date).unwrap_or_else(|| chrono::Utc::now().date_naive());
+    let d = parse_date_opt(&b.cost_date).unwrap_or_else(|| st.clock.now().date_naive());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let id: Uuid = sqlx::query_scalar("INSERT INTO app.commessa_costi(tenant_id,commessa_id,description,category,amount,cost_date,created_by) VALUES($1,$2,$3,COALESCE($4,'materiale'),$5::numeric,$6,$7) RETURNING id")
         .bind(tid).bind(cid).bind(b.description.trim()).bind(&b.category).bind(b.amount).bind(d).bind(s.user_id)
@@ -5240,7 +5244,7 @@ pub async fn add_commessa_diario(State(st): State<AppState>, h: HeaderMap, Path(
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "cantieri").await?;
     if b.body.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "testo richiesto")); }
-    let d = parse_date_opt(&b.diary_date).unwrap_or_else(|| chrono::Utc::now().date_naive());
+    let d = parse_date_opt(&b.diary_date).unwrap_or_else(|| st.clock.now().date_naive());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let id: Uuid = sqlx::query_scalar("INSERT INTO app.commessa_diario(tenant_id,commessa_id,diary_date,weather,present_count,body,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
         .bind(tid).bind(cid).bind(d).bind(&b.weather).bind(b.present_count).bind(b.body.trim()).bind(s.user_id)
@@ -5263,7 +5267,7 @@ pub async fn add_commessa_fattura(State(st): State<AppState>, h: HeaderMap, Path
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
     if b.number.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "numero richiesto")); }
-    let d = parse_date_opt(&b.issue_date).unwrap_or_else(|| chrono::Utc::now().date_naive());
+    let d = parse_date_opt(&b.issue_date).unwrap_or_else(|| st.clock.now().date_naive());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let id: Uuid = sqlx::query_scalar("INSERT INTO app.commessa_fatture(tenant_id,commessa_id,sal_id,number,amount,issue_date,note,created_by) VALUES($1,$2,$3,$4,$5::numeric,$6,$7,$8) RETURNING id")
         .bind(tid).bind(cid).bind(b.sal_id).bind(b.number.trim()).bind(b.amount).bind(d).bind(&b.note).bind(s.user_id)
@@ -7474,6 +7478,7 @@ pub async fn shift_current(State(st): State<AppState>, h: HeaderMap) -> R {
     Ok(Json(match row {
         Some(r) => {
             let started: Dt = r.get("started_at");
+            // wall-clock: started_at e' il DEFAULT now() SQL (wall). Coerenza con lo storage.
             let elapsed = (chrono::Utc::now() - started).num_minutes().max(0);
             json!({"active":true,"id":r.get::<Uuid,_>("id"),"started_at":started,
                 "elapsed_minutes":elapsed,"max_hours":max_h,"over_max":elapsed > max_h*60})
@@ -8416,7 +8421,7 @@ pub async fn suggest_order_tech(State(st): State<AppState>, h: HeaderMap, Path(i
     let ord = sqlx::query("SELECT scheduled_start,title FROM app.work_orders WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
     let ord = match ord { Some(r)=>r, None=>{ return Err(err(StatusCode::NOT_FOUND,"intervento non trovato")); } };
     let sched: Option<chrono::DateTime<chrono::Utc>> = ord.try_get("scheduled_start").ok();
-    let day = sched.map(|d| d.date_naive()).unwrap_or_else(|| chrono::Utc::now().date_naive());
+    let day = sched.map(|d| d.date_naive()).unwrap_or_else(|| st.clock.now().date_naive());
     let day_start = chrono::Utc.from_utc_datetime(&day.and_hms_opt(0,0,0).unwrap());
     let day_end = day_start + chrono::Duration::days(1);
     let workers = sqlx::query("SELECT id,email FROM app.users WHERE role IN ('lavoratore','operatore') ORDER BY email").fetch_all(&mut *tx).await.map_err(ise)?;
@@ -8528,7 +8533,7 @@ pub async fn create_plan(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
     if b.title.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "titolo richiesto")); }
     let ev = b.every_days.unwrap_or(30).max(1);
-    let nd = parse_date_opt(&b.next_date).unwrap_or_else(|| chrono::Utc::now().date_naive());
+    let nd = parse_date_opt(&b.next_date).unwrap_or_else(|| st.clock.now().date_naive());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let id: Uuid = sqlx::query_scalar("INSERT INTO app.maintenance_plans(tenant_id,client_id,site_id,contract_id,title,every_days,next_date) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
         .bind(tid).bind(b.client_id).bind(b.site_id).bind(b.contract_id).bind(b.title.trim()).bind(ev).bind(nd)
@@ -10556,7 +10561,7 @@ pub async fn group_calendar_ics(State(st): State<AppState>, axum::extract::Query
     let Some(row) = row else { return (StatusCode::NOT_FOUND, "token non valido").into_response(); };
     let tid: Uuid = row.get("tenant_id"); let gid: Uuid = row.get("group_id");
     let name: String = sqlx::query_scalar("SELECT name FROM app.alarm_groups WHERE id=$1").bind(gid).fetch_optional(&st.owner_pool).await.ok().flatten().unwrap_or_else(|| "Gruppo".into());
-    let now = chrono::Utc::now();
+    let now = st.clock.now();
     let segs = esc_group_shifts(&st, tid, gid, now, 30).await;
     let fmt = |t: chrono::DateTime<chrono::Utc>| t.format("%Y%m%dT%H%M%SZ").to_string();
     let mut ics = format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//YouWorkforce//Reperibilita//IT\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:Reperibilita {}\r\n", name.replace('\n'," "));
@@ -10601,7 +10606,7 @@ pub async fn oncall_calendar_ics(State(st): State<AppState>, axum::extract::Quer
         ics.push_str("END:VEVENT\r\n");
     }
     // F3 — turni CALCOLATI dalla rotazione nativa (prossimi 30 giorni), non solo i turni manuali.
-    let now = chrono::Utc::now();
+    let now = st.clock.now();
     for (gi, (gname, s, e)) in esc_user_rotation_shifts_g(&st, tid, uid, now, 30, q.group).await.iter().enumerate() {
         ics.push_str("BEGIN:VEVENT\r\n");
         ics.push_str(&format!("UID:rot-{uid}-{gi}-{}@youworkforce\r\n", fmt(*s)));
@@ -10755,7 +10760,7 @@ pub async fn calendar_ics(State(st): State<AppState>, axum::extract::Query(q): a
         .bind(&q.token).fetch_optional(&st.owner_pool).await.ok().flatten();
     let Some(row) = row else { return (StatusCode::NOT_FOUND, "token non valido").into_response(); };
     let tid: Uuid = row.get("tenant_id"); let uid: Uuid = row.get("user_id");
-    let now = chrono::Utc::now();
+    let now = st.clock.now();
     let evs = calendar_collect(&st, tid, now - chrono::Duration::days(7), now + chrono::Duration::days(60), Some(uid)).await;
     let fmt = |t: chrono::DateTime<chrono::Utc>| t.format("%Y%m%dT%H%M%SZ").to_string();
     let esc_ics = |x: &str| x.replace('\\',"\\\\").replace('\n'," ").replace(',', "\\,").replace(';', "\\;");
@@ -11741,7 +11746,7 @@ pub async fn group_shifts(State(st): State<AppState>, h: HeaderMap, Path(gid): P
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let days: i64 = q.get("days").and_then(|d| d.parse().ok()).unwrap_or(30);
-    let now = chrono::Utc::now();
+    let now = st.clock.now();
     let segs = esc_group_shifts(&st, tid, gid, now, days).await;
     let out: Vec<Value> = segs.iter().filter(|(_,_,e)| !e.is_empty()).map(|(s0,e0,em)| json!({
         "start":s0,"end":e0,"oncall":em})).collect();
@@ -12120,7 +12125,7 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
         let dg: Option<Uuid> = sqlx::query_scalar("SELECT default_group_id FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
             .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
         if let Some(dg) = dg {
-            let now0 = chrono::Utc::now();
+            let now0 = st.clock.now();
             let oncall = esc_native_oncall_contacts(st, tid, dg, None, now0, false).await;
             let text = format!("YouWorkforce: {bundled} allarmi durante la manutenzione. Escalation ripresa.");
             for (_u, phone, _email) in &oncall {
@@ -12137,7 +12142,10 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
     // (storicamente) gli override; il motore nativo funziona anche senza (strada nuova).
     let ga_sess = goalert_session(st, tid).await;
     let ga_opt: Option<(&str,&str)> = ga_sess.as_ref().map(|(b,c,_)| (b.as_str(), c.as_str()));
-    let now = chrono::Utc::now();
+    // riferimento temporale del motore nativo = orologio controllabile: step_fired_at viene SCRITTO
+    // e confrontato con lo stesso `now` (vedi escalation::tick), quindi e' auto-coerente e testabile
+    // con TEST_CLOCK (in prod offset=0 -> identico al wall-clock).
+    let now = st.clock.now();
     let sink = std::env::var("YW_ESC_SINK_URL").unwrap_or_default();
     let from = std::env::var("YW_ESC_FROM").unwrap_or_else(|_| "+10000000000".into());
     // adapter LIVE (gate): Twilio reale, Slack, relay email. Default OFF -> sink/dry.
@@ -12263,6 +12271,8 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
 pub async fn slack_announce_scan(st: &AppState) {
     let token = std::env::var("YW_ESC_SLACK_TOKEN").unwrap_or_default();
     if token.trim().is_empty() { return; }
+    // wall-clock: annuncio verso Slack (sistema esterno) + cadenza giornaliera HH:MM e
+    // slack_last_announce (SQL) sono su tempo reale; il TEST_CLOCK non deve spammare Slack.
     let now = chrono::Utc::now();
     let groups = sqlx::query("SELECT id,tenant_id,name,slack_channel_id,slack_notify,slack_last_announce,oncall_mode,oncall_tz FROM app.alarm_groups WHERE slack_notify<>'off' AND slack_channel_id IS NOT NULL")
         .fetch_all(&st.owner_pool).await.unwrap_or_default();
@@ -12447,6 +12457,7 @@ pub async fn ingest_heartbeat(State(st): State<AppState>, Path(token): Path<Stri
 pub async fn heartbeat_watchdog(st: &AppState) {
     let rows = sqlx::query("SELECT id,tenant_id,name,timeout_s,group_id,last_ping_at FROM app.heartbeat_monitors WHERE state='ok'")
         .fetch_all(&st.owner_pool).await.unwrap_or_default();
+    // wall-clock: last_ping_at e' scritto con now() SQL (wall); il timeout si misura sul wall.
     let now = chrono::Utc::now();
     for r in &rows {
         let last: Option<chrono::DateTime<chrono::Utc>> = r.try_get("last_ping_at").ok().flatten();
@@ -12630,7 +12641,7 @@ pub async fn oncall_now_native(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
-    let now = chrono::Utc::now();
+    let now = st.clock.now();
     let groups = sqlx::query("SELECT id,name FROM app.alarm_groups WHERE tenant_id=$1 ORDER BY name")
         .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
     let mut out = Vec::new();
@@ -12693,7 +12704,7 @@ async fn esc_status_update_notify(st: &AppState, tid: Uuid, iid: Uuid, actor: Op
           WHERE i.id=$1 AND i.tenant_id=$2")
         .bind(iid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
     let Some(gid) = gid else { return; };
-    let oncall = esc_native_oncall_contacts(st, tid, gid, None, chrono::Utc::now(), false).await;
+    let oncall = esc_native_oncall_contacts(st, tid, gid, None, st.clock.now(), false).await;
     let short = iid.to_string(); let short = &short[..8];
     let verb = if action=="close" { "chiuso" } else { "preso in carico" };
     let text = format!("YouWorkforce: incidente {short} {verb} da {actor_label}.");
