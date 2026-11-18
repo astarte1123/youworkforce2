@@ -22,6 +22,8 @@ esterno** (coerente con la direzione self-contained; unica integrazione esterna 
   (centrale + escalation); un tenant puramente IoT resta nel solo mondo alert.
 - **Alert IoT in vista separata** (Fase 3, vedi sotto): soglia / offline / ripristino, con ciclo
   di vita proprio (aperto → preso in carico → chiuso) e **watchdog offline** nativo.
+- **Monitoraggio flotta** (Fase 4, vedi sotto): stato online/offline, ultimi valori canonici,
+  tendenza (sparkline) e alert aperti per dispositivo, in un colpo d'occhio.
 - **Blueprint / attivazione zero-touch** (Fase 2): l'admin sceglie *che lavoro* deve fare il device
   (`iot_blueprints`: catena del freddo, livello serbatoio, energia, qualità aria, varchi, conteggio,
   ambiente LoRaWAN) e `POST /api/iot/activate` configura TUTTO da solo — device + token device-bound
@@ -51,6 +53,7 @@ esterno** (coerente con la direzione self-contained; unica integrazione esterna 
 | Broker MQTT nativo | TCP **1883** · PUBLISH su `yw/{tid}/{ext}/telemetry` · SUBSCRIBE a `yw/{tid}/{ext}/command` |
 | Alert IoT (lista) | `GET /api/iot/alerts?state=&device=&severity=` · `GET /api/iot/alerts/summary` |
 | Alert IoT (azioni) | `POST /api/iot/alerts/:id/ack` · `POST /api/iot/alerts/:id/close` |
+| Monitoraggio flotta | `GET /api/iot/monitor` (stato online/offline + ultimi valori + trend + alert) |
 
 ## Alert IoT in vista separata (Fase 3)
 
@@ -71,6 +74,21 @@ mondo sicurezza. In console: menu **IoT Dashboard → Alert IoT** (notifica nati
   `iot_alerts` è il registro persistente consultabile dalla vista.
 - **Coesistenza**: con Lone Worker attivo la soglia alza **anche** l'incidente di sicurezza (bridge
   in `persist_telemetry`), così i due perimetri restano autonomi ma collaborano.
+
+## Monitoraggio IoT (Fase 4)
+
+`GET /api/iot/monitor` dà l'overview della flotta IoT in una chiamata; in console: menu
+**IoT Dashboard → Monitoraggio IoT**.
+
+- **Stato online/offline** per device: `online` = `last_telemetry_at` entro `offline_after_s`
+  (o un default di 3600 s se il watchdog non è impostato — segnalato come `has_watchdog:false`).
+  Orologio controllabile (coerente col watchdog).
+- **Ultimi valori canonici**: una riga per metrica (etichetta + unità dal catalogo `iot_metrics`),
+  ordinate per categoria.
+- **Tendenza**: `spark` = ultimi 24 punti numerici della metrica primaria (sparkline in console).
+- **Alert aperti** per device + **riepilogo** flotta (totali / online / offline / senza watchdog /
+  alert aperti).
+- Aggiornamento **live** via SSE (telemetria e alert).
 
 ## Broker MQTT nativo (porta 1883)
 

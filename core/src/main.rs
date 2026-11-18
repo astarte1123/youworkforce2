@@ -432,6 +432,8 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/iot/devices/:id/map", get(api::device_map_get).put(api::device_map_set))
         .route("/api/iot/blueprints", get(api::iot_blueprints_list))
         .route("/api/iot/activate", post(api::iot_activate))
+        // Fase 4: monitoraggio IoT (stato flotta + ultimi valori + trend)
+        .route("/api/iot/monitor", get(api::iot_monitor))
         // Fase 3: alert IoT in vista separata (soglia/offline/ripristino)
         .route("/api/iot/alerts", get(api::iot_alerts_list))
         .route("/api/iot/alerts/summary", get(api::iot_alerts_summary))

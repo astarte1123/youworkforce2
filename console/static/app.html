@@ -46,7 +46,8 @@ const NAV = [
   {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
   {k:'profili',   t:'Profili di protezione', ico:'shield', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
   {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
-  // --- IoT: alert di processo (soglia/offline/ripristino) in VISTA SEPARATA dalla Centrale sicurezza ---
+  // --- IoT: monitoraggio flotta + alert di processo (soglia/offline/ripristino), VISTA SEPARATA ---
+  {k:'iot-monitor',t:'Monitoraggio IoT', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:['iot'], grp:'iot'},
   {k:'iot-alerts',t:'Alert IoT', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['iot'], grp:'iot'},
   // --- Lavoro sul campo ---
   {k:'ordini',    t:'Interventi', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
@@ -89,7 +90,7 @@ const I18N={ en:{
   login_password:"Password", login_signin:"Sign in", login_quick:"Quick demo access (password <b>demo</b>):",
   grp_op:"Operations", grp_safety:"Worker Safety", grp_iot:"IoT Dashboard", grp_work:"Field work", grp_cfg:"Configuration",
   "nav_dashboard":"Dashboard","nav_centrale":"Alarm center","nav_miei-allarmi":"My alarms",
-  "nav_mappa":"Alarm map","nav_mappa-dispositivi":"Device map","nav_piantine":"Floor plans","nav_cruscotti":"IoT dashboards","nav_report":"Reports","nav_iot-alerts":"IoT alerts",
+  "nav_mappa":"Alarm map","nav_mappa-dispositivi":"Device map","nav_piantine":"Floor plans","nav_cruscotti":"IoT dashboards","nav_report":"Reports","nav_iot-alerts":"IoT alerts","nav_iot-monitor":"IoT monitoring",
   "nav_ordini":"Work orders","nav_consuntivi":"Timesheets","nav_turni":"Shifts","nav_agente":"AI agent",
   "nav_dispositivi":"Devices & Apps","nav_trigger":"Safety triggers","nav_profili":"Protection profiles","nav_connettori":"Connectors","nav_gruppi":"Escalation & on-call",
   "nav_anagrafiche":"Users & sites","nav_ai":"AI · youworker.ai","nav_moduli":"Modules",
@@ -365,7 +366,7 @@ function route(){
   setActive(k); const v=$('#view'); v.innerHTML='<div class="col"><div class="skel" style="height:90px"></div><div class="skel" style="height:260px"></div></div>';
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
-  ({dashboard:vDashboard,centrale:vCentrale,'iot-alerts':vIotAlerts,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
+  ({dashboard:vDashboard,centrale:vCentrale,'iot-monitor':vIotMonitor,'iot-alerts':vIotAlerts,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
     dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
@@ -388,6 +389,7 @@ function connectSSE(){
     if(d.type==='iot_alert'){ const a=d.alert||{}; const sev=a.severity==='critical'?'bad':(a.severity==='info'?'':'warn');
       toast('Alert IoT: '+(a.message||a.kind||''), sev==='bad'?'bad':'warn'); if(sev==='bad') alarmBeep(); }
     if((d.type==='iot_alert'||d.type==='iot_alert_update') && k==='iot-alerts') route();
+    if(k==='iot-monitor' && (d.type==='telemetry'||d.type==='iot_alert'||d.type==='iot_alert_update')) route();
   };
 }
 // ---- Allarme: suono + popup quando un dispositivo apre un incidente ----
@@ -528,6 +530,35 @@ function bindRows(v){
   $$('[data-inc]',v).forEach(r=>r.onclick=()=>openIncident(r.dataset.inc));
   $$('[data-ord]',v).forEach(r=>r.onclick=()=>openOrder(r.dataset.ord));
   $$('[data-ts]',v).forEach(r=>r.onclick=()=>openTimesheet(r.dataset.ts));
+}
+
+// ---------------- Monitoraggio IoT (stato flotta + ultimi valori + trend) ----------------
+function sparkSvg(arr,w,hh){ w=w||120; hh=hh||28; if(!arr||arr.length<2) return '<span class="mut" style="font-size:12px">—</span>';
+  const mn=Math.min(...arr), mx=Math.max(...arr), rg=(mx-mn)||1;
+  const pts=arr.map((v,i)=>`${(i/(arr.length-1)*w).toFixed(1)},${(hh-2-((v-mn)/rg)*(hh-4)).toFixed(1)}`).join(' ');
+  return `<svg width="${w}" height="${hh}" viewBox="0 0 ${w} ${hh}" preserveAspectRatio="none" style="vertical-align:middle"><polyline points="${pts}" fill="none" stroke="#e2001a" stroke-width="1.5"/></svg>`; }
+function iotAgo(s){ if(s==null) return 'mai'; if(s<60) return s+'s fa'; if(s<3600) return Math.floor(s/60)+'m fa'; if(s<86400) return Math.floor(s/3600)+'h fa'; return Math.floor(s/86400)+'g fa'; }
+async function vIotMonitor(v){
+  let d; try{ d=await api('/iot/monitor'); }catch(e){ v.innerHTML='<div class="card">Impossibile caricare il monitoraggio IoT.</div>'; return; }
+  const sm=d.summary||{}; const devs=d.devices||[];
+  const chip=(lab,val,col)=>`<span style="display:inline-block;padding:4px 10px;border-radius:10px;background:${col};color:#fff;font-size:13px;margin-right:6px">${lab}: <b>${val}</b></span>`;
+  const cards = devs.map(x=>{
+    const stat = x.online ? '<span style="color:#16a34a">● Online</span>'
+      : `<span style="color:#e2001a">● Offline</span> <span class="mut" style="font-size:12px">(${iotAgo(x.seconds_since)})</span>`;
+    const wd = x.has_watchdog ? '' : ' <span class="mut" style="font-size:11px" title="Nessuna soglia di silenzio impostata">no watchdog</span>';
+    const al = x.open_alerts>0 ? `<a href="#/iot-alerts" style="color:#e2001a;font-weight:600">${x.open_alerts} alert</a>` : '<span class="mut" style="font-size:12px">nessun alert</span>';
+    const vals = (x.metrics||[]).map(m=>`<div class="row" style="justify-content:space-between;gap:10px"><span class="mut" style="font-size:12px">${m.label||m.metric}</span><b>${m.value!=null?m.value:'—'} ${m.unit||''}</b></div>`).join('') || '<div class="mut" style="font-size:12px">Nessuna misura ancora</div>';
+    const primLab = (x.metrics||[]).find(m=>m.metric===x.primary);
+    return `<div class="card" style="min-width:240px;flex:1 1 240px">
+      <div class="row" style="justify-content:space-between"><b>${(x.name||x.external_id||'').replace(/</g,'&lt;')}</b>${stat}${wd}</div>
+      <div class="mut" style="font-size:12px;margin:2px 0 8px">${x.site?('📍 '+x.site):'&nbsp;'} · ${al}</div>
+      ${vals}
+      <div style="margin-top:8px">${sparkSvg(x.spark)} <span class="mut" style="font-size:11px">${primLab?(primLab.label||x.primary):''} (trend)</span></div>
+    </div>`;
+  }).join('') || '<div class="card">Nessun dispositivo IoT. Attivane uno da Dispositivi → ⚡ Attiva per un lavoro.</div>';
+  v.innerHTML=`<div class="page-h"><div><h1>Monitoraggio IoT</h1><div class="mut">Stato dei dispositivi IoT, ultimi valori e tendenza · live</div></div>
+      <div class="row">${chip('Totali',sm.total||0,'#64748b')}${chip('Online',sm.online||0,'#16a34a')}${chip('Offline',sm.offline||0,'#e2001a')}${chip('Alert aperti',sm.open_alerts||0,'#b45309')}</div></div>
+    <div class="row" style="flex-wrap:wrap;gap:12px;align-items:stretch">${cards}</div>`;
 }
 
 // ---------------- Alert IoT (vista separata dalla Centrale sicurezza) ----------------

@@ -7334,6 +7334,72 @@ pub async fn iot_alert_close(State(st): State<AppState>, h: HeaderMap, Path(id):
     Ok(Json(json!({"ok":true})))
 }
 
+// ---- API "Monitoraggio IoT" (Fase 4): stato flotta + ultimi valori + trend ----
+// Overview aggregata dei device IoT: online/offline (last_telemetry_at vs watchdog), ultimi valori
+// canonici (metrica+unità), alert aperti, e una mini-serie (spark) della metrica primaria.
+pub async fn iot_monitor(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, CONNECTOR_MODS).await?;
+    let now = st.clock.now();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let devs = sqlx::query(
+        "SELECT d.id, COALESCE(d.label,d.external_id) AS name, d.external_id, d.last_telemetry_at, d.offline_after_s,
+                s.name AS site_name
+         FROM app.devices d LEFT JOIN app.sites s ON s.id=d.site_id
+         WHERE d.source='iot' ORDER BY name")
+        .fetch_all(&mut *tx).await.map_err(ise)?;
+    let mut out: Vec<Value> = Vec::new();
+    let (mut n_online, mut n_offline, mut n_nowd, mut n_alerts) = (0i64,0i64,0i64,0i64);
+    for d in &devs {
+        let dev: Uuid = d.get("id");
+        let last: Option<chrono::DateTime<chrono::Utc>> = d.try_get("last_telemetry_at").ok().flatten();
+        let oas: Option<i32> = d.try_get("offline_after_s").ok().flatten();
+        let secs = last.map(|t| (now - t).num_seconds());
+        let stale_after = oas.unwrap_or(3600) as i64;
+        let online = secs.map(|sx| sx <= stale_after).unwrap_or(false);
+        if online { n_online+=1; } else { n_offline+=1; }
+        if oas.is_none() { n_nowd+=1; }
+        // ultimi valori canonici (una riga per metrica) + etichetta/unità/sort dal catalogo
+        let latest = sqlx::query(
+            "SELECT DISTINCT ON (t.metric) t.metric, t.num, t.unit, t.ts, m.label, m.sort
+             FROM app.device_telemetry t JOIN app.iot_metrics m ON m.metric=t.metric
+             WHERE t.device_id=$1 AND t.metric IS NOT NULL ORDER BY t.metric, t.ts DESC")
+            .bind(dev).fetch_all(&mut *tx).await.map_err(ise)?;
+        let mut metrics: Vec<(i32,Value)> = latest.iter().map(|r| {
+            let sort: i32 = r.try_get("sort").unwrap_or(100);
+            (sort, json!({
+                "metric": r.get::<String,_>("metric"), "label": r.try_get::<Option<String>,_>("label").ok().flatten(),
+                "unit": r.try_get::<Option<String>,_>("unit").ok().flatten(),
+                "value": r.try_get::<Option<f64>,_>("num").ok().flatten(),
+                "ts": r.get::<chrono::DateTime<chrono::Utc>,_>("ts") }))
+        }).collect();
+        metrics.sort_by_key(|(k,_)| *k);
+        let primary = metrics.first().map(|(_,v)| v.get("metric").and_then(|x| x.as_str()).unwrap_or("").to_string());
+        // spark (trend) della metrica primaria: ultimi 24 punti numerici, in ordine cronologico
+        let mut spark: Vec<f64> = Vec::new();
+        if let Some(pm) = &primary {
+            let sp = sqlx::query_scalar::<_,Option<f64>>(
+                "SELECT num FROM app.device_telemetry WHERE device_id=$1 AND metric=$2 AND num IS NOT NULL ORDER BY ts DESC LIMIT 24")
+                .bind(dev).bind(pm).fetch_all(&mut *tx).await.map_err(ise)?;
+            spark = sp.into_iter().flatten().collect(); spark.reverse();
+        }
+        let alerts: i64 = sqlx::query_scalar("SELECT count(*) FROM app.iot_alerts WHERE device_id=$1 AND state<>'chiuso'")
+            .bind(dev).fetch_one(&mut *tx).await.map_err(ise)?;
+        n_alerts += alerts;
+        out.push(json!({
+            "id": dev, "name": d.try_get::<Option<String>,_>("name").ok().flatten(),
+            "external_id": d.get::<String,_>("external_id"),
+            "site": d.try_get::<Option<String>,_>("site_name").ok().flatten(),
+            "online": online, "has_watchdog": oas.is_some(), "offline_after_s": oas,
+            "last_telemetry_at": last, "seconds_since": secs, "open_alerts": alerts,
+            "metrics": metrics.into_iter().map(|(_,v)| v).collect::<Vec<_>>(), "primary": primary, "spark": spark }));
+    }
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({
+        "summary": {"total": devs.len() as i64, "online": n_online, "offline": n_offline, "no_watchdog": n_nowd, "open_alerts": n_alerts},
+        "devices": out })))
+}
+
 // ---- Teltonika: comando GPRS (codec12) verso un device connesso ----
 #[derive(Deserialize)] pub struct GprsCmdReq { pub command: String }
 pub async fn device_gprs_command(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GprsCmdReq>) -> R {
