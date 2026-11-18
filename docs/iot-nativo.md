@@ -24,6 +24,9 @@ esterno** (coerente con la direzione self-contained; unica integrazione esterna 
   di vita proprio (aperto → preso in carico → chiuso) e **watchdog offline** nativo.
 - **Monitoraggio flotta** (Fase 4, vedi sotto): stato online/offline, ultimi valori canonici,
   tendenza (sparkline) e alert aperti per dispositivo, in un colpo d'occhio.
+- **Catalogo sensori reali** (Fase 5, vedi sotto): archetipi di sensori industriali (CO₂, temperatura,
+  livello, energia, porta, conteggio…) agganciati ai blueprint; si attiva "per modello" e il lavoro
+  si deriva da sé.
 - **Blueprint / attivazione zero-touch** (Fase 2): l'admin sceglie *che lavoro* deve fare il device
   (`iot_blueprints`: catena del freddo, livello serbatoio, energia, qualità aria, varchi, conteggio,
   ambiente LoRaWAN) e `POST /api/iot/activate` configura TUTTO da solo — device + token device-bound
@@ -47,8 +50,9 @@ esterno** (coerente con la direzione self-contained; unica integrazione esterna 
 | Attributi | `GET/POST /api/iot/devices/:id/attributes` (`{scope, values}`) |
 | Comando/RPC | `POST /api/iot/devices/:id/command` (`{method, params?}`) · `GET …/commands` |
 | Soglie | `GET/POST /api/sensor-rules` (regole metric/op/threshold/etype) |
-| Blueprint (lavori) | `GET /api/iot/blueprints` |
-| Attivazione zero-touch | `POST /api/iot/activate` (`{blueprint, external_id, label?}`) → device+token+mappa+soglie+istruzioni |
+| Blueprint (lavori) | `GET /api/iot/blueprints` (ogni blueprint include i `models` reali consigliati) |
+| Catalogo modelli | `GET /api/catalog/devices?category=sensore` (include `blueprint` + `capabilities` canoniche) |
+| Attivazione zero-touch | `POST /api/iot/activate` (`{blueprint? | model_code?, external_id, label?}`) → device+token+mappa+soglie+istruzioni |
 | Webhook LoRaWAN/TTN | `POST /api/ingress/lorawan?token=…` (uplink con payload decodificato) |
 | Broker MQTT nativo | TCP **1883** · PUBLISH su `yw/{tid}/{ext}/telemetry` · SUBSCRIBE a `yw/{tid}/{ext}/command` |
 | Alert IoT (lista) | `GET /api/iot/alerts?state=&device=&severity=` · `GET /api/iot/alerts/summary` |
@@ -89,6 +93,24 @@ mondo sicurezza. In console: menu **IoT Dashboard → Alert IoT** (notifica nati
 - **Alert aperti** per device + **riepilogo** flotta (totali / online / offline / senza watchdog /
   alert aperti).
 - Aggiornamento **live** via SSE (telemetria e alert).
+
+## Catalogo sensori reali (Fase 5)
+
+Il catalogo `device_models` non è più solo tracker GPS: include **archetipi di sensori industriali**
+(category `sensore`) con protocollo IoT (LoRaWAN / MQTT / HTTP), `capabilities` = **metriche
+canoniche** misurate, e una colonna **`blueprint`** che li aggancia al profilo-lavoro.
+
+- Esempi: Elsys ERS CO2 / Milesight AM103 → `air-quality`; Dragino LHT65 / Elsys ERS → `cold-chain`;
+  Milesight EM500-UDL / Dragino LDDS75 → `tank-level`; Milesight WS301 / Dragino LDS02 →
+  `door-contact`; Shelly EM / Milesight CT101 → `energy-meter`; Milesight VS121 → `people-count`;
+  più i generici MQTT/HTTP/LoRaWAN (senza blueprint, flessibili).
+- **Attivazione per modello**: `POST /api/iot/activate {model_code, external_id}` **deriva il
+  blueprint** dal modello (se non si passa `blueprint`), e configura device + normalizzazione +
+  soglie + watchdog da sé. "Quale sensore per quale lavoro; il resto si sistema." Un modello
+  generico senza blueprint richiede un `blueprint` esplicito (errore onesto 400 altrimenti).
+- `GET /api/iot/blueprints` restituisce per ogni lavoro l'elenco dei **sensori consigliati**
+  (`models`), così il picker "Attiva per un lavoro" propone l'hardware giusto. Il device salva
+  `model_code` (visibile in catalogo/monitoraggio).
 
 ## Broker MQTT nativo (porta 1883)
 

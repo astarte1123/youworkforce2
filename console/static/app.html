@@ -2872,6 +2872,7 @@ async function iotActivateStart(){
       <div class="small mut">Scegli <b>che lavoro</b> deve fare il dispositivo: la piattaforma crea tutto da sola (credenziale, normalizzazione dei dati, soglie) e ti dà le istruzioni per collegarlo.</div>
       <label class="small">Lavoro<select id="bpSel" class="in" onchange="iotBpInfo()">${bps.map(opt).join('')}</select></label>
       <div id="bpInfo" class="small mut"></div>
+      <label class="small">Sensore consigliato (opzionale)<select id="bpModel" class="in"></select></label>
       <label class="small">Identificativo dispositivo (IMEI / DevEUI / seriale)<input id="bpExt" class="in" placeholder="es. sensore-cella-1"></label>
       <label class="small">Etichetta (opzionale)<input id="bpLbl" class="in" placeholder="es. Cella frigo cucina"></label>
       <div class="row" style="gap:8px"><button class="btn" onclick="iotActivateRun()">Attiva</button></div>
@@ -2879,11 +2880,17 @@ async function iotActivateStart(){
   window._BPS=bps; iotBpInfo();
 }
 function iotBpInfo(){ const el=document.getElementById('bpInfo'); if(!el)return; const b=(window._BPS||[]).find(x=>x.code===document.getElementById('bpSel').value); if(!b)return;
-  el.innerHTML=`${esc(b.job)}<br><span class="mut">Misura: ${(b.metrics||[]).join(', ')||'—'}</span>`; }
+  el.innerHTML=`${esc(b.job)}<br><span class="mut">Misura: ${(b.metrics||[]).join(', ')||'—'}</span>`;
+  // sensori reali agganciati a questo lavoro: l'admin sceglie l'hardware, il resto si configura
+  const ms=document.getElementById('bpModel'); if(ms){ const mods=b.models||[];
+    ms.innerHTML='<option value="">— sensore generico —</option>'+mods.map(m=>`<option value="${m.model_code}">${esc(m.manufacturer)} ${esc(m.model_name)}${m.recommended?' ★':''}</option>`).join('');
+    ms.parentElement.style.display = mods.length ? '' : 'none';
+  } }
 async function iotActivateRun(){
   const blueprint=document.getElementById('bpSel').value, external_id=document.getElementById('bpExt').value.trim(), label=document.getElementById('bpLbl').value.trim();
+  const model_code=(document.getElementById('bpModel')||{}).value||undefined;
   if(!external_id){ toast('Indica l\'identificativo del dispositivo','bad'); return; }
-  try{ const r=await api('/iot/activate',{method:'POST',body:JSON.stringify({blueprint,external_id,label:label||undefined})});
+  try{ const r=await api('/iot/activate',{method:'POST',body:JSON.stringify({blueprint,model_code,external_id,label:label||undefined})});
     const c=r.connect||{}; const origin=location.origin;
     let how='';
     if(c.protocol==='lorawan'){ how=`<div class="small">Imposta su TTN/ChirpStack il <b>webhook di uplink</b>:</div><code class="small" style="display:block;word-break:break-all;margin:3px 0;padding:4px 6px;background:var(--panel2,#0002);border-radius:4px">${origin}${esc(c.webhook_url)}</code>`; }

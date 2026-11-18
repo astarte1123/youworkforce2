@@ -3053,7 +3053,7 @@ pub async fn list_catalog(State(st): State<AppState>, h: HeaderMap,
     let manu = q.get("manufacturer").filter(|s| !s.is_empty()).cloned();
     let cat = q.get("category").filter(|s| !s.is_empty()).cloned();
     let rows = sqlx::query(
-        "SELECT model_code,manufacturer,model_name,protocol,default_port,category,capabilities,osmand,recommended,notes
+        "SELECT model_code,manufacturer,model_name,protocol,default_port,category,capabilities,osmand,recommended,notes,blueprint
          FROM app.device_models
          WHERE ($1::text IS NULL OR lower(manufacturer||' '||model_name) LIKE $1)
            AND ($2::text IS NULL OR manufacturer=$2)
@@ -3066,7 +3066,8 @@ pub async fn list_catalog(State(st): State<AppState>, h: HeaderMap,
         "model_name":r.get::<String,_>("model_name"),"protocol":r.get::<String,_>("protocol"),
         "default_port":r.try_get::<i32,_>("default_port").ok(),"category":r.get::<String,_>("category"),
         "capabilities":r.get::<Vec<String>,_>("capabilities"),"osmand":r.get::<bool,_>("osmand"),
-        "recommended":r.get::<bool,_>("recommended"),"notes":r.try_get::<String,_>("notes").ok() })).collect();
+        "recommended":r.get::<bool,_>("recommended"),"notes":r.try_get::<String,_>("notes").ok(),
+        "blueprint":r.try_get::<Option<String>,_>("blueprint").ok().flatten() })).collect();
     Ok(Json(json!(out)))
 }
 pub async fn catalog_facets(State(st): State<AppState>, h: HeaderMap) -> R {
@@ -6892,16 +6893,26 @@ pub async fn iot_blueprints_list(State(st): State<AppState>, h: HeaderMap) -> R 
     require_any_module(&st, tid, DEVICE_MODS).await?;
     let rows = sqlx::query("SELECT code,name,job,category,protocol,key_map,default_rules,icon FROM app.iot_blueprints ORDER BY sort,code")
         .fetch_all(&st.owner_pool).await.map_err(ise)?;
-    let out: Vec<Value> = rows.iter().map(|r| json!({
-        "code":r.get::<String,_>("code"),"name":r.get::<String,_>("name"),"job":r.get::<String,_>("job"),
-        "category":r.get::<String,_>("category"),"protocol":r.get::<String,_>("protocol"),"icon":r.get::<String,_>("icon"),
-        "metrics": r.get::<Value,_>("key_map").as_array().map(|a| a.iter().filter_map(|x| x.get("metric").and_then(|m| m.as_str())).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>()).unwrap_or_default(),
-        "rules": r.get::<Value,_>("default_rules") })).collect();
+    // sensori reali del catalogo agganciati ai blueprint: così il picker "per un lavoro" propone l'hardware.
+    let models = sqlx::query("SELECT model_code,manufacturer,model_name,protocol,recommended,blueprint FROM app.device_models WHERE blueprint IS NOT NULL ORDER BY recommended DESC, manufacturer, model_name")
+        .fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let mut out: Vec<Value> = Vec::new();
+    for r in &rows {
+        let code: String = r.get("code");
+        let devs: Vec<Value> = models.iter().filter(|m| m.get::<Option<String>,_>("blueprint").as_deref()==Some(code.as_str()))
+            .map(|m| json!({"model_code":m.get::<String,_>("model_code"),"manufacturer":m.get::<String,_>("manufacturer"),
+                "model_name":m.get::<String,_>("model_name"),"protocol":m.get::<String,_>("protocol"),"recommended":m.get::<bool,_>("recommended")})).collect();
+        out.push(json!({
+            "code":code,"name":r.get::<String,_>("name"),"job":r.get::<String,_>("job"),
+            "category":r.get::<String,_>("category"),"protocol":r.get::<String,_>("protocol"),"icon":r.get::<String,_>("icon"),
+            "metrics": r.get::<Value,_>("key_map").as_array().map(|a| a.iter().filter_map(|x| x.get("metric").and_then(|m| m.as_str())).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>()).unwrap_or_default(),
+            "rules": r.get::<Value,_>("default_rules"), "models": devs }));
+    }
     Ok(Json(json!(out)))
 }
 
 #[derive(Deserialize)]
-pub struct ActivateReq { pub blueprint: String, pub external_id: String, #[serde(default)] pub label: Option<String>, #[serde(default)] pub site_id: Option<Uuid> }
+pub struct ActivateReq { #[serde(default)] pub blueprint: Option<String>, #[serde(default)] pub model_code: Option<String>, pub external_id: String, #[serde(default)] pub label: Option<String>, #[serde(default)] pub site_id: Option<Uuid> }
 /// Attivazione zero-touch: da un blueprint crea il device + token device-bound + mappa di
 /// normalizzazione + soglie di default, e restituisce le istruzioni di collegamento per il protocollo.
 /// "L'admin dice quale device per quale lavoro; tutto il resto si sistema."
@@ -6911,9 +6922,19 @@ pub async fn iot_activate(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     if !module_active(&st, tid, "iot").await { return Err(err(StatusCode::FORBIDDEN, "modulo IoT non attivo")); }
     let ext = b.external_id.trim();
     if ext.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "identificativo dispositivo richiesto")); }
-    // blueprint
+    // blueprint: esplicito, oppure derivato dal modello di sensore scelto ("quale device per quale lavoro").
+    let model_code = b.model_code.clone().filter(|s| !s.trim().is_empty());
+    let bp_code = match b.blueprint.clone().filter(|s| !s.trim().is_empty()) {
+        Some(c) => c,
+        None => match &model_code {
+            Some(mc) => sqlx::query_scalar::<_,Option<String>>("SELECT blueprint FROM app.device_models WHERE model_code=$1")
+                .bind(mc).fetch_optional(&st.owner_pool).await.map_err(ise)?.flatten()
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "il modello scelto non ha un profilo-lavoro associato: indica un blueprint"))?,
+            None => return Err(err(StatusCode::BAD_REQUEST, "serve un blueprint o un modello di sensore")),
+        }
+    };
     let bp = sqlx::query("SELECT name,protocol,key_map,default_rules,offline_after_s FROM app.iot_blueprints WHERE code=$1")
-        .bind(&b.blueprint).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .bind(&bp_code).fetch_optional(&st.owner_pool).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "blueprint sconosciuto"))?;
     let bp_name: String = bp.get("name");
     let protocol: String = bp.get("protocol");
@@ -6927,9 +6948,9 @@ pub async fn iot_activate(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
         .bind(tid).bind(ext).fetch_one(&mut *tx).await.map_err(ise)?;
     if exists { return Err(err(StatusCode::CONFLICT, "esiste già un dispositivo con questo identificativo")); }
     let label = b.label.clone().unwrap_or_else(|| bp_name.clone());
-    let cfg = json!({"blueprint": b.blueprint, "protocol": protocol});
-    let dev_id: Uuid = sqlx::query_scalar("INSERT INTO app.devices(tenant_id,external_id,source,label,site_id,config,offline_after_s) VALUES($1,$2,'iot',$3,$4,$5,$6) RETURNING id")
-        .bind(tid).bind(ext).bind(&label).bind(b.site_id).bind(&cfg).bind(offline_after_s).fetch_one(&mut *tx).await.map_err(ise)?;
+    let cfg = json!({"blueprint": bp_code, "protocol": protocol, "model_code": model_code});
+    let dev_id: Uuid = sqlx::query_scalar("INSERT INTO app.devices(tenant_id,external_id,source,label,site_id,config,offline_after_s,model_code) VALUES($1,$2,'iot',$3,$4,$5,$6,$7) RETURNING id")
+        .bind(tid).bind(ext).bind(&label).bind(b.site_id).bind(&cfg).bind(offline_after_s).bind(&model_code).fetch_one(&mut *tx).await.map_err(ise)?;
     // mappa di normalizzazione dal blueprint
     if let Some(arr) = key_map.as_array() {
         for m in arr {
@@ -6966,7 +6987,7 @@ pub async fn iot_activate(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     let handle = format!("iot-{}", &secret[4..12]);
     sqlx::query("INSERT INTO app.ingest_tokens(token,token_hash,tenant_id,source,device_id,label) VALUES($1,$2,$3,'iot',$4,$5)")
         .bind(&handle).bind(&hash).bind(tid).bind(dev_id).bind(&label).execute(&st.owner_pool).await.map_err(ise)?;
-    audit(&st, tid, &s.email, "iot_activate", json!({"blueprint":b.blueprint,"device":dev_id,"external_id":ext})).await;
+    audit(&st, tid, &s.email, "iot_activate", json!({"blueprint":bp_code,"model_code":model_code,"device":dev_id,"external_id":ext})).await;
     // istruzioni di collegamento per protocollo (il segreto va nell'URL/credenziale)
     let connect = match protocol.as_str() {
         "lorawan" => json!({"protocol":"lorawan",
@@ -6985,7 +7006,7 @@ pub async fn iot_activate(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
             "body_example": {"values":{"temperature":4.2}},
             "note":"Invia una POST JSON a questo URL ad ogni misura."}),
     };
-    Ok(Json(json!({"ok":true,"device_id":dev_id,"external_id":ext,"blueprint":b.blueprint,
+    Ok(Json(json!({"ok":true,"device_id":dev_id,"external_id":ext,"blueprint":bp_code,"model_code":model_code,
         "token":secret,"rules_added":rules_added,"connect":connect,
         "note":"Copia il token adesso: non sarà più mostrato."})))
 }
