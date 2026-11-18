@@ -46,7 +46,10 @@ pub async fn delete_site(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.sites WHERE id=$1").bind(id).execute(&mut *tx).await
-        .map_err(|_| err(StatusCode::CONFLICT, "sede referenziata: rimuovi prima i collegamenti"))?.rows_affected();
+        .map_err(|e| match e.as_database_error().and_then(|d| d.code()) {
+            Some(c) if c == "23503" => err(StatusCode::CONFLICT, "sede referenziata: rimuovi prima i collegamenti"),
+            _ => ise(e),
+        })?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "sede inesistente")); }
     Ok(Json(json!({"ok":true})))
@@ -95,7 +98,10 @@ pub async fn delete_asset(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.assets WHERE id=$1").bind(id).execute(&mut *tx).await
-        .map_err(|_| err(StatusCode::CONFLICT, "asset con dispositivi collegati"))?.rows_affected();
+        .map_err(|e| match e.as_database_error().and_then(|d| d.code()) {
+            Some(c) if c == "23503" => err(StatusCode::CONFLICT, "asset con dispositivi collegati"),
+            _ => ise(e),
+        })?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "asset inesistente")); }
     Ok(Json(json!({"ok":true})))

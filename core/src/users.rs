@@ -107,7 +107,10 @@ pub async fn delete_user(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     if id == s.user_id { return Err(err(StatusCode::CONFLICT, "non puoi eliminare te stesso")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.users WHERE id=$1").bind(id).execute(&mut *tx).await
-        .map_err(|_| err(StatusCode::CONFLICT, "utente referenziato (ordini/consuntivi): cambia ruolo invece di eliminarlo"))?.rows_affected();
+        .map_err(|e| match e.as_database_error().and_then(|d| d.code()) {
+            Some(c) if c == "23503" => err(StatusCode::CONFLICT, "utente referenziato (ordini/consuntivi): cambia ruolo invece di eliminarlo"),
+            _ => ise(e),
+        })?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "utente inesistente")); }
     audit(&st, tid, &s.email, "delete_user", json!({"id":id})).await;

@@ -4237,7 +4237,7 @@ pub async fn patrol_dashboard(State(st): State<AppState>, h: HeaderMap) -> R {
     use chrono::{TimeZone as _, Datelike, Duration};
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "giri").await?;
-    let now = chrono::Utc::now(); let today = now.date_naive();
+    let now = st.clock.now(); let today = now.date_naive(); // orologio controllabile (coerente col resto; TEST_CLOCK)
     let widx = today.weekday().num_days_from_monday() as usize;
     let win_start = chrono::Utc.from_utc_datetime(&today.and_hms_opt(0,0,0).unwrap()) - Duration::hours(12); // include la sera prima (notturni)
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;

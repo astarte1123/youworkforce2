@@ -28,9 +28,13 @@ say "2 lista piani contiene il nuovo"
 echo "$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/patrol-schedules)" | grep -q "$RN" && ok || no "not listed"
 
 say "3 cruscotto: slot dovuti + mancanti>0"
+# deterministico anche a cavallo di mezzanotte UTC: porta il test-clock avanti di 2h
+# cosi' almeno gli slot 00:00/01:00 risultano scaduti (non punzonati); poi ripristino.
+curl -s -X POST $BASE/api/_test/advance -H 'content-type: application/json' -d '{"seconds":7200}' -o /dev/null
 D=$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/patrol-dashboard)
 NS=$(echo "$D" | jq1 "print(len(json.load(sys.stdin)['slots']))")
 MA=$(echo "$D" | jq1 "print(json.load(sys.stdin)['summary']['mancanti'])")
+curl -s -X POST $BASE/api/_test/advance -H 'content-type: application/json' -d '{"seconds":-7200}' -o /dev/null
 [ "${NS:-0}" -ge 1 ] && [ "${MA:-0}" -ge 1 ] && ok || no "slots=$NS mancanti=$MA"
 
 say "4 giorno escluso dal mask -> nessuno slot di quel giro"
