@@ -10651,12 +10651,10 @@ pub async fn escalation_engine_get(State(st): State<AppState>, h: HeaderMap) -> 
 pub async fn esc_suppress_goalert(st: &AppState, tid: Uuid) -> bool {
     let engine = sqlx::query_scalar::<_, String>("SELECT escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
-    // default native: una riga mancante segue il nuovo default del prodotto.
-    let native = engine.as_deref().unwrap_or("native") == "native";
-    if !native { return false; }
-    let has_live = crate::delivery::TwilioCfg::from_env().is_some();
-    let force = std::env::var("YW_ESC_SUPPRESS_GOALERT").ok().as_deref() == Some("1");
-    has_live || force
+    // Prodotto SELF-CONTAINED: il motore nativo è SEMPRE autoritativo (default = native).
+    // La consegna reale passa dal sink nativo configurato in deploy (Twilio/HTTP sink) o resta DRY
+    // se nessun sink è impostato; in nessun caso si ricade su GoAlert (connettore ritirato).
+    engine.as_deref().unwrap_or("native") == "native"
 }
 
 #[derive(Deserialize)] pub struct EngineReq { pub engine: String }
