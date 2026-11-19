@@ -34,17 +34,19 @@ html,body{height:100%}
 body{margin:0;font-family:var(--sans);font-size:15px;line-height:1.5;color:var(--fg);background:var(--bg);
   -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 
-/* ---- filigrana "Lavoro sul campo": immagine di sfondo, trasparente, dietro ai contenuti ---- */
-/* Attiva solo quando il gruppo di navigazione attivo è "work" (data-navgrp impostato dal router). */
+/* ---- filigrana "Lavoro sul campo": immagine in trasparenza, sopra lo sfondo, dietro ai click ---- */
+/* Attiva solo quando il gruppo di navigazione attivo è "work" (data-navgrp impostato dal router).
+   Overlay (non dietro le card, che la coprirebbero): z-index sopra i contenuti ma sotto il FAB e i
+   pannelli; pointer-events:none così non intercetta i click. Opacità bassa = resta una filigrana. */
 body[data-navgrp="work"]::before{
-  content:"";position:fixed;right:0;bottom:0;z-index:-1;pointer-events:none;
+  content:"";position:fixed;right:0;bottom:0;z-index:30;pointer-events:none;
   width:min(46vw,560px);height:min(46vw,560px);
   background:url(/lavoratore-campo.svg) right bottom/contain no-repeat;
-  opacity:.55;transition:opacity .3s;
+  opacity:.16;transition:opacity .3s;
 }
-:root[data-theme="dark"] body[data-navgrp="work"]::before,:root.dark body[data-navgrp="work"]::before{opacity:.5}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) body[data-navgrp="work"]::before{opacity:.5}}
-@media (max-width:820px){ body[data-navgrp="work"]::before{width:min(70vw,360px);height:min(70vw,360px);opacity:.4} }
+:root[data-theme="dark"] body[data-navgrp="work"]::before,:root.dark body[data-navgrp="work"]::before{opacity:.42}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) body[data-navgrp="work"]::before{opacity:.42}}
+@media (max-width:820px){ body[data-navgrp="work"]::before{width:min(72vw,340px);height:min(72vw,340px);opacity:.12} }
 h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
 h1{font-size:22px} h2{font-size:17px} h3{font-size:15px}
 a{color:var(--brand-ink);text-decoration:none} a:hover{text-decoration:underline}
