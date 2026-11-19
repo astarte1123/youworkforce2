@@ -2714,7 +2714,7 @@ async function vConsuntivi(v){
   const canCreate=can(['lavoratore','tenant_admin']);
   v.innerHTML=`<div class="page-h"><div><h1>${t('consun_title','Consuntivi')}</h1><div class="mut">${T.length} consuntivi</div></div>
     ${canCreate?`<button class="btn" onclick="newTS()">+ Nuovo consuntivo</button>`:''}</div>
-  <div class="card"><table class="table" data-export="agenda-tecnici"><thead><tr><th>Addetto</th><th>Ordine</th><th>Stato</th></tr></thead>
+  <div class="card"><table class="table" data-export="consuntivi"><thead><tr><th>Addetto</th><th>Ordine</th><th>Stato</th></tr></thead>
   <tbody>${T.map(t=>`<tr class="clk" data-ts="${t.id}"><td><b>${esc(t.owner.split('@')[0])}</b></td>
     <td>${esc(t.order_title||'—')}</td><td>${chip(t.state)}</td></tr>`).join('')
     ||`<tr><td colspan="3" class="empty">${ICON.receipt}<div>Nessun consuntivo</div></td></tr>`}</tbody></table></div>`;
