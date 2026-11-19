@@ -559,130 +559,6 @@ pub async fn super_set_traccar(State(st): State<AppState>, h: HeaderMap, Path(ti
     Ok(Json(json!({"ok":true})))
 }
 
-#[derive(Deserialize)]
-pub struct SetGoalert { pub integration_key: String, pub service_id: Option<String>,
-    pub gql_user: Option<String>, pub gql_pass: Option<String> }
-pub async fn super_set_goalert(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetGoalert>) -> R {
-    require_super(&st, &h).await?;
-    let enc_pass = b.gql_pass.as_ref().map(|p| st.secrets.encrypt(p));   // P3: cifrato a riposo
-    sqlx::query("INSERT INTO app.goalert_services(tenant_id,integration_key,service_id,gql_user,gql_pass) VALUES($1,$2,$3,$4,$5)
-        ON CONFLICT (tenant_id) DO UPDATE SET integration_key=EXCLUDED.integration_key,
-          service_id=COALESCE(EXCLUDED.service_id,goalert_services.service_id),
-          gql_user=COALESCE(EXCLUDED.gql_user,goalert_services.gql_user),
-          gql_pass=COALESCE(EXCLUDED.gql_pass,goalert_services.gql_pass), updated_at=now()")
-        .bind(tid).bind(&b.integration_key).bind(&b.service_id).bind(&b.gql_user).bind(&enc_pass)
-        .execute(&st.owner_pool).await.map_err(ise)?;
-    sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,'superadmin','set_goalert_key',$2)")
-        .bind(tid).bind(json!({"len":b.integration_key.len(),"service_id":b.service_id})).execute(&st.owner_pool).await.map_err(ise)?;
-    Ok(Json(json!({"ok":true})))
-}
-
-// Helper: sessione GoAlert per il tenant (login via credenziali salvate).
-async fn goalert_session(st: &AppState, tid: Uuid) -> Option<(String, String, Option<String>)> {
-    let base = st.goalert_base.clone()?;
-    let row = sqlx::query("SELECT gql_user,gql_pass,service_id FROM app.goalert_services WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten()?;
-    let user: String = row.try_get("gql_user").ok()?; let pass: String = row.try_get("gql_pass").ok()?;
-    let pass = st.secrets.decrypt(&pass);   // P3: decifra a riposo
-    let sid: Option<String> = row.try_get("service_id").ok();
-    let cookie = goalert::login(&st.http, &base, &user, &pass).await?;
-    Some((base, cookie, sid))
-}
-
-// P2: stato reale dell'alert GoAlert di un incidente (ack/close/escalation).
-pub async fn goalert_status(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?;
-    if !has_cap(&s,"incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
-    let tid = s.tenant_id.unwrap();
-    let aid: Option<i32> = sqlx::query_scalar("SELECT goalert_alert_id FROM app.incidents WHERE id=$1 AND tenant_id=$2")
-        .bind(iid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.flatten();
-    let Some(aid) = aid else { return Ok(Json(json!({"available":false,"reason":"nessun alert GoAlert collegato"}))); };
-    let Some((base, cookie, _)) = goalert_session(&st, tid).await else {
-        return Ok(Json(json!({"available":false,"reason":"credenziali GoAlert non configurate"}))); };
-    let q = format!("{{alert(id:{aid}){{id status summary}}}}");
-    match goalert::graphql(&st.http, &base, &cookie, &q).await {
-        Some(v) => { let a = v.pointer("/data/alert");
-            Ok(Json(json!({"available":true,"alert_id":aid,
-                "status": a.and_then(|x| x.get("status")).and_then(|x| x.as_str()),
-                "summary": a.and_then(|x| x.get("summary")).and_then(|x| x.as_str())}))) }
-        None => Ok(Json(json!({"available":false,"reason":"GoAlert non raggiungibile"}))),
-    }
-}
-
-// (c) ack / escalate dell'alert GoAlert dalla nostra console.
-async fn goalert_alert_action(st: &AppState, h: &HeaderMap, iid: Uuid, mutation: impl Fn(i64)->String) -> R {
-    let s = require_tenant(st, h).await?;
-    if !has_cap(&s,"incidents.handle") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
-    let tid = s.tenant_id.unwrap();
-    let aid: Option<i32> = sqlx::query_scalar("SELECT goalert_alert_id FROM app.incidents WHERE id=$1 AND tenant_id=$2")
-        .bind(iid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.flatten();
-    let aid = aid.ok_or_else(|| err(StatusCode::BAD_REQUEST, "nessun alert GoAlert collegato"))?;
-    let (base, cookie, _) = goalert_session(st, tid).await
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "credenziali GoAlert non configurate"))?;
-    let v = goalert::graphql(&st.http, &base, &cookie, &mutation(aid as i64)).await
-        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "GoAlert non raggiungibile"))?;
-    if v.get("errors").is_some() { return Err(err(StatusCode::BAD_GATEWAY, &format!("GoAlert: {}", v.get("errors").unwrap()))); }
-    Ok(Json(json!({"ok":true})))
-}
-pub async fn goalert_ack(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>) -> R {
-    let r = goalert_alert_action(&st, &h, iid, |aid| format!("mutation{{updateAlerts(input:{{alertIDs:[{aid}],newStatus:StatusAcknowledged}}){{id}}}}")).await?;
-    if let Ok(s)=require_tenant(&st,&h).await { let tid=s.tenant_id.unwrap();
-        let _=sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'human_ack',$3)")
-            .bind(tid).bind(iid).bind(json!({"by":s.email,"via":"goalert"})).execute(&st.owner_pool).await; }
-    Ok(r)
-}
-pub async fn goalert_escalate(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>) -> R {
-    goalert_alert_action(&st, &h, iid, |aid| format!("mutation{{escalateAlerts(input:[{aid}]){{id}}}}")).await
-}
-
-// P2: chi è reperibile adesso sul servizio del tenant.
-pub async fn goalert_oncall(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?;
-    if !has_cap(&s,"incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
-    let tid = s.tenant_id.unwrap();
-    let Some((base, cookie, sid)) = goalert_session(&st, tid).await else {
-        return Ok(Json(json!({"available":false,"reason":"GoAlert non configurato"}))); };
-    let Some(sid) = sid else { return Ok(Json(json!({"available":false,"reason":"service_id non impostato"}))); };
-    let q = format!("{{service(id:\"{sid}\"){{onCallUsers{{userName stepNumber}}}}}}");
-    match goalert::graphql(&st.http, &base, &cookie, &q).await {
-        Some(v) => { let arr = v.pointer("/data/service/onCallUsers").and_then(|x| x.as_array()).cloned().unwrap_or_default();
-            let out: Vec<Value> = arr.iter().map(|u| json!({
-                "user": u.get("userName").and_then(|x| x.as_str()),
-                "step": u.get("stepNumber").and_then(|x| x.as_i64())})).collect();
-            Ok(Json(json!({"available":true,"oncall":out}))) }
-        None => Ok(Json(json!({"available":false,"reason":"GoAlert non raggiungibile"}))),
-    }
-}
-
-/// Credenziali admin GoAlert di default (il motore è integrato nel prodotto): da env
-/// GOALERT_ADMIN_USER / GOALERT_ADMIN_PASS, altrimenti i default noti. Così il provisioning
-/// avviene automaticamente, senza chiedere nulla all'amministratore.
-pub fn goalert_admin_creds() -> (String, String) {
-    (std::env::var("GOALERT_ADMIN_USER").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "admin".into()),
-     std::env::var("GOALERT_ADMIN_PASS").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "goalertadmin1".into()))
-}
-/// Provisiona GoAlert per un tenant (EP + servizio + generic key + heartbeat). Riusabile da
-/// handler, creazione tenant e worker. Ritorna i riferimenti creati o un errore parlante.
-pub async fn do_goalert_provision(st: &AppState, tid: Uuid, user: &str, pass: &str, name: Option<&str>) -> Result<Value, (StatusCode,String)> {
-    let base = st.goalert_base.clone().ok_or_else(|| err(StatusCode::BAD_REQUEST, "GOALERT_BASE non configurato (motore escalation non raggiungibile)"))?;
-    let cookie = goalert::login(&st.http, &base, user, pass).await
-        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "login GoAlert fallito (credenziali/connessione)"))?;
-    let b = GoalertProvision{ user: Some(user.to_string()), pass: Some(pass.to_string()), name: name.map(String::from) };
-    goalert_provision_inner(st, tid, &base, &cookie, &b).await
-}
-
-// P3: provisioning GoAlert per-tenant (crea escalation policy + servizio + generic key).
-#[derive(Deserialize)]
-pub struct GoalertProvision { pub user: Option<String>, pub pass: Option<String>, pub name: Option<String> }
-pub async fn goalert_provision(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<GoalertProvision>) -> R {
-    require_super(&st, &h).await?;
-    // credenziali: quelle passate oppure i default del prodotto (nessun prompt)
-    let (du, dp) = goalert_admin_creds();
-    let user = b.user.clone().filter(|s| !s.is_empty()).unwrap_or(du);
-    let pass = b.pass.clone().filter(|s| !s.is_empty()).unwrap_or(dp);
-    let out = do_goalert_provision(&st, tid, &user, &pass, b.name.as_deref()).await?;
-    Ok(Json(out))
-}
 // ============ Auto-integrazioni: moduli integrati configurati dal prodotto, non dall'uomo ============
 // I motori integrati (GoAlert, Traccar, ThingsBoard) girano sulla nostra infrastruttura: base URL e
 // credenziali admin vengono dai default del prodotto (env), così l'attivazione di un modulo li
@@ -690,16 +566,6 @@ pub async fn goalert_provision(State(st): State<AppState>, h: HeaderMap, Path(ti
 fn env_opt(k: &str) -> Option<String> { std::env::var(k).ok().filter(|s| !s.trim().is_empty()) }
 fn norm_base(b: &str) -> String { let b=b.trim_end_matches('/'); b.strip_suffix("/api").unwrap_or(b).to_string() }
 
-/// Provisiona GoAlert automaticamente se il modulo è attivo e non è già provisionato.
-pub async fn auto_provision_goalert(st: &AppState, tid: Uuid) -> Result<bool, String> {
-    if !module_active(st, tid, "goalert").await { return Ok(false); }
-    if st.goalert_base.is_none() { return Err("motore GoAlert non raggiungibile (GOALERT_BASE)".into()); }
-    let has: i64 = sqlx::query_scalar("SELECT count(*) FROM app.goalert_services WHERE tenant_id=$1")
-        .bind(tid).fetch_one(&st.owner_pool).await.map_err(|e| e.to_string())?;
-    if has > 0 { return Ok(false); }
-    let (u,p) = goalert_admin_creds();
-    do_goalert_provision(st, tid, &u, &p, None).await.map(|_| true).map_err(|e| e.1)
-}
 /// Connette Traccar automaticamente dai default del prodotto se il modulo è attivo.
 pub async fn auto_connect_traccar(st: &AppState, tid: Uuid) -> Result<bool, String> {
     if !module_active(st, tid, "traccar").await { return Ok(false); }
@@ -784,48 +650,14 @@ async fn deauto_integration(st: &AppState, tid: Uuid, module: &str) {
 pub async fn reconcile_integrations(st: &AppState) {
     let tids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM app.tenants").fetch_all(&st.owner_pool).await.unwrap_or_default();
     for tid in tids {
-        if let Err(e) = auto_provision_goalert(st, tid).await { tracing::debug!("auto goalert {tid}: {e}"); }
         if let Err(e) = auto_connect_traccar(st, tid).await { tracing::debug!("auto traccar {tid}: {e}"); }
         if let Err(e) = auto_connect_thingsboard(st, tid).await { tracing::debug!("auto thingsboard {tid}: {e}"); }
         for m in ["goalert","traccar","thingsboard"] { deauto_integration(st, tid, m).await; }
     }
 }
 
-async fn goalert_provision_inner(st: &AppState, tid: Uuid, base: &str, cookie: &str, b: &GoalertProvision) -> Result<Value,(StatusCode,String)> {
-    let user = b.user.clone().unwrap_or_default();
-    let pass = b.pass.clone().unwrap_or_default();
-    // suffisso unico: i nomi EP/service devono essere univoci su GoAlert (re-provision sicuro)
-    let suf = chrono::Utc::now().timestamp();
-    let name = format!("{} {}", b.name.clone().unwrap_or_else(|| format!("YW {}", &tid.to_string()[..8])), suf);
-    // EP (repeat 1, nessuno step: lo configura l'admin in GoAlert), servizio, generic key
-    let ep = goalert::graphql(&st.http,base,cookie,
-        &format!("mutation{{createEscalationPolicy(input:{{name:\"{name} EP\",repeat:1}}){{id}}}}")).await
-        .and_then(|v| v.pointer("/data/createEscalationPolicy/id").and_then(|x| x.as_str().map(String::from)))
-        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "createEscalationPolicy fallito"))?;
-    let sid = goalert::graphql(&st.http,base,cookie,
-        &format!("mutation{{createService(input:{{name:\"{name}\",escalationPolicyID:\"{ep}\"}}){{id}}}}")).await
-        .and_then(|v| v.pointer("/data/createService/id").and_then(|x| x.as_str().map(String::from)))
-        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "createService fallito"))?;
-    let key = goalert::graphql(&st.http,base,cookie,
-        &format!("mutation{{createIntegrationKey(input:{{serviceID:\"{sid}\",type:generic,name:\"core-outbox\"}}){{id}}}}")).await
-        .and_then(|v| v.pointer("/data/createIntegrationKey/id").and_then(|x| x.as_str().map(String::from)))
-        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "createIntegrationKey fallito"))?;
-    // heartbeat monitor (P3): avvisa se la nostra pipeline smette di pingare
-    let hb = goalert::graphql(&st.http,base,cookie,
-        &format!("mutation{{createHeartbeatMonitor(input:{{serviceID:\"{sid}\",name:\"yw-core\",timeoutMinutes:5}}){{href}}}}")).await
-        .and_then(|v| v.pointer("/data/createHeartbeatMonitor/href").and_then(|x| x.as_str().map(String::from)));
-    let enc_pass = st.secrets.encrypt(&pass);   // P3: cifrato a riposo
-    sqlx::query("INSERT INTO app.goalert_services(tenant_id,integration_key,service_id,gql_user,gql_pass,heartbeat_url) VALUES($1,$2,$3,$4,$5,$6)
-        ON CONFLICT (tenant_id) DO UPDATE SET integration_key=EXCLUDED.integration_key,service_id=EXCLUDED.service_id,
-          gql_user=EXCLUDED.gql_user,gql_pass=EXCLUDED.gql_pass,heartbeat_url=EXCLUDED.heartbeat_url,updated_at=now()")
-        .bind(tid).bind(&key).bind(&sid).bind(&user).bind(&enc_pass).bind(&hb).execute(&st.owner_pool).await.map_err(ise)?;
-    audit(&st, tid, "superadmin", "goalert_provision", json!({"service_id":sid})).await;
-    Ok(json!({"ok":true,"escalation_policy":ep,"service_id":sid,"integration_key":key,"heartbeat_url":hb}))
-}
-
 // ---- "YouWorkforce pilota GoAlert": sincronizza Gruppi/Routing/Escalation -> GoAlert ----
 // Escapa una stringa per inserirla in un literal GraphQL.
-fn esc_gql(s: &str) -> String { s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ") }
 fn parse_hhmm(s: &str) -> Option<(u32,u32)> {
     let mut it = s.split(':'); let h: u32 = it.next()?.trim().parse().ok()?; let m: u32 = it.next()?.trim().parse().ok()?;
     if h < 24 && m < 60 { Some((h,m)) } else { None }
@@ -836,23 +668,6 @@ fn rotation_start(handoff_time: Option<&str>, handoff_day: Option<i32>) -> Strin
     let day = handoff_day.unwrap_or(0).clamp(0,6);
     let (h,m) = handoff_time.and_then(parse_hhmm).unwrap_or((0,0));
     format!("2024-01-{:02}T{:02}:{:02}:00Z", 1+day, h, m)
-}
-/// WeekdayFilter GoAlert = [Dom,Lun,Mar,Mer,Gio,Ven,Sab] (0=Dom). cov_days e' lun..dom.
-fn weekday_filter(cov_days: &str) -> String {
-    let b: Vec<char> = cov_days.chars().collect();
-    let g = |i: usize| b.get(i).map(|c| *c == '1').unwrap_or(true);
-    let order = [6usize,0,1,2,3,4,5]; // Dom,Lun..Sab -> indici lun..dom
-    let arr: Vec<&str> = order.iter().map(|&i| if g(i) {"true"} else {"false"}).collect();
-    format!("[{}]", arr.join(","))
-}
-// GoAlert consente nei nomi solo lettere/cifre/trattino/underscore/apostrofo/spazio.
-fn ga_name(s: &str) -> String {
-    let cleaned: String = s.chars().map(|c| if c.is_ascii_alphanumeric() || c=='-' || c=='_' || c=='\'' || c==' ' { c } else { ' ' }).collect();
-    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-async fn gql_id(st: &AppState, base: &str, cookie: &str, q: &str, ptr: &str) -> Option<String> {
-    goalert::graphql(&st.http, base, cookie, q).await
-        .and_then(|v| v.pointer(ptr).and_then(|x| x.as_str().map(String::from)))
 }
 /// Impostazioni reperibilità del tenant (ladder vocale + status updates). Default sicuri.
 pub struct OncallCfg { pub voice_on: bool, pub voice_min: i32, pub status_on: bool }
@@ -867,272 +682,6 @@ async fn oncall_cfg(st: &AppState, tid: Uuid) -> OncallCfg {
         None => OncallCfg{ voice_on:true, voice_min:5, status_on:true },
     }
 }
-/// Provisiona in GoAlert i recapiti dell'utente + la ladder di notifica.
-/// EMAIL/SMS immediati (@0); VOICE di fallback @voice_min se abilitato (safety: se l'SMS
-/// non riceve risposta, parte la chiamata). enableStatusUpdates sul recapito primario.
-/// Crea solo i tipi con trasporto abilitato (EMAIL se SMTP, SMS/VOICE se Twilio). Idempotente.
-async fn ensure_contact_methods(st: &AppState, base: &str, cookie: &str, guid: &str, email: &str, phone: Option<&str>, sms_on: bool, email_on: bool, cfg: &OncallCfg) -> i64 {
-    let existing = goalert::graphql(&st.http, base, cookie,
-        &format!("{{user(id:\"{guid}\"){{contactMethods{{type value}}}}}}")).await;
-    let has = |ty: &str, val: &str| existing.as_ref()
-        .and_then(|v| v.pointer("/data/user/contactMethods").and_then(|a| a.as_array()))
-        .map(|a| a.iter().any(|c| c.get("type").and_then(|x| x.as_str()) == Some(ty)
-            && c.get("value").and_then(|x| x.as_str()) == Some(val))).unwrap_or(false);
-    let su = if cfg.status_on { "true" } else { "false" };
-    let mut n = 0i64;
-    let p = phone.unwrap_or("").trim();
-    let have_sms = sms_on && !p.is_empty() && is_e164(p);
-    // EMAIL immediata (status updates solo se non c'e' SMS, per non duplicare)
-    if email_on && !email.is_empty() && !has("EMAIL", email) {
-        let esu = if cfg.status_on && !have_sms { "true" } else { "false" };
-        let q = format!("mutation{{createUserContactMethod(input:{{userID:\"{guid}\",name:\"YW email\",type:EMAIL,value:\"{}\",enableStatusUpdates:{esu},newUserNotificationRule:{{delayMinutes:0}}}}){{id}}}}", esc_gql(email));
-        if gql_id(st, base, cookie, &q, "/data/createUserContactMethod/id").await.is_some() { n += 1; }
-    }
-    // SMS immediato (recapito primario per gli status updates)
-    if have_sms && !has("SMS", p) {
-        let q = format!("mutation{{createUserContactMethod(input:{{userID:\"{guid}\",name:\"YW sms\",type:SMS,value:\"{}\",enableStatusUpdates:{su},newUserNotificationRule:{{delayMinutes:0}}}}){{id}}}}", esc_gql(p));
-        if gql_id(st, base, cookie, &q, "/data/createUserContactMethod/id").await.is_some() { n += 1; }
-    }
-    // VOICE di fallback @voice_min (chiamata se l'SMS non riceve risposta)
-    if cfg.voice_on && have_sms && !has("VOICE", p) {
-        let q = format!("mutation{{createUserContactMethod(input:{{userID:\"{guid}\",name:\"YW voce\",type:VOICE,value:\"{}\",newUserNotificationRule:{{delayMinutes:{}}}}}){{id}}}}", esc_gql(p), cfg.voice_min);
-        if gql_id(st, base, cookie, &q, "/data/createUserContactMethod/id").await.is_some() { n += 1; }
-    }
-    n
-}
-/// Costruisce in GoAlert, in modo idempotente, la struttura che rispecchia la config
-/// del tenant: ogni Gruppo allarme -> escalation policy (step sui membri, repeat da
-/// sos_escalation) + servizio + integration key; ogni routing etype->gruppo popola
-/// app.goalert_routing con la key del gruppo (il drain instrada gia' per etype).
-pub async fn sync_goalert(st: &AppState, tid: Uuid) -> Result<Value, (StatusCode, String)> {
-    let base = st.goalert_base.clone().ok_or_else(|| err(StatusCode::BAD_REQUEST, "GOALERT_BASE non configurato"))?;
-    let svc = sqlx::query("SELECT gql_user,gql_pass FROM app.goalert_services WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "GoAlert non provisionato per questo tenant (chiedi al superadmin: Provisiona GoAlert)"))?;
-    let gu: String = svc.get("gql_user");
-    let gp_enc: String = svc.try_get("gql_pass").unwrap_or_default();
-    let gp = st.secrets.decrypt(&gp_enc);
-    let cookie = goalert::login(&st.http, &base, &gu, &gp).await
-        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "login GoAlert fallito (credenziali di provisioning)"))?;
-    // parametri escalation dal tool loneworker/sos_escalation
-    let (_pri, repeat) = sos_escalation(st, tid).await;
-    let delay_min = if repeat > 0 { ((repeat + 59) / 60).max(1) } else { 15 };
-    let ep_repeat = if repeat > 0 { 3 } else { 0 };
-
-    // Quali destinazioni sono abilitate su GoAlert? servono per creare i recapiti reali.
-    let cfg = goalert::graphql(&st.http, &base, &cookie, "{config(all:true){id value}}").await;
-    let cfg_on = |id: &str| cfg.as_ref()
-        .and_then(|v| v.pointer("/data/config").and_then(|a| a.as_array()))
-        .map(|a| a.iter().any(|c| c.get("id").and_then(|x| x.as_str()) == Some(id)
-            && c.get("value").and_then(|x| x.as_str()) == Some("true"))).unwrap_or(false);
-    let sms_on = cfg_on("Twilio.Enable");
-    let email_on = cfg_on("SMTP.Enable");
-    let slack_on = cfg_on("Slack.Enable");
-    let occfg = oncall_cfg(st, tid).await;
-    let slug: String = sqlx::query_scalar("SELECT slug FROM app.tenants WHERE id=$1").bind(tid)
-        .fetch_optional(&st.owner_pool).await.ok().flatten().unwrap_or_default();
-
-    let groups = sqlx::query("SELECT id,name,goalert_ep_id,goalert_service_id,goalert_key,oncall_mode,oncall_type,oncall_shift,oncall_tz,goalert_rotation_id,coverage_mode,cov_start,cov_end,cov_days,handoff_time,handoff_day,slack_channel_id,slack_notify,goalert_schedule_id FROM app.alarm_groups WHERE tenant_id=$1 ORDER BY name")
-        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-    let (mut n_users, mut n_groups, mut skipped, mut n_cm, mut no_contact, mut n_rot) = (0i64, 0i64, 0i64, 0i64, 0i64, 0i64);
-    for g in &groups {
-        let gid: Uuid = g.get("id");
-        let gname: String = g.get("name");
-        let members = sqlx::query("SELECT u.id,u.email,u.phone,u.goalert_user_id FROM app.alarm_group_members m JOIN app.users u ON u.id=m.user_id WHERE m.group_id=$1 ORDER BY m.position")
-            .bind(gid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-        if members.is_empty() { skipped += 1; continue; }
-        // assicura l'utente GoAlert per ogni membro + i suoi recapiti
-        let mut uids: Vec<String> = Vec::new();
-        for m in &members {
-            let uid: Uuid = m.get("id");
-            let email: String = m.get("email");
-            let phone: Option<String> = m.try_get("phone").ok().flatten();
-            let mut g_uid: Option<String> = m.try_get("goalert_user_id").ok().flatten();
-            if g_uid.is_none() {
-                let uname = format!("yw_{}_{}", &tid.to_string()[..8], &uid.to_string()[..8]);
-                let pw = auth::new_token();
-                let q = format!("mutation{{createUser(input:{{username:\"{uname}\",password:\"{pw}\",name:\"{}\",email:\"{}\"}}){{id}}}}", esc_gql(&email), esc_gql(&email));
-                g_uid = gql_id(st, &base, &cookie, &q, "/data/createUser/id").await;
-                if let Some(ref id) = g_uid {
-                    sqlx::query("UPDATE app.users SET goalert_user_id=$1 WHERE id=$2").bind(id).bind(uid).execute(&st.owner_pool).await.map_err(ise)?;
-                    n_users += 1;
-                }
-            }
-            if let Some(id) = &g_uid {
-                // recapiti reali + ladder vocale: EMAIL/SMS @0 + VOICE fallback @N
-                let created = ensure_contact_methods(st, &base, &cookie, id, &email, phone.as_deref(), sms_on, email_on, &occfg).await;
-                n_cm += created;
-                let has_any = (email_on && !email.is_empty()) || (sms_on && phone.as_deref().map(|p| !p.is_empty()).unwrap_or(false));
-                if !has_any { no_contact += 1; }
-            }
-            if let Some(id) = g_uid { uids.push(id); }
-        }
-        if uids.is_empty() { skipped += 1; continue; }
-        // nuova escalation policy + step (idempotenza: si ricrea la EP, si ripunta il servizio, si elimina la vecchia)
-        let suf = chrono::Utc::now().timestamp_millis();
-        let epname = format!("YW {} {} {}", &tid.to_string()[..8], ga_name(&gname), suf);
-        let new_ep = gql_id(st, &base, &cookie,
-            &format!("mutation{{createEscalationPolicy(input:{{name:\"{}\",repeat:{ep_repeat}}}){{id}}}}", esc_gql(&epname)),
-            "/data/createEscalationPolicy/id").await
-            .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "createEscalationPolicy fallito"))?;
-        // config copertura/handoff/slack del gruppo
-        let mode: String = g.get("oncall_mode");
-        let coverage: String = g.try_get("coverage_mode").unwrap_or_else(|_| "24_7".into());
-        let cov_start: Option<String> = g.try_get("cov_start").ok().flatten();
-        let cov_end: Option<String> = g.try_get("cov_end").ok().flatten();
-        let cov_days: String = g.try_get("cov_days").unwrap_or_else(|_| "1111111".into());
-        let handoff_time: Option<String> = g.try_get("handoff_time").ok().flatten();
-        let handoff_day: Option<i32> = g.try_get("handoff_day").ok().flatten();
-        let slack_ch: Option<String> = g.try_get("slack_channel_id").ok().flatten();
-        let slack_notify: String = g.try_get("slack_notify").unwrap_or_else(|_| "off".into());
-
-        // base target(s): rotation (turni) o utenti (tutti)
-        let base_targets: Vec<String> = if mode == "turni" {
-            let oc_type: String = g.get("oncall_type");
-            let oc_shift: i32 = g.get("oncall_shift");
-            let oc_tz: String = g.get("oncall_tz");
-            let start = rotation_start(handoff_time.as_deref(), handoff_day);
-            let mut rot_id: Option<String> = g.try_get("goalert_rotation_id").ok().flatten();
-            let rname = format!("YW {} {} turni {}", &tid.to_string()[..8], ga_name(&gname), suf);
-            if rot_id.is_none() {
-                rot_id = gql_id(st, &base, &cookie,
-                    &format!("mutation{{createRotation(input:{{name:\"{}\",type:{oc_type},start:\"{start}\",shiftLength:{oc_shift},timeZone:\"{}\"}}){{id}}}}", esc_gql(&rname), esc_gql(&oc_tz)),
-                    "/data/createRotation/id").await;
-            }
-            if let Some(ref rid) = rot_id {
-                let uidlist = uids.iter().map(|u| format!("\"{u}\"")).collect::<Vec<_>>().join(",");
-                let _ = goalert::graphql(&st.http, &base, &cookie,
-                    &format!("mutation{{updateRotation(input:{{id:\"{rid}\",type:{oc_type},start:\"{start}\",shiftLength:{oc_shift},timeZone:\"{}\",userIDs:[{uidlist}]}})}}", esc_gql(&oc_tz))).await;
-                sqlx::query("UPDATE app.alarm_groups SET goalert_rotation_id=$1 WHERE id=$2").bind(rid).bind(gid).execute(&st.owner_pool).await.map_err(ise)?;
-                n_rot += 1;
-                vec![format!("{{type:rotation,id:\"{rid}\"}}")]
-            } else {
-                uids.iter().map(|id| format!("{{type:user,id:\"{id}\"}}")).collect()
-            }
-        } else {
-            uids.iter().map(|id| format!("{{type:user,id:\"{id}\"}}")).collect()
-        };
-
-        // Avvolgi sempre on-call in una Schedule (modello nativo GoAlert): abilita copertura
-        // a fasce (#3), override/assenze (#4) e on-call-slack (#9) in modo uniforme. Fallback
-        // sicuro: se la Schedule non si crea, lo step punta direttamente a rotation/utenti.
-        let want_schedule = true;
-        let mut step_targets: Vec<String> = base_targets.clone();
-        if want_schedule {
-            let oc_tz: String = g.get("oncall_tz");
-            let mut sched_id: Option<String> = g.try_get("goalert_schedule_id").ok().flatten();
-            if sched_id.is_none() {
-                let scname = format!("YW {} {} sched {}", &tid.to_string()[..8], ga_name(&gname), suf);
-                sched_id = gql_id(st, &base, &cookie,
-                    &format!("mutation{{createSchedule(input:{{name:\"{}\",timeZone:\"{}\"}}){{id}}}}", esc_gql(&scname), esc_gql(&oc_tz)),
-                    "/data/createSchedule/id").await;
-            }
-            if let Some(ref scid) = sched_id {
-                // regole di copertura: 'orari' = finestra+giorni; altrimenti 24/7
-                let rules = if coverage == "orari" {
-                    let s = cov_start.as_deref().unwrap_or("00:00");
-                    let e = cov_end.as_deref().unwrap_or("00:00");
-                    format!("{{start:\"{s}\",end:\"{e}\",weekdayFilter:{}}}", weekday_filter(&cov_days))
-                } else {
-                    "{start:\"00:00\",end:\"00:00\",weekdayFilter:[true,true,true,true,true,true,true]}".to_string()
-                };
-                // ogni target base diventa un target della schedule con le stesse regole
-                for bt in &base_targets {
-                    let tgt = bt.trim_start_matches('{').trim_end_matches('}');
-                    let _ = goalert::graphql(&st.http, &base, &cookie,
-                        &format!("mutation{{updateScheduleTarget(input:{{scheduleID:\"{scid}\",target:{{{tgt}}},rules:[{rules}]}})}}")).await;
-                }
-                sqlx::query("UPDATE app.alarm_groups SET goalert_schedule_id=$1 WHERE id=$2").bind(scid).bind(gid).execute(&st.owner_pool).await.map_err(ise)?;
-                step_targets = vec![format!("{{type:schedule,id:\"{scid}\"}}")];
-                // #9 on-call notifications su Slack
-                if slack_on { if let Some(ref ch) = slack_ch {
-                    let rule = if slack_notify == "onchange" || slack_notify == "off" {
-                        format!("{{target:{{type:slackChannel,id:\"{}\"}}}}", esc_gql(ch))
-                    } else {
-                        format!("{{target:{{type:slackChannel,id:\"{}\"}},time:\"{}\",weekdayFilter:[true,true,true,true,true,true,true]}}", esc_gql(ch), esc_gql(&slack_notify))
-                    };
-                    if slack_notify != "off" {
-                        let _ = goalert::graphql(&st.http, &base, &cookie,
-                            &format!("mutation{{setScheduleOnCallNotificationRules(input:{{scheduleID:\"{scid}\",rules:[{rule}]}})}}")).await;
-                    }
-                }}
-            }
-        }
-        // #10 canale Slack come ulteriore target dello step di escalation
-        if slack_on { if let Some(ref ch) = slack_ch {
-            step_targets.push(format!("{{type:slackChannel,id:\"{}\"}}", esc_gql(ch)));
-        }}
-        let targets = step_targets.join(",");
-        let _ = goalert::graphql(&st.http, &base, &cookie,
-            &format!("mutation{{createEscalationPolicyStep(input:{{escalationPolicyID:\"{new_ep}\",delayMinutes:{delay_min},targets:[{targets}]}}){{id}}}}")).await;
-        // servizio + integration key (la key resta stabile tra le sync)
-        let mut sid: Option<String> = g.try_get("goalert_service_id").ok().flatten();
-        let mut key: Option<String> = g.try_get("goalert_key").ok().flatten();
-        let old_ep: Option<String> = g.try_get("goalert_ep_id").ok().flatten();
-        if sid.is_none() {
-            let sname = format!("YW {} {} {}", &tid.to_string()[..8], ga_name(&gname), suf);
-            sid = gql_id(st, &base, &cookie,
-                &format!("mutation{{createService(input:{{name:\"{}\",escalationPolicyID:\"{new_ep}\"}}){{id}}}}", esc_gql(&sname)),
-                "/data/createService/id").await;
-            if let Some(ref s) = sid {
-                key = gql_id(st, &base, &cookie,
-                    &format!("mutation{{createIntegrationKey(input:{{serviceID:\"{s}\",type:generic,name:\"yw-group\"}}){{id}}}}"),
-                    "/data/createIntegrationKey/id").await;
-            }
-        } else if let Some(ref s) = sid {
-            let _ = goalert::graphql(&st.http, &base, &cookie,
-                &format!("mutation{{updateService(input:{{id:\"{s}\",escalationPolicyID:\"{new_ep}\"}})}}")).await;
-            if let Some(oep) = &old_ep {
-                let _ = goalert::graphql(&st.http, &base, &cookie,
-                    &format!("mutation{{deleteAll(input:[{{type:escalationPolicy,id:\"{oep}\"}}])}}")).await;
-            }
-        }
-        sqlx::query("UPDATE app.alarm_groups SET goalert_ep_id=$1, goalert_service_id=$2, goalert_key=COALESCE($3,goalert_key) WHERE id=$4")
-            .bind(&new_ep).bind(&sid).bind(&key).bind(gid).execute(&st.owner_pool).await.map_err(ise)?;
-        // #12 labels sul servizio: ritrovabilita' per tenant/gruppo nella console GoAlert
-        if let Some(ref s) = sid {
-            if !slug.is_empty() {
-                let _ = goalert::graphql(&st.http, &base, &cookie,
-                    &format!("mutation{{setLabel(input:{{target:{{type:service,id:\"{s}\"}},key:\"youworkforce/tenant\",value:\"{}\"}})}}", esc_gql(&slug))).await;
-            }
-            let _ = goalert::graphql(&st.http, &base, &cookie,
-                &format!("mutation{{setLabel(input:{{target:{{type:service,id:\"{s}\"}},key:\"youworkforce/group\",value:\"{}\"}})}}", esc_gql(&ga_name(&gname)))).await;
-        }
-        n_groups += 1;
-    }
-    // routing etype -> integration key del gruppo responsabile (il drain legge goalert_routing)
-    let routes = sqlx::query("SELECT r.etype,g.goalert_key,g.goalert_service_id FROM app.alarm_routing r JOIN app.alarm_groups g ON g.id=r.group_id WHERE r.tenant_id=$1 AND g.goalert_key IS NOT NULL")
-        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-    let mut n_routes = 0i64;
-    for r in &routes {
-        let et: String = r.get("etype");
-        let k: String = r.get("goalert_key");
-        let s: Option<String> = r.try_get("goalert_service_id").ok().flatten();
-        sqlx::query("INSERT INTO app.goalert_routing(tenant_id,etype,integration_key,service_id) VALUES($1,$2,$3,$4)
-             ON CONFLICT (tenant_id,etype) DO UPDATE SET integration_key=EXCLUDED.integration_key, service_id=EXCLUDED.service_id")
-            .bind(tid).bind(&et).bind(&k).bind(&s).execute(&st.owner_pool).await.map_err(ise)?;
-        n_routes += 1;
-    }
-    // avviso onesto: se nessun trasporto e' attivo, GoAlert non puo' consegnare a nessuno
-    let warning = if !sms_on && !email_on {
-        Some("Nessun trasporto attivo in GoAlert: gli alert NON raggiungono nessuno. Il superadmin deve configurare Twilio (SMS/voce) o SMTP (email) in Connettori -> Trasporto notifiche.".to_string())
-    } else if no_contact > 0 {
-        Some(format!("{no_contact} membro/i senza recapito utilizzabile (manca il telefono per SMS, o l'email con SMTP attivo): non verranno avvisati finche' non aggiungi il recapito in Utenti e sedi."))
-    } else { None };
-    audit(st, tid, "youworkforce", "goalert_sync", json!({"groups":n_groups,"users_created":n_users,"routes":n_routes,"skipped":skipped,"contact_methods":n_cm})).await;
-    Ok(json!({"ok":true,"groups_synced":n_groups,"users_created":n_users,"routes":n_routes,"groups_skipped_no_members":skipped,
-        "contact_methods_created":n_cm,"members_without_contact":no_contact,"rotations":n_rot,
-        "transport":{"sms":sms_on,"email":email_on},
-        "repeat_seconds":repeat,"step_delay_minutes":delay_min,"ep_repeat":ep_repeat,"warning":warning}))
-}
-pub async fn goalert_sync_handler(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?;
-    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo l'admin del tenant")); }
-    require_module(&st, s.tenant_id.unwrap(), "loneworker").await?;
-    let out = sync_goalert(&st, s.tenant_id.unwrap()).await?;
-    Ok(Json(out))
-}
-
 // ====== Config server Traccar, gestita DA YouWorkforce (PUT /api/server) ======
 // Porte/forwarding = config d'avvio (nostra compose/env). I filtri posizione sono
 // già nel nostro strumento traccar/alarm_map. Qui le impostazioni runtime del server.
@@ -2490,17 +2039,6 @@ pub async fn traccar_verify(State(st): State<AppState>, h: HeaderMap) -> R {
     })))
 }
 
-// ====== Config trasporto notifiche GoAlert, gestita DA YouWorkforce ======
-// L'admin configura tutto dal nostro pannello; noi spingiamo la config a GoAlert via GraphQL.
-// NB: in GoAlert OSS la config è per-istanza (globale), non per-tenant.
-const GA_CFG_IDS: &[&str] = &[
-    "Twilio.Enable","Twilio.AccountSID","Twilio.AuthToken","Twilio.FromNumber","Twilio.MessagingServiceSID",
-    "SMTP.Enable","SMTP.From","SMTP.Address","SMTP.Username","SMTP.Password","SMTP.DisableTLS","SMTP.SkipVerify",
-    "Slack.Enable","Slack.ClientID","Slack.ClientSecret","Slack.AccessToken","Slack.SigningSecret",
-    "Mailgun.Enable","Mailgun.APIKey","Mailgun.EmailDomain",
-    "Webhook.Enable","Webhook.AllowedURLs","General.PublicURL",
-];
-const GA_CFG_SECRETS: &[&str] = &["Twilio.AuthToken","SMTP.Password","Slack.ClientSecret","Slack.SigningSecret","Slack.AccessToken","Mailgun.APIKey"];
 /// Validazione E.164: '+' seguito da 8-15 cifre, prima cifra 1-9.
 pub(crate) fn is_e164(s: &str) -> bool {
     let b = s.as_bytes();
@@ -2509,82 +2047,10 @@ pub(crate) fn is_e164(s: &str) -> bool {
     b[1..].iter().all(|c| c.is_ascii_digit())
 }
 
-pub async fn goalert_get_config(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
-    require_super(&st, &h).await?;
-    let Some((base, cookie, _)) = goalert_session(&st, tid).await else {
-        return Err(err(StatusCode::BAD_REQUEST, "credenziali GoAlert non configurate per il tenant (prima: Provisiona/Imposta)")); };
-    let v = goalert::graphql(&st.http, &base, &cookie, "{config(all:true){id type value}}").await
-        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "GoAlert non raggiungibile"))?;
-    let all = v.pointer("/data/config").and_then(|x| x.as_array()).cloned().unwrap_or_default();
-    let out: Vec<Value> = all.iter().filter(|c| {
-        c.get("id").and_then(|i| i.as_str()).map(|i| GA_CFG_IDS.contains(&i)).unwrap_or(false)
-    }).map(|c| {
-        let id = c.get("id").and_then(|x| x.as_str()).unwrap_or("");
-        let ty = c.get("type").and_then(|x| x.as_str()).unwrap_or("string");
-        let val = c.get("value").and_then(|x| x.as_str()).unwrap_or("");
-        let secret = GA_CFG_SECRETS.contains(&id);
-        json!({"id":id,"type":ty,"secret":secret,
-            "value": if secret { Value::Null } else { json!(val) },
-            "set": if secret { Some(!val.is_empty()) } else { None }})
-    }).collect();
-    Ok(Json(json!(out)))
-}
-
 #[derive(Deserialize)]
 pub struct GaCfgSet { pub entries: Vec<GaCfgEntry> }
 #[derive(Deserialize)]
 pub struct GaCfgEntry { pub id: String, pub value: String }
-pub async fn goalert_set_config(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<GaCfgSet>) -> R {
-    require_super(&st, &h).await?;
-    let Some((base, cookie, _)) = goalert_session(&st, tid).await else {
-        return Err(err(StatusCode::BAD_REQUEST, "credenziali GoAlert non configurate")); };
-    // whitelist + segreti vuoti = non sovrascrivere
-    let mut items = Vec::new();
-    for e in &b.entries {
-        if !GA_CFG_IDS.contains(&e.id.as_str()) { continue; }
-        if GA_CFG_SECRETS.contains(&e.id.as_str()) && e.value.is_empty() { continue; }
-        // validazione lato nostro (prima di inoltrare a GoAlert)
-        if e.id == "Twilio.FromNumber" && !e.value.is_empty() && !is_e164(&e.value) {
-            return Err(err(StatusCode::BAD_REQUEST, "Twilio.FromNumber: formato E.164 richiesto (es. +14155552671)"));
-        }
-        if e.id == "Twilio.MessagingServiceSID" && !e.value.is_empty()
-            && !(e.value.len()==34 && e.value.starts_with("MG")) {
-            return Err(err(StatusCode::BAD_REQUEST, "Twilio.MessagingServiceSID: formato 'MG' + 32 esadecimali"));
-        }
-        if e.id == "Twilio.AccountSID" && !e.value.is_empty()
-            && !(e.value.len()==34 && e.value.starts_with("AC")) {
-            return Err(err(StatusCode::BAD_REQUEST, "Twilio.AccountSID: formato 'AC' + 32 esadecimali"));
-        }
-        let v = e.value.replace('\\', "\\\\").replace('"', "\\\"");
-        items.push(format!("{{id:\"{}\",value:\"{}\"}}", e.id, v));
-    }
-    if items.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nessun campo valido")); }
-    let q = format!("mutation{{setConfig(input:[{}])}}", items.join(","));
-    let v = goalert::graphql(&st.http, &base, &cookie, &q).await
-        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "GoAlert non raggiungibile"))?;
-    if v.get("errors").is_some() {
-        return Err(err(StatusCode::BAD_GATEWAY, &format!("GoAlert: {}", v.get("errors").unwrap())));
-    }
-    audit(&st, tid, "superadmin", "goalert_set_config", json!({"n":items.len()})).await;
-    Ok(Json(json!({"ok":true,"updated":items.len()})))
-}
-
-// P3: routing per tipo evento -> key GoAlert specifica.
-#[derive(Deserialize)]
-pub struct GoalertRoute { pub etype: String, pub integration_key: Option<String> }
-pub async fn goalert_set_routing(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GoalertRoute>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap();
-    match &b.integration_key {
-        Some(k) if !k.is_empty() => { sqlx::query("INSERT INTO app.goalert_routing(tenant_id,etype,integration_key) VALUES($1,$2,$3)
-            ON CONFLICT (tenant_id,etype) DO UPDATE SET integration_key=EXCLUDED.integration_key")
-            .bind(tid).bind(&b.etype).bind(k).execute(&st.owner_pool).await.map_err(ise)?; }
-        _ => { sqlx::query("DELETE FROM app.goalert_routing WHERE tenant_id=$1 AND etype=$2")
-            .bind(tid).bind(&b.etype).execute(&st.owner_pool).await.map_err(ise)?; }
-    }
-    Ok(Json(json!({"ok":true})))
-}
-
 // ----------------------------- tenant plane -----------------------------
 pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Json<LoginReq>) -> impl IntoResponse {
     // tenant resolved from Host (or X-Tenant-Slug for local dev)
@@ -10586,12 +10052,6 @@ mod async_stream {
 // manutenzione, calendario iCal. Tutto pilotato da YouWorkforce (tenant_admin).
 // ============================================================================
 
-/// Sessione GoAlert del tenant o errore parlante (provisioning mancante).
-#[allow(dead_code)]
-async fn ga_session_or_err(st: &AppState, tid: Uuid) -> Result<(String,String,Option<String>),(StatusCode,String)> {
-    goalert_session(st, tid).await
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "GoAlert non provisionato (chiedi al superadmin: Provisiona GoAlert) o credenziali non valide"))
-}
 
 // ---- Impostazioni reperibilita' (ladder vocale + status updates) ----
 pub async fn oncall_settings_get(State(st): State<AppState>, h: HeaderMap) -> R {
@@ -10907,10 +10367,6 @@ async fn group_schedule_id(st: &AppState, tid: Uuid, gid: Uuid) -> Option<String
     sqlx::query_scalar("SELECT goalert_schedule_id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
         .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten()
 }
-async fn ga_user_id(st: &AppState, tid: Uuid, uid: Uuid) -> Option<String> {
-    sqlx::query_scalar("SELECT goalert_user_id FROM app.users WHERE id=$1 AND tenant_id=$2")
-        .bind(uid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten()
-}
 #[derive(Deserialize)] pub struct OverrideQuery { pub group_id: Uuid }
 pub async fn oncall_overrides_list(State(st): State<AppState>, h: HeaderMap, axum::extract::Query(q): axum::extract::Query<OverrideQuery>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
@@ -10960,14 +10416,6 @@ pub async fn oncall_override_add(State(st): State<AppState>, h: HeaderMap, Json(
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let oid: Uuid = row.get("id");
-    // GoAlert best-effort (rollback/rete di sicurezza): mirror se provisionato, senza bloccare.
-    if let (Some(scid), Some((base,cookie,_))) = (group_schedule_id(&st, tid, b.group_id).await, goalert_session(&st, tid).await) {
-        let mut fields = vec![format!("scheduleID:\"{scid}\""), format!("start:\"{}\"", esc_gql(&b.start)), format!("end:\"{}\"", esc_gql(&b.end))];
-        if let Some(u) = b.add_user_id { if let Some(g) = ga_user_id(&st, tid, u).await { fields.push(format!("addUserID:\"{g}\"")); } }
-        if let Some(u) = b.remove_user_id { if let Some(g) = ga_user_id(&st, tid, u).await { fields.push(format!("removeUserID:\"{g}\"")); } }
-        let gq = format!("mutation{{createUserOverride(input:{{{}}}){{id}}}}", fields.join(","));
-        let _ = goalert::graphql(&st.http, &base, &cookie, &gq).await;
-    }
     audit(&st, tid, "youworkforce", "oncall_override_add", json!({"group":b.group_id,"id":oid})).await;
     Ok(Json(json!({"ok":true,"id":oid})))
 }
@@ -11074,19 +10522,8 @@ pub async fn oncall_maintenance(State(st): State<AppState>, h: HeaderMap, Json(b
     sqlx::query("INSERT INTO app.tenant_oncall_cfg(tenant_id,maintenance_until) VALUES($1,$2)
         ON CONFLICT (tenant_id) DO UPDATE SET maintenance_until=EXCLUDED.maintenance_until,updated_at=now()")
         .bind(tid).bind(until_db).execute(&st.owner_pool).await.map_err(ise)?;
-    // GoAlert best-effort (rete di sicurezza): se provisionato, allinea i service; altrimenti ignora.
-    let mut n = 0;
-    if let Some((base, cookie, prov_sid)) = goalert_session(&st, tid).await {
-        let mut sids: Vec<String> = sqlx::query_scalar("SELECT goalert_service_id FROM app.alarm_groups WHERE tenant_id=$1 AND goalert_service_id IS NOT NULL")
-            .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-        if let Some(p) = prov_sid { if !sids.contains(&p) { sids.push(p); } }
-        for sid in &sids {
-            let gq = format!("mutation{{updateService(input:{{id:\"{}\",maintenanceExpiresAt:\"{}\"}})}}", esc_gql(sid), exp_s);
-            if goalert::graphql(&st.http, &base, &cookie, &gq).await.map(|v| v.get("errors").is_none()).unwrap_or(false) { n += 1; }
-        }
-    }
-    audit(&st, tid, "youworkforce", "oncall_maintenance", json!({"hours":hours,"goalert_services":n,"native":true})).await;
-    Ok(Json(json!({"ok":true,"services":n,"until":if hours>0 {Some(exp_s)} else {None},"active":hours>0})))
+    audit(&st, tid, "youworkforce", "oncall_maintenance", json!({"hours":hours,"native":true})).await;
+    Ok(Json(json!({"ok":true,"until":if hours>0 {Some(exp_s)} else {None},"active":hours>0})))
 }
 /// Maintenance nativo attivo adesso? (now < maintenance_until). Usato dal runner nativo.
 pub async fn maintenance_active(st: &AppState, tid: Uuid) -> bool {
@@ -11933,15 +11370,6 @@ fn esc_build_schedule(g: &sqlx::postgres::PgRow, members: &[Uuid]) -> crate::esc
     crate::escalation::Schedule{ rotation, fixed_users, rules, overrides: vec![] }
 }
 
-/// Email on-call correnti in GoAlert per un servizio (onCallUsers.userName == email nostra).
-async fn esc_goalert_oncall_emails(st: &AppState, base: &str, cookie: &str, sid: &str) -> Vec<String> {
-    let q = format!("{{service(id:\"{sid}\"){{onCallUsers{{userName}}}}}}");
-    goalert::graphql(&st.http, base, cookie, &q).await
-        .and_then(|v| v.pointer("/data/service/onCallUsers").and_then(|a| a.as_array()).cloned())
-        .map(|a| a.iter().filter_map(|u| u.get("userName").and_then(|x| x.as_str()).map(|s| s.to_lowercase())).collect())
-        .unwrap_or_default()
-}
-
 /// Uuid sintetico deterministico da un'email (per un sostituto non membro del gruppo: serve
 /// solo al confronto per-email dello shadow, non è un utente reale).
 fn esc_synth_uuid(email: &str) -> Uuid {
@@ -11954,43 +11382,6 @@ fn esc_synth_uuid(email: &str) -> Uuid {
     bytes[..8].copy_from_slice(&a.to_le_bytes());
     bytes[8..].copy_from_slice(&b.to_le_bytes());
     Uuid::from_bytes(bytes)
-}
-
-/// Override (assenze) attivi in GoAlert per lo schedule, convertiti nel modello nativo
-/// [`crate::escalation::Override`]. Mappa gli utenti GoAlert -> uuid nostro via l'email
-/// (`userName`/`name` == email in questo sistema); un sostituto esterno al gruppo ottiene un
-/// uuid sintetico e viene aggiunto a `email_of` così il confronto per-email resta corretto.
-async fn esc_goalert_overrides(
-    st: &AppState, base: &str, cookie: &str, schedule_id: &str,
-    email_of: &mut std::collections::HashMap<Uuid, String>,
-) -> Vec<crate::escalation::Override> {
-    let gq = format!("{{userOverrides(input:{{scheduleID:\"{}\"}}){{nodes{{start end addUser{{name}} removeUser{{name}}}}}}}}", esc_gql(schedule_id));
-    let nodes = goalert::graphql(&st.http, base, cookie, &gq).await
-        .and_then(|v| v.pointer("/data/userOverrides/nodes").and_then(|a| a.as_array()).cloned())
-        .unwrap_or_default();
-    let mut uid_of_email: std::collections::HashMap<String, Uuid> =
-        email_of.iter().map(|(u, e)| (e.clone(), *u)).collect();
-    let mut resolve = |name: Option<&str>| -> Option<Uuid> {
-        let e = name?.trim().to_lowercase();
-        if e.is_empty() { return None; }
-        if let Some(u) = uid_of_email.get(&e) { return Some(*u); }
-        let u = esc_synth_uuid(&e);
-        uid_of_email.insert(e.clone(), u);
-        email_of.insert(u, e);
-        Some(u)
-    };
-    let mut out = vec![];
-    for n in &nodes {
-        let parse = |k: &str| n.get(k).and_then(|x| x.as_str())
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|d| d.with_timezone(&chrono::Utc));
-        let (Some(start), Some(end)) = (parse("start"), parse("end")) else { continue };
-        let add = resolve(n.pointer("/addUser/name").and_then(|x| x.as_str()));
-        let remove = resolve(n.pointer("/removeUser/name").and_then(|x| x.as_str()));
-        if add.is_none() && remove.is_none() { continue; }
-        out.push(crate::escalation::Override { start, end, add, remove });
-    }
-    out
 }
 
 /// Risolve il membro on-call della rotation con STATO persistente (semantica GoAlert
@@ -12084,12 +11475,8 @@ async fn esc_native_oncall_contacts(
     sched.overrides = esc_native_overrides(st, tid, gid, &email_of).await;
     let rot_member = match &sched.rotation {
         Some(rot) => {
-            // ground-truth GoAlert solo per semina (se disponibile); altrimenti seed nativo.
-            let mut gae = match (ga, g.try_get::<Option<String>,_>("goalert_service_id").ok().flatten()) {
-                (Some((base, cookie)), Some(sid)) => esc_goalert_oncall_emails(st, base, cookie, &sid).await,
-                _ => vec![],
-            };
-            gae.sort(); gae.dedup();
+            // seed rotation NATIVO (GoAlert ritirato: nessun ground-truth esterno).
+            let gae: Vec<String> = vec![];
             // consegna (seed): semina+persiste; lettura (!seed): calcolo transiente senza persistere.
             esc_resolve_rot_member(st, tid, gid, rot, &members, &email_of, &gae, now, seed, !seed).await
         }
@@ -12614,10 +12001,8 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
         let _ = sqlx::query("UPDATE app.incidents SET bundled_at=NULL WHERE tenant_id=$1 AND bundled_at IS NOT NULL")
             .bind(tid).execute(&st.owner_pool).await;
     }
-    // GoAlert OPZIONALE: se provisionato serve solo come ground-truth per la semina rotation e
-    // (storicamente) gli override; il motore nativo funziona anche senza (strada nuova).
-    let ga_sess = goalert_session(st, tid).await;
-    let ga_opt: Option<(&str,&str)> = ga_sess.as_ref().map(|(b,c,_)| (b.as_str(), c.as_str()));
+    // Motore nativo autoritativo: nessun ground-truth esterno (GoAlert ritirato). Seed rotation nativo.
+    let ga_opt: Option<(&str,&str)> = None;
     // riferimento temporale del motore nativo = orologio controllabile: step_fired_at viene SCRITTO
     // e confrontato con lo stesso `now` (vedi escalation::tick), quindi e' auto-coerente e testabile
     // con TEST_CLOCK (in prod offset=0 -> identico al wall-clock).

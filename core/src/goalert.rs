@@ -59,29 +59,3 @@ pub async fn close_notification(
     }
 }
 
-/// Login GraphQL (basic provider) -> cookie di sessione da riusare. P2/P3.
-/// GoAlert risponde 307 con Set-Cookie: serve un client che NON segua i redirect,
-/// altrimenti reqwest segue il 307 e perde il cookie.
-pub async fn login(_http: &reqwest::Client, base: &str, user: &str, pass: &str) -> Option<String> {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build().ok()?;
-    let url = format!("{base}/api/v2/identity/providers/basic");
-    let resp = client.post(&url)
-        .header("Referer", format!("{base}/")).header("Origin", base)
-        .form(&[("username", user), ("password", pass)]).send().await.ok()?;
-    let mut cookies = Vec::new();
-    for v in resp.headers().get_all(reqwest::header::SET_COOKIE).iter() {
-        if let Ok(s) = v.to_str() { if let Some(pair) = s.split(';').next() { cookies.push(pair.to_string()); } }
-    }
-    if cookies.is_empty() { None } else { Some(cookies.join("; ")) }
-}
-
-/// Esegue una query/mutation GraphQL con la sessione.
-pub async fn graphql(http: &reqwest::Client, base: &str, cookie: &str, query: &str) -> Option<Value> {
-    let url = format!("{base}/api/graphql");
-    http.post(&url).header("Referer", format!("{base}/")).header("content-type", "application/json")
-        .header("Cookie", cookie)
-        .body(json!({"query": query}).to_string())
-        .send().await.ok()?.json::<Value>().await.ok()
-}

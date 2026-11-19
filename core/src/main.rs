@@ -32,14 +32,6 @@ async fn crypto_migrate(st: &AppState) -> anyhow::Result<()> {
         sqlx::query("UPDATE app.traccar_connections SET password=$2 WHERE tenant_id=$1")
             .bind(tid).bind(enc).execute(&st.owner_pool).await?;
     }
-    let ga = sqlx::query("SELECT tenant_id,gql_pass FROM app.goalert_services WHERE gql_pass IS NOT NULL AND gql_pass NOT LIKE 'enc:v1:%'")
-        .fetch_all(&st.owner_pool).await?;
-    for r in ga {
-        let tid: Uuid = r.get("tenant_id");
-        let enc = st.secrets.encrypt(&r.get::<String,_>("gql_pass"));
-        sqlx::query("UPDATE app.goalert_services SET gql_pass=$2 WHERE tenant_id=$1")
-            .bind(tid).bind(enc).execute(&st.owner_pool).await?;
-    }
     Ok(())
 }
 
@@ -203,11 +195,8 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/superadmin/login", post(api::superadmin_login))
         .route("/api/superadmin/tenants", post(api::create_tenant).get(api::list_tenants))
         .route("/api/superadmin/tenants/:id/modules", post(api::set_module).get(api::super_list_modules))
-        .route("/api/superadmin/tenants/:id/goalert", post(api::super_set_goalert))
         .route("/api/superadmin/tenants/:id/traccar", get(api::super_get_traccar).post(api::super_set_traccar))
-        .route("/api/superadmin/tenants/:id/goalert/provision", post(api::goalert_provision))
         .route("/api/superadmin/tenants/:id/integrations", get(api::super_integrations_status))
-        .route("/api/superadmin/tenants/:id/goalert/config", get(api::goalert_get_config).post(api::goalert_set_config))
         .route("/api/superadmin/tenants/:id/traccar/config", get(api::traccar_get_config).post(api::traccar_set_config))
         .route("/api/superadmin/tenants/:id/ai", get(api::super_get_ai).post(api::super_set_ai))
         .route("/api/superadmin/tenants/:id/ai/verify", post(api::ai_verify))
@@ -293,7 +282,6 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/groups/search", get(api::group_search))
         .route("/api/groups/:gid/members/:uid", axum::routing::delete(api::remove_group_member))
         .route("/api/routing", post(api::set_routing))
-        .route("/api/alarm/sync-goalert", post(api::goalert_sync_handler))
         .route("/api/sensor-rules", get(api::list_sensor_rules).post(api::create_sensor_rule))
         .route("/api/sensor-rules/:id", axum::routing::delete(api::delete_sensor_rule))
         .route("/api/checkins/list", get(api::list_checkins))
@@ -450,11 +438,6 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/incidents/:id/close", post(api::close_incident))
         .route("/api/incidents/:id/assign", post(api::assign_incident))
         .route("/api/incidents/:id/note", post(api::add_incident_note))
-        .route("/api/incidents/:id/goalert-status", get(api::goalert_status))
-        .route("/api/incidents/:id/goalert-ack", post(api::goalert_ack))
-        .route("/api/incidents/:id/goalert-escalate", post(api::goalert_escalate))
-        .route("/api/oncall-now", get(api::goalert_oncall))
-        .route("/api/goalert/routing", post(api::goalert_set_routing))
         .route("/api/sos", post(api::worker_sos))
         .route("/api/worker/position", post(api::worker_position))
         .route("/api/checkins", post(api::create_checkin))

@@ -880,23 +880,12 @@ async function openIncident(id){
     <div class="small mut">Correlazione</div><div class="mono" style="margin-bottom:16px">${esc(i.correlation)}</div>
     <div style="margin-bottom:6px">${acts}</div>${assignBox}${noteBox}
     ${AI_FEAT.incident_summary?`<div class="row" style="gap:6px;margin-top:14px"><button class="btn ghost small" onclick="aiIncidentSummary('${id}',this)">✦ Sintesi AI</button></div><div id="aiIncOut"></div>`:''}
-    <div class="small mut" style="margin-top:14px">Stato GoAlert</div><div id="gaStatus" class="small">…</div>
-    ${canOp?`<div class="row" style="gap:6px;margin-top:6px"><button class="btn ghost small" onclick="gaAck('${id}')">Ack</button>
-      <button class="btn ghost small" onclick="gaEsc('${id}')">Escalate</button></div>`:''}
     <h3 style="margin:18px 0 10px">Timeline</h3>
     <ul class="timeline">${tl.map(e=>{const dt=fmtDetail(e.kind,e.detail);return `<li><div class="t">${tlTitle(e.kind)}${e.at?` <span class="small mut" style="font-weight:400">· ${new Date(e.at).toLocaleTimeString('it-IT')}</span>`:''}</div>${dt?`<div class="small mut">${dt}</div>`:''}</li>`;}).join('')||'<li class="mut">—</li>'}</ul>`);
-  loadGaStatus(id);
 }
 async function aiIncidentSummary(id,btn){ const box=$('#aiIncOut'); if(!box)return; btn.disabled=true; box.innerHTML='<div class="small mut" style="margin-top:6px">youworker.ai…</div>';
   try{ const r=await api('/incidents/'+id+'/ai-summary'); box.innerHTML=`<div class="card pad" style="margin-top:6px;background:var(--brand-soft)"><div class="small mut">✦ youworker.ai</div><div style="white-space:pre-wrap;margin-top:4px">${esc(r.summary)}</div></div>`; }
   catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad);margin-top:6px">${esc(e.message)}</div>`; } finally{ btn.disabled=false; } }
-const GA_LAB={StatusUnacknowledged:'🔴 non preso in carico',StatusAcknowledged:'🟡 preso in carico (ack)',StatusClosed:'🟢 chiuso'};
-async function gaAck(id){ try{ await api('/incidents/'+id+'/goalert-ack',{method:'POST'}); toast('Ack inviato a GoAlert','ok'); loadGaStatus(id);}catch(e){toast(e.message,'bad');} }
-async function gaEsc(id){ try{ await api('/incidents/'+id+'/goalert-escalate',{method:'POST'}); toast('Escalation forzata','ok'); loadGaStatus(id);}catch(e){toast(e.message,'bad');} }
-async function loadGaStatus(id){ const el=$('#gaStatus'); if(!el)return;
-  try{ const r=await api('/incidents/'+id+'/goalert-status');
-    el.innerHTML = r.available ? (GA_LAB[r.status]||esc(r.status||'—')) : '<span class="mut">'+esc(r.reason||'n/d')+'</span>'; }
-  catch(e){ el.innerHTML='<span class="mut">n/d</span>'; } }
 // Timeline leggibile per operatori non tecnici: etichette in italiano, niente JSON grezzo.
 const TL_LAB={
   notify_requested:'📣 Allarme in uscita verso la reperibilità',
@@ -3555,7 +3544,7 @@ async function renderSensorRules(){
   box.innerHTML=`<div class="card pad"><div class="card-h" style="padding:0 0 10px"><h2>Regole sensori (IoT / ThingsBoard)</h2>
     <button class="btn ghost small" onclick="aiSuggestRules(this)">✦ Suggerisci regole (AI)</button></div>
     <div id="srSuggest"></div>
-    <div class="small mut" style="margin-bottom:8px">Trasformano la telemetria in allarmi, in modo parametrico: <b>metrica</b> (chiave nel payload) + <b>operatore</b> + <b>soglia</b> → <b>evento</b>. Gli eventi critici attivano la catena allarmi (incidente + GoAlert). Valgono sia per ThingsBoard sia per l'IoT generico.</div>
+    <div class="small mut" style="margin-bottom:8px">Trasformano la telemetria in allarmi, in modo parametrico: <b>metrica</b> (chiave nel payload) + <b>operatore</b> + <b>soglia</b> → <b>evento</b>. Gli eventi critici attivano la catena allarmi nativa (incidente + escalation).</div>
     <table class="table" data-export="regole-sensori"><thead><tr><th>Metrica</th><th>Condizione</th><th>Evento</th><th>Etichetta</th><th></th></tr></thead>
     <tbody>${R.map(r=>`<tr><td class="mono small">${esc(r.metric)}</td>
       <td class="small">${opLab(r.op)}${numeric(r.op)?' '+(r.threshold??''):''}</td>
@@ -3886,7 +3875,7 @@ function traccarHealthCard(s){
       <div><div class="small mut">Cursore eventi</div><b>#${s.last_event_id||0}</b></div>
     </div>
     ${s.last_error?`<div class="small" style="color:var(--bad);margin-top:8px">⚠ ${esc(s.last_error)}</div>`:''}
-    ${s.outbox_stuck>0?`<div class="small" style="color:var(--bad);margin-top:8px">⛔ ${s.outbox_stuck} notifica/e di sicurezza bloccata/e verso GoAlert — in ritentativo continuo${s.outbox_last_error?': '+esc(s.outbox_last_error):''}</div>`:''}
+    ${s.outbox_stuck>0?`<div class="small" style="color:var(--bad);margin-top:8px">⛔ ${s.outbox_stuck} notifica/e di sicurezza bloccata/e — in ritentativo continuo${s.outbox_last_error?': '+esc(s.outbox_last_error):''}</div>`:''}
     <div class="small mut" style="margin-top:8px">Pull via API Traccar: recupera eventi persi (backfill da cursore) e rileva il silenzio dei badge anche se Traccar non invia <i>deviceOffline</i>. Il forwarding resta come percorso rapido.</div>
     ${can(['tenant_admin'])?`<div class="row" style="gap:8px;margin-top:10px"><button class="btn ghost small" onclick="trVerify(this)">Verifica collegamento</button>
       <button class="btn ghost small" onclick="trSettings(this)">⚙ Impostazioni sicurezza</button>
@@ -4149,8 +4138,7 @@ async function vGruppi(v){
     'batteria_critica','batteria_bassa'];
   const routeOf=e=>(G.routing.find(r=>r.etype===e)||{}).group_id||'';
   v.innerHTML=`<div class="page-h"><div><h1>${t('escal_title','Escalation e reperibilità')}</h1><div class="mut">destinatari, canali e rotazione per tipo di evento</div></div>
-    <div class="row" style="gap:8px"><button class="btn ghost" onclick="syncGoalert(this)" title="Rollback: ripristina il motore GoAlert come rete di sicurezza">🔄 Sincronizza con GoAlert (rollback)</button>
-      <button class="btn" onclick="grpNew()">+ Nuovo gruppo</button></div></div>
+    <div class="row" style="gap:8px"><button class="btn" onclick="grpNew()">+ Nuovo gruppo</button></div></div>
   <div class="seg" id="escTabs" style="margin-bottom:14px;flex-wrap:wrap">
     <button class="seg-btn on" data-et="gruppi" onclick="escTab('gruppi')">Gruppi</button>
     <button class="seg-btn" data-et="routing" onclick="escTab('routing')">Routing</button>
@@ -4162,9 +4150,7 @@ async function vGruppi(v){
   <div class="esc-tab" data-et="gruppi">
   <div class="card pad" style="margin-bottom:12px;background:var(--brand-soft)"><div class="small">
     <b>I gruppi pilotano l'escalation.</b> Definisci gruppi, membri, rotazione di reperibilità e routing (evento→gruppo):
-    il <b>motore nativo</b> (default) risolve on-call e consegna le notifiche (SMS/voce/e-mail/Slack) con ripetizione da <i>Escalation SOS</i>.
-    <span class="mut">GoAlert resta disponibile come rete di sicurezza: usa <b>Sincronizza con GoAlert</b> solo per il rollback di un tenant.</span></div>
-    <div id="gaSyncOut" class="small" style="margin-top:6px"></div></div>
+    il <b>motore nativo</b> risolve on-call e consegna le notifiche (SMS/voce/e-mail/Slack) con ripetizione da <i>Escalation SOS</i>.</div></div>
   <div class="card pad" style="margin-bottom:12px">
     <div class="spread"><h2 style="margin-bottom:4px">Gruppo di default (catch-all)</h2>
       <span class="tag ${ocs.engine==='native'?'':'mut'}">motore: ${esc(ocs.engine||'native')}</span></div>
@@ -4272,7 +4258,6 @@ async function vGruppi(v){
         <label class="row small" style="gap:8px;align-items:center;margin-top:6px">dopo <input id="ocVoiceMin" type="number" min="1" max="60" value="${ocs.voice_fallback_min||5}" style="width:56px"> minuti</label>
         <label class="row small" style="gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="ocStatus" ${ocs.status_updates_on?'checked':''}> Avvisa il reperibile sugli aggiornamenti dell'allarme</label>
         <button class="btn ghost small" style="margin-top:8px" onclick="ocSettingsSave(this)">Salva impostazioni</button>
-        <div class="small faint" style="margin-top:4px">Applica con <b>Sincronizza con GoAlert</b>.</div>
       </div>
       <div>
         <h3 style="margin:0 0 8px">Manutenzione (sospende escalation)</h3>
@@ -4422,7 +4407,7 @@ async function escDelivReport(btn){ const out=$('#escDiagOut'); out.innerHTML='<
   catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
 async function ocSettingsSave(btn){
   const body={voice_fallback_on:$('#ocVoice').checked, voice_fallback_min:+($('#ocVoiceMin').value||5), status_updates_on:$('#ocStatus').checked};
-  try{ await api('/oncall-settings',{method:'POST',body:JSON.stringify(body)}); toast('Salvato — Sincronizza con GoAlert','ok'); }
+  try{ await api('/oncall-settings',{method:'POST',body:JSON.stringify(body)}); toast('Salvato','ok'); }
   catch(e){ toast(e.message,'bad'); }
 }
 async function ocMaint(hours){
@@ -4549,16 +4534,6 @@ async function ocAbsAdd(gid){
   catch(err){ toast(err.message,'bad'); }
 }
 async function ocAbsDel(id){ try{ await api('/oncall-overrides/delete',{method:'POST',body:JSON.stringify({id})}); toast('Rimossa','ok'); ocAbsences(); }catch(e){ toast(e.message,'bad'); } }
-async function syncGoalert(btn){
-  const out=$('#gaSyncOut'); if(btn){btn.disabled=true;btn.textContent='Sincronizzo…';}
-  try{ const r=await api('/alarm/sync-goalert',{method:'POST'});
-    const tr=r.transport||{}; const trTxt=`trasporto: ${tr.sms?'SMS✓':'SMS✗'} ${tr.email?'email✓':'email✗'}`;
-    if(out) out.innerHTML=`<span style="color:var(--ok,green)">✓ Sincronizzato</span> · ${r.groups_synced} gruppi · ${r.rotations||0} turni · ${r.users_created} utenti · ${r.contact_methods_created} recapiti · ${r.routes} routing · ${trTxt} · repeat ${r.repeat_seconds}s (step ${r.step_delay_minutes}m ×${r.ep_repeat})${r.groups_skipped_no_members?` · ${r.groups_skipped_no_members} gruppi senza membri`:''}`
-      +(r.warning?`<div style="color:var(--warn,#b45309);margin-top:4px">⚠ ${esc(r.warning)}</div>`:'');
-    toast('GoAlert sincronizzato','ok');
-  }catch(e){ if(out) out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; toast(e.message,'bad'); }
-  finally{ if(btn){btn.disabled=false;btn.textContent='🔄 Sincronizza con GoAlert';} }
-}
 function grpOncallToggle(gid){ const m=$('#ocMode_'+gid).value; const p=$('#ocParams_'+gid); if(p) p.style.display=m==='turni'?'inline-flex':'none'; const h=$('#hoP_'+gid); if(h) h.style.display=m==='turni'?'flex':'none'; }
 function covToggle(gid){ const m=$('#cov_'+gid).value; const p=$('#covP_'+gid); if(p) p.style.display=m==='orari'?'block':'none'; }
 async function grpOncallSave(gid){
@@ -4567,7 +4542,7 @@ async function grpOncallSave(gid){
     coverage_mode:$('#cov_'+gid)?.value||'24_7', cov_start:$('#covS_'+gid)?.value||null, cov_end:$('#covE_'+gid)?.value||null, cov_days:days,
     handoff_time:$('#hoT_'+gid)?.value||null, handoff_day:+($('#hoD_'+gid)?.value||0),
     slack_channel_id:$('#slC_'+gid)?.value||null, slack_notify:$('#slN_'+gid)?.value||'off'};
-  try{ await api('/groups/'+gid+'/oncall',{method:'POST',body:JSON.stringify(body)}); toast('Salvato — premi Sincronizza con GoAlert','ok'); }
+  try{ await api('/groups/'+gid+'/oncall',{method:'POST',body:JSON.stringify(body)}); toast('Salvato','ok'); }
   catch(e){ toast(e.message,'bad'); }
 }
 // Helper comune: drawer di creazione a campo singolo (comportamento uniforme in tutto il prodotto).
@@ -5139,7 +5114,7 @@ async function userEdit(u){
   drawer('Utente · '+esc(u.email),`<div class="col" style="gap:10px">
     <label class="small mut">Ruolo<select id="uRo2">${roleOptions(u.role)}</select></label>
     <label class="small mut">Nuova password (opzionale)<input id="uPw2" placeholder="lascia vuoto per non cambiare"></label>
-    <label class="small mut">Telefono (E.164, per notifiche SMS/voce GoAlert)<input id="uPhone" placeholder="+393331234567" value="${esc(u.phone||'')}"></label>
+    <label class="small mut">Telefono (E.164, per notifiche SMS/voce)<input id="uPhone" placeholder="+393331234567" value="${esc(u.phone||'')}"></label>
     ${siteBox}
     <div class="row" style="gap:8px"><button class="btn grow" onclick="userSave('${u.id}',${scoped})">Salva</button>
       <button class="btn ghost" onclick="userDel('${u.id}')">Elimina</button></div><div class="cfg-msg small"></div></div>`);
