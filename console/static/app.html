@@ -4315,8 +4315,7 @@ async function vGruppi(v){
       <h3 style="margin:0 0 8px">Diagnostica motore escalation</h3>
       <div class="row small" style="gap:6px;align-items:center;flex-wrap:wrap">
         <span class="chip">motore: ${esc(window._OCS&&window._OCS.engine||'native')}</span>
-        <button class="btn ghost small" onclick="escDelivReport(this)">Report consegne</button>
-        <button class="btn ghost small" onclick="escShadowReport(this)">Report parità (shadow)</button></div>
+        <button class="btn ghost small" onclick="escDelivReport(this)">Report consegne</button></div>
       <div id="escDiagOut" class="small" style="margin-top:8px"></div>
     </div>
     <div style="margin-top:14px">
@@ -4420,11 +4419,6 @@ async function escDelivReport(btn){ const out=$('#escDiagOut'); out.innerHTML='<
   try{ const r=await api('/escalation/delivery'); const bs=r.by_state||{};
     out.innerHTML=`<b>Consegne (7gg):</b> ${Object.keys(bs).length?Object.entries(bs).map(([k,v])=>`${esc(k)}=${v}`).join(' · '):'nessuna'} · sink ${r.sink_configured?'configurato':'dry'}
       ${(r.recent||[]).length?'<div style="margin-top:6px">'+r.recent.slice(0,8).map(x=>`<div class="mut">${esc(x.channel||'')} → ${esc(x.state||'')} ${esc(x.to_value||'')}</div>`).join('')+'</div>':''}`; }
-  catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
-async function escShadowReport(btn){ const out=$('#escDiagOut'); out.innerHTML='<span class="mut">Carico…</span>';
-  try{ const r=await api('/escalation/shadow');
-    out.innerHTML=`<b>Parità nativo vs GoAlert (7gg):</b> ${r.samples||0} campioni, match ${((r.match_rate||1)*100).toFixed(0)}%
-      ${(r.recent_diffs||[]).length?'<div style="margin-top:6px">divergenze recenti:'+r.recent_diffs.slice(0,6).map(d=>`<div class="mut">nativo=[${(d.native||[]).join(',')}] goalert=[${(d.goalert||[]).join(',')}]</div>`).join('')+'</div>':'<div class="mut" style="margin-top:4px">nessuna divergenza</div>'}`; }
   catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
 async function ocSettingsSave(btn){
   const body={voice_fallback_on:$('#ocVoice').checked, voice_fallback_min:+($('#ocVoiceMin').value||5), status_updates_on:$('#ocStatus').checked};

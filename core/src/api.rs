@@ -11376,47 +11376,6 @@ pub async fn calendar_ics(State(st): State<AppState>, axum::extract::Query(q): a
 /// #5 Sync ack/chiusura da GoAlert -> incidente YW. Se il reperibile prende in carico o
 /// chiude via SMS/voce/console GoAlert, lo stato dell'incidente YW lo riflette.
 /// Girata periodicamente dal worker. Best-effort: un tenant giu' non blocca gli altri.
-pub async fn goalert_ack_sync(st: &AppState) {
-    let open = sqlx::query("SELECT tenant_id, id, goalert_alert_id FROM app.incidents WHERE state<>'chiuso' AND goalert_alert_id IS NOT NULL ORDER BY tenant_id LIMIT 200")
-        .fetch_all(&st.owner_pool).await.unwrap_or_default();
-    if open.is_empty() { return; }
-    // raggruppa per tenant per riusare la sessione GoAlert
-    let mut by_tenant: std::collections::HashMap<Uuid, Vec<(Uuid,i32)>> = std::collections::HashMap::new();
-    for r in &open {
-        let tid: Uuid = r.get("tenant_id");
-        let iid: Uuid = r.get("id");
-        if let Ok(aid) = r.try_get::<i32,_>("goalert_alert_id") {
-            by_tenant.entry(tid).or_default().push((iid, aid));
-        }
-    }
-    for (tid, items) in by_tenant {
-        let Some((base, cookie, _)) = goalert_session(st, tid).await else { continue; };
-        for (iid, aid) in items {
-            let v = goalert::graphql(&st.http, &base, &cookie, &format!("{{alert(id:{aid}){{status}}}}")).await;
-            let status = v.as_ref().and_then(|v| v.pointer("/data/alert/status").and_then(|x| x.as_str())).unwrap_or("");
-            match status {
-                "StatusAcknowledged" => {
-                    let n = sqlx::query("UPDATE app.incidents SET state='preso_in_carico',version=version+1 WHERE id=$1 AND state='aperto'")
-                        .bind(iid).execute(&st.owner_pool).await.map(|r| r.rows_affected()).unwrap_or(0);
-                    if n > 0 {
-                        let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'human_ack',$3)")
-                            .bind(tid).bind(iid).bind("preso in carico dal reperibile (GoAlert: SMS/voce/console)").execute(&st.owner_pool).await;
-                    }
-                }
-                "StatusClosed" => {
-                    let n = sqlx::query("UPDATE app.incidents SET state='chiuso',closed_at=now(),version=version+1 WHERE id=$1 AND state<>'chiuso'")
-                        .bind(iid).execute(&st.owner_pool).await.map(|r| r.rows_affected()).unwrap_or(0);
-                    if n > 0 {
-                        let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'goalert_closed',$3)")
-                            .bind(tid).bind(iid).bind("chiuso dal reperibile in GoAlert").execute(&st.owner_pool).await;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
 // ============================================================================
 // Traccar parity: event policy, report proxy, drivers, maintenance, computed
 // attributes, accumulators. Tutto pilotato da YouWorkforce (tenant_admin).
@@ -12081,84 +12040,6 @@ async fn esc_resolve_rot_member(
 
 /// Runner shadow per un tenant: per ogni gruppo con servizio GoAlert, confronta on-call
 /// nativo vs GoAlert e logga. Best-effort, nessun effetto esterno oltre al log.
-pub async fn escalation_shadow_tenant(st: &AppState, tid: Uuid) -> (i64, i64) {
-    let Some((base, cookie, _)) = goalert_session(st, tid).await else { return (0,0); };
-    let groups = sqlx::query("SELECT id,name,oncall_mode,oncall_type,oncall_shift,coverage_mode,cov_start,cov_end,cov_days,handoff_time,handoff_day,goalert_service_id FROM app.alarm_groups WHERE tenant_id=$1 AND goalert_service_id IS NOT NULL")
-        .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default();
-    // riferimento temporale = orologio REALE (GoAlert usa il wall-clock), non il clock di test.
-    let now = chrono::Utc::now();
-    let (mut n, mut matched) = (0i64, 0i64);
-    for g in &groups {
-        let gid: Uuid = g.get("id");
-        let sid: String = match g.try_get("goalert_service_id") { Ok(Some(s)) => s, _ => continue };
-        // membri (uuid+email) del gruppo
-        let mrows = sqlx::query("SELECT u.id,u.email FROM app.alarm_group_members m JOIN app.users u ON u.id=m.user_id WHERE m.group_id=$1 ORDER BY m.position")
-            .bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
-        if mrows.is_empty() { continue; }
-        let members: Vec<Uuid> = mrows.iter().map(|r| r.get::<Uuid,_>("id")).collect();
-        let mut email_of: std::collections::HashMap<Uuid,String> = mrows.iter().map(|r| (r.get::<Uuid,_>("id"), r.get::<String,_>("email").to_lowercase())).collect();
-        // on-call GoAlert (ground truth)
-        let mut ga = esc_goalert_oncall_emails(st, &base, &cookie, &sid).await;
-        ga.sort(); ga.dedup();
-        // on-call nativo (override/assenze tirati da GoAlert e modellati nel resolver)
-        let mut sched = esc_build_schedule(g, &members);
-        if let Some(scid) = group_schedule_id(st, tid, gid).await {
-            sched.overrides = esc_goalert_overrides(st, &base, &cookie, &scid, &mut email_of).await;
-        }
-        let rot_member = match &sched.rotation {
-            Some(rot) => esc_resolve_rot_member(st, tid, gid, rot, &members, &email_of, &ga, now, false, false).await,
-            None => None,
-        };
-        let mut native: Vec<String> = sched.on_call_at_rot(now, rot_member).iter().filter_map(|u| email_of.get(u).cloned()).collect();
-        native.sort(); native.dedup();
-        let is_match = native == ga;
-        if is_match { matched += 1; }
-        let _ = sqlx::query("INSERT INTO app.esc_shadow_log(tenant_id,group_id,native_oncall,goalert_oncall,match,detail) VALUES($1,$2,$3,$4,$5,$6)")
-            .bind(tid).bind(gid).bind(&native).bind(&ga).bind(is_match)
-            .bind(json!({"group":g.get::<String,_>("name"),"mode":g.get::<String,_>("oncall_mode"),
-                "overrides":sched.overrides.len(),
-                "note":"FASE 1 shadow: rotation stateful (seed GoAlert + advance nativo) + override/assenze modellati"}))
-            .execute(&st.owner_pool).await;
-        n += 1;
-    }
-    (n, matched)
-}
-
-/// Scansione shadow di tutti i tenant con GoAlert provisionato. Girata dal worker a bassa frequenza.
-pub async fn escalation_shadow_scan(st: &AppState) {
-    let tids: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT tenant_id FROM app.goalert_services")
-        .fetch_all(&st.owner_pool).await.unwrap_or_default();
-    for tid in tids { let _ = escalation_shadow_tenant(st, tid).await; }
-}
-
-/// Riepilogo shadow (tenant_admin/superadmin): match-rate recente + ultime divergenze.
-pub async fn escalation_shadow_report(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
-    let tid = s.tenant_id.unwrap();
-    let agg = sqlx::query("SELECT count(*) AS tot, count(*) FILTER (WHERE match) AS ok FROM app.esc_shadow_log WHERE tenant_id=$1 AND at > now() - interval '7 days'")
-        .bind(tid).fetch_one(&st.owner_pool).await.map_err(ise)?;
-    let tot: i64 = agg.get("tot"); let ok: i64 = agg.get("ok");
-    let diffs = sqlx::query("SELECT at,group_id,native_oncall,goalert_oncall,detail FROM app.esc_shadow_log WHERE tenant_id=$1 AND match=false ORDER BY at DESC LIMIT 20")
-        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-    let out: Vec<Value> = diffs.iter().map(|r| json!({
-        "at": r.get::<chrono::DateTime<chrono::Utc>,_>("at"),
-        "group_id": r.try_get::<Uuid,_>("group_id").ok(),
-        "native": r.get::<Vec<String>,_>("native_oncall"),
-        "goalert": r.get::<Vec<String>,_>("goalert_oncall"),
-        "detail": r.try_get::<Value,_>("detail").ok() })).collect();
-    let rate = if tot>0 { (ok as f64)/(tot as f64) } else { 1.0 };
-    Ok(Json(json!({"window_days":7,"samples":tot,"matches":ok,"match_rate":rate,"recent_diffs":out,
-        "note":"Shadow FASE 1: motore nativo vs GoAlert. 0 divergenze = pronti a valutare il cutover. GoAlert resta il motore."})))
-}
-
-/// Trigger manuale (superadmin/admin) di un giro shadow sul proprio tenant.
-pub async fn escalation_shadow_run(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
-    let tid = s.tenant_id.unwrap();
-    let (n, m) = escalation_shadow_tenant(&st, tid).await;
-    Ok(Json(json!({"ok":true,"groups":n,"matches":m})))
-}
-
 // ============================================================================
 // #4 escalation nativo — FASE 2: CONSEGNA IN OMBRA (sink di prova, GoAlert resta il motore)
 // ============================================================================
