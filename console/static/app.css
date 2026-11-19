@@ -126,8 +126,10 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,va
 
 /* ---- export bar (unica per tutte le tabelle: CSV/Excel/PDF/Markdown) ---- */
 .exp-wrap{display:flex;justify-content:flex-end;margin:0 0 10px}
+/* se la barra segue una card (es. Connettori), stacco dal fondo della card sopra */
+.card + .exp-wrap{margin-top:16px}
 /* dentro una card (tabelle in griglia): allineata ai lati della card, spazio misurato sopra la tabella */
-.exp-wrap.in-card{margin:0;padding:10px 14px 0}
+.exp-wrap.in-card{margin:0;padding:12px 14px 2px}
 .exp-bar{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sm);padding:5px 8px;box-shadow:var(--sh)}
 .exp-bar .exp-lbl{font-size:12px;color:var(--mut);font-weight:700;letter-spacing:.02em;margin-right:2px}
 .exp-bar .btn.sm{padding:4px 10px}

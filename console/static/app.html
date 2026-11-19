@@ -422,31 +422,43 @@ function exportBar(sel, base){ return `<div class="exp-bar" role="group" aria-la
     <button class="btn ghost sm" onclick="exportTable('${sel}','${base}','pdf')" title="Documento PDF">PDF</button>
     <button class="btn ghost sm" onclick="exportTable('${sel}','${base}','md')" title="Markdown">MD</button>
   </div>`; }
-let _expSeq=0;
-function decorateExports(root){ try{ (root&&root.querySelectorAll?root:document).querySelectorAll('table.table[data-export]').forEach(tb=>{
-    if(tb.dataset.expDone) return; tb.dataset.expDone='1';
-    if(!tb.id) tb.id='exptbl'+(++_expSeq);
-    const base=tb.getAttribute('data-export')||'export';
-    const card=tb.closest('.card');
-    const inGrid = card && card.parentElement && card.parentElement.matches('.grid,.g2,.g3,.g4,.g5');
-    const wrap=document.createElement('div');
-    if(card && inGrid){
-      // card dentro una griglia: la barra va DENTRO la card (sotto l'intestazione), per non
-      // sfasare la griglia; spaziatura allineata al resto della card.
-      wrap.className='exp-wrap in-card'; wrap.innerHTML=exportBar('#'+tb.id, base);
-      const ch=card.querySelector(':scope > .card-h');
-      if(ch) ch.insertAdjacentElement('afterend', wrap); else card.insertBefore(wrap, card.firstChild);
-    } else {
-      // flusso normale: barra sopra la card della tabella
-      wrap.className='exp-wrap'; wrap.innerHTML=exportBar('#'+tb.id, base);
-      const anchor=(card&&card.parentNode)?card:tb;
-      anchor.parentNode.insertBefore(wrap, anchor);
-    }
-  }); }catch(e){} }
+let _expSeq=0, _expObs=null, _expView=null;
+// Decorazione idempotente: ogni barra è legata alla sua tabella via data-for=<id tabella>.
+// 1) rimuove le barre orfane (tabella sparita dopo un re-render) 2) aggiunge una barra SOLO se la
+// tabella non ne ha già una. Niente duplicati anche quando una vista ri-renderizza su ricerca.
+// L'observer è disconnesso durante le modifiche per non ri-innescarsi.
+function decorateExports(){
+  const v=_expView||$('#view'); if(!v) return;
+  try{
+    if(_expObs) _expObs.disconnect();
+    v.querySelectorAll('.exp-wrap[data-for]').forEach(w=>{ if(!v.querySelector('[id="'+w.dataset.for+'"]')) w.remove(); });
+    v.querySelectorAll('table.table[data-export]').forEach(tb=>{
+      if(!tb.id) tb.id='exptbl'+(++_expSeq);
+      if(v.querySelector('.exp-wrap[data-for="'+tb.id+'"]')) return; // già decorata → no duplicati
+      const base=tb.getAttribute('data-export')||'export';
+      const card=tb.closest('.card');
+      const inGrid = card && card.parentElement && card.parentElement.matches('.grid,.g2,.g3,.g4,.g5');
+      const wrap=document.createElement('div'); wrap.dataset.for=tb.id;
+      if(card && inGrid){
+        // card dentro una griglia: barra DENTRO la card (sotto l'intestazione), per non sfasare la griglia
+        wrap.className='exp-wrap in-card'; wrap.innerHTML=exportBar('#'+tb.id, base);
+        const ch=card.querySelector(':scope > .card-h');
+        if(ch) ch.insertAdjacentElement('afterend', wrap); else card.insertBefore(wrap, card.firstChild);
+      } else {
+        // flusso normale: barra sopra la card della tabella
+        wrap.className='exp-wrap'; wrap.innerHTML=exportBar('#'+tb.id, base);
+        const anchor=(card&&card.parentNode)?card:tb;
+        anchor.parentNode.insertBefore(wrap, anchor);
+      }
+    });
+  }catch(e){}
+  finally{ if(_expObs && v) _expObs.observe(v,{childList:true,subtree:true}); }
+}
 let _expStarted=false;
 function startExports(){ if(_expStarted) return; _expStarted=true;
-  const v=$('#view'); if(!v) return; decorateExports(v);
-  new MutationObserver(()=>decorateExports(v)).observe(v,{childList:true,subtree:true});
+  _expView=$('#view'); if(!_expView) return;
+  _expObs=new MutationObserver(()=>decorateExports());
+  decorateExports();
 }
 
 // ---------------- SSE ----------------
@@ -3362,7 +3374,7 @@ async function vConnettori(v){
       :`<div class="small">Token di ingest: <b>${c.tokens}</b> ${c.state!=='attivo'?'<span class="tag">modulo spento</span>':''}</div>`}
   </div>`).join('')}</div>
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Credenziali di ingest</h2></div>
-    <div id="newTokBox"></div>
+    <div class="card-b" style="padding-top:12px"><div id="newTokBox"></div>
     <div class="row" style="gap:6px;flex-wrap:wrap;margin:8px 0">
       <select id="tkSrc" class="small" title="sorgente">${['traccar','iot'].map(x=>`<option>${x}</option>`).join('')}</select>
       <select id="tkDev" class="small" title="lega a un dispositivo (opzionale)"><option value="">— tutti i device (tenant) —</option>${(DV||[]).map(d=>`<option value="${d.id}">${esc(d.name||d.external_id||d.id)}</option>`).join('')}</select>
@@ -3382,7 +3394,7 @@ async function vConnettori(v){
       <td>${st}</td>
       <td style="text-align:right;white-space:nowrap">${t.revoked?'':`<button class="btn ghost small" onclick="tokRevoke('${esc(t.token)}')">revoca</button> `}<button class="btn-ico btn ghost" onclick="tokDel('${esc(t.token)}')">${ICON.x}</button></td></tr>`}).join('')
       ||`<tr><td colspan="7" class="empty">nessun token</td></tr>`}</tbody></table>
-    <div class="small mut" style="margin-top:8px">Il tenant deriva sempre dalla credenziale. <b>Lega un token a un dispositivo</b> per attribuire i dati a quel device e impedire che un payload si spacci per un altro. Il segreto dei token nuovi è salvato <b>solo come hash</b>: copialo alla creazione. Revoca = blocco immediato; scadenza = blocco automatico.</div></div>
+    <div class="small mut" style="margin-top:8px">Il tenant deriva sempre dalla credenziale. <b>Lega un token a un dispositivo</b> per attribuire i dati a quel device e impedire che un payload si spacci per un altro. Il segreto dei token nuovi è salvato <b>solo come hash</b>: copialo alla creazione. Revoca = blocco immediato; scadenza = blocco automatico.</div></div></div>
   <div id="tbHealthCard" style="margin-top:16px"></div>
   <div id="sensorRulesCard" style="margin-top:16px"></div>`;
   if(ACTIVE_MODS.has('thingsboard')) renderTbHealth();
