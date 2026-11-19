@@ -539,7 +539,7 @@ function sparkSvg(arr,w,hh){ w=w||120; hh=hh||28; if(!arr||arr.length<2) return 
   return `<svg width="${w}" height="${hh}" viewBox="0 0 ${w} ${hh}" preserveAspectRatio="none" style="vertical-align:middle"><polyline points="${pts}" fill="none" stroke="#e2001a" stroke-width="1.5"/></svg>`; }
 function iotAgo(s){ if(s==null) return 'mai'; if(s<60) return s+'s fa'; if(s<3600) return Math.floor(s/60)+'m fa'; if(s<86400) return Math.floor(s/3600)+'h fa'; return Math.floor(s/86400)+'g fa'; }
 async function vIotMonitor(v){
-  let d; try{ d=await api('/iot/monitor'); }catch(e){ v.innerHTML='<div class="card">Impossibile caricare il monitoraggio IoT.</div>'; return; }
+  let d; try{ d=await api('/iot/monitor'); }catch(e){ v.innerHTML='<div class="card pad">Impossibile caricare il monitoraggio IoT.</div>'; return; }
   const sm=d.summary||{}; const devs=d.devices||[];
   const chip=(lab,val,col)=>`<span style="display:inline-block;padding:4px 10px;border-radius:10px;background:${col};color:#fff;font-size:13px;margin-right:6px">${lab}: <b>${val}</b></span>`;
   const cards = devs.map(x=>{
@@ -549,13 +549,13 @@ async function vIotMonitor(v){
     const al = x.open_alerts>0 ? `<a href="#/iot-alerts" style="color:#e2001a;font-weight:600">${x.open_alerts} alert</a>` : '<span class="mut" style="font-size:12px">nessun alert</span>';
     const vals = (x.metrics||[]).map(m=>`<div class="row" style="justify-content:space-between;gap:10px"><span class="mut" style="font-size:12px">${m.label||m.metric}</span><b>${m.value!=null?m.value:'—'} ${m.unit||''}</b></div>`).join('') || '<div class="mut" style="font-size:12px">Nessuna misura ancora</div>';
     const primLab = (x.metrics||[]).find(m=>m.metric===x.primary);
-    return `<div class="card" style="min-width:240px;flex:1 1 240px">
-      <div class="row" style="justify-content:space-between"><b>${(x.name||x.external_id||'').replace(/</g,'&lt;')}</b>${stat}${wd}</div>
+    return `<div class="card" style="padding:14px;min-width:240px;flex:1 1 240px">
+      <div class="row" style="justify-content:space-between;gap:6px"><b style="min-width:0;overflow-wrap:anywhere">${(x.name||x.external_id||'').replace(/</g,'&lt;')}</b><span style="flex:none">${stat}${wd}</span></div>
       <div class="mut" style="font-size:12px;margin:2px 0 8px">${x.site?('📍 '+x.site):'&nbsp;'} · ${al}</div>
       ${vals}
       <div style="margin-top:8px">${sparkSvg(x.spark)} <span class="mut" style="font-size:11px">${primLab?(primLab.label||x.primary):''} (trend)</span></div>
     </div>`;
-  }).join('') || '<div class="card">Nessun dispositivo IoT. Attivane uno da Dispositivi → ⚡ Attiva per un lavoro.</div>';
+  }).join('') || '<div class="card pad">Nessun dispositivo IoT. Attivane uno da Dispositivi → ⚡ Attiva per un lavoro.</div>';
   v.innerHTML=`<div class="page-h"><div><h1>Monitoraggio IoT</h1><div class="mut">Stato dei dispositivi IoT, ultimi valori e tendenza · live</div></div>
       <div class="row">${chip('Totali',sm.total||0,'#64748b')}${chip('Online',sm.online||0,'#16a34a')}${chip('Offline',sm.offline||0,'#e2001a')}${chip('Alert aperti',sm.open_alerts||0,'#b45309')}</div></div>
     <div class="row" style="flex-wrap:wrap;gap:12px;align-items:stretch">${cards}</div>`;
@@ -572,7 +572,7 @@ async function vIotAlerts(v){
   const state = IOTA.tab==='aperti' ? 'aperto' : (IOTA.tab==='presi' ? 'preso_in_carico' : '');
   let list=[], sum={open:0,critical:0,warning:0,info:0,unacked:0};
   try{ sum=await api('/iot/alerts/summary'); }catch(e){}
-  try{ list=await api('/iot/alerts'+(state?('?state='+state):'')); }catch(e){ v.innerHTML='<div class="card">Impossibile caricare gli alert IoT.</div>'; return; }
+  try{ list=await api('/iot/alerts'+(state?('?state='+state):'')); }catch(e){ v.innerHTML='<div class="card pad">Impossibile caricare gli alert IoT.</div>'; return; }
   const tab=(k,lab)=>`<button class="btn ${IOTA.tab===k?'':'ghost'}" onclick="IOTA.tab='${k}';route()">${lab}</button>`;
   const rows = list.map(a=>{
     const kind=IOTA_KIND[a.kind]||a.kind;
@@ -591,7 +591,7 @@ async function vIotAlerts(v){
   v.innerHTML=`<div class="page-h"><div><h1>Alert IoT</h1>
       <div class="mut">Alert di processo dei dispositivi (soglia, offline, ripristino) — separati dalla Centrale sicurezza. ${sum.open} aperti · ${sum.critical} critici · ${sum.unacked} da prendere in carico · live</div></div>
       <div class="row" style="gap:6px">${tab('aperti','Aperti')}${tab('presi','Presi in carico')}${tab('tutti','Tutti')}</div></div>
-    <div class="card"><table class="tbl"><thead><tr><th>Gravità</th><th>Alert</th><th>Dispositivo</th><th>Aperto</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    <div class="card" style="overflow-x:auto"><table class="table"><thead><tr><th>Gravità</th><th>Alert</th><th>Dispositivo</th><th>Aperto</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 async function iotAlertAck(id){ try{ await api('/iot/alerts/'+id+'/ack',{method:'POST'}); route(); }catch(e){ toast(e.message||'errore','bad'); } }
 async function iotAlertClose(id){ try{ await api('/iot/alerts/'+id+'/close',{method:'POST'}); route(); }catch(e){ toast(e.message||'errore','bad'); } }
@@ -3873,7 +3873,7 @@ async function vTrigger(v){
       Questo è il <b>perimetro di sicurezza del lavoratore</b>: ogni trigger critico apre un incidente in <b>Centrale allarmi</b>
       e avvia l'<b>escalation</b> verso i reperibili. La mappatura sorgente→evento dipende dai dispositivi/connettori configurati.</div></div>
     <div class="card pad" style="margin-bottom:12px">
-      <table class="tbl"><thead><tr><th>Trigger</th><th>Sorgenti</th><th>Esito</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <table class="table"><thead><tr><th>Trigger</th><th>Sorgenti</th><th>Esito</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="card pad"><h2 style="margin-bottom:10px">Configurazione trigger</h2>
       <div class="grid g2">
         <label class="col small" style="gap:4px">SOS instradato come
