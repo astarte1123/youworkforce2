@@ -255,6 +255,7 @@ function brandNameOrLogo(){ return BRANDING.has_logo
 // ---------------- login ----------------
 function renderLogin(){
   document.body.classList.add('login-bg');
+  try{ document.body.dataset.navgrp=''; }catch(e){}
   $('#root').innerHTML = `
   <div style="min-height:100vh;display:grid;place-items:center;padding:20px;background:
      radial-gradient(1200px 600px at 10% -10%, var(--brand-soft), transparent),
@@ -360,7 +361,10 @@ function toggleNav(force){
 }
 function rebuildNav(){ const n=$('#nav'); if(n) n.innerHTML=navHtml(); }
 function setActive(k){ $$('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.k===k));
-  const n=allNav().find(x=>x.k===k); if(n&&$('#pageTitle'))$('#pageTitle').textContent=navLabel(n); }
+  const n=allNav().find(x=>x.k===k); if(n&&$('#pageTitle'))$('#pageTitle').textContent=navLabel(n);
+  // gruppo di navigazione attivo → filigrana "Lavoro sul campo" via CSS (body[data-navgrp])
+  const grp = n ? (n.grp || (n.grps&&n.grps[0]) || '') : '';
+  try{ document.body.dataset.navgrp = grp; }catch(e){} }
 
 function route(){
   let k=(location.hash.replace('#/','')||'dashboard');
@@ -394,8 +398,14 @@ function _tableMatrix(el){ if(typeof el==='string') el=document.querySelector(el
 const _expSrc={};
 function registerExport(base, fn){ _expSrc[base]=fn; }
 function exportTable(sel, base, fmt){
-  let m=null; if(_expSrc[base]){ try{ m=_expSrc[base](); }catch(e){ m=null; } }
-  if(!m || !m.rows) m=_tableMatrix(sel);
+  let m=null;
+  const el=typeof sel==='string'?document.querySelector(sel):sel;
+  // 1) tabella potenziata: export di TUTTE le righe filtrate (tutte le pagine)
+  if(el && el._exportMatrix){ try{ m=el._exportMatrix(); }catch(e){ m=null; } }
+  // 2) provider registrato dalla vista (tabella paginata bespoke, es. Centrale)
+  if((!m || !m.rows) && _expSrc[base]){ try{ m=_expSrc[base](); }catch(e){ m=null; } }
+  // 3) ripiego: lettura DOM
+  if(!m || !m.rows) m=_tableMatrix(el);
   if(!m || !m.rows.length){ toast('Niente da esportare in questa vista','warn'); return; }
   const name=_slugName(base)+'-'+new Date().toISOString().slice(0,10); const H=m.headers, R=m.rows;
   try{
@@ -422,37 +432,87 @@ function exportBar(sel, base){ return `<div class="exp-bar" role="group" aria-la
     <button class="btn ghost sm" onclick="exportTable('${sel}','${base}','pdf')" title="Documento PDF">PDF</button>
     <button class="btn ghost sm" onclick="exportTable('${sel}','${base}','md')" title="Markdown">MD</button>
   </div>`; }
+// Testo ricercabile di una riga: usa data-hay (sinonimi ricchi) se presente, sennò il testo visibile.
+function _rowHay(tr){ return (tr.getAttribute('data-hay') || tr.textContent).replace(/\s+/g,' ').trim().toLowerCase(); }
+const PAGE_SIZES=[25,50,100,250];
 let _expSeq=0, _expObs=null, _expView=null;
-// Decorazione idempotente: ogni barra è legata alla sua tabella via data-for=<id tabella>.
-// 1) rimuove le barre orfane (tabella sparita dopo un re-render) 2) aggiunge una barra SOLO se la
-// tabella non ne ha già una. Niente duplicati anche quando una vista ri-renderizza su ricerca.
-// L'observer è disconnesso durante le modifiche per non ri-innescarsi.
+// Potenzia OGNI tabella table.table[data-export] con: barra strumenti (ricerca + export), paginazione
+// (righe/pagina scegliibili) e export di TUTTE le righe filtrate (tutte le pagine). Le viste con
+// paginazione propria (es. Centrale) usano data-enhance="off": ricevono solo la barra export.
+// Idempotente: la barra/pager sono legati alla tabella via id; le orfane vengono rimosse.
 function decorateExports(){
   const v=_expView||$('#view'); if(!v) return;
   try{
     if(_expObs) _expObs.disconnect();
-    v.querySelectorAll('.exp-wrap[data-for]').forEach(w=>{ if(!v.querySelector('[id="'+w.dataset.for+'"]')) w.remove(); });
+    // rimuovi strumenti orfani (tabella sparita dopo un re-render)
+    v.querySelectorAll('.tbl-tools[data-for],.tbl-pager[data-for]').forEach(w=>{ if(!v.querySelector('[id="'+w.dataset.for+'"]')) w.remove(); });
     v.querySelectorAll('table.table[data-export]').forEach(tb=>{
       if(!tb.id) tb.id='exptbl'+(++_expSeq);
-      if(v.querySelector('.exp-wrap[data-for="'+tb.id+'"]')) return; // già decorata → no duplicati
-      const base=tb.getAttribute('data-export')||'export';
-      const card=tb.closest('.card');
-      const inGrid = card && card.parentElement && card.parentElement.matches('.grid,.g2,.g3,.g4,.g5');
-      const wrap=document.createElement('div'); wrap.dataset.for=tb.id;
-      if(card && inGrid){
-        // card dentro una griglia: barra DENTRO la card (sotto l'intestazione), per non sfasare la griglia
-        wrap.className='exp-wrap in-card'; wrap.innerHTML=exportBar('#'+tb.id, base);
-        const ch=card.querySelector(':scope > .card-h');
-        if(ch) ch.insertAdjacentElement('afterend', wrap); else card.insertBefore(wrap, card.firstChild);
-      } else {
-        // flusso normale: barra sopra la card della tabella
-        wrap.className='exp-wrap'; wrap.innerHTML=exportBar('#'+tb.id, base);
-        const anchor=(card&&card.parentNode)?card:tb;
-        anchor.parentNode.insertBefore(wrap, anchor);
-      }
+      if(v.querySelector('.tbl-tools[data-for="'+tb.id+'"]')) return; // già potenziata → niente duplicati
+      enhanceTable(tb);
     });
   }catch(e){}
   finally{ if(_expObs && v) _expObs.observe(v,{childList:true,subtree:true}); }
+}
+function enhanceTable(tb){
+  const base=tb.getAttribute('data-export')||'export';
+  const enh = tb.getAttribute('data-enhance')!=='off';
+  const card=tb.closest('.card');
+  const inGrid = card && card.parentElement && card.parentElement.matches('.grid,.g2,.g3,.g4,.g5');
+  const tbody=tb.querySelector('tbody');
+  const dataRows=()=>tbody?[...tbody.children].filter(tr=>tr.children.length>1 && !tr.querySelector('td[colspan]')):[];
+  const {keep,headers}=(function(){ const ths=[...tb.querySelectorAll('thead th')];
+    const keep=ths.length?ths.map((th,i)=>th.textContent.trim()!==''?i:-1).filter(i=>i>=0):null;
+    return {keep, headers: keep?keep.map(i=>ths[i].textContent.replace(/\s+/g,' ').trim()):[]}; })();
+  const cells=tr=>{ const tds=[...tr.children]; const txt=td=>td?td.textContent.replace(/\s+/g,' ').trim():'';
+    return keep?keep.map(i=>txt(tds[i])):tds.map(txt); };
+
+  // barra strumenti: ricerca (sx) + export (dx)
+  const tools=document.createElement('div'); tools.dataset.for=tb.id;
+  tools.className='tbl-tools'+(inGrid?' in-card':'');
+  tools.innerHTML=(enh?`<input class="input tbl-q" placeholder="🔎 Cerca in tabella…" aria-label="Cerca nella tabella">`:'')+exportBar('#'+tb.id, base);
+  if(card && inGrid){ const ch=card.querySelector(':scope > .card-h');
+    if(ch) ch.insertAdjacentElement('afterend', tools); else card.insertBefore(tools, card.firstChild);
+  } else { const anchor=(card&&card.parentNode)?card:tb; anchor.parentNode.insertBefore(tools, anchor); }
+
+  const st={q:'', page:1, size: PAGE_SIZES[0]};
+  const filtered=()=>{ const toks=st.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return dataRows().filter(tr=> toks.every(t=> _rowHay(tr).includes(t))); };
+  // vista con paginazione propria (es. Centrale): solo export, via provider registrato (dataset completo)
+  if(!enh) return;
+  // tabella potenziata: export = TUTTE le righe filtrate (tutte le pagine, non solo quella a schermo)
+  tb._exportMatrix=()=>({headers, rows: filtered().map(cells)});
+
+  // pager sotto la tabella + messaggio "nessun risultato"
+  const note=document.createElement('div'); note.className='tbl-noresult'; note.hidden=true; note.textContent='Nessuna riga corrisponde alla ricerca.';
+  tb.parentNode.insertBefore(note, tb.nextSibling);
+  const pager=document.createElement('div'); pager.dataset.for=tb.id; pager.className='tbl-pager'+(inGrid?' in-card':'');
+  (note.parentNode).insertBefore(pager, note.nextSibling);
+
+  function render(){
+    const rows=filtered(); const total=rows.length;
+    const size=st.size, pages=Math.max(1,Math.ceil(total/size));
+    if(st.page>pages)st.page=pages; if(st.page<1)st.page=1;
+    const start=(st.page-1)*size;
+    dataRows().forEach(tr=>tr.style.display='none');
+    rows.slice(start,start+size).forEach(tr=>tr.style.display='');
+    note.hidden = total>0 || dataRows().length===0;
+    const from=total?start+1:0, to=Math.min(start+size,total);
+    const opts=PAGE_SIZES.map(n=>`<option value="${n}"${st.size===n?' selected':''}>${n}</option>`).join('')+`<option value="all"${st.size>=1e9?' selected':''}>Tutte</option>`;
+    pager.innerHTML=`<span>Mostrando <b>${from}–${to}</b> di <b>${total}</b></span>
+      <div class="pg-right">
+        <label class="pg-size">righe/pagina <select class="input tbl-size">${opts}</select></label>
+        <button class="btn ghost sm tbl-prev" ${st.page<=1?'disabled':''}>‹ Prec</button>
+        <span class="pg-info">${st.page} / ${pages}</span>
+        <button class="btn ghost sm tbl-next" ${st.page>=pages?'disabled':''}>Succ ›</button>
+      </div>`;
+    pager.querySelector('.tbl-size').onchange=e=>{ const vv=e.target.value; st.size=vv==='all'?1e9:+vv; st.page=1; render(); };
+    pager.querySelector('.tbl-prev').onclick=()=>{ st.page--; render(); };
+    pager.querySelector('.tbl-next').onclick=()=>{ st.page++; render(); };
+  }
+  const q=tools.querySelector('.tbl-q');
+  if(q) q.addEventListener('input', ()=>{ st.q=q.value; st.page=1; render(); });
+  render();
 }
 let _expStarted=false;
 function startExports(){ if(_expStarted) return; _expStarted=true;
@@ -708,7 +768,7 @@ async function vCentrale(v){
       <div class="seg" id="cenTabs"></div>
       <input id="incSearch" class="grow" placeholder="${t('cen_search','🔎 Cerca: tipo, sede, assegnato, stato, priorità, correlazione…')}" value="${esc(CEN.q)}" oninput="CEN.q=this.value;CEN.page=1;cenRender()" style="min-width:220px">
     </div>
-    <div style="overflow-x:auto;margin-top:10px"><table class="table" data-export="centrale-allarmi" id="incTable"><thead><tr><th>${t('col_type','Tipo')}</th><th>${t('col_site','Sede')}</th><th>${t('col_assignee','Assegnato')}</th><th>${t('col_status','Stato')}</th><th>${t('col_priority','Priorità')}</th><th>${t('col_correlation','Correlazione')}</th></tr></thead>
+    <div style="overflow-x:auto;margin-top:10px"><table class="table" data-export="centrale-allarmi" data-enhance="off" id="incTable"><thead><tr><th>${t('col_type','Tipo')}</th><th>${t('col_site','Sede')}</th><th>${t('col_assignee','Assegnato')}</th><th>${t('col_status','Stato')}</th><th>${t('col_priority','Priorità')}</th><th>${t('col_correlation','Correlazione')}</th></tr></thead>
     <tbody id="incBody"></tbody></table></div>
     <div id="incEmpty" class="empty" hidden style="padding:28px 8px">${ICON.check}<div>${t('cen_empty','Nessun incidente in questa vista')}</div></div>
     <div id="incPager" class="row" style="justify-content:space-between;align-items:center;margin-top:10px;flex-wrap:wrap;gap:8px"></div>
@@ -2847,16 +2907,12 @@ async function vDispositivi(v){
       <button class="btn ghost" onclick="wizardStart()">${t('dev_add_guided','+ Aggiungi (guidato)')}</button>
       <button class="btn ghost" onclick="dokBulkStart()">⇪ Import massivo</button>
       <button class="btn ghost" onclick="devEdit(null)">${t('dev_add_manual','manuale')}</button></div></div>
-  <div class="card pad" style="margin-bottom:10px"><div class="row" style="gap:8px;align-items:center">
-    <input id="devSearch" class="grow" placeholder="${t('dev_search','🔎 Cerca: ID esterno, modello, etichetta, assegnatario, capacità, ultimo contatto, onboarding…')}" oninput="devFilter(this.value)" style="width:100%">
-    <span id="devCount" class="small mut" style="white-space:nowrap">${D.length} ${t('dev_count','dispositivi')}</span></div></div>
   <div class="card"><table class="table" data-export="dispositivi" id="devTable"><thead><tr><th>${t('col_extid','ID esterno')}</th><th>${t('col_model','Modello')}</th><th>${t('col_label','Etichetta')}</th><th>${t('col_assignee','Assegnato a')}</th><th>${t('col_caps','Capacità')}</th><th>${t('col_lastseen','Ultimo contatto')}</th><th>${t('col_onboarding','Onboarding')}</th></tr></thead>
   <tbody>${D.map(d=>`<tr class="clk" data-dev='${encodeURIComponent(JSON.stringify(d))}' data-hay="${esc(devHay(d))}">
     <td class="mono">${esc(d.external_id)}</td><td class="small">${model(d)}</td><td>${esc(d.label||'—')}</td>
     <td class="small">${who(d)}</td><td class="small">${(d.capabilities||[]).slice(0,4).map(c=>`<span class="tag">${esc(c)}</span>`).join('')||'—'}</td>
     <td class="small">${seen(d)}</td><td>${prov(d.prov_step)||(d.enabled?'<span class="chip s-attivo">attivo</span>':'<span class="chip">off</span>')}</td></tr>`).join('')
-    ||`<tr><td colspan="7" class="empty">${ICON.shield}<div>${t('dev_empty','Nessun dispositivo. Usa "+ Aggiungi (guidato)".')}</div></td></tr>`}</tbody></table>
-    <div id="devEmpty" class="small mut pad" hidden style="text-align:center">${t('dev_no_match','Nessun dispositivo corrisponde alla ricerca.')}</div></div>`;
+    ||`<tr><td colspan="7" class="empty">${ICON.shield}<div>${t('dev_empty','Nessun dispositivo. Usa "+ Aggiungi (guidato)".')}</div></td></tr>`}</tbody></table></div>`;
   $$('[data-dev]',v).forEach(r=>r.onclick=()=>devEdit(JSON.parse(decodeURIComponent(r.dataset.dev))));
 }
 // Testo ricercabile (full-text) di un dispositivo: unisce tutte le colonne mostrate + sinonimi utili.
