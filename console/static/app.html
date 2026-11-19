@@ -1911,7 +1911,7 @@ async function vCantieri(v){
     <td><span class="chip">${esc(COMM_STATI[c.status]||c.status)}</span></td>
     <td><div class="row" style="gap:6px;align-items:center">${progBar(c.progress)}<span class="small">${c.progress}%</span></div><div class="small mut">${c.lav_count} lavorazioni · ${c.shift_count} turni</div></td></tr>`;
   v.innerHTML=`<div class="page-h"><div><h1>Cantieri e commesse</h1><div class="mut">${C.length} commesse · progetti di cantiere con lavorazioni e avanzamento</div></div>
-    <span><button class="btn ghost" onclick="commesseCSV()">⬇ CSV</button> ${planner?`<button class="btn" onclick="comNew()">+ Nuova commessa</button>`:''}</span></div>
+    <span>${planner?`<button class="btn" onclick="comNew()">+ Nuova commessa</button>`:''}</span></div>
   <div class="small mut" style="margin:-4px 0 12px">🏗️ Cantiere = progetto su un sito, scomposto in <b>lavorazioni</b> con avanzamento; lo stato complessivo è la media pesata. I <b>SAL</b> fotografano l'avanzamento nel tempo. I turni possono essere legati alla commessa.</div>
   <div class="card"><table class="table" data-export="cantieri"><thead><tr><th>Commessa</th><th>Committente</th><th>Sede</th><th>Stato</th><th>Avanzamento</th></tr></thead>
     <tbody>${C.map(row).join('')||`<tr><td colspan="5" class="empty">${ICON.building}<div>Nessuna commessa</div></td></tr>`}</tbody></table></div>`;
@@ -2352,7 +2352,7 @@ async function vListino(v){
     <td>${p.active?'<span class="chip s-attivo">attiva</span>':'<span class="chip">sospesa</span>'}</td>
     <td style="text-align:right">${canEdit?`<button class="btn ghost small" onclick='priceForm(${JSON.stringify(p).replace(/'/g,"&#39;")})'>modifica</button> <button class="btn-ico btn ghost" onclick="priceDel('${p.id}')">${ICON.x}</button>`:''}</td></tr>`;
   v.innerHTML=`<div class="page-h"><div><h1>Listino</h1><div class="mut">${P.length} voci · prezzi per valorizzare gli interventi</div></div>
-    <span><button class="btn ghost" onclick="listinoCSV()">⬇ CSV</button> ${canEdit?`<button class="btn" onclick="priceForm()">+ Nuova voce</button>`:''}</span></div>
+    <span>${canEdit?`<button class="btn" onclick="priceForm()">+ Nuova voce</button>`:''}</span></div>
   <div class="small mut" style="margin:-4px 0 12px">🧾 Il listino è il catalogo delle voci fatturabili (manodopera, materiali, trasferta). Si usa per valorizzare ogni intervento.</div>
   <div class="card"><table class="table" data-export="listino"><thead><tr><th>Voce</th><th>Categoria</th><th>Unità</th><th style="text-align:right">Prezzo</th><th>Stato</th><th></th></tr></thead>
     <tbody>${P.map(row).join('')||`<tr><td colspan="6" class="empty">${ICON.receipt}<div>Nessuna voce di listino</div></td></tr>`}</tbody></table></div>`;
