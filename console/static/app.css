@@ -124,6 +124,13 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,va
 .sev{font-weight:700}
 .pri3{color:var(--bad)} .pri2{color:var(--warn)} .pri1{color:var(--info)}
 
+/* ---- export bar (unica per tutte le tabelle: CSV/Excel/PDF/Markdown) ---- */
+.exp-wrap{display:flex;justify-content:flex-end;margin:0 0 10px}
+.exp-bar{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sm);padding:5px 8px;box-shadow:var(--sh)}
+.exp-bar .exp-lbl{font-size:12px;color:var(--mut);font-weight:700;letter-spacing:.02em;margin-right:2px}
+.exp-bar .btn.sm{padding:4px 10px}
+@media(max-width:640px){.exp-wrap{justify-content:stretch}.exp-bar{width:100%;justify-content:space-between}}
+
 /* ---- table ---- */
 .table{width:100%;border-collapse:collapse;font-size:14px}
 .table th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);

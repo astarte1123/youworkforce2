@@ -12,6 +12,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.15/index.global.min.js" referrerpolicy="no-referrer"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" referrerpolicy="no-referrer"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" referrerpolicy="no-referrer"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@geoman-io/leaflet-geoman-free@2.14.2/dist/leaflet-geoman.css" referrerpolicy="no-referrer">
 <script src="https://cdn.jsdelivr.net/npm/@geoman-io/leaflet-geoman-free@2.14.2/dist/leaflet-geoman.min.js" referrerpolicy="no-referrer"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" referrerpolicy="no-referrer"></script>
@@ -349,6 +350,7 @@ function renderShell(){
   if(can(['operatore','tenant_admin','auditor'])) connectSSE();
   route();
   startI18n();
+  startExports();
 }
 // Nav mobile: la barra laterale diventa un drawer a scomparsa sotto 820px.
 function toggleNav(force){
@@ -368,6 +370,65 @@ function route(){
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'iot-monitor':vIotMonitor,'iot-alerts':vIotAlerts,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
     dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+}
+
+// ---------------- Export unificato (CSV / Excel / PDF / Markdown) ----------------
+// Un solo motore per TUTTE le tabelle: legge il DOM della tabella (quindi rispetta i filtri di
+// ricerca correnti, esporta solo le righe mostrate) e scarta la colonna azioni (intestazione vuota).
+// Le viste segnalano una tabella esportabile con  data-export="nome-file"; la toolbar è iniettata
+// automaticamente sopra la card che la contiene (stile unico .exp-bar).
+function _slugName(s){ return (String(s||'export').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'')||'export'); }
+function _expSave(name, blob){ const a=document.createElement('a'); a.href=URL.createObjectURL(a._b=blob); a.download=name;
+  document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),2000); }
+function _tableMatrix(el){ if(typeof el==='string') el=document.querySelector(el); if(!el) return null;
+  const ths=[...el.querySelectorAll('thead th')];
+  const keep = ths.length ? ths.map((th,i)=>th.textContent.trim()!==''?i:-1).filter(i=>i>=0) : null;
+  const txt=td=>td?td.textContent.replace(/\s+/g,' ').trim():'';
+  const headers = keep ? keep.map(i=>ths[i].textContent.replace(/\s+/g,' ').trim()) : [];
+  const trs=[...el.querySelectorAll('tbody tr')].filter(tr=>tr.children.length>1 && !tr.querySelector('td[colspan]'));
+  const rows=trs.map(tr=>{ const tds=[...tr.children]; return keep ? keep.map(i=>txt(tds[i])) : tds.map(txt); });
+  return {headers, rows};
+}
+function exportTable(sel, base, fmt){
+  const m=_tableMatrix(sel); if(!m || !m.rows.length){ toast('Niente da esportare in questa vista','warn'); return; }
+  const name=_slugName(base)+'-'+new Date().toISOString().slice(0,10); const H=m.headers, R=m.rows;
+  try{
+    if(fmt==='csv'){ _expSave(name+'.csv', new Blob(['﻿'+toCSV(H.length?[H,...R]:R)],{type:'text/csv;charset=utf-8'})); }
+    else if(fmt==='md'){ const esc=c=>String(c).replace(/\|/g,'\\|');
+      const head = H.length ? ['| '+H.map(esc).join(' | ')+' |','| '+H.map(()=>'---').join(' | ')+' |'] : [];
+      _expSave(name+'.md', new Blob([[ '# '+base, '', ...head, ...R.map(r=>'| '+r.map(esc).join(' | ')+' |') ].join('\n')+'\n'],{type:'text/markdown;charset=utf-8'})); }
+    else if(fmt==='xlsx'){ if(!window.XLSX){ toast('Libreria Excel non caricata','bad'); return; }
+      const ws=XLSX.utils.aoa_to_sheet(H.length?[H,...R]:R);
+      ws['!cols']=(H.length?H:R[0]||[]).map((_,i)=>({wch:Math.min(60,Math.max(10,...[H[i]||'',...R.map(r=>r[i]||'')].map(s=>String(s).length)))}));
+      const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Dati'); XLSX.writeFile(wb,name+'.xlsx'); }
+    else if(fmt==='pdf'){ const {jsPDF}=window.jspdf; const doc=new jsPDF({orientation:(H.length||8)>5?'landscape':'portrait'});
+      doc.setFontSize(13); doc.text(base,14,14);
+      doc.autoTable({head:H.length?[H]:undefined, body:R, startY:20, styles:{fontSize:8,cellPadding:3},
+        headStyles:{fillColor:[226,0,26],textColor:255}, alternateRowStyles:{fillColor:[247,249,252]}});
+      doc.save(name+'.pdf'); }
+    toast('Export '+fmt.toUpperCase()+' pronto ('+R.length+' righe)','ok');
+  }catch(e){ toast('Export non riuscito: '+e.message,'bad'); }
+}
+function exportBar(sel, base){ return `<div class="exp-bar" role="group" aria-label="Esporta tabella">
+    <span class="exp-lbl">⬇ Esporta</span>
+    <button class="btn ghost sm" onclick="exportTable('${sel}','${base}','csv')" title="Valori separati (Excel/fogli)">CSV</button>
+    <button class="btn ghost sm" onclick="exportTable('${sel}','${base}','xlsx')" title="Microsoft Excel">Excel</button>
+    <button class="btn ghost sm" onclick="exportTable('${sel}','${base}','pdf')" title="Documento PDF">PDF</button>
+    <button class="btn ghost sm" onclick="exportTable('${sel}','${base}','md')" title="Markdown">MD</button>
+  </div>`; }
+let _expSeq=0;
+function decorateExports(root){ try{ (root&&root.querySelectorAll?root:document).querySelectorAll('table.table[data-export]').forEach(tb=>{
+    if(tb.dataset.expDone) return; tb.dataset.expDone='1';
+    if(!tb.id) tb.id='exptbl'+(++_expSeq);
+    const base=tb.getAttribute('data-export')||'export';
+    const wrap=document.createElement('div'); wrap.className='exp-wrap'; wrap.innerHTML=exportBar('#'+tb.id, base);
+    const card=tb.closest('.card'), anchor=(card&&card.parentNode)?card:tb;
+    anchor.parentNode.insertBefore(wrap, anchor);
+  }); }catch(e){} }
+let _expStarted=false;
+function startExports(){ if(_expStarted) return; _expStarted=true;
+  const v=$('#view'); if(!v) return; decorateExports(v);
+  new MutationObserver(()=>decorateExports(v)).observe(v,{childList:true,subtree:true});
 }
 
 // ---------------- SSE ----------------
@@ -591,7 +652,7 @@ async function vIotAlerts(v){
   v.innerHTML=`<div class="page-h"><div><h1>Alert IoT</h1>
       <div class="mut">Alert di processo dei dispositivi (soglia, offline, ripristino) — separati dalla Centrale sicurezza. ${sum.open} aperti · ${sum.critical} critici · ${sum.unacked} da prendere in carico · live</div></div>
       <div class="row" style="gap:6px">${tab('aperti','Aperti')}${tab('presi','Presi in carico')}${tab('tutti','Tutti')}</div></div>
-    <div class="card" style="overflow-x:auto"><table class="table"><thead><tr><th>Gravità</th><th>Alert</th><th>Dispositivo</th><th>Aperto</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    <div class="card" style="overflow-x:auto"><table class="table" data-export="alert-iot"><thead><tr><th>Gravità</th><th>Alert</th><th>Dispositivo</th><th>Aperto</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 async function iotAlertAck(id){ try{ await api('/iot/alerts/'+id+'/ack',{method:'POST'}); route(); }catch(e){ toast(e.message||'errore','bad'); } }
 async function iotAlertClose(id){ try{ await api('/iot/alerts/'+id+'/close',{method:'POST'}); route(); }catch(e){ toast(e.message||'errore','bad'); } }
@@ -614,7 +675,7 @@ async function vCentrale(v){
       <div class="seg" id="cenTabs"></div>
       <input id="incSearch" class="grow" placeholder="${t('cen_search','🔎 Cerca: tipo, sede, assegnato, stato, priorità, correlazione…')}" value="${esc(CEN.q)}" oninput="CEN.q=this.value;CEN.page=1;cenRender()" style="min-width:220px">
     </div>
-    <div style="overflow-x:auto;margin-top:10px"><table class="table" id="incTable"><thead><tr><th>${t('col_type','Tipo')}</th><th>${t('col_site','Sede')}</th><th>${t('col_assignee','Assegnato')}</th><th>${t('col_status','Stato')}</th><th>${t('col_priority','Priorità')}</th><th>${t('col_correlation','Correlazione')}</th></tr></thead>
+    <div style="overflow-x:auto;margin-top:10px"><table class="table" data-export="centrale-allarmi" id="incTable"><thead><tr><th>${t('col_type','Tipo')}</th><th>${t('col_site','Sede')}</th><th>${t('col_assignee','Assegnato')}</th><th>${t('col_status','Stato')}</th><th>${t('col_priority','Priorità')}</th><th>${t('col_correlation','Correlazione')}</th></tr></thead>
     <tbody id="incBody"></tbody></table></div>
     <div id="incEmpty" class="empty" hidden style="padding:28px 8px">${ICON.check}<div>${t('cen_empty','Nessun incidente in questa vista')}</div></div>
     <div id="incPager" class="row" style="justify-content:space-between;align-items:center;margin-top:10px;flex-wrap:wrap;gap:8px"></div>
@@ -622,7 +683,7 @@ async function vCentrale(v){
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>${t('cen_checkins','Check-in attivi')}</h2>
     ${AI_FEAT.checkin_anomaly?`<button class="btn ghost small" onclick="aiCheckinAnomaly(this)">✦ Anomalie check-in (AI)</button>`:''}</div>
     <div id="aiCkOut"></div>
-    <table class="table"><thead><tr><th>${t('col_worker','Lavoratore')}</th><th>${t('col_site','Sede')}</th><th>${t('col_due','Scadenza')}</th><th>${t('col_status','Stato')}</th></tr></thead>
+    <table class="table" data-export="centrale-check-in"><thead><tr><th>${t('col_worker','Lavoratore')}</th><th>${t('col_site','Sede')}</th><th>${t('col_due','Scadenza')}</th><th>${t('col_status','Stato')}</th></tr></thead>
     <tbody>${CK.map(c=>`<tr><td>${esc(c.email)}</td><td>${esc(c.site||'—')}</td>
       <td class="small mut">${new Date(c.due_at).toLocaleString(LANG==='en'?'en-GB':'it-IT')}</td><td>${chip(c.state)}</td></tr>`).join('')
       ||`<tr><td colspan="4" class="empty">${t('ck_none','nessun check-in attivo')}</td></tr>`}</tbody></table></div>`;
@@ -875,7 +936,7 @@ async function runAlarmReport(){
         <div class="pad"><div class="grid g5" style="gap:14px">
           ${kpi('alert','Totale',sm.totale)}${kpi('alert','Critici',sm.critici)}${kpi('clipboard','Aperti',sm.aperti)}${kpi('receipt','Presi in carico',sm.presi_in_carico+'/'+sm.totale)}${kpi('clock','Tempo medio risposta',fmtResp(sm.ack_medio_s))}</div>
           <div class="small mut" style="margin-top:8px">Periodo ${fmtD(d.from)} — ${fmtD(d.to)}</div></div>
-        <table class="table"><thead><tr><th>Aperto il</th><th>Tipo</th><th>Stato</th><th>Preso in carico</th><th>Risposta</th><th>Chiuso il</th><th>Sede</th><th>Assegnato a</th><th>Esito</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+        <table class="table" data-export="report-allarmi"><thead><tr><th>Aperto il</th><th>Tipo</th><th>Stato</th><th>Preso in carico</th><th>Risposta</th><th>Chiuso il</th><th>Sede</th><th>Assegnato a</th><th>Esito</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }catch(e){ out.innerHTML='<div class="card pad" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
 }
 async function pdfAlarms(){
@@ -885,7 +946,7 @@ async function pdfAlarms(){
     const {jsPDF}=window.jspdf, doc=new jsPDF({orientation:'landscape'}); const sm=d.summary;
     doc.setFontSize(16); doc.setTextColor(20); doc.text('Report Allarmi — YouWorkforce', 14, 16);
     doc.setFontSize(10); doc.setTextColor(90);
-    doc.text('Tenant: '+d.tenant, 14, 24);
+    doc.text(String(d.tenant||''), 14, 24);
     doc.text('Periodo: '+fmtD(d.from)+'  —  '+fmtD(d.to), 14, 29);
     doc.text('Generato il: '+new Date().toLocaleString('it-IT'), 14, 34);
     doc.setTextColor(20);
@@ -1489,7 +1550,7 @@ async function configIndoor(){
   drawer('Configura indoor', `
     <h3 style="margin:2px 0 8px">Piantine</h3>
     <div class="small mut" style="margin-bottom:8px">Carica le mappe interne (immagine o PDF). Poi in Mappa/Piantine le selezioni e posizioni i beacon registrati.</div>
-    <table class="table"><thead><tr><th>Nome</th><th>Dim.</th><th>Sede</th><th></th></tr></thead><tbody>${fpRows}</tbody></table>
+    <table class="table" data-export="piantine"><thead><tr><th>Nome</th><th>Dim.</th><th>Sede</th><th></th></tr></thead><tbody>${fpRows}</tbody></table>
     <div class="card pad" style="margin-top:8px"><b class="small">Carica nuova piantina</b>
       <div class="col" style="gap:8px;margin-top:8px">
         <label class="small mut">Nome<input id="fpName" placeholder="Es. Capannone A - Piano terra"></label>
@@ -1499,7 +1560,7 @@ async function configIndoor(){
       </div></div>
     <h3 style="margin:18px 0 8px">Beacon / zone</h3>
     <div class="small mut" style="margin-bottom:8px">Registra i beacon che il tenant possiede (id reale del dispositivo). Gli allarmi con quel beacon vengono localizzati nella zona; i beacon registrati sono poi posizionabili sulle piantine.</div>
-    <table class="table"><thead><tr><th>Beacon</th><th>Zona</th><th>Sede/Piano</th><th>Posizione</th><th></th></tr></thead><tbody>${bkRows}</tbody></table>
+    <table class="table" data-export="beacon-indoor"><thead><tr><th>Beacon</th><th>Zona</th><th>Sede/Piano</th><th>Posizione</th><th></th></tr></thead><tbody>${bkRows}</tbody></table>
     <div class="card pad" style="margin-top:8px"><b class="small">Registra / aggiorna beacon</b>
       <div class="col" style="gap:8px;margin-top:8px">
         <label class="small mut">Beacon UID (id reale, es. 100-200)<input id="bkUid" placeholder="major-minor o UUID"></label>
@@ -1692,7 +1753,7 @@ async function vRonde(v){
       </div>`).join('')||'<div class="small mut" style="margin-top:8px">Nessun giro. Crea un giro e aggiungi i checkpoint.</div>'}
     </div>
     <div class="card pad"><h2>Ronde eseguite (${rounds.length})</h2>
-      <table class="table" style="margin-top:8px"><thead><tr><th>Giro</th><th>Operatore</th><th>Avvio</th><th>Stato</th></tr></thead>
+      <table class="table" data-export="ronde" style="margin-top:8px"><thead><tr><th>Giro</th><th>Operatore</th><th>Avvio</th><th>Stato</th></tr></thead>
       <tbody>${rounds.map(r=>`<tr style="cursor:pointer" onclick="ronView('${r.id}')"><td>${esc(r.route_name)}</td><td class="small">${esc(r.email)}</td><td class="small mut">${r.started_at?new Date(r.started_at).toLocaleString():''}</td><td>${stChip(r.status)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessuna ronda</td></tr>'}</tbody></table>
     </div>
   </div>`;
@@ -1743,7 +1804,7 @@ async function ronView(id){ const r=await api('/patrol-rounds/'+id).catch(()=>nu
     <div>Operatore: <b>${esc((r.user_id||'').slice(0,8))}</b> · Stato: <span class="chip ${r.status==='completato'?'ok':(r.status==='incompleto'?'bad':'')}">${esc(r.status)}</span> · ${r.done}/${r.total}</div>
     <div class="small mut">Avvio: ${r.started_at?new Date(r.started_at).toLocaleString():''}${r.ended_at?(' · Fine: '+new Date(r.ended_at).toLocaleString()):''}${r.window_minutes?(' · finestra '+r.window_minutes+' min'):''}</div>
     ${(r.anomalies&&r.anomalies.length)?`<div class="card pad" style="background:#fdecec;border-left:3px solid var(--bad)"><b class="small">⚠ ${r.anomalies.length} anomalie</b>${r.anomalies.map(a=>`<div class="small">· <b>${esc(ANOM_LAB[a.kind]||a.kind)}</b> — ${esc(a.detail||'')}</div>`).join('')}</div>`:'<div class="small" style="color:var(--ok,green)">✓ Nessuna anomalia</div>'}
-    <table class="table"><thead><tr><th>#</th><th>Checkpoint</th><th>Tipo</th><th>Tempo max</th><th>Punzonatura</th></tr></thead>
+    <table class="table" data-export="checkpoint"><thead><tr><th>#</th><th>Checkpoint</th><th>Tipo</th><th>Tempo max</th><th>Punzonatura</th></tr></thead>
     <tbody>${r.checkpoints.map(c=>`<tr><td>${c.position}</td><td>${esc(c.name)}</td><td><span class="chip">${c.kind}</span></td><td class="small mut">${c.max_min!=null?c.max_min+' min':'—'}</td>
       <td>${c.punched?(`<span class="chip ${c.punched.ok?'ok':'bad'}">${c.punched.ok?'OK':'KO'}</span> <span class="small mut">${new Date(c.punched.at).toLocaleTimeString()} · ${c.punched.method}</span>`):'<span class="small mut">—</span>'}</td></tr>`).join('')}</tbody></table>
   </div>`);
@@ -1815,7 +1876,7 @@ async function vOrdini(v){
   <div class="small mut" style="margin:-4px 0 12px">🔧 Interventi = il tecnico va dal cliente: appuntamenti con rapporto, firma, materiali e consuntivo per visita.</div>
   ${agendaByDay(sched)}
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Da pianificare</h2></div>
-    <table class="table"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Quando</th><th>Priorità</th><th>Stato</th></tr></thead>
+    <table class="table" data-export="interventi"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Quando</th><th>Priorità</th><th>Stato</th></tr></thead>
     <tbody>${unsched.map(row).join('')||`<tr><td colspan="6" class="empty">${ICON.clipboard}<div>Nessun intervento</div></td></tr>`}</tbody></table></div>`;
   bindRows(v);
 }
@@ -1852,7 +1913,7 @@ async function vCantieri(v){
   v.innerHTML=`<div class="page-h"><div><h1>Cantieri e commesse</h1><div class="mut">${C.length} commesse · progetti di cantiere con lavorazioni e avanzamento</div></div>
     <span><button class="btn ghost" onclick="commesseCSV()">⬇ CSV</button> ${planner?`<button class="btn" onclick="comNew()">+ Nuova commessa</button>`:''}</span></div>
   <div class="small mut" style="margin:-4px 0 12px">🏗️ Cantiere = progetto su un sito, scomposto in <b>lavorazioni</b> con avanzamento; lo stato complessivo è la media pesata. I <b>SAL</b> fotografano l'avanzamento nel tempo. I turni possono essere legati alla commessa.</div>
-  <div class="card"><table class="table"><thead><tr><th>Commessa</th><th>Committente</th><th>Sede</th><th>Stato</th><th>Avanzamento</th></tr></thead>
+  <div class="card"><table class="table" data-export="cantieri"><thead><tr><th>Commessa</th><th>Committente</th><th>Sede</th><th>Stato</th><th>Avanzamento</th></tr></thead>
     <tbody>${C.map(row).join('')||`<tr><td colspan="5" class="empty">${ICON.building}<div>Nessuna commessa</div></td></tr>`}</tbody></table></div>`;
   v.querySelectorAll('tr[data-com]').forEach(tr=>tr.onclick=()=>openCommessa(tr.dataset.com));
 }
@@ -2214,7 +2275,7 @@ async function vClienti(v){
     <td class="small mut">${c.orders} interventi · ${c.contacts} referenti</td></tr>`;
   v.innerHTML=`<div class="page-h"><div><h1>Clienti</h1><div class="mut">${C.length} clienti · committenti dell'assistenza</div></div>
     ${canEdit?`<button class="btn" onclick="cliNew()">+ Nuovo cliente</button>`:''}</div>
-  <div class="card"><table class="table"><thead><tr><th>Cliente</th><th>Contatto</th><th>Indirizzo</th><th></th></tr></thead>
+  <div class="card"><table class="table" data-export="clienti"><thead><tr><th>Cliente</th><th>Contatto</th><th>Indirizzo</th><th></th></tr></thead>
     <tbody>${C.map(row).join('')||`<tr><td colspan="4" class="empty">${ICON.building}<div>Nessun cliente</div></td></tr>`}</tbody></table></div>`;
   v.querySelectorAll('tr[data-cli]').forEach(tr=>tr.onclick=()=>openClient(tr.dataset.cli));
 }
@@ -2293,7 +2354,7 @@ async function vListino(v){
   v.innerHTML=`<div class="page-h"><div><h1>Listino</h1><div class="mut">${P.length} voci · prezzi per valorizzare gli interventi</div></div>
     <span><button class="btn ghost" onclick="listinoCSV()">⬇ CSV</button> ${canEdit?`<button class="btn" onclick="priceForm()">+ Nuova voce</button>`:''}</span></div>
   <div class="small mut" style="margin:-4px 0 12px">🧾 Il listino è il catalogo delle voci fatturabili (manodopera, materiali, trasferta). Si usa per valorizzare ogni intervento.</div>
-  <div class="card"><table class="table"><thead><tr><th>Voce</th><th>Categoria</th><th>Unità</th><th style="text-align:right">Prezzo</th><th>Stato</th><th></th></tr></thead>
+  <div class="card"><table class="table" data-export="listino"><thead><tr><th>Voce</th><th>Categoria</th><th>Unità</th><th style="text-align:right">Prezzo</th><th>Stato</th><th></th></tr></thead>
     <tbody>${P.map(row).join('')||`<tr><td colspan="6" class="empty">${ICON.receipt}<div>Nessuna voce di listino</div></td></tr>`}</tbody></table></div>`;
 }
 function priceForm(p){ p=p||{};
@@ -2406,7 +2467,7 @@ async function vRichieste(v){
     <td style="text-align:right">${canEdit&&r.status!=='convertita'?`<button class="btn ghost small" onclick="reqConvert('${r.id}')">→ intervento</button> `:''}${canEdit?`<button class="btn-ico btn ghost" onclick="reqDel('${r.id}')">${ICON.x}</button>`:''}</td></tr>`;
   v.innerHTML=`<div class="page-h"><div><h1>Richieste</h1><div class="mut">${R.length} richieste · canale d'ingresso prima dell'intervento</div></div>
     <button class="btn" onclick="reqNew()">+ Nuova richiesta</button></div>
-  <div class="card"><table class="table"><thead><tr><th>Richiesta</th><th>Cliente</th><th>Priorità</th><th>Stato</th><th></th></tr></thead>
+  <div class="card"><table class="table" data-export="richieste"><thead><tr><th>Richiesta</th><th>Cliente</th><th>Priorità</th><th>Stato</th><th></th></tr></thead>
     <tbody>${R.map(row).join('')||`<tr><td colspan="5" class="empty">${ICON.clipboard}<div>Nessuna richiesta</div></td></tr>`}</tbody></table></div>`;
 }
 function reqNew(){ const v=$('#view'); const clients=v._clients||[];
@@ -2438,11 +2499,11 @@ async function vContratti(v){
   v.innerHTML=`<div class="page-h"><div><h1>Contratti</h1><div class="mut">${C.length} contratti · ${P.length} piani di manutenzione</div></div>
     ${canEdit?`<span><button class="btn" onclick="contrForm()">+ Contratto</button> <button class="btn ghost" onclick="planForm()">+ Piano manutenzione</button></span>`:''}</div>
   <div class="card"><div class="card-h"><h2>Contratti / SLA</h2></div>
-    <table class="table"><thead><tr><th>Contratto</th><th>Cliente</th><th>SLA</th><th>Monte ore</th><th>Stato</th><th></th></tr></thead>
+    <table class="table" data-export="contratti"><thead><tr><th>Contratto</th><th>Cliente</th><th>SLA</th><th>Monte ore</th><th>Stato</th><th></th></tr></thead>
     <tbody>${C.map(crow).join('')||`<tr><td colspan="6" class="empty">Nessun contratto</td></tr>`}</tbody></table></div>
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Piani di manutenzione ricorrente</h2></div>
     <div class="small mut" style="padding:0 14px">«Genera ora» crea l'intervento alla data prevista e sposta avanti la prossima scadenza.</div>
-    <table class="table"><thead><tr><th>Piano</th><th>Cliente / sede</th><th>Cadenza</th><th>Prossimo</th><th></th></tr></thead>
+    <table class="table" data-export="piani-manutenzione"><thead><tr><th>Piano</th><th>Cliente / sede</th><th>Cadenza</th><th>Prossimo</th><th></th></tr></thead>
     <tbody>${P.map(prow).join('')||`<tr><td colspan="5" class="empty">Nessun piano</td></tr>`}</tbody></table></div>`;
 }
 function contrForm(c){ c=c||{}; const v=$('#view'); const clients=v._clients||[];
@@ -2632,7 +2693,7 @@ async function vConsuntivi(v){
   const canCreate=can(['lavoratore','tenant_admin']);
   v.innerHTML=`<div class="page-h"><div><h1>${t('consun_title','Consuntivi')}</h1><div class="mut">${T.length} consuntivi</div></div>
     ${canCreate?`<button class="btn" onclick="newTS()">+ Nuovo consuntivo</button>`:''}</div>
-  <div class="card"><table class="table"><thead><tr><th>Addetto</th><th>Ordine</th><th>Stato</th></tr></thead>
+  <div class="card"><table class="table" data-export="agenda-tecnici"><thead><tr><th>Addetto</th><th>Ordine</th><th>Stato</th></tr></thead>
   <tbody>${T.map(t=>`<tr class="clk" data-ts="${t.id}"><td><b>${esc(t.owner.split('@')[0])}</b></td>
     <td>${esc(t.order_title||'—')}</td><td>${chip(t.state)}</td></tr>`).join('')
     ||`<tr><td colspan="3" class="empty">${ICON.receipt}<div>Nessun consuntivo</div></td></tr>`}</tbody></table></div>`;
@@ -2756,7 +2817,7 @@ async function vDispositivi(v){
   <div class="card pad" style="margin-bottom:10px"><div class="row" style="gap:8px;align-items:center">
     <input id="devSearch" class="grow" placeholder="${t('dev_search','🔎 Cerca: ID esterno, modello, etichetta, assegnatario, capacità, ultimo contatto, onboarding…')}" oninput="devFilter(this.value)" style="width:100%">
     <span id="devCount" class="small mut" style="white-space:nowrap">${D.length} ${t('dev_count','dispositivi')}</span></div></div>
-  <div class="card"><table class="table" id="devTable"><thead><tr><th>${t('col_extid','ID esterno')}</th><th>${t('col_model','Modello')}</th><th>${t('col_label','Etichetta')}</th><th>${t('col_assignee','Assegnato a')}</th><th>${t('col_caps','Capacità')}</th><th>${t('col_lastseen','Ultimo contatto')}</th><th>${t('col_onboarding','Onboarding')}</th></tr></thead>
+  <div class="card"><table class="table" data-export="dispositivi" id="devTable"><thead><tr><th>${t('col_extid','ID esterno')}</th><th>${t('col_model','Modello')}</th><th>${t('col_label','Etichetta')}</th><th>${t('col_assignee','Assegnato a')}</th><th>${t('col_caps','Capacità')}</th><th>${t('col_lastseen','Ultimo contatto')}</th><th>${t('col_onboarding','Onboarding')}</th></tr></thead>
   <tbody>${D.map(d=>`<tr class="clk" data-dev='${encodeURIComponent(JSON.stringify(d))}' data-hay="${esc(devHay(d))}">
     <td class="mono">${esc(d.external_id)}</td><td class="small">${model(d)}</td><td>${esc(d.label||'—')}</td>
     <td class="small">${who(d)}</td><td class="small">${(d.capabilities||[]).slice(0,4).map(c=>`<span class="tag">${esc(c)}</span>`).join('')||'—'}</td>
@@ -3209,7 +3270,7 @@ async function devReport(id,kind){ const out=$('#devRepOut'); if(!out)return; ou
     const arr=Array.isArray(d)?d:[];
     if(!arr.length){ out.innerHTML='<span class="mut">Nessun dato negli ultimi 7 giorni.</span>'; return; }
     if(kind==='summary'){ const s=arr[0]; out.innerHTML=`<div>Distanza: <b>${(s.distance/1000).toFixed(1)} km</b> · vel. media ${(s.averageSpeed*1.852).toFixed(0)} km/h · max ${(s.maxSpeed*1.852).toFixed(0)} km/h</div>`; return; }
-    out.innerHTML='<table class="table"><thead><tr><th>Inizio</th><th>Fine</th><th>'+(kind==='trips'?'Distanza':'Durata')+'</th></tr></thead><tbody>'+
+    out.innerHTML='<table class="table" data-export="report-tracciamento"><thead><tr><th>Inizio</th><th>Fine</th><th>'+(kind==='trips'?'Distanza':'Durata')+'</th></tr></thead><tbody>'+
       arr.slice(0,20).map(t=>`<tr><td>${new Date(t.startTime).toLocaleString('it-IT')}</td><td>${new Date(t.endTime).toLocaleString('it-IT')}</td><td>${kind==='trips'?((t.distance/1000).toFixed(1)+' km'):(Math.round((t.duration||0)/60000)+' min')}</td></tr>`).join('')+'</tbody></table>';
   }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
 function devReportCsv(id,kind){ const r=_repRange();
@@ -3287,7 +3348,7 @@ async function vConnettori(v){
       <input id="tkLabel" class="small" placeholder="etichetta (opz.)" style="width:150px">
       <input id="tkExp" type="number" min="0" max="3650" class="small" placeholder="scad. giorni (0=mai)" style="width:140px">
       <button class="btn ghost small" onclick="tokNew()">+ genera token</button></div>
-    <table class="table"><thead><tr><th>Sorgente</th><th>Credenziale</th><th>Dispositivo</th><th>Scadenza</th><th>Ultimo uso</th><th>Stato</th><th></th></tr></thead>
+    <table class="table" data-export="credenziali-ingest"><thead><tr><th>Sorgente</th><th>Credenziale</th><th>Dispositivo</th><th>Scadenza</th><th>Ultimo uso</th><th>Stato</th><th></th></tr></thead>
     <tbody>${T.map(t=>{
       const st=t.revoked?'<span class="tag" style="background:#fee2e2;color:#b91c1c">revocato</span>':(t.expired?'<span class="tag" style="background:#fef3c7;color:#92400e">scaduto</span>':'<span class="chip s-attivo">attivo</span>');
       const copy=t.hashed?'':` <a onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(t.token)}')&&toast('Copiato','ok')">copia</a>`;
@@ -3406,7 +3467,7 @@ async function renderSensorRules(){
     <button class="btn ghost small" onclick="aiSuggestRules(this)">✦ Suggerisci regole (AI)</button></div>
     <div id="srSuggest"></div>
     <div class="small mut" style="margin-bottom:8px">Trasformano la telemetria in allarmi, in modo parametrico: <b>metrica</b> (chiave nel payload) + <b>operatore</b> + <b>soglia</b> → <b>evento</b>. Gli eventi critici attivano la catena allarmi (incidente + GoAlert). Valgono sia per ThingsBoard sia per l'IoT generico.</div>
-    <table class="table"><thead><tr><th>Metrica</th><th>Condizione</th><th>Evento</th><th>Etichetta</th><th></th></tr></thead>
+    <table class="table" data-export="regole-sensori"><thead><tr><th>Metrica</th><th>Condizione</th><th>Evento</th><th>Etichetta</th><th></th></tr></thead>
     <tbody>${R.map(r=>`<tr><td class="mono small">${esc(r.metric)}</td>
       <td class="small">${opLab(r.op)}${numeric(r.op)?' '+(r.threshold??''):''}</td>
       <td><span class="chip ${r.etype==='telemetria'?'':'s-critico'}">${esc(RULE_ET_LAB[r.etype]||r.etype)}</span></td>
@@ -3519,7 +3580,7 @@ async function reportGen(btn){
 }
 async function loadReports(){ const box=$('#repList'); if(!box)return;
   let L=[]; try{ L=await api('/ai/reports'); }catch(e){}
-  box.innerHTML=`<table class="table"><thead><tr><th>Titolo</th><th>Tipo</th><th>Autore</th><th>Data</th></tr></thead>
+  box.innerHTML=`<table class="table" data-export="report-ai"><thead><tr><th>Titolo</th><th>Tipo</th><th>Autore</th><th>Data</th></tr></thead>
     <tbody>${L.map(r=>`<tr class="clk" onclick="reportOpen('${r.id}')"><td>${esc(r.title)}</td><td>${esc(r.kind)}</td>
       <td class="small mut">${esc((r.created_by||'').split('@')[0])}</td><td class="small mut">${new Date(r.created_at).toLocaleString('it-IT')}</td></tr>`).join('')
       ||'<tr><td colspan="4" class="empty">nessun report salvato</td></tr>'}</tbody></table>`;
@@ -3873,7 +3934,7 @@ async function vTrigger(v){
       Questo è il <b>perimetro di sicurezza del lavoratore</b>: ogni trigger critico apre un incidente in <b>Centrale allarmi</b>
       e avvia l'<b>escalation</b> verso i reperibili. La mappatura sorgente→evento dipende dai dispositivi/connettori configurati.</div></div>
     <div class="card pad" style="margin-bottom:12px">
-      <table class="table"><thead><tr><th>Trigger</th><th>Sorgenti</th><th>Esito</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <table class="table" data-export="trigger-sicurezza"><thead><tr><th>Trigger</th><th>Sorgenti</th><th>Esito</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="card pad"><h2 style="margin-bottom:10px">Configurazione trigger</h2>
       <div class="grid g2">
         <label class="col small" style="gap:4px">SOS instradato come
@@ -4619,7 +4680,7 @@ async function vAnagrafiche(v){
         <button class="btn ghost small" onclick="teamAdd('${t.id}')">+ membro</button></div></div>`).join('')
       ||'<div class="small mut">Nessuna squadra.</div>'}</div></div>`:''}
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Asset / mezzi (${assets.length})</h2><a onclick="assetNew()">+ nuovo asset</a></div>
-    <table class="table"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th>Sede</th><th></th></tr></thead>
+    <table class="table" data-export="asset-mezzi"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th>Sede</th><th></th></tr></thead>
     <tbody>${assets.map(a=>`<tr class="clk" data-asset='${JSON.stringify(a).replace(/'/g,"&#39;")}'><td><b>${esc(a.name)}</b></td><td><span class="chip">${esc(a.kind)}</span></td><td class="small mut">${esc(a.identifier||'—')}</td><td class="small mut">${esc(a.site||'—')}</td>
       <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();assetDel('${a.id}')">${ICON.x}</button></td></tr>`).join('')
       ||'<tr><td colspan="5" class="empty">nessun asset</td></tr>'}</tbody></table></div>`;
@@ -4752,7 +4813,7 @@ function renderAuPager(a){
 function renderAudit(a){
   if(!a) return '<div class="small mut">non disponibile</div>';
   const rows=a.rows||[];
-  return `<table class="table"><thead><tr><th>Quando</th><th>Attore</th><th>Azione</th><th>Dettaglio</th></tr></thead>
+  return `<table class="table" data-export="audit-log"><thead><tr><th>Quando</th><th>Attore</th><th>Azione</th><th>Dettaglio</th></tr></thead>
   <tbody>${rows.map(r=>`<tr><td class="small">${fmtTime(r.at)}</td><td class="small">${esc(r.actor)}</td>
     <td><span class="chip">${esc(r.action)}</span></td>
     <td class="small mut" style="max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(JSON.stringify(r.detail||{}))}">${esc(JSON.stringify(r.detail||{}))}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessuna voce</td></tr>'}</tbody></table>`;
@@ -4800,7 +4861,7 @@ function renderGdPager(a){
 function renderGdUsers(a){
   if(!a) return '<div class="small mut">non disponibile</div>';
   const rows=a.rows||[];
-  return `<table class="table"><thead><tr><th>Email</th><th>Ruolo</th><th>Stato</th><th></th></tr></thead>
+  return `<table class="table" data-export="utenti"><thead><tr><th>Email</th><th>Ruolo</th><th>Stato</th><th></th></tr></thead>
   <tbody>${rows.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
     <td>${u.anonymized_at?'<span class="chip s-bad">anonimizzato</span>':'<span class="chip s-ok">attivo</span>'}</td>
     <td style="text-align:right">
@@ -5092,7 +5153,7 @@ async function vTurni(v){
   const createBtn=planner?`<button class="btn" onclick="spNew()">+ Pianifica turno</button>`:'';
   const oncallCard=`<div class="card" style="margin-top:16px"><div class="card-h"><h2>Reperibilità</h2>
     ${planner?`<a onclick="ocNew()">+ aggiungi</a>`:''}</div>
-    <table class="table"><thead><tr><th>Utente</th><th>Dalle</th><th>Alle</th><th>Nota</th><th></th></tr></thead>
+    <table class="table" data-export="reperibilita"><thead><tr><th>Utente</th><th>Dalle</th><th>Alle</th><th>Nota</th><th></th></tr></thead>
     <tbody>${OC.map(o=>`<tr><td>${esc(o.email)}</td><td class="small">${dtLocal(o.starts_at)}</td><td class="small">${dtLocal(o.ends_at)}</td>
       <td class="small mut">${esc(o.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="ocDel('${o.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
       ||`<tr><td colspan="5" class="empty">Nessuna reperibilità</td></tr>`}</tbody></table></div>`;
@@ -5100,7 +5161,7 @@ async function vTurni(v){
   const absCard=`<div class="card" style="margin-top:16px"><div class="card-h"><h2>Assenze e indisponibilità</h2>
     ${planner?`<a onclick="absNew()">+ aggiungi</a>`:''}</div>
     <div class="small mut" style="padding:0 14px">Un'assenza impedisce di pianificare turni sulla persona in quel periodo.</div>
-    <table class="table"><thead><tr><th>Lavoratore</th><th>Tipo</th><th>Dal</th><th>Al</th><th>Nota</th><th></th></tr></thead>
+    <table class="table" data-export="assenze"><thead><tr><th>Lavoratore</th><th>Tipo</th><th>Dal</th><th>Al</th><th>Nota</th><th></th></tr></thead>
     <tbody>${(A||[]).map(a=>`<tr><td>${esc(a.email)}</td><td>${absKind(a.kind)}</td><td class="small">${dtLocal(a.starts_at)}</td><td class="small">${dtLocal(a.ends_at)}</td>
       <td class="small mut">${esc(a.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="absDel('${a.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
       ||`<tr><td colspan="6" class="empty">Nessuna assenza</td></tr>`}</tbody></table></div>`;
@@ -5114,13 +5175,13 @@ async function vTurni(v){
   const covCard=planner?`<div class="card" style="margin-top:16px"><div class="card-h"><h2>Copertura minima</h2>
     <span><a onclick="covNew()">+ requisito</a> · <a onclick="covCheck()">verifica copertura</a> · <a onclick="covFairness()">equità</a></span></div>
     <div class="small mut" style="padding:0 14px">Dichiara quante persone servono per sede/fascia/giorni; la verifica trova i giorni scoperti del piano.</div>
-    <table class="table"><thead><tr><th>Sede</th><th>Giorni</th><th>Fascia</th><th>Min</th><th>Competenza</th><th></th></tr></thead>
+    <table class="table" data-export="copertura-turni"><thead><tr><th>Sede</th><th>Giorni</th><th>Fascia</th><th>Min</th><th>Competenza</th><th></th></tr></thead>
     <tbody>${(CV||[]).map(c=>`<tr><td>${esc(c.site||'ovunque')}</td><td class="small">${esc(dmTxt(c.days_mask))}</td><td class="small">${esc(c.cov_start)}–${esc(c.cov_end)}</td>
       <td>${c.min_people}</td><td class="small mut">${esc(c.qual||'—')}</td><td style="text-align:right"><button class="btn-ico btn ghost" onclick="covDel('${c.id}')">${ICON.x}</button></td></tr>`).join('')
       ||`<tr><td colspan="6" class="empty">Nessun requisito di copertura</td></tr>`}</tbody></table>
     <div id="covGaps" style="padding:0 14px 12px"></div></div>`:'';
   v.innerHTML=`<div class="page-h"><div><h1>${t('turni_title','Turni')}</h1><div class="mut">${P.length} turni pianificati${planner?'':' (i tuoi)'}</div></div>${createBtn}</div>
-  <div class="card"><table class="table"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Quando</th><th>Stato</th><th></th></tr></thead>
+  <div class="card"><table class="table" data-export="check-in-pianificati"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Quando</th><th>Stato</th><th></th></tr></thead>
     <tbody>${planRows}</tbody></table></div>${oncallCard}${absCard}${qualCard}${covCard}`;
 }
 function covNew(){
@@ -5158,7 +5219,7 @@ async function covFairness(){
   const box=$('#covGaps'); if(box) box.innerHTML='<div class="small mut">Calcolo…</div>';
   try{ const r=await api('/fairness'); const p=r.people||[]; if(!box)return;
     box.innerHTML = p.length? `<div class="small mut" style="margin-top:8px">Carico ultimi 30 giorni — squilibrio max-min: <b>${r.spread_hours}h</b></div>`+
-      `<table class="table"><thead><tr><th>Persona</th><th>Ore</th><th>Turni</th><th>Weekend</th><th>Notti</th></tr></thead><tbody>`+
+      `<table class="table" data-export="carico-lavoro"><thead><tr><th>Persona</th><th>Ore</th><th>Turni</th><th>Weekend</th><th>Notti</th></tr></thead><tbody>`+
       p.map(x=>`<tr><td class="small">${esc(x.email)}</td><td>${x.hours}</td><td>${x.shifts}</td><td>${x.weekend}</td><td>${x.nights}</td></tr>`).join('')+`</tbody></table>`
       : '<div class="small mut" style="margin-top:8px">Nessun turno nel periodo.</div>';
   }catch(e){ if(box) box.innerHTML='<div class="small" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
