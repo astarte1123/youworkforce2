@@ -3126,20 +3126,24 @@ async function devTelem(id){ const el=$('#telemBox'); if(!el)return; el.textCont
   }catch(e){ el.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
 // Mappa di normalizzazione: chiave grezza del device -> metrica standard (con unità) + scala/offset.
 let _iotMetrics=null;
+// Template riga a livello di modulo: NON va inlineato dentro un attributo onclick (contiene virgolette
+// e romperebbe l'attributo). L'aggiunta riga passa per devMapAddRow().
+function _iotMapOpts(m){ return (_iotMetrics||[]).map(x=>`<option value="${x.metric}"${x.metric===m?' selected':''}>${esc(x.label)}${x.unit?' ('+esc(x.unit)+')':''}</option>`).join(''); }
+function _iotMapLine(rk,m,sc,of){ return `<div class="row mapRow" style="gap:6px;margin-bottom:4px;align-items:center">
+        <input class="in small mapRaw" placeholder="chiave grezza (es. t)" value="${esc(rk||'')}" style="width:140px">
+        <span class="mut">→</span>
+        <select class="in small mapMet">${_iotMapOpts(m)}</select>
+        <input class="in small mapScale" title="scala" value="${sc!=null?sc:1}" style="width:60px">
+        <input class="in small mapOff" title="offset" value="${of!=null?of:0}" style="width:60px">
+        <button class="btn ghost small" onclick="this.closest('.mapRow').remove()">✕</button></div>`; }
+function devMapAddRow(){ const box=document.getElementById('mapRows'); if(!box)return;
+  box.insertAdjacentHTML('beforeend', _iotMapLine('', _iotMetrics&&_iotMetrics[0]&&_iotMetrics[0].metric, 1, 0)); }
 async function devMap(id){ const el=$('#mapBox'); if(!el)return; el.textContent='carico…';
   try{ if(!_iotMetrics) _iotMetrics=await api('/iot/metrics');
     const r=await api('/iot/devices/'+id+'/map'); const rows=r.map||[];
-    const opts=m=>_iotMetrics.map(x=>`<option value="${x.metric}"${x.metric===m?' selected':''}>${esc(x.label)}${x.unit?' ('+esc(x.unit)+')':''}</option>`).join('');
-    const line=(rk,m,sc,of)=>`<div class="row mapRow" style="gap:6px;margin-bottom:4px;align-items:center">
-        <input class="in small mapRaw" placeholder="chiave grezza (es. t)" value="${esc(rk||'')}" style="width:140px">
-        <span class="mut">→</span>
-        <select class="in small mapMet">${opts(m)}</select>
-        <input class="in small mapScale" title="scala" value="${sc!=null?sc:1}" style="width:60px">
-        <input class="in small mapOff" title="offset" value="${of!=null?of:0}" style="width:60px">
-        <button class="btn ghost small" onclick="this.closest('.mapRow').remove()">✕</button></div>`;
-    el.innerHTML=`<div id="mapRows">${rows.map(x=>line(x.raw_key,x.metric,x.scale,x.offset)).join('')||''}</div>
+    el.innerHTML=`<div id="mapRows">${rows.map(x=>_iotMapLine(x.raw_key,x.metric,x.scale,x.offset)).join('')||''}</div>
       <div class="row" style="gap:6px;margin-top:6px">
-        <button class="btn ghost small" onclick="document.getElementById('mapRows').insertAdjacentHTML('beforeend',\`${line('', _iotMetrics[0]&&_iotMetrics[0].metric,1,0).replace(/`/g,'\\`')}\`)">+ riga</button>
+        <button class="btn ghost small" onclick="devMapAddRow()">+ riga</button>
         <button class="btn small" onclick="devMapSave('${id}')">Salva mappa</button></div>
       <div class="small mut" style="margin-top:4px">valore_standard = scala × valore_grezzo + offset (es. 255 con scala 0.1 → 25.5)</div>`;
   }catch(e){ el.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
