@@ -12,7 +12,6 @@ pub struct AppState {
     // live SSE events fan out via Postgres LISTEN/NOTIFY into this local bus.
     pub bus: broadcast::Sender<TenantEvent>,
     pub http: reqwest::Client,
-    pub goalert_base: Option<String>,
     pub control_host: String,
     pub base_domain: String,
     pub secrets: Arc<crate::crypto::Secrets>,

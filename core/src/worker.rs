@@ -3,7 +3,7 @@ use sqlx::Row;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use crate::state::{AppState, TenantEvent};
-use crate::{goalert, api, privacy};
+use crate::{api, privacy};
 
 /// Background worker (system scope, owner connection bypasses RLS).
 /// 1) drains the outbox to GoAlert (at-least-once, retry with backoff)
@@ -22,7 +22,6 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     // ciascun future sullo heap: `tick` tiene solo puntatori e la profondità di stack resta limitata.
     Box::pin(drain_outbox(st)).await?;
     Box::pin(sweep_checkins(st)).await?;
-    Box::pin(heartbeats(st)).await?;
     Box::pin(traccar_poll(st)).await?;
     Box::pin(thingsboard_poll(st)).await?;
     // auto-integrazioni: configura da sola i moduli integrati attivi (idempotente), ~ogni 60s
@@ -177,7 +176,7 @@ async fn conn_watchdog(st: &AppState, tid: Uuid, conn_down_after: i32, now: Date
                 let iid: Uuid = row.get("id"); let etype: String = row.get("etype");
                 sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'transition',$3)")
                     .bind(tid).bind(iid).bind(json!({"to":"chiuso","outcome":"connessione ripristinata","by":"watchdog"})).execute(&st.owner_pool).await?;
-                sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_close',$2)")
+                sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'close',$2)")
                     .bind(tid).bind(json!({"incident_id":iid,"summary":format!("close {}",corr),"dedup":corr,"etype":etype}))
                     .execute(&st.owner_pool).await?;
             }
@@ -391,37 +390,6 @@ async fn poll_tenant(st: &AppState, tid: Uuid, base: &str, user: &str, pass: &st
     Ok(())
 }
 
-/// P3: ping agli heartbeat monitor GoAlert configurati -> GoAlert allerta se la
-/// nostra pipeline smette di pingare.
-async fn heartbeats(st: &AppState) -> anyhow::Result<()> {
-    let urls: Vec<String> = sqlx::query_scalar("SELECT heartbeat_url FROM app.goalert_services WHERE heartbeat_url IS NOT NULL")
-        .fetch_all(&st.owner_pool).await.unwrap_or_default();
-    for u in urls { let _ = st.http.post(&u).send().await; }
-    Ok(())
-}
-
-// Backoff e policy di ritentativo per l'outbox (#6). Gli invii di SICUREZZA (goalert_*)
-// non vengono MAI abbandonati: ritentano con backoff capato finche' non passano, cosi' un
-// outage di GoAlert non puo' far sparire un SOS. Solo gli invii non critici vanno in 'error'
-// dopo 6 tentativi. last_error rende visibile all'admin perche' sono bloccati.
-async fn requeue_outbox(st: &AppState, id: Uuid, tid: Uuid, kind: &str, attempts: i32, err: &str, incident_id: Option<Uuid>) -> anyhow::Result<()> {
-    let critical = kind == "goalert_notify" || kind == "goalert_close";
-    // backoff esponenziale: 5,10,20,40,80,160,300(cap) secondi
-    let shift = std::cmp::min((attempts.max(1) - 1) as u32, 6);
-    let backoff_s: i64 = std::cmp::min(300i64, 5i64 * (1i64 << shift));
-    if !critical && attempts >= 6 {
-        sqlx::query("UPDATE app.outbox SET state='error', last_error=$2 WHERE id=$1")
-            .bind(id).bind(err).execute(&st.owner_pool).await?;
-        return Ok(());
-    }
-    sqlx::query("UPDATE app.outbox SET state='pending', last_error=$2, next_attempt_at=now()+($3||' seconds')::interval WHERE id=$1")
-        .bind(id).bind(err).bind(backoff_s.to_string()).execute(&st.owner_pool).await?;
-    // allarme operativo UNA volta, al superamento della soglia, ma si continua a ritentare
-    if critical && attempts == 6 {
-        crate::api::publish_event(st, TenantEvent{tenant_id:tid, payload:json!({"type":"notify_failed","incident_id":incident_id,"reason":err})}).await;
-    }
-    Ok(())
-}
 
 async fn drain_outbox(st: &AppState) -> anyhow::Result<()> {
     // claim with a lease so a restart doesn't drop pending sends
@@ -439,66 +407,20 @@ async fn drain_outbox(st: &AppState) -> anyhow::Result<()> {
         let tid: Uuid = r.get("tenant_id");
         let payload: serde_json::Value = r.get("payload");
         let attempts: i32 = r.get("attempts");
-        let kind: String = r.try_get("kind").unwrap_or_else(|_| "goalert_notify".into());
-        let summary = payload.get("summary").and_then(|v| v.as_str()).unwrap_or("incident");
-        let dedup = payload.get("dedup").and_then(|v| v.as_str()).unwrap_or("");
-        let details = payload.get("details").and_then(|v| v.as_str()).unwrap_or("");
+        let kind: String = r.try_get("kind").unwrap_or_else(|_| "notify".into());
         let incident_id = payload.get("incident_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok());
-        // Routing per tipo evento (P3): key specifica per etype, altrimenti key del tenant, altrimenti payload.
-        let etype = payload.get("etype").and_then(|v| v.as_str());
-        let key: String = sqlx::query_scalar(
-            "SELECT COALESCE(
-                (SELECT integration_key FROM app.goalert_routing WHERE tenant_id=$1 AND etype=$2),
-                (SELECT integration_key FROM app.goalert_services WHERE tenant_id=$1))")
-            .bind(tid).bind(etype).fetch_optional(&st.owner_pool).await?.flatten()
-            .unwrap_or_else(|| payload.get("integration_key").and_then(|v| v.as_str()).unwrap_or("").to_string());
-
-        // FASE 4 (cutover native): sopprime la notifica/chiusura GoAlert quando il nativo è
-        // autoritativo e ha un percorso di consegna reale. Per 'goalert_notify' scatena subito la
-        // consegna nativa (latenza ~drain, non il prossimo scan). GoAlert resta provisionato.
-        if (kind == "goalert_notify" || kind == "goalert_close") && crate::api::esc_suppress_goalert(st, tid).await {
-            sqlx::query("UPDATE app.outbox SET state='done' WHERE id=$1").bind(id).execute(&st.owner_pool).await?;
+        let _ = attempts; // lease gia' incrementato; la consegna nativa e' idempotente, nessun requeue
+        // Consegna NATIVA (self-contained): 'notify' scatena subito il runner nativo
+        // (escalation_delivery_shadow_tenant, idempotente, latenza ~drain); 'close' e' no-op (il
+        // runner nativo smette da se' quando l'incidente risulta chiuso). La riga outbox si chiude.
+        sqlx::query("UPDATE app.outbox SET state='done' WHERE id=$1").bind(id).execute(&st.owner_pool).await?;
+        if kind == "notify" || kind == "goalert_notify" {
             if let Some(iid) = incident_id {
-                let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'goalert_suppressed_native',$3)")
-                    .bind(tid).bind(iid).bind(json!({"outbox_kind":kind.clone()})).execute(&st.owner_pool).await;
+                let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'notify_dispatched',$3)")
+                    .bind(tid).bind(iid).bind(json!({"engine":"native"})).execute(&st.owner_pool).await;
             }
-            if kind == "goalert_notify" {
-                let _ = Box::pin(crate::api::escalation_delivery_shadow_tenant(st, tid)).await; // consegna nativa immediata (idempotente)
-            }
-            continue;
-        }
-
-        // P1: chiusura alert (quando l'incidente è risolto da noi)
-        if kind == "goalert_close" {
-            let (ok, d) = goalert::close_notification(&st.http, &st.goalert_base, &key, summary, dedup).await;
-            if ok {
-                sqlx::query("UPDATE app.outbox SET state='done' WHERE id=$1").bind(id).execute(&st.owner_pool).await?;
-                if let Some(iid) = incident_id {
-                    sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'goalert_closed',$3)")
-                        .bind(tid).bind(iid).bind(json!({"dedup":dedup})).execute(&st.owner_pool).await?;
-                }
-            } else {
-                requeue_outbox(st, id, tid, &kind, attempts, &format!("goalert_close: {}", d), incident_id).await?;
-            }
-            continue;
-        }
-
-        let (ok, detail) = goalert::request_notification(&st.http, &st.goalert_base, &key, summary, dedup, details).await;
-        if ok {
-            sqlx::query("UPDATE app.outbox SET state='done' WHERE id=$1").bind(id).execute(&st.owner_pool).await?;
-            // P2: salva l'AlertID GoAlert sull'incidente per leggere lo stato dopo
-            if let (Some(iid), Some(aid)) = (incident_id, detail.get("alert_id").and_then(|v| v.as_i64())) {
-                let _ = sqlx::query("UPDATE app.incidents SET goalert_alert_id=$2 WHERE id=$1")
-                    .bind(iid).bind(aid as i32).execute(&st.owner_pool).await;
-            }
-            if let Some(iid) = incident_id {
-                // 'goalert_sent' = inviato/accettato da GoAlert (NON ack umano)
-                sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'goalert_sent',$3)")
-                    .bind(tid).bind(iid).bind(detail).execute(&st.owner_pool).await?;
-            }
+            let _ = Box::pin(crate::api::escalation_delivery_shadow_tenant(st, tid)).await;
             crate::api::publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"notify_sent","incident_id":incident_id})}).await;
-        } else {
-            requeue_outbox(&st, id, tid, &kind, attempts, &format!("goalert_notify: {}", detail), incident_id).await?;
         }
     }
     Ok(())
@@ -536,7 +458,7 @@ async fn sweep_checkins(st: &AppState) -> anyhow::Result<()> {
         let iid: Uuid = irow.get("id");
         sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'notify_requested',$3)")
             .bind(tid).bind(iid).bind(json!({"etype":"mancato_checkin"})).execute(&st.owner_pool).await?;
-        sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_notify',$2)")
+        sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'notify',$2)")
             .bind(tid).bind(json!({"incident_id":iid,"summary":format!("mancato_checkin [{}]",correlation),"dedup":correlation,"integration_key":"","etype":"mancato_checkin","details":format!("mancato check-in; correlazione={}",correlation)}))
             .execute(&st.owner_pool).await?;
         crate::api::publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"incident_opened","incident_id":iid,"etype":"mancato_checkin"})}).await;

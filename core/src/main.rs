@@ -1,4 +1,4 @@
-mod state; mod clock; mod auth; mod db; mod goalert; mod worker; mod api; mod crypto;
+mod state; mod clock; mod auth; mod db; mod worker; mod api; mod crypto;
 #[allow(dead_code)] mod escalation; // #4 FASE 0: libreria pura (non ancora wirata; GoAlert resta il motore)
 mod delivery; // #4 FASE 2: adapter di consegna in ombra (sink di prova; GoAlert resta il motore)
 mod modules; // #3 FASE 1: registry manifest moduli (dipendenze + metadata)
@@ -84,8 +84,6 @@ fn tb_parity_routes() -> Router<AppState> {
         .route("/api/safety/profiles/:id/members", post(api::protection_profile_member_add))
         .route("/api/safety/profiles/:id/members/:uid", axum::routing::delete(api::protection_profile_member_del))
         // FASE 3 cutover: lettura motore (admin) + set/rollback (superadmin)
-        .route("/api/escalation/engine", get(api::escalation_engine_get))
-        .route("/api/superadmin/tenants/:id/escalation-engine", post(api::escalation_engine_set))
         // ack inbound Twilio (firma validata; CSRF-exempt come /api/ingress/*)
         .route("/api/ingress/twilio/sms", post(api::twilio_ingress_sms))
         .route("/api/ingress/twilio/voice", post(api::twilio_ingress_voice))
@@ -141,7 +139,6 @@ async fn run() -> anyhow::Result<()> {
         clock: Arc::new(clock::Clock::new(env("TEST_CLOCK","0")=="1")),
         bus,
         http: reqwest::Client::new(),
-        goalert_base: std::env::var("GOALERT_BASE").ok().filter(|s| !s.is_empty()),
         control_host: env("YW_CONTROL_HOST", "tenants.loneworker.eu"),
         base_domain: env("YW_BASE_DOMAIN", "loneworker.eu"),
         secrets: Arc::new(crypto::Secrets::from_env()),

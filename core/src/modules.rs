@@ -81,9 +81,6 @@ pub const REGISTRY: &[Manifest] = &[
         capabilities:&[], widgets:&[],
         description:"Prevenzione, checklist, audit di sicurezza." },
     // ---- Connector: integrazioni esterne attivabili ----------------------------------------
-    Manifest{ code:"goalert", name:"GoAlert (escalation)", kind:"connector", requires:&["loneworker"], provides:&["escalation"],
-        capabilities:&["iot.manage"], widgets:&[],
-        description:"Motore di escalation/on-call: consegna gli allarmi ai reperibili." },
     Manifest{ code:"traccar", name:"Traccar (badge)", kind:"connector", requires:&["loneworker"], provides:&["gps","badge"],
         capabilities:&["iot.manage","devices.admin"], widgets:&["incidents"],
         description:"Tracciamento badge/GPS: posizioni ed eventi diventano incidenti." },
@@ -115,11 +112,6 @@ mod tests {
     fn set(v: &[&str]) -> HashSet<String> { v.iter().map(|s| s.to_string()).collect() }
 
     #[test]
-    fn goalert_requires_loneworker() {
-        assert_eq!(missing_deps("goalert", &set(&[])), vec!["loneworker"]);
-        assert!(missing_deps("goalert", &set(&["loneworker"])).is_empty());
-    }
-    #[test]
     fn traccar_requires_loneworker() {
         assert_eq!(missing_deps("traccar", &set(&["iot"])), vec!["loneworker"]);
         assert!(missing_deps("traccar", &set(&["loneworker"])).is_empty());
@@ -138,9 +130,9 @@ mod tests {
     }
     #[test]
     fn dependents_warn_before_disable() {
-        let act = set(&["loneworker","goalert","traccar"]);
+        let act = set(&["loneworker","traccar"]);
         let mut d = dependents_active("loneworker", &act); d.sort();
-        assert_eq!(d, vec!["goalert","traccar"]);
+        assert_eq!(d, vec!["traccar"]);
     }
     #[test]
     fn registry_covers_catalog() {

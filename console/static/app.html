@@ -66,7 +66,7 @@ const NAV = [
   {k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], mod:['workforce'], grp:'work'},
   {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'cfg'},
   // --- Configurazione generale (non specifica del perimetro sicurezza) ---
-  {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','thingsboard','goalert','iot'], grp:'cfg'},
+  {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','thingsboard','iot'], grp:'cfg'},
   {k:'utenti-ruoli',t:'Utenti e ruoli', ico:'shield', roles:['tenant_admin'], grp:'cfg'},
   {k:'anagrafiche',t:'Utenti e sedi', ico:'receipt', roles:['tenant_admin'], grp:'cfg'},
   {k:'privacy-audit',t:'Privacy e audit', ico:'shield', roles:['tenant_admin'], grp:'cfg'},
@@ -889,8 +889,10 @@ async function aiIncidentSummary(id,btn){ const box=$('#aiIncOut'); if(!box)retu
 // Timeline leggibile per operatori non tecnici: etichette in italiano, niente JSON grezzo.
 const TL_LAB={
   notify_requested:'📣 Allarme in uscita verso la reperibilità',
+  notify_dispatched:'✅ Consegnato al sistema di reperibilità',
   goalert_notify:'📣 Allarme in uscita verso la reperibilità',
   goalert_sent:'✅ Consegnato al sistema di reperibilità',
+  goalert_suppressed_native:'✅ Consegnato al sistema di reperibilità',
   goalert_closed:'🟢 Allarme rientrato (chiuso)',
   human_ack:'🙋 Preso in carico',
   transition:'🔁 Cambio stato',
@@ -3409,14 +3411,13 @@ async function vConnettori(v){
   const [C,T,TS,DV]=await Promise.all([api('/connectors').catch(()=>[]),api('/ingest-tokens').catch(()=>[]),
     trOn?api('/traccar/status').catch(()=>null):Promise.resolve(null),api('/devices').catch(()=>[])]);
   const hint={traccar:'OsmAnd → '+location.origin.replace(/:\d+$/,':5055')+' · forwarding → /api/ingress/traccar?token=',
-    thingsboard:'Rule Engine REST → /api/ingress/thingsboard?token=',iot:'POST → /api/events (header X-Ingest-Token)',goalert:'chiave per-tenant gestita dal superadmin'};
+    thingsboard:'Rule Engine REST → /api/ingress/thingsboard?token=',iot:'POST → /api/events (header X-Ingest-Token)'};
   v.innerHTML=`<div class="page-h"><div><h1>${t('connettori_title','Connettori')}</h1><div class="mut">sorgenti esterne e credenziali macchina del tenant</div></div></div>
   ${traccarHealthCard(TS)}
   <div class="grid g2">${C.map(c=>`<div class="card pad">
     <div class="spread"><b>${esc(c.name)}</b>${chip(c.state)}</div>
     <div class="small mut" style="margin:6px 0">${esc(hint[c.code]||'')}</div>
-    ${c.code==='goalert'?`<div class="small">Chiave escalation: ${c.has_key?'<span class="chip s-attivo">configurata</span>':'<span class="chip">assente (superadmin)</span>'}</div>`
-      :`<div class="small">Token di ingest: <b>${c.tokens}</b> ${c.state!=='attivo'?'<span class="tag">modulo spento</span>':''}</div>`}
+    <div class="small">Token di ingest: <b>${c.tokens}</b> ${c.state!=='attivo'?'<span class="tag">modulo spento</span>':''}</div>
   </div>`).join('')}</div>
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Credenziali di ingest</h2></div>
     <div class="card-b" style="padding-top:12px"><div id="newTokBox"></div>

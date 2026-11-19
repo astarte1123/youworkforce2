@@ -6,7 +6,7 @@ use std::convert::Infallible;
 use uuid::Uuid;
 use futures::stream::Stream;
 use crate::state::{AppState, Session, TenantEvent};
-use crate::{auth, db, goalert};
+use crate::{auth, db};
 
 pub(crate) type R = Result<Json<Value>, (StatusCode, String)>;
 pub(crate) fn err(c: StatusCode, m: &str) -> (StatusCode, String) { (c, m.to_string()) }
@@ -601,13 +601,6 @@ pub async fn auto_connect_thingsboard(st: &AppState, tid: Uuid) -> Result<bool, 
 /// Stato delle integrazioni di un tenant (semaforo: ok / anomalia / spento). Segnala solo i problemi.
 pub async fn super_integrations_status(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
     require_super(&st, &h).await?;
-    // GoAlert
-    let ga_on = module_active(&st, tid, "goalert").await;
-    let ga_prov: i64 = sqlx::query_scalar("SELECT count(*) FROM app.goalert_services WHERE tenant_id=$1").bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
-    let ga = if !ga_on { json!({"module":false,"status":"spento"}) }
-        else if st.goalert_base.is_none() { json!({"module":true,"status":"anomalia","detail":"motore GoAlert non raggiungibile"}) }
-        else if ga_prov==0 { json!({"module":true,"status":"anomalia","detail":"provisioning in corso o fallito"}) }
-        else { json!({"module":true,"status":"ok","detail":"provisionato"}) };
     // Traccar
     let tr_on = module_active(&st, tid, "traccar").await;
     let tr_cfg: i64 = sqlx::query_scalar("SELECT count(*) FROM app.traccar_connections WHERE tenant_id=$1").bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
@@ -624,7 +617,7 @@ pub async fn super_integrations_status(State(st): State<AppState>, h: HeaderMap,
         else if tb_cfg==0 { json!({"module":true,"status":"anomalia","detail":"motore ThingsBoard non configurato nel prodotto (THINGSBOARD_BASE)"}) }
         else if tb_reach==Some(false) { json!({"module":true,"status":"anomalia","detail":"server ThingsBoard irraggiungibile"}) }
         else { json!({"module":true,"status":"ok","detail":"connesso"}) };
-    Ok(Json(json!({"goalert":ga,"traccar":tr,"thingsboard":tb})))
+    Ok(Json(json!({"traccar":tr,"thingsboard":tb})))
 }
 
 /// Elimina la configurazione di un motore SOLO quando il modulo è esplicitamente spento
@@ -636,7 +629,6 @@ async fn deauto_integration(st: &AppState, tid: Uuid, module: &str) {
     let off = matches!(state.as_deref(), None | Some("non_abilitato"));
     if !off { return; }
     let (table, extra): (&str, Option<&str>) = match module {
-        "goalert" => ("app.goalert_services", None),
         "traccar" => ("app.traccar_connections", Some("app.traccar_poll_state")),
         "thingsboard" => ("app.thingsboard_connections", Some("app.thingsboard_poll_state")),
         _ => return,
@@ -652,7 +644,7 @@ pub async fn reconcile_integrations(st: &AppState) {
     for tid in tids {
         if let Err(e) = auto_connect_traccar(st, tid).await { tracing::debug!("auto traccar {tid}: {e}"); }
         if let Err(e) = auto_connect_thingsboard(st, tid).await { tracing::debug!("auto thingsboard {tid}: {e}"); }
-        for m in ["goalert","traccar","thingsboard"] { deauto_integration(st, tid, m).await; }
+        for m in ["traccar","thingsboard"] { deauto_integration(st, tid, m).await; }
     }
 }
 
@@ -1873,10 +1865,10 @@ pub async fn traccar_status(State(st): State<AppState>, h: HeaderMap) -> R {
     // #6 — invii di sicurezza bloccati: notifiche/chiusure GoAlert che non passano
     // (oltre soglia, ancora in coda a ritentare). Visibile all'admin come degrado.
     let outbox_stuck: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM app.outbox WHERE tenant_id=$1 AND kind IN ('goalert_notify','goalert_close') AND state<>'done' AND attempts>=6")
+        "SELECT count(*) FROM app.outbox WHERE tenant_id=$1 AND kind IN ('notify','close','goalert_notify','goalert_close') AND state<>'done' AND attempts>=6")
         .bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
     let outbox_last_error: Option<String> = sqlx::query_scalar(
-        "SELECT last_error FROM app.outbox WHERE tenant_id=$1 AND kind IN ('goalert_notify','goalert_close') AND state<>'done' AND attempts>=6 ORDER BY attempts DESC LIMIT 1")
+        "SELECT last_error FROM app.outbox WHERE tenant_id=$1 AND kind IN ('notify','close','goalert_notify','goalert_close') AND state<>'done' AND attempts>=6 ORDER BY attempts DESC LIMIT 1")
         .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
     Ok(Json(json!({
         "configured": configured,
@@ -2496,16 +2488,13 @@ pub async fn list_connectors(State(st): State<AppState>, h: HeaderMap) -> R {
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, CONNECTOR_MODS).await?;
     let defs = [("iot","IoT nativo",0usize)]; // suite self-contained: solo motore IoT nativo
-    let has_key: i64 = sqlx::query_scalar("SELECT count(*) FROM app.goalert_services WHERE tenant_id=$1")
-        .bind(tid).fetch_one(&st.owner_pool).await.map_err(ise)?;
     let mut out = Vec::new();
     for (code,name,_p) in defs {
         let state: Option<String> = sqlx::query_scalar("SELECT state FROM app.tenant_modules WHERE tenant_id=$1 AND module_code=$2")
             .bind(tid).bind(code).fetch_optional(&st.owner_pool).await.map_err(ise)?;
         let toks: i64 = sqlx::query_scalar("SELECT count(*) FROM app.ingest_tokens WHERE tenant_id=$1 AND source=$2")
             .bind(tid).bind(code).fetch_one(&st.owner_pool).await.map_err(ise)?;
-        out.push(json!({"code":code,"name":name,"state":state.unwrap_or("non_abilitato".into()),
-            "tokens":toks,"has_key": if code=="goalert" { Some(has_key>0) } else { None::<bool> }}));
+        out.push(json!({"code":code,"name":name,"state":state.unwrap_or("non_abilitato".into()),"tokens":toks}));
     }
     Ok(Json(json!(out)))
 }
@@ -5140,7 +5129,7 @@ pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
         // timeline + outbox notify request in the SAME transaction (contract line 48)
         sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'notify_requested',$3)")
             .bind(tid).bind(iid).bind(json!({"etype":n.etype,"source":n.source,"priority":pri,"repeat_seconds":repeat})).execute(&mut *tx).await.map_err(ise)?;
-        sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_notify',$2)")
+        sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'notify',$2)")
             .bind(tid).bind(json!({
                 "incident_id": iid, "summary": format!("{} [{}] @ {} (src:{})", n.etype, n.correlation, n.site_name.clone().unwrap_or("-".into()), n.source),
                 "dedup": n.correlation, "integration_key": "", "repeat_seconds": repeat, "etype": n.etype,
@@ -7316,7 +7305,7 @@ pub async fn close_incident(State(st): State<AppState>, h: HeaderMap, Path(iid):
     sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'transition',$3)")
         .bind(tid).bind(iid).bind(json!({"to":"chiuso","outcome":b.outcome,"by":s.email})).execute(&mut *tx).await.map_err(ise)?;
     // P1 close-loop: chiedi a GoAlert di chiudere l'alert con lo stesso dedup (=correlation)
-    sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_close',$2)")
+    sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'close',$2)")
         .bind(tid).bind(json!({"incident_id":iid,"summary":format!("close {}",correlation),"dedup":correlation,"etype":etype}))
         .execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
@@ -7433,7 +7422,7 @@ pub async fn worker_sos(State(st): State<AppState>, h: HeaderMap, Json(b): Json<
     let iid: Uuid = irow.get("id");
     sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'notify_requested',$3)")
         .bind(tid).bind(iid).bind(json!({"etype":"sos","by":s.email,"priority":pri,"repeat_seconds":repeat})).execute(&mut *tx).await.map_err(ise)?;
-    sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_notify',$2)")
+    sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'notify',$2)")
         .bind(tid).bind(json!({"incident_id":iid,"summary":format!("SOS [{}] {}",correlation,s.email),"dedup":correlation,
             "integration_key":"","repeat_seconds":repeat,"etype":"sos",
             "details":format!("SOS lavoratore={}; lat={:?}; lon={:?}; correlazione={}",s.email,lat,lon,correlation)}))
@@ -10096,41 +10085,6 @@ pub async fn oncall_settings_set(State(st): State<AppState>, h: HeaderMap, Json(
     Ok(Json(json!({"ok":true,"voice_fallback_on":voice_on,"voice_fallback_min":voice_min,"status_updates_on":status_on})))
 }
 
-/// FASE 3 — motore di escalation del tenant (lettura, admin). 'goalert' = shadow; 'native' = cutover.
-pub async fn escalation_engine_get(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
-    let tid = s.tenant_id.unwrap();
-    let engine = sqlx::query_scalar::<_, String>("SELECT escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_else(|| "native".into());
-    Ok(Json(json!({"engine":engine,
-        "note":"native=nativo autoritativo (consegna live+ack, default); goalert=GoAlert motore (nativo in shadow, rollback). GoAlert resta rete di sicurezza."})))
-}
-/// FASE 4 (prep) — se il tenant è in cutover `native` E ha un percorso di consegna nativo reale,
-/// la notifica GoAlert va SOPPRESSA (niente doppio path). Guardia SOS: senza credenziali Twilio
-/// live (né override esplicito) NON si sopprime → GoAlert continua a pagare (rete di sicurezza).
-pub async fn esc_suppress_goalert(st: &AppState, tid: Uuid) -> bool {
-    let engine = sqlx::query_scalar::<_, String>("SELECT escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
-    // Prodotto SELF-CONTAINED: il motore nativo è SEMPRE autoritativo (default = native).
-    // La consegna reale passa dal sink nativo configurato in deploy (Twilio/HTTP sink) o resta DRY
-    // se nessun sink è impostato; in nessun caso si ricade su GoAlert (connettore ritirato).
-    engine.as_deref().unwrap_or("native") == "native"
-}
-
-#[derive(Deserialize)] pub struct EngineReq { pub engine: String }
-/// FASE 3 — cutover/rollback del motore (superadmin). native|goalert. Operazione sulla catena di
-/// sicurezza: solo superadmin. Rollback = rimettere 'goalert' (immediato, GoAlert è sempre acceso).
-pub async fn escalation_engine_set(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<EngineReq>) -> R {
-    require_super(&st, &h).await?;
-    if b.engine != "goalert" && b.engine != "native" {
-        return Err(err(StatusCode::BAD_REQUEST, "engine deve essere 'goalert' o 'native'"));
-    }
-    sqlx::query("INSERT INTO app.tenant_oncall_cfg(tenant_id,escalation_engine) VALUES($1,$2) ON CONFLICT (tenant_id) DO UPDATE SET escalation_engine=EXCLUDED.escalation_engine,updated_at=now()")
-        .bind(tid).bind(&b.engine).execute(&st.owner_pool).await.map_err(ise)?;
-    audit(&st, tid, "superadmin", "escalation_engine_set", json!({"engine":b.engine})).await;
-    Ok(Json(json!({"ok":true,"engine":b.engine})))
-}
-
 // ---- Recapiti GoAlert dei membri (stato verifica) ----
 pub async fn oncall_contacts(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
@@ -12173,13 +12127,10 @@ pub async fn slack_announce_scan(st: &AppState) {
 }
 
 /// Scansione consegna del motore nativo (dal worker). SELF-SUFFICIENT: copre OGNI tenant che ha
-/// incidenti aperti (qualunque modulo li produca: safety/IoT/TB/Traccar), più i tenant con GoAlert
-/// provisionato (per la semina/compat). Non dipende più dalla sola tabella goalert_services.
+/// incidenti aperti (qualunque modulo li produca: safety/IoT/Traccar).
 pub async fn escalation_delivery_shadow_scan(st: &AppState) {
     let tids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT tenant_id FROM app.incidents WHERE state <> 'chiuso'
-         UNION
-         SELECT tenant_id FROM app.goalert_services")
+        "SELECT DISTINCT tenant_id FROM app.incidents WHERE state <> 'chiuso'")
         .fetch_all(&st.owner_pool).await.unwrap_or_default();
     // Per-tenant su task DEDICATO: il future (profondo) del tenant viene pollato dal runtime dalla
     // cima dello stack del task, non annidato nel frame dello scan -> isolamento di profondità.
@@ -12487,7 +12438,7 @@ pub async fn incidents_close_all(State(st): State<AppState>, h: HeaderMap, Json(
         // trail per-incidente come la chiusura singola
         sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'transition',$3)")
             .bind(tid).bind(iid).bind(json!({"to":"chiuso","outcome":b.outcome,"by":s.email,"bulk":true})).execute(&mut *tx).await.map_err(ise)?;
-        sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'goalert_close',$2)")
+        sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'close',$2)")
             .bind(tid).bind(json!({"incident_id":iid,"summary":format!("close {}",correlation),"dedup":correlation,"etype":etype}))
             .execute(&mut *tx).await.map_err(ise)?;
     }
