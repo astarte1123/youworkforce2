@@ -389,8 +389,14 @@ function _tableMatrix(el){ if(typeof el==='string') el=document.querySelector(el
   const rows=trs.map(tr=>{ const tds=[...tr.children]; return keep ? keep.map(i=>txt(tds[i])) : tds.map(txt); });
   return {headers, rows};
 }
+// Registro provider dati: una vista con tabella PAGINATA registra qui il dataset filtrato COMPLETO
+// (non solo la pagina mostrata). exportTable lo preferisce al DOM se presente per quel nome.
+const _expSrc={};
+function registerExport(base, fn){ _expSrc[base]=fn; }
 function exportTable(sel, base, fmt){
-  const m=_tableMatrix(sel); if(!m || !m.rows.length){ toast('Niente da esportare in questa vista','warn'); return; }
+  let m=null; if(_expSrc[base]){ try{ m=_expSrc[base](); }catch(e){ m=null; } }
+  if(!m || !m.rows) m=_tableMatrix(sel);
+  if(!m || !m.rows.length){ toast('Niente da esportare in questa vista','warn'); return; }
   const name=_slugName(base)+'-'+new Date().toISOString().slice(0,10); const H=m.headers, R=m.rows;
   try{
     if(fmt==='csv'){ _expSave(name+'.csv', new Blob(['﻿'+toCSV(H.length?[H,...R]:R)],{type:'text/csv;charset=utf-8'})); }
@@ -421,9 +427,21 @@ function decorateExports(root){ try{ (root&&root.querySelectorAll?root:document)
     if(tb.dataset.expDone) return; tb.dataset.expDone='1';
     if(!tb.id) tb.id='exptbl'+(++_expSeq);
     const base=tb.getAttribute('data-export')||'export';
-    const wrap=document.createElement('div'); wrap.className='exp-wrap'; wrap.innerHTML=exportBar('#'+tb.id, base);
-    const card=tb.closest('.card'), anchor=(card&&card.parentNode)?card:tb;
-    anchor.parentNode.insertBefore(wrap, anchor);
+    const card=tb.closest('.card');
+    const inGrid = card && card.parentElement && card.parentElement.matches('.grid,.g2,.g3,.g4,.g5');
+    const wrap=document.createElement('div');
+    if(card && inGrid){
+      // card dentro una griglia: la barra va DENTRO la card (sotto l'intestazione), per non
+      // sfasare la griglia; spaziatura allineata al resto della card.
+      wrap.className='exp-wrap in-card'; wrap.innerHTML=exportBar('#'+tb.id, base);
+      const ch=card.querySelector(':scope > .card-h');
+      if(ch) ch.insertAdjacentElement('afterend', wrap); else card.insertBefore(wrap, card.firstChild);
+    } else {
+      // flusso normale: barra sopra la card della tabella
+      wrap.className='exp-wrap'; wrap.innerHTML=exportBar('#'+tb.id, base);
+      const anchor=(card&&card.parentNode)?card:tb;
+      anchor.parentNode.insertBefore(wrap, anchor);
+    }
   }); }catch(e){} }
 let _expStarted=false;
 function startExports(){ if(_expStarted) return; _expStarted=true;
@@ -669,6 +687,9 @@ async function vCentrale(v){
     <button class="btn ghost small" onclick="incCloseAll(this)">${t('cen_closeall','Chiudi tutti')}</button>` : '';
   // stato vista: mantiene tab/ricerca tra i re-render; reset pagina se cambia il dataset
   CEN={all:I, tab:CEN.tab||'aperti', q:CEN.q||'', page:1, size:25};
+  // export: dataset filtrato COMPLETO (tutte le pagine della vista corrente), non solo la pagina a schermo
+  registerExport('centrale-allarmi', ()=>({ headers:['Tipo','Sede','Assegnato','Stato','Priorità','Correlazione'],
+    rows: cenFiltered().map(i=>[ i.etype||'', i.site||'', i.assignee||'', i.state||'', (i.priority||0), i.correlation||'' ]) }));
   v.innerHTML=`<div class="page-h"><div><h1>${t('cen_title','Centrale allarmi')}</h1><div class="mut">${I.length} ${t('cen_incidents','incidenti')} · ${CK.length} ${t('cen_checkins_n','check-in')} (${scaduti} ${t('cen_expired','scaduti')}) · ${t('cen_live','live')}</div></div><div class="row" style="gap:8px;align-items:center">${bulk}${onc}</div></div>
   <div class="card" style="padding:12px">
     <div class="row" style="gap:12px;align-items:center;flex-wrap:wrap">
@@ -4662,11 +4683,11 @@ async function vAnagrafiche(v){
   v.innerHTML=`<div class="page-h"><div><h1>${t('anag_title','Utenti e sedi')}</h1><div class="mut">anagrafiche del tenant · <a onclick="location.hash='#/utenti-ruoli'">gruppi e ruoli →</a></div></div></div>
   <div class="grid g2">
     <div class="card"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
-      <table class="table"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
+      <table class="table" data-export="utenti"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
       <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
         <td style="text-align:right"><button class="btn ghost small" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'>gestisci</button></td></tr>`).join('')}</tbody></table></div>
     <div class="card"><div class="card-h"><h2>Sedi (${sites.length})</h2><a onclick="siteForm()">+ aggiungi</a></div>
-      <table class="table"><thead><tr><th>Nome</th><th>Indirizzo</th><th></th></tr></thead>
+      <table class="table" data-export="sedi"><thead><tr><th>Nome</th><th>Indirizzo</th><th></th></tr></thead>
       <tbody>${sites.map(s=>`<tr><td>${esc(s.name)}</td><td class="small mut">${esc(s.address||'—')}${(s.lat!=null&&s.lon!=null)?' · 📍':''}${s.access_notes?' · 🔑':''}</td>
         <td style="text-align:right"><button class="btn ghost small" onclick='siteForm(${JSON.stringify(s).replace(/'/g,"&#39;")})'>gestisci</button>
         <button class="btn-ico btn ghost" onclick="siteDel('${s.id}')">${ICON.x}</button></td></tr>`).join('')
@@ -4719,7 +4740,7 @@ async function vUtentiRuoli(v){
       ${ugroups.length?`<div class="row" style="gap:6px;margin-top:4px"><select id="crg_${r.id}" class="grow small">${ugroups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select><button class="btn ghost small" onclick="crAddGroup('${r.id}')">+ gruppo</button></div>`:''}
       </div>`).join('')||'<div class="small mut">Nessun ruolo personalizzato.</div>'}</div></div>`:''}
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
-    <table class="table"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
+    <table class="table" data-export="utenti"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
     <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
       <td style="text-align:right"><button class="btn ghost small" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'>gestisci</button></td></tr>`).join('')||'<tr><td colspan="3" class="empty">nessun utente</td></tr>'}</tbody></table></div>
   <div class="card pad" style="margin-top:16px"><div class="spread"><div><h2>Gruppi di persone (${ugroups.length})</h2><div class="small mut">insiemi di persone condivisi, riusabili da qualunque modulo (es. importabili nei gruppi di allarme)</div></div><a onclick="ugNew()">+ nuovo gruppo</a></div>
