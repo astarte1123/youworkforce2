@@ -113,7 +113,9 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,va
 
 /* ---- chips / states ---- */
 .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:650;padding:3px 10px;border-radius:999px;
-  background:var(--surface2);color:var(--mut);border:1px solid var(--line);white-space:nowrap}
+  background:var(--surface2);color:var(--mut);border:1px solid var(--line);white-space:nowrap;max-width:100%}
+/* variante per contenuti lunghi (es. banner on-call con molti indirizzi): va a capo invece di sforare */
+.chip.wrap{white-space:normal;text-align:left;overflow-wrap:anywhere;word-break:break-word}
 .chip.dot:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
 .s-aperto,.s-in_revisione,.s-bozza{background:var(--warn-soft);color:var(--warn);border-color:transparent}
 .s-preso_in_carico,.s-in_corso,.s-assegnato,.s-da_configurare{background:var(--info-soft);color:var(--info);border-color:transparent}

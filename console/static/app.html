@@ -601,7 +601,7 @@ let CEN={all:[],tab:'aperti',q:'',page:1,size:25};
 async function vCentrale(v){
   const [I,CK,OC]=await Promise.all([api('/incidents').catch(()=>[]), api('/checkins/list').catch(()=>[]), api('/oncall-now-native').catch(()=>({available:false}))]);
   const scaduti=CK.filter(c=>c.state==='scaduto').length;
-  const onc = OC.available ? `<span class="chip s-attivo" title="reperibili ora (motore nativo)">📞 on-call: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
+  const onc = OC.available ? `<span class="chip s-attivo wrap" title="reperibili ora (motore nativo)">📞 on-call: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
   const canBulk = ['operatore','tenant_admin'].includes(ME.role);
   const open = I.filter(i=>i.state!=='chiuso').length;
   const bulk = (canBulk && open>0) ? `<button class="btn ghost small" onclick="incAckAll(this)">${t('cen_ackall','Prendi in carico tutti')}</button>
@@ -691,7 +691,7 @@ async function aiCheckinAnomaly(btn){ const box=$('#aiCkOut'); if(!box)return; b
 async function vMieiAllarmi(v){
   const [I,OC]=await Promise.all([api('/incidents').catch(()=>[]), api('/oncall-now-native').catch(()=>({available:false}))]);
   const aperti=I.filter(i=>i.state!=='chiuso');
-  const onc = OC.available ? `<span class="chip s-attivo" title="reperibili di turno">📞 di turno: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
+  const onc = OC.available ? `<span class="chip s-attivo wrap" title="reperibili di turno">📞 di turno: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
   v.innerHTML=`<div class="page-h"><div><h1>I miei allarmi</h1><div class="mut">${aperti.length} aperti · prendi in carico e chiudi</div></div><div>${onc}</div></div>
   <div class="col" style="gap:10px">${aperti.map(i=>`
     <div class="card clk" data-inc="${i.id}" style="padding:14px;border-left:4px solid ${i.priority>=3?'var(--bad)':i.priority>=2?'#ea580c':'var(--line)'}">
