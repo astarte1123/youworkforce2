@@ -73,8 +73,8 @@ const FIELD_MODS=['interventi','cantieri','giri','workforce','consuntivi'];
 const NAV = [
   {k:'dashboard', t:'Dashboard', ico:'home', roles:null, grp:'op'},
   // --- Sicurezza Lavoratore (perimetro man-down/SOS): operatività allarmi + config del perimetro ---
-  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
-  {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
+  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker','traccar','iot'], grp:'safety'},
+  {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker','traccar','iot'], grp:'safety'},
   {k:'mappa',     t:'Mappa allarmi', ico:'map', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'safety'},
   // Piantine (indoor): due voci separate, ciascuna legata al PROPRIO perimetro, così non si
   // duplica. In Sicurezza solo se c'è un modulo dispositivi/allarmi; in Lavoro sul campo solo se
@@ -87,7 +87,7 @@ const NAV = [
   {k:'dispositivi',t:'Dispositivi & App', ico:'shield', roles:['tenant_admin'], mod:DEVICE_MODS, grp:'safety'},
   {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
   {k:'profili',   t:'Profili di protezione', ico:'shield', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
-  {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker','traccar','iot','thingsboard'], grp:'safety'},
+  {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker','traccar','iot'], grp:'safety'},
   // --- IoT: monitoraggio flotta + alert di processo (soglia/offline/ripristino), VISTA SEPARATA ---
   {k:'iot-monitor',t:'Monitoraggio IoT', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:['iot'], grp:'iot'},
   {k:'iot-alerts',t:'Alert IoT', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['iot'], grp:'iot'},
@@ -108,7 +108,7 @@ const NAV = [
   {k:'setup',     t:'Configurazione', ico:'check', roles:['tenant_admin'], grp:'cfg'},
   {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'cfg'},
   // --- Configurazione generale (non specifica del perimetro sicurezza) ---
-  {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','thingsboard','iot'], grp:'cfg'},
+  {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','iot'], grp:'cfg'},
   {k:'utenti-ruoli',t:'Utenti e ruoli', ico:'shield', roles:['tenant_admin'], grp:'cfg'},
   {k:'anagrafiche',t:'Utenti e sedi', ico:'receipt', roles:['tenant_admin'], grp:'cfg'},
   {k:'privacy-audit',t:'Privacy e audit', ico:'shield', roles:['tenant_admin'], grp:'cfg'},
@@ -1017,7 +1017,7 @@ const ETYPE_LAB={sos:'SOS / richiesta soccorso',man_down:'Uomo a terra (man down
   manutenzione_richiesta:'Manutenzione richiesta',manutenzione_richiesta_critico:'Manutenzione richiesta (critico)',
   cambio_conducente:'Cambio conducente',media_ricevuto:'Media ricevuto',attraversamento_geofence:'Attraversamento geofence',
   esito_comando:'Esito comando',device_moving:'In movimento',device_offline:'Dispositivo offline',device_alarm:'Allarme dispositivo',traccar_event:'Evento Traccar',
-  sensore_critico:'Sensore critico',allarme_sensore:'Allarme sensore (ThingsBoard)',telemetria:'Telemetria'};
+  sensore_critico:'Sensore critico',allarme_sensore:'Allarme sensore (IoT)',telemetria:'Telemetria'};
 function etLab(e){ return ETYPE_LAB[e]||e; }
 function fmtD(s){ return s? new Date(s).toLocaleString('it-IT') : '—'; }
 function fmtResp(sec){ sec=Number(sec); if(!isFinite(sec)) return '—'; return sec>=60 ? Math.floor(sec/60)+'m '+Math.round(sec%60)+'s' : Math.round(sec)+'s'; }
@@ -3598,7 +3598,7 @@ async function vConnettori(v){
   const [C,T,TS,DV]=await Promise.all([api('/connectors').catch(()=>[]),api('/ingest-tokens').catch(()=>[]),
     trOn?api('/traccar/status').catch(()=>null):Promise.resolve(null),api('/devices').catch(()=>[])]);
   const hint={traccar:'OsmAnd → '+location.origin.replace(/:\d+$/,':5055')+' · forwarding → /api/ingress/traccar?token=',
-    thingsboard:'Rule Engine REST → /api/ingress/thingsboard?token=',iot:'POST → /api/events (header X-Ingest-Token)'};
+    iot:'POST → /api/events (header X-Ingest-Token)'};
   v.innerHTML=`<div class="page-h"><div><h1>${t('connettori_title','Connettori')}</h1><div class="mut">sorgenti esterne e credenziali macchina del tenant</div></div></div>
   ${traccarHealthCard(TS)}
   <div class="grid g2">${C.map(c=>`<div class="card pad">
@@ -3628,10 +3628,8 @@ async function vConnettori(v){
       <td style="text-align:right;white-space:nowrap">${t.revoked?'':`<button class="btn ghost small" onclick="tokRevoke('${esc(t.token)}')">revoca</button> `}<button class="btn-ico btn ghost" onclick="tokDel('${esc(t.token)}')">${ICON.x}</button></td></tr>`}).join('')
       ||`<tr><td colspan="7" class="empty">nessun token</td></tr>`}</tbody></table>
     <div class="small mut" style="margin-top:var(--s-8)">Il tenant deriva sempre dalla credenziale. <b>Lega un token a un dispositivo</b> per attribuire i dati a quel device e impedire che un payload si spacci per un altro. Il segreto dei token nuovi è salvato <b>solo come hash</b>: copialo alla creazione. Revoca = blocco immediato; scadenza = blocco automatico.</div></div></div>
-  <div id="tbHealthCard" style="margin-top:var(--s-16)"></div>
   <div id="sensorRulesCard" style="margin-top:var(--s-16)"></div>`;
-  if(ACTIVE_MODS.has('thingsboard')) renderTbHealth();
-  if(ACTIVE_MODS.has('iot')||ACTIVE_MODS.has('thingsboard')) renderSensorRules();
+  if(ACTIVE_MODS.has('iot')) renderSensorRules();
   // segreto mostrato UNA sola volta subito dopo la creazione (poi solo hash a riposo)
   if(window._newToken){ const box=$('#newTokBox'); const tk=window._newToken; window._newToken=null;
     if(box){ box.innerHTML=`<div class="card pad" style="background:#ecfdf5;border:1px solid #10b981">
@@ -3639,88 +3637,6 @@ async function vConnettori(v){
       <div class="mono" style="margin:var(--s-6) 0;word-break:break-all">${esc(tk)}</div>
       <button class="btn small" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(tk)}')&&toast('Copiato','ok')">Copia token</button></div>`; } }
 }
-async function renderTbHealth(){
-  const box=$('#tbHealthCard'); if(!box)return;
-  let s; try{ s=await api('/thingsboard/status'); }catch(e){ return; }
-  if(!s.configured){ box.innerHTML=`<div class="card pad"><div class="spread"><b>ThingsBoard — pull</b><span class="chip">non configurata</span></div>
-    <div class="small mut" style="margin-top:var(--s-6)">Il superadmin imposta la connessione ThingsBoard per abilitare lo specchio device e il pull telemetria.</div></div>`; return; }
-  const reach = s.reachable===true?'<span class="chip s-attivo">raggiungibile</span>':(s.reachable===false?'<span class="chip s-critico">irraggiungibile</span>':'<span class="chip">mai sincronizzato</span>');
-  box.innerHTML=`<div class="card pad"><div class="spread"><b>ThingsBoard — pull (specchio + telemetria)</b>${reach}</div>
-    <div class="row small mut" style="gap:var(--s-14);margin-top:var(--s-8);flex-wrap:wrap">
-      <span>Poll: <b>${s.poll_enabled?'attivo':'manuale'}</b>${s.poll_enabled?` (${s.poll_interval_s}s)`:''}</span>
-      <span>Device: <b>${s.device_count??'—'}</b></span>
-      <span>Incidenti ultimo pull: <b>${s.alarm_count??'—'}</b></span>
-      <span>Ultimo OK: <b>${s.last_ok_at?new Date(s.last_ok_at).toLocaleString('it-IT'):'—'}</b></span></div>
-    ${s.last_error?`<div class="small" style="color:var(--bad);margin-top:var(--s-6)">⚠ ${esc(s.last_error)}</div>`:''}
-    <div class="small mut" style="margin-top:var(--s-6)">Pull e push convergono sullo stesso motore regole sensori e sulla stessa catena incidenti. La connessione è gestita dal superadmin; l'operatività dal tenant admin.</div>
-    ${can(['tenant_admin'])?`<div class="row" style="gap:var(--s-8);margin-top:var(--s-10)">
-      <button class="btn ghost small" onclick="tbSync(this)">🔄 Sincronizza ora</button>
-      <button class="btn ghost small" onclick="tbAdvanced(this)">🛠 ThingsBoard avanzato</button></div>
-      <div id="tbSyncOut" class="small" style="margin-top:var(--s-6)"></div><div id="tbAdvOut"></div>`:''}</div>`;
-}
-async function tbSync(btn){ const out=$('#tbSyncOut'); if(btn){btn.disabled=true;btn.textContent='Sincronizzo…';}
-  try{ const r=await api('/thingsboard/sync',{method:'POST'});
-    if(out) out.innerHTML=`<span style="color:var(--ok,green)">✓ ${r.device_count} device · ${r.alarm_count} incidenti</span>`; toast('ThingsBoard sincronizzato','ok');
-  }catch(e){ if(out) out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; toast(e.message,'bad'); }
-  finally{ if(btn){btn.disabled=false;btn.textContent='🔄 Sincronizza ora';} }
-}
-const TB_SEV=['CRITICAL','MAJOR','MINOR','WARNING','INDETERMINATE'];
-const TB_SEV_LAB={CRITICAL:'Critico',MAJOR:'Maggiore',MINOR:'Minore',WARNING:'Avviso',INDETERMINATE:'Indeterminato'};
-async function tbAdvanced(btn){
-  const out=$('#tbAdvOut'); if(!out)return;
-  if(out.dataset.open){ out.innerHTML=''; out.dataset.open=''; return; } out.dataset.open='1';
-  out.innerHTML='<div class="small mut" style="margin-top:var(--s-8)">Carico…</div>';
-  try{
-    const [pol,inv]=await Promise.all([api('/thingsboard/alarm-policy').catch(()=>({severity:{}})),api('/thingsboard/devices').catch(()=>({devices:[]}))]);
-    const ev=pol.severity||{};
-    const polRows=TB_SEV.map(k=>`<div class="row small" style="justify-content:space-between;gap:var(--s-8);padding:var(--s-3) 0"><span>${TB_SEV_LAB[k]}</span>
-      <select id="tbp_${k}" class="small">
-        <option value="ignora" ${ev[k]==='ignora'?'selected':''}>ignora</option>
-        <option value="registra" ${ev[k]==='registra'?'selected':''}>registra</option>
-        <option value="critico" ${ev[k]==='critico'?'selected':''}>critico (allarme)</option></select></div>`).join('');
-    const devs=inv.devices||[];
-    const devRows=devs.map(d=>`<div style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)">
-      <div class="spread"><b class="small">${esc(d.name)}</b><span class="small mut">${esc(d.tb_type||'')}</span></div>
-      <div class="row" style="gap:var(--s-5);margin-top:var(--s-5);flex-wrap:wrap">
-        <button class="btn ghost small" onclick="tbAttrs('${d.id}','${esc(d.name)}')">Attributi</button>
-        <button class="btn ghost small" onclick="tbRpc('${d.id}','${esc(d.name)}')">Comando (RPC)</button>
-        <button class="btn ghost small" onclick="tbShared('${d.id}','${esc(d.name)}')">Config remota</button>
-        <button class="btn ghost small" onclick="tbHist('${d.id}','${esc(d.name)}')">Storico</button></div>
-      <div id="tbDevOut_${d.id}" class="small" style="margin-top:var(--s-6)"></div></div>`).join('')||'<div class="small mut">Nessun device. Premi Sincronizza ora.</div>';
-    out.innerHTML=`<div class="card pad" style="margin-top:var(--s-10);background:var(--bg2)">
-      <details open><summary style="cursor:pointer;font-weight:600">Policy allarmi (per severità TB)</summary>
-        <div class="small mut" style="margin:var(--s-6) 0">Gli allarmi nativi di ThingsBoard entrano come incidenti secondo questa policy. <b>critico</b> = allarme + escalation.</div>
-        ${polRows}<button class="btn small" style="margin-top:var(--s-8)" onclick="tbPolicySave(this)">Salva policy</button></details>
-      <details style="margin-top:var(--s-10)"><summary style="cursor:pointer;font-weight:600">Device ThingsBoard (${devs.length})</summary>
-        <div style="margin-top:var(--s-8)">${devRows}</div></details>
-    </div>`;
-  }catch(e){ out.innerHTML='<div class="small" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
-}
-async function tbPolicySave(btn){ const severity={}; TB_SEV.forEach(k=>{ const el=$('#tbp_'+k); if(el) severity[k]=el.value; });
-  try{ await api('/thingsboard/alarm-policy',{method:'POST',body:JSON.stringify({severity})}); toast('Policy salvata','ok'); }catch(e){ toast(e.message,'bad'); } }
-async function tbAttrs(id,name){ const out=$('#tbDevOut_'+id); out.innerHTML='Carico…';
-  try{ const a=await api('/thingsboard/devices/'+id+'/attributes'); const arr=Array.isArray(a)?a:[];
-    out.innerHTML = arr.length? '<table class="table"><tbody>'+arr.slice(0,30).map(x=>`<tr><td class="mono small">${esc(x.key)}</td><td class="small">${esc(String(x.value))}</td></tr>`).join('')+'</tbody></table>' : '<span class="mut">Nessun attributo.</span>';
-  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
-async function tbRpc(id,name){ const method=await askPrompt('Metodo RPC (es. setGpioStatus):'); if(!method)return;
-  const paramsRaw=await askPrompt('Parametri JSON (es. {"pin":1,"value":true}) — vuoto = {}:'); let params={};
-  if(paramsRaw){ try{ params=JSON.parse(paramsRaw); }catch(e){ toast('JSON non valido','bad'); return; } }
-  const out=$('#tbDevOut_'+id); out.innerHTML='Invio…';
-  try{ const r=await api('/thingsboard/devices/'+id+'/rpc',{method:'POST',body:JSON.stringify({method,params,oneway:true})});
-    out.innerHTML = r.ok? '<span style="color:var(--ok,green)">✓ comando inviato</span>' : `<span style="color:var(--warn,#b45309)">HTTP ${r.status} (device offline?)</span>`;
-  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
-async function tbShared(id,name){ const raw=await askPrompt('Config remota (shared attributes) JSON, es. {"reportInterval":60}:'); if(!raw)return;
-  let attributes; try{ attributes=JSON.parse(raw); }catch(e){ toast('JSON non valido','bad'); return; }
-  const out=$('#tbDevOut_'+id); out.innerHTML='Invio…';
-  try{ await api('/thingsboard/devices/'+id+'/shared-attributes',{method:'POST',body:JSON.stringify({attributes})}); out.innerHTML='<span style="color:var(--ok,green)">✓ config inviata al device</span>'; toast('Config remota inviata','ok'); }
-  catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
-async function tbHist(id,name){ const keys=await askPrompt('Chiavi telemetria (separate da virgola, es. temperature,humidity):'); if(!keys)return;
-  const to=Date.now(), from=to-7*864e5;
-  const out=$('#tbDevOut_'+id); out.innerHTML='Carico…';
-  try{ const d=await api('/thingsboard/devices/'+id+'/history?keys='+encodeURIComponent(keys)+'&from='+from+'&to='+to);
-    const ks=Object.keys(d||{});
-    out.innerHTML = ks.length? ks.map(k=>`<div class="small"><b>${esc(k)}</b>: ${(d[k]||[]).length} punti (ultimo: ${esc(String((d[k]||[])[0]?.value??'—'))})</div>`).join('') : '<span class="mut">Nessun dato nel periodo.</span>';
-  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
 const RULE_OPS=[['>=','≥'],['<=','≤'],['>','>'],['<','<'],['==','='],['is_true','è vero'],['is_false','è falso']];
 const RULE_ETYPES=['sensore_critico','batteria_critica','man_down','perdita_alimentazione','telemetria'];
 const RULE_ET_LAB={sensore_critico:'Sensore critico',batteria_critica:'Batteria critica',man_down:'Uomo a terra',perdita_alimentazione:'Perdita alimentazione',telemetria:'Telemetria (nessun allarme)'};
@@ -3729,7 +3645,7 @@ async function renderSensorRules(){
   let R=[]; try{ R=await api('/sensor-rules'); }catch(e){}
   const opLab=o=>(RULE_OPS.find(x=>x[0]===o)||[o,o])[1];
   const numeric=o=>!['is_true','is_false'].includes(o);
-  box.innerHTML=`<div class="card pad"><div class="card-h" style="padding:0 0 var(--s-10)"><h2>Regole sensori (IoT / ThingsBoard)</h2>
+  box.innerHTML=`<div class="card pad"><div class="card-h" style="padding:0 0 var(--s-10)"><h2>Regole sensori (IoT)</h2>
     <button class="btn ghost small" onclick="aiSuggestRules(this)">✦ Suggerisci regole (AI)</button></div>
     <div id="srSuggest"></div>
     <div class="small mut" style="margin-bottom:var(--s-8)">Trasformano la telemetria in allarmi, in modo parametrico: <b>metrica</b> (chiave nel payload) + <b>operatore</b> + <b>soglia</b> → <b>evento</b>. Gli eventi critici attivano la catena allarmi nativa (incidente + escalation).</div>

@@ -2,7 +2,7 @@
 # Runner di TUTTE le suite e2e contro lo stack in esecuzione, raggruppate per
 # dipendenza. Usato in locale e in CI (dopo l'avvio dei servizi).
 #   MODE=core    -> solo le suite che richiedono core+Postgres (gating affidabile)
-#   MODE=engines -> solo le suite dei motori (YWAlert/Traccar/ThingsBoard), auto-skip se giù
+#   MODE=engines -> solo le suite dei motori (YWAlert/Traccar), auto-skip se giù
 #   MODE=all     -> tutto (default)
 # RUN_SETUP=1    -> include anche le suite che richiedono setup esterno/stato acme fresco
 #                   (goalert-e2e: KEY; goalert-delivery: receiver; goalert-p4/traccar-p1/

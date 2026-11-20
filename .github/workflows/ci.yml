@@ -56,7 +56,7 @@ jobs:
       - name: run core suites
         run: MODE=core bash qa/run-all.sh
 
-  # Best-effort (non blocca): suite dei motori esterni residui (Traccar/ThingsBoard).
+  # Best-effort (non blocca): suite del connettore edge residuo (Traccar).
   # NB: l'escalation (YWAlert) è NATIVA e gira nel gate 'core', non qui.
   # L'orchestrazione dei container è pesante; i fallimenti sono segnalati ma non bloccano.
   engines:
@@ -86,10 +86,9 @@ jobs:
       - name: build core
         run: cargo build --release
         working-directory: core
-      - name: start engines (Traccar / ThingsBoard)
+      - name: start engines (Traccar)
         run: |
           bash qa/run-traccar.sh || true
-          bash qa/run-thingsboard.sh || true
       - name: start core
         run: |
           ./core/target/release/yw-core &

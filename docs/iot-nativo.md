@@ -149,10 +149,12 @@ l'ingest dei sensori e il downlink dei comandi. Disattivabile con `YW_MQTT_PORT=
 - Integra con **Lone Worker** (le soglie diventano incidenti con escalation), **Vigilanza/Cantieri**
   (i device sul campo), **Mappa dispositivi** (posizioni live).
 
-## ThingsBoard esterno: ritirato
+## ThingsBoard esterno: ritirato del tutto
 
-Il connettore `thingsboard` è stato eliminato dal catalogo (mig 0108) e le sue route proxy
-rimosse. Il vecchio manuale resta come riferimento storico in `docs/thingsboard-manuale.md`.
+Il connettore `thingsboard` è stato **smantellato**: modulo rimosso dal catalogo (mig 0108),
+route proxy già assenti, tabelle di connessione/pull droppate (mig 0118), poller del worker,
+endpoint, tool agente `tb_*`, UI di connessione, servizio docker-compose e manuale dedicato
+**eliminati**. Tutte le funzioni IoT industriali sono native sotto `/api/iot/*` + regole sensori.
 
 ## Tenant demo
 

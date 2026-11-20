@@ -222,21 +222,6 @@ async function openTools(tid,btn){
         onchange="toggleTool('${tid}','${esc(t.module_code)}','${esc(t.tool_code)}',this)"><span class="sl"></span></label>
     </div>`).join('')}</div>`).join('')||'<div class="small mut">nessuno strumento</div>';
 }
-async function tbSync(tid){
-  const msg=document.getElementById('tb_msg_'+tid); if(msg)msg.textContent='Sincronizzo…';
-  const body={poll_enabled:document.getElementById('tb_poll_'+tid).checked, poll_interval_s:+document.getElementById('tb_int_'+tid).value};
-  try{ const r=await api('/superadmin/tenants/'+tid+'/thingsboard/sync',{method:'POST',body:JSON.stringify(body)});
-    if(msg) msg.innerHTML=r.reachable?`<span class="s-attivo">✓ ${r.device_count} device · ${r.alarm_count} allarmi</span>`:`<span style="color:var(--bad)">✗ ${esc(r.verdict||'irraggiungibile')}</span>`;
-    toast(r.reachable?'ThingsBoard sincronizzato':'ThingsBoard irraggiungibile', r.reachable?'ok':'bad');
-  }catch(e){ if(msg)msg.textContent=e.message; toast(e.message,'bad'); }
-}
-async function tbVerify(tid){
-  const msg=document.getElementById('tb_msg_'+tid); if(msg)msg.textContent='Verifico…';
-  try{ const r=await api('/superadmin/tenants/'+tid+'/thingsboard/verify',{method:'POST'});
-    if(msg) msg.innerHTML=r.reachable?`<span class="s-attivo">✓ ${esc(r.verdict)}</span> · device: <b>${r.device_count}</b>`:`<span style="color:var(--bad)">✗ ${esc(r.verdict)}</span>`;
-    toast(r.reachable?'ThingsBoard collegato':'ThingsBoard irraggiungibile', r.reachable?'ok':'bad');
-  }catch(e){ if(msg)msg.textContent=e.message; toast(e.message,'bad'); }
-}
 async function aiConn(tid,btn){
   const box=document.getElementById('cfg_'+tid);
   if(box.dataset.open==='ai'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
@@ -304,7 +289,7 @@ async function mapVisOpen(tid,btn){
   if(box.dataset.open==='mapvis'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
   box.dataset.open='mapvis'; cfgExclusive(btn); btnOn(btn,true); box.innerHTML='<div class="small mut">carico…</div>';
   let v; try{ v=await api('/superadmin/tenants/'+tid+'/map-visibility'); }catch(e){ box.innerHTML='<div class="small" style="color:var(--bad)">'+e.message+'</div>'; return; }
-  box.innerHTML=`<div class="card" style="padding:12px"><div class="small mut" style="margin-bottom:8px">Quali voci di menu mappa vede l'admin del tenant (sezione Operations). Richiede un modulo dispositivi attivo (Traccar/ThingsBoard/IoT).</div>
+  box.innerHTML=`<div class="card" style="padding:12px"><div class="small mut" style="margin-bottom:8px">Quali voci di menu mappa vede l'admin del tenant (sezione Operations). Richiede un modulo dispositivi attivo (Traccar/IoT).</div>
     <label style="display:block;margin-bottom:6px"><input type="checkbox" id="mv_out_${tid}" ${v.map_outdoor?'checked':''}> <b>Mappa</b> (outdoor)</label>
     <label style="display:block;margin-bottom:10px"><input type="checkbox" id="mv_in_${tid}" ${v.map_indoor?'checked':''}> <b>Piantine</b> (indoor)</label>
     <button class="btn small" onclick="mapVisSave('${tid}')">Salva</button>
@@ -325,7 +310,7 @@ async function scnRender(tid){
   try{ [cat,app]=await Promise.all([api('/superadmin/scenarios'), api('/superadmin/tenants/'+tid+'/scenarios')]); }catch(e){ box.innerHTML='<div class="small" style="color:var(--bad)">'+e.message+'</div>'; return; }
   const applied=new Set(app.map(a=>a.code));
   const bySector={}; cat.forEach(s=>{ (bySector[s.sector]=bySector[s.sector]||[]).push(s); });
-  let h=`<div class="card" style="padding:12px"><div class="small mut" style="margin-bottom:8px">Ambienti ispirati ai casi d'uso ThingsBoard. Attivare uno scenario abilita i moduli, inserisce il bundle di regole sensori e (se spuntato) crea device + sito demo. Rimozione pulita; i moduli restano abilitati.</div>
+  let h=`<div class="card" style="padding:12px"><div class="small mut" style="margin-bottom:8px">Ambienti per casi d'uso IoT. Attivare uno scenario abilita i moduli, inserisce il bundle di regole sensori e (se spuntato) crea device + sito demo. Rimozione pulita; i moduli restano abilitati.</div>
     <label class="small mut" style="display:block;margin-bottom:8px"><input type="checkbox" id="scn_demo_${tid}" checked> crea anche device/sito demo</label>
     <div class="row" style="gap:6px;margin-bottom:8px"><button class="btn small" onclick="scnApplyAll('${tid}')">Attiva tutti (${cat.length})</button>
       <button class="btn ghost small" onclick="scnRemoveAll('${tid}')">Rimuovi tutti${app.length?' ('+app.length+')':''}</button></div>`;

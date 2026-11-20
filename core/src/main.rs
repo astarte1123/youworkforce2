@@ -37,8 +37,6 @@ async fn crypto_migrate(st: &AppState) -> anyhow::Result<()> {
 
 fn env(k: &str, d: &str) -> String { std::env::var(k).unwrap_or_else(|_| d.to_string()) }
 
-// ThingsBoard parity (tenant_admin): inventario, sync, alarm policy, attributi, RPC,
-// shared-attr, storico. Sub-router separato per contenere la profondità del tipo Router.
 // Sub-router IoT (telemetria/attributi/comandi/blueprint/monitor/alert): estratto dal router
 // principale per contenere la profondità di codegen del tipo Router (evita lo stack-overflow di rustc).
 fn iot_routes() -> Router<AppState> {
@@ -61,9 +59,10 @@ fn iot_routes() -> Router<AppState> {
         .route("/api/ingress/lorawan", post(api::ingest_lorawan))
         .route("/api/ingress/pull", get(api::iot_device_pull))
 }
-fn tb_parity_routes() -> Router<AppState> {
+// Sub-router aggregato (GDPR, dashboard, escalation, safety, …): estratto per contenere la
+// profondità di codegen del tipo Router (evita lo stack-overflow di rustc).
+fn extra_routes() -> Router<AppState> {
     Router::new()
-        // (ThingsBoard esterno ritirato: le funzioni IoT industriali sono native sotto /api/iot/*)
         // #7 GDPR
         .route("/api/gdpr/export/:uid", get(privacy::gdpr_export))
         .route("/api/gdpr/anonymize/:uid", post(privacy::gdpr_anonymize))
@@ -477,8 +476,8 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/sensor-rules/suggest", post(api::sensor_rules_suggest))
         ;
     let app = app
-        // ThingsBoard parity: sub-router separato (merge).
-        .merge(tb_parity_routes())
+        // Sub-router aggregato (GDPR/dashboard/escalation/safety): merge.
+        .merge(extra_routes())
         .route("/api/setup-status", get(api::setup_status))
         .route("/api/home-tasks", get(api::home_tasks))
         .route("/api/scenarios", get(api::tenant_scenarios_list))

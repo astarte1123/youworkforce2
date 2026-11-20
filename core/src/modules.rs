@@ -4,7 +4,7 @@
 //!                 di persone, sedi, permessi/ruoli, privacy/audit, dashboard). Non attivabili dal
 //!                 superadmin: ci sono sempre.
 //!   - `product`   moduli funzionali attivabili per-tenant (loneworker, interventi, giri, ...).
-//!   - `connector` integrazioni esterne attivabili (traccar, thingsboard, iot). Escalation = YWAlert nativo.
+//!   - `connector` integrazioni edge attivabili (traccar, iot). Escalation = YWAlert nativo; IoT nativo.
 //! Il catalogo DB (app.modules_catalog) resta la fonte per l'ELENCO attivabile (product+connector);
 //! qui si aggiungono le relazioni/metadata che il DB non modella + lo strato `core`.
 
@@ -51,7 +51,7 @@ pub const REGISTRY: &[Manifest] = &[
         description:"Dashboard unica configurabile: aggrega i widget dei moduli attivi." },
     Manifest{ code:"core.devices", name:"Dispositivi (inventario)", kind:"core", requires:&[], provides:&["device_inventory"],
         capabilities:&["devices.admin","devices.manage"], widgets:&[],
-        description:"Inventario/config dispositivi: infrastruttura condivisa. L'inventario è trasversale; la PIPELINE allarmi è dei moduli safety (loneworker/traccar/iot/thingsboard)." },
+        description:"Inventario/config dispositivi: infrastruttura condivisa. L'inventario è trasversale; la PIPELINE allarmi è dei moduli safety (loneworker/traccar/iot)." },
     // ---- Product: moduli funzionali attivabili ---------------------------------------------
     Manifest{ code:"loneworker", name:"Lone Worker e centrale allarmi", kind:"product", requires:&[], provides:&["incidents","checkins"],
         capabilities:&["incidents.view","incidents.handle","escalation.manage"], widgets:&["incidents","checkins"],

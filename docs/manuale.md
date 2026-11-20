@@ -112,8 +112,8 @@ Modulo **giri**: giri di controllo per guardie/manutentori.
 
 ## 10. IoT e scenari
 
-- **IoT/ThingsBoard**: regole sensori parametriche, connessione e **pull** di telemetria/allarmi;
-  gestione device e attributi. Vedi [thingsboard-manuale](thingsboard-manuale.md).
+- **IoT (nativo)**: regole sensori parametriche, telemetria time-series, attributi e comandi/RPC,
+  soglie→incidenti, tutto senza server esterni. Vedi [iot-nativo](iot-nativo.md). (ThingsBoard ritirato.)
 - **Scenari/casi d'uso**: 16 ambienti attivabili dal superadmin su ogni tenant (moduli + regole
   sensori + demo). Generatore di scenari da descrizione/immagini.
 
@@ -136,8 +136,8 @@ Modulo **assistant**.
 ## 13. Amministrazione multi-tenant (superadmin)
 
 Licenze e branding (logo, palette), attivazione moduli e scenari per tenant, impersonazione del
-tenant per assistenza. Le integrazioni (YWAlert/Traccar/ThingsBoard) si **auto-configurano** dai
-default di prodotto.
+tenant per assistenza. Le integrazioni (YWAlert/Traccar) si **auto-configurano** dai
+default di prodotto. L'IoT è nativo (nessun ThingsBoard).
 
 ## 13-bis. Privacy e audit (GDPR + registro attività)
 
@@ -154,7 +154,7 @@ Vedi [gdpr-privacy-audit](gdpr-privacy-audit.md).
 | Console (UI, ricerca, mappe, tema, responsive, i18n) | [console-ui-manuale.md](console-ui-manuale.md) |
 | Escalation e reperibilità | [escalation-manuale.md](escalation-manuale.md) · [ywalert-manuale.md](ywalert-manuale.md) |
 | Traccar (badge/GPS) | [traccar-manuale.md](traccar-manuale.md) |
-| ThingsBoard (IoT) | [thingsboard-manuale.md](thingsboard-manuale.md) |
+| IoT nativo (telemetria/attributi/comandi/regole) | [iot-nativo.md](iot-nativo.md) |
 | Edge nativo Teltonika (TCP/IO/GPRS) | [teltonika-edge.md](teltonika-edge.md) |
 | Gruppi di persone condivisi | [gruppi-condivisi.md](gruppi-condivisi.md) |
 | Permessi (capability) | [capability-layer.md](capability-layer.md) |
