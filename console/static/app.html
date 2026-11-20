@@ -499,7 +499,7 @@ function enhanceTable(tb){
     note.hidden = total>0 || dataRows().length===0;
     const from=total?start+1:0, to=Math.min(start+size,total);
     const opts=PAGE_SIZES.map(n=>`<option value="${n}"${st.size===n?' selected':''}>${n}</option>`).join('')+`<option value="all"${st.size>=1e9?' selected':''}>Tutte</option>`;
-    pager.innerHTML=`<span>Mostrando <b>${from}–${to}</b> di <b>${total}</b></span>
+    pager.innerHTML=`<span>${t('pager_showing','Mostra')} <b>${from}–${to}</b> ${t('pager_of','di')} <b>${total}</b></span>
       <div class="pg-right">
         <label class="pg-size">righe/pagina <select class="input tbl-size">${opts}</select></label>
         <button class="btn ghost sm tbl-prev" ${st.page<=1?'disabled':''}>‹ Prec</button>
@@ -771,7 +771,7 @@ async function vCentrale(v){
     <div style="overflow-x:auto;margin-top:var(--s-10)"><table class="table" data-export="centrale-allarmi" data-enhance="off" id="incTable"><thead><tr><th>${t('col_type','Tipo')}</th><th>${t('col_site','Sede')}</th><th>${t('col_assignee','Assegnato')}</th><th>${t('col_status','Stato')}</th><th>${t('col_priority','Priorità')}</th><th>${t('col_correlation','Correlazione')}</th></tr></thead>
     <tbody id="incBody"></tbody></table></div>
     <div id="incEmpty" class="empty" hidden style="padding:var(--s-28) var(--s-8)">${ICON.check}<div>${t('cen_empty','Nessun incidente in questa vista')}</div></div>
-    <div id="incPager" class="row" style="justify-content:space-between;align-items:center;margin-top:var(--s-10);flex-wrap:wrap;gap:var(--s-8)"></div>
+    <div id="incPager" class="row" style="justify-content:space-between;align-items:center;margin-top:var(--s-10);padding:0 var(--gutter);flex-wrap:wrap;gap:var(--s-8)"></div>
   </div>
   <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>${t('cen_checkins','Check-in attivi')}</h2>
     ${AI_FEAT.checkin_anomaly?`<button class="btn ghost small" onclick="aiCheckinAnomaly(this)">✦ Anomalie check-in (AI)</button>`:''}</div>
@@ -816,7 +816,7 @@ function cenRender(){
   $$('#incBody [data-inc]').forEach(r=>r.onclick=()=>openIncident(r.dataset.inc));
   if(total===0){ pager.innerHTML=''; return; }
   const from=start+1, to=Math.min(start+CEN.size,total);
-  pager.innerHTML=`<span class="small mut">${t('pager_showing','Mostrando')} ${from}–${to} ${t('pager_of','di')} ${total}</span>
+  pager.innerHTML=`<span class="small mut">${t('pager_showing','Mostra')} ${from}–${to} ${t('pager_of','di')} ${total}</span>
     <div class="row" style="gap:var(--s-6);align-items:center">
       <button class="btn ghost small" ${CEN.page<=1?'disabled':''} onclick="cenPage(-1)">${t('pager_prev','‹ Prec')}</button>
       <span class="small" style="min-width:74px;text-align:center">${t('pager_page','Pagina')} ${CEN.page} / ${pages}</span>
@@ -4831,7 +4831,7 @@ async function vPrivacyAudit(v){
       <button class="btn ghost small" onclick="gdClear()">azzera</button>
     </div>
     <div id="gdBox" style="overflow-x:auto;margin-top:var(--s-10)">${renderGdUsers(gusers)}</div>
-    <div id="gdPager" class="row" style="gap:var(--s-8);margin-top:var(--s-10);align-items:center;flex-wrap:wrap">${renderGdPager(gusers)}</div></div>
+    <div id="gdPager" class="row" style="gap:var(--s-8);margin-top:var(--s-10);padding:0 var(--gutter);align-items:center;flex-wrap:wrap">${renderGdPager(gusers)}</div></div>
 
   <div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><div><h2>Ritenzione dati</h2><div class="small mut">cancellazione automatica dei dati vecchi.</div></div></div>
     <div style="margin-top:var(--s-8)">${retTxt}</div></div>
@@ -4849,7 +4849,7 @@ async function vPrivacyAudit(v){
       <button class="btn ghost small" onclick="auditClear()">azzera</button>
     </div>
     <div id="auBox" style="overflow-x:auto;margin-top:var(--s-10)">${renderAudit(audit)}</div>
-    <div id="auPager" class="row" style="gap:var(--s-8);margin-top:var(--s-10);align-items:center;flex-wrap:wrap">${renderAuPager(audit)}</div></div>`;
+    <div id="auPager" class="row" style="gap:var(--s-8);margin-top:var(--s-10);padding:0 var(--gutter);align-items:center;flex-wrap:wrap">${renderAuPager(audit)}</div></div>`;
 }
 function auQuery(extra){
   const qs=new URLSearchParams();
