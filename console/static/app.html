@@ -2171,6 +2171,11 @@ async function comSave(){
   try{await api('/commesse',{method:'POST',body:JSON.stringify(b)}); toast('Commessa creata','ok'); closeDrawer(); route();}
   catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
 }
+// Tab del drawer Commessa: mostra/nasconde i gruppi di sezioni senza ricaricare i dati.
+function comTab(k){
+  document.querySelectorAll('#drawer .comtab').forEach(el=>{ el.style.display = el.dataset.ct===k?'':'none'; });
+  document.querySelectorAll('#drawer .seg-btn[data-ct]').forEach(b=>b.classList.toggle('on', b.dataset.ct===k));
+}
 async function openCommessa(id){
   const planner=can(['pianificatore','tenant_admin']);
   let c, allTeams=[]; try{ c=await api('/commesse/'+id); }catch(e){ toast(e.message,'bad'); return; }
@@ -2256,20 +2261,33 @@ async function openCommessa(id){
     <div><div class="spread"><b>${esc(c.name)}</b>${statusSel}</div>
       <div class="small mut" style="margin-top:var(--s-4)">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}${c.start_date?' · '+esc(c.start_date):''}${c.end_date?' → '+esc(c.end_date):''}${c.budget!=null?' · € '+c.budget.toLocaleString('it-IT'):''}${(c.cig||c.cup)?`<br>${c.cig?'CIG: '+esc(c.cig):''}${c.cup?' · CUP: '+esc(c.cup):''}`:''}</div>
       <div class="row" style="gap:var(--s-8);align-items:center;margin-top:var(--s-8)">${progBar(c.progress)}<b>${c.progress}%</b><span class="small mut">avanzamento complessivo (media pesata)</span></div></div>
-    <div><div class="spread"><h3 style="margin:0">Lavorazioni (WBS)</h3>${planner?`<a onclick="lavNew('${id}')">+ aggiungi</a>`:''}</div>
-      <div style="margin-top:var(--s-8)">${lav}</div></div>
-    ${gantt}
-    <div><div class="spread"><h3 style="margin:0">SAL — stato avanzamento</h3>${planner?`<a onclick="salNew('${id}')">+ registra SAL</a>`:''}</div>
-      <table class="table" style="margin-top:var(--s-6)"><thead><tr><th>Data</th><th>%</th><th>Importo</th><th>Note</th><th></th></tr></thead><tbody>${sal}</tbody></table></div>
-    <div><h3 style="margin:0">Turni legati</h3>
-      <table class="table" style="margin-top:var(--s-6)"><thead><tr><th>Lavoratore</th><th>Quando</th><th>Stato</th></tr></thead><tbody>${shifts}</tbody></table>
-      <div class="small mut" style="margin-top:var(--s-4)">Per legare un turno: pianificalo in <b>Turni</b> e scegli questa commessa.</div></div>
-    ${squadreSection}
-    ${presenzeSection}
-    ${costiSection}
-    ${giornaleSection}
-    ${fattureSection}
-    ${attSection}
+    <div class="seg" style="flex-wrap:wrap">
+      <button class="seg-btn on" data-ct="avanzamento" onclick="comTab('avanzamento')">Avanzamento</button>
+      <button class="seg-btn" data-ct="persone" onclick="comTab('persone')">Persone</button>
+      <button class="seg-btn" data-ct="economia" onclick="comTab('economia')">Economia</button>
+      <button class="seg-btn" data-ct="diario" onclick="comTab('diario')">Diario &amp; Documenti</button></div>
+    <div class="comtab" data-ct="avanzamento"><div class="col" style="gap:var(--s-12)">
+      <div><div class="spread"><h3 style="margin:0">Lavorazioni (WBS)</h3>${planner?`<a onclick="lavNew('${id}')">+ aggiungi</a>`:''}</div>
+        <div style="margin-top:var(--s-8)">${lav}</div></div>
+      ${gantt}
+      <div><div class="spread"><h3 style="margin:0">SAL — stato avanzamento</h3>${planner?`<a onclick="salNew('${id}')">+ registra SAL</a>`:''}</div>
+        <table class="table" style="margin-top:var(--s-6)"><thead><tr><th>Data</th><th>%</th><th>Importo</th><th>Note</th><th></th></tr></thead><tbody>${sal}</tbody></table></div>
+    </div></div>
+    <div class="comtab" data-ct="persone" style="display:none"><div class="col" style="gap:var(--s-12)">
+      <div><h3 style="margin:0">Turni legati</h3>
+        <table class="table" style="margin-top:var(--s-6)"><thead><tr><th>Lavoratore</th><th>Quando</th><th>Stato</th></tr></thead><tbody>${shifts}</tbody></table>
+        <div class="small mut" style="margin-top:var(--s-4)">Per legare un turno: pianificalo in <b>Turni</b> e scegli questa commessa.</div></div>
+      ${squadreSection}
+      ${presenzeSection}
+    </div></div>
+    <div class="comtab" data-ct="economia" style="display:none"><div class="col" style="gap:var(--s-12)">
+      ${costiSection}
+      ${fattureSection}
+    </div></div>
+    <div class="comtab" data-ct="diario" style="display:none"><div class="col" style="gap:var(--s-12)">
+      ${giornaleSection}
+      ${attSection}
+    </div></div>
     ${planner?`<button class="btn ghost" onclick="comDel('${id}')">${ICON.x} Elimina commessa</button>`:''}</div>`);
 }
 async function comSetStatus(id,st){ try{await api('/commesse/'+id,{method:'POST',body:JSON.stringify({status:st})}); toast('Stato aggiornato','ok');}catch(e){toast(e.message,'bad');} }
@@ -5281,6 +5299,14 @@ async function vTurni(v){
     hasInterventi?api('/orders').catch(()=>[]):Promise.resolve([]),
     hasCantieri?api('/commesse').catch(()=>[]):Promise.resolve([])]);
   v._users=users; v._sites=sites; v._quals=Q||[]; v._cov=CV||[]; v._orders=(O&&O.length!==undefined)?O:[]; v._commesse=(CM&&CM.length!==undefined)?CM:[];
+  TUR={P,OC,A,Q,CV,planner,hasQual:(planner&&ACTIVE_MODS.has('qualifiche'))};
+  renderTurni(v);
+}
+let TUR={}; let TUR_TAB='turni';
+function turTab(t){ TUR_TAB=t; renderTurni($('#view')); }
+function renderTurni(v){
+  const {P,OC,A,Q,CV,planner,hasQual}=TUR;
+  if(TUR_TAB==='copertura' && !planner) TUR_TAB='turni';
   const stChip=s=>`<span class="chip ${s==='confermato'?'s-attivo':''}">${s}</span>`;
   const planRows=P.map(p=>{
     const mine=p.user_id===ME.user_id||ME.email===p.email;
@@ -5294,38 +5320,48 @@ async function vTurni(v){
       <td style="text-align:right">${acts.join(' ')}</td></tr>`;}).join('')
     ||emptyRow(5, ICON.clipboard, 'Nessun turno pianificato', 'Pianifica i turni del personale per sede e fascia; potrai legarli alle commesse e verificare la copertura minima.', planner?{fn:'spNew()',label:'+ Pianifica turno'}:null);
   const createBtn=planner?`<button class="btn" onclick="spNew()">+ Pianifica turno</button>`:'';
-  const oncallCard=`<div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Reperibilità</h2>
-    ${planner?`<a onclick="ocNew()">+ aggiungi</a>`:''}</div>
+  const turniCard=`<div class="card"><div class="card-h"><div><h2>Turni pianificati</h2>
+      <div class="small mut">${P.length} turni${planner?'':' (i tuoi)'}</div></div>${createBtn}</div>
+    <table class="table" data-export="check-in-pianificati"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Quando</th><th>Stato</th><th></th></tr></thead>
+    <tbody>${planRows}</tbody></table></div>`;
+  const oncallCard=`<div class="card"><div class="card-h"><div><h2>Reperibilità</h2><div class="small mut">${OC.length} finestre di reperibilità</div></div>
+    ${planner?`<button class="btn ghost small" onclick="ocNew()">+ aggiungi</button>`:''}</div>
     <table class="table" data-export="reperibilita"><thead><tr><th>Utente</th><th>Dalle</th><th>Alle</th><th>Nota</th><th></th></tr></thead>
     <tbody>${OC.map(o=>`<tr><td>${esc(o.email)}</td><td class="small">${dtLocal(o.starts_at)}</td><td class="small">${dtLocal(o.ends_at)}</td>
       <td class="small mut">${esc(o.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="ocDel('${o.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
       ||emptyRow(5, ICON.shield, 'Nessuna reperibilità', 'Definisci chi è reperibile e in quale finestra: riceverà gli allarmi quando è di turno.', planner?{fn:'ocNew()',label:'+ Aggiungi reperibilità'}:null)}</tbody></table></div>`;
   const absKind=k=>`<span class="chip">${esc(k)}</span>`;
-  const absCard=`<div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Assenze e indisponibilità</h2>
-    ${planner?`<a onclick="absNew()">+ aggiungi</a>`:''}</div>
+  const absCard=`<div class="card"><div class="card-h"><div><h2>Assenze e indisponibilità</h2><div class="small mut">${(A||[]).length} registrate</div></div>
+    ${planner?`<button class="btn ghost small" onclick="absNew()">+ aggiungi</button>`:''}</div>
     <div class="card-note">Un'assenza impedisce di pianificare turni sulla persona in quel periodo.</div>
     <table class="table" data-export="assenze"><thead><tr><th>Lavoratore</th><th>Tipo</th><th>Dal</th><th>Al</th><th>Nota</th><th></th></tr></thead>
     <tbody>${(A||[]).map(a=>`<tr><td>${esc(a.email)}</td><td>${absKind(a.kind)}</td><td class="small">${dtLocal(a.starts_at)}</td><td class="small">${dtLocal(a.ends_at)}</td>
       <td class="small mut">${esc(a.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="absDel('${a.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
       ||emptyRow(6, ICON.clipboard, 'Nessuna assenza', 'Registra ferie, malattie o indisponibilità: il pianificatore non assegnerà turni in quei periodi.', planner?{fn:'absNew()',label:'+ Aggiungi assenza'}:null)}</tbody></table></div>`;
-  // Qualifiche (solo se il modulo è attivo: l'endpoint ritorna dati; altrimenti Q è vuoto per il 403)
-  const qualCard=(planner && ACTIVE_MODS.has('qualifiche'))?`<div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Qualifiche e competenze</h2>
+  const qualCard=hasQual?`<div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Qualifiche e competenze</h2>
     <span><a onclick="qualNew()">+ nuova</a> · <a onclick="qualAssign()">assegna a persona</a></span></div>
     <div class="card-note">Un turno può richiedere una qualifica: solo chi la possiede (non scaduta) può coprirlo.</div>
     <div class="grid g2 card-inset">${(Q||[]).map(q=>`<div style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8)" class="spread"><b class="small">${esc(q.name)}</b><button class="btn-ico btn ghost" onclick="qualDel('${q.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessuna qualifica. Creane una e assegnala alle persone.</div>'}</div></div>`:'';
   const DOW=['lun','mar','mer','gio','ven','sab','dom'];
   const dmTxt=m=>DOW.filter((_,i)=>m[i]==='1').join(' ');
-  const covCard=planner?`<div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Copertura minima</h2>
-    <span><a onclick="covNew()">+ requisito</a> · <a onclick="covCheck()">verifica copertura</a> · <a onclick="covFairness()">equità</a></span></div>
+  const covCard=planner?`<div class="card"><div class="card-h"><div><h2>Copertura minima</h2><div class="small mut">${(CV||[]).length} requisiti</div></div>
+    <span><a onclick="covCheck()">verifica copertura</a> · <a onclick="covFairness()">equità</a> · <button class="btn ghost small" onclick="covNew()">+ requisito</button></span></div>
     <div class="card-note">Dichiara quante persone servono per sede/fascia/giorni; la verifica trova i giorni scoperti del piano.</div>
     <table class="table" data-export="copertura-turni"><thead><tr><th>Sede</th><th>Giorni</th><th>Fascia</th><th>Min</th><th>Competenza</th><th></th></tr></thead>
     <tbody>${(CV||[]).map(c=>`<tr><td>${esc(c.site||'ovunque')}</td><td class="small">${esc(dmTxt(c.days_mask))}</td><td class="small">${esc(c.cov_start)}–${esc(c.cov_end)}</td>
       <td>${c.min_people}</td><td class="small mut">${esc(c.qual||'—')}</td><td style="text-align:right"><button class="btn-ico btn ghost" onclick="covDel('${c.id}')">${ICON.x}</button></td></tr>`).join('')
       ||emptyRow(6, ICON.clipboard, 'Nessun requisito di copertura', 'Dichiara quante persone servono per sede, fascia e giorni: la verifica troverà i turni scoperti.', planner?{fn:'covNew()',label:'+ Aggiungi requisito'}:null)}</tbody></table>
     <div id="covGaps" class="card-inset-b"></div></div>`:'';
-  v.innerHTML=`<div class="page-h"><div><h1>${t('turni_title','Turni')}</h1><div class="mut">${P.length} turni pianificati${planner?'':' (i tuoi)'}</div></div>${createBtn}</div>
-  <div class="card"><table class="table" data-export="check-in-pianificati"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Quando</th><th>Stato</th><th></th></tr></thead>
-    <tbody>${planRows}</tbody></table></div>${oncallCard}${absCard}${qualCard}${covCard}`;
+  const tab=(k,lab,n)=>`<button class="seg-btn${TUR_TAB===k?' on':''}" onclick="turTab('${k}')">${lab} <span class="seg-n">${n}</span></button>`;
+  const tabs=`<div class="seg" style="margin-bottom:var(--s-14);flex-wrap:wrap">
+    ${tab('turni','Turni',P.length)}${tab('reperibilita','Reperibilità',OC.length)}${tab('assenze','Assenze',(A||[]).length)}${planner?tab('copertura','Copertura',(CV||[]).length):''}</div>`;
+  let body;
+  if(TUR_TAB==='reperibilita') body=oncallCard;
+  else if(TUR_TAB==='assenze') body=absCard;
+  else if(TUR_TAB==='copertura'&&planner) body=covCard+qualCard;
+  else body=turniCard;
+  v.innerHTML=`<div class="page-h"><div><h1>${t('turni_title','Turni')}</h1><div class="mut">organizza turni, reperibilità, assenze e copertura del personale</div></div></div>
+  ${tabs}${body}`;
 }
 function covNew(){
   const v=$('#view'); const sites=v._sites||[], quals=v._quals||[];
