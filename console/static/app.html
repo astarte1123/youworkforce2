@@ -2080,7 +2080,11 @@ async function vMappaCantieri(v){
     </div>`;
   const loneOn=ACTIVE_MODS.has('loneworker');
   const [C,D0]=await Promise.all([api('/commesse').catch(()=>[]), api('/devices').catch(()=>[])]);
-  const open=C.filter(c=>c.status!=='chiuso' && c.site_lat!=null && c.site_lon!=null);
+  // coordinate effettive del cantiere: proprie della commessa, altrimenti quelle della sede collegata.
+  const clat=c=>c.lat!=null?c.lat:c.site_lat, clon=c=>c.lon!=null?c.lon:c.site_lon;
+  C.forEach(c=>{ c._lat=clat(c); c._lon=clon(c); });
+  const open=C.filter(c=>c.status!=='chiuso' && c._lat!=null && c._lon!=null);
+  const noGeo=C.filter(c=>c.status!=='chiuso' && (c._lat==null||c._lon==null));
   const siteIds=new Set(C.map(c=>c.site_id).filter(Boolean));
   const devs=(D0||[]).filter(d=>d.last_lat!=null&&d.last_lon!=null&&d.site_id&&siteIds.has(d.site_id));
   setTimeout(async()=>{
@@ -2089,13 +2093,13 @@ async function vMappaCantieri(v){
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(CANTMAP);
     const pts=[];
     const statusCol={pianificato:'#6b7280',in_corso:'#2563eb',sospeso:'#d97706'};
-    open.forEach(c=>{ const m=L.marker([c.site_lat,c.site_lon],{icon:hardhatDivIcon(statusCol[c.status]||'#2563eb')}).addTo(CANTMAP);
+    open.forEach(c=>{ const m=L.marker([c._lat,c._lon],{icon:hardhatDivIcon(statusCol[c.status]||'#2563eb')}).addTo(CANTMAP);
       m.bindPopup(`<div style="min-width:180px"><b>${esc(c.code)} · ${esc(c.name)}</b>
         <div class="small">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}</div>
         <div class="small">Stato: ${esc(COMM_STATI[c.status]||c.status)} · Avanz. ${c.progress}%</div>
         <button class="btn small" style="margin-top:var(--s-6)" onclick="openCommessa('${c.id}')">Apri scheda completa</button></div>`);
       m.on('click',()=>cantSide(c));
-      pts.push([c.site_lat,c.site_lon]); });
+      pts.push([c._lat,c._lon]); });
     // dispositivi nei siti dei cantieri
     devs.forEach(d=>{ const m=L.marker([d.last_lat,d.last_lon]).addTo(CANTMAP);
       m.bindPopup(`<b>📟 ${esc(d.label||d.external_id||'Dispositivo')}</b><div class="small mut">${esc(d.site_name||'')}${d.last_battery!=null?' · 🔋'+d.last_battery+'%':''}</div>`);
@@ -2114,12 +2118,18 @@ async function vMappaCantieri(v){
   const list=open.map(c=>`<div class="spread clk-card" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)" onclick='cantSide(${JSON.stringify(c).replace(/'/g,"&#39;")})'>
     <div><b class="small">${esc(c.code)}</b> <span class="small mut">${esc(c.name)}</span><div class="small mut">${esc(c.client_name||'—')} · ${c.progress}%</div></div>
     <span class="chip">${esc(COMM_STATI[c.status]||c.status)}</span></div>`).join('')||'<div class="small mut">Nessun cantiere aperto geolocalizzato.</div>';
+  const planner=can(['pianificatore','tenant_admin']);
+  const noGeoList=noGeo.map(c=>`<div class="spread" style="border:1px dashed var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)">
+    <div><b class="small">${esc(c.code)}</b> <span class="small mut">${esc(c.name)}</span></div>
+    ${planner?`<button class="btn ghost small" onclick='comGeoForm("${c.id}",${JSON.stringify(c).replace(/'/g,"&#39;")})'>📍 posiziona</button>`:'<span class="small mut">senza posizione</span>'}</div>`).join('');
   const side=document.getElementById('cantSide'); if(side) side.innerHTML=`<h2 style="margin:0 0 var(--s-8)">Cantieri aperti (${open.length})</h2>${list}
+    ${noGeo.length?`<div class="card-note" style="margin-top:var(--s-10)">${noGeo.length} cantieri senza posizione: non compaiono sulla mappa. ${planner?'Dai loro un indirizzo per geolocalizzarli.':''}</div>${noGeoList}`:''}
     <div class="small mut" style="margin-top:var(--s-8)">📟 ${devs.length} dispositivi nei siti${loneOn?' · 🚨 allarmi Lone Worker integrati':''}</div>`;
 }
 function cantSide(c){
   const side=document.getElementById('cantSide'); if(!side)return;
-  if(CANTMAP&&c.site_lat!=null) CANTMAP.setView([c.site_lat,c.site_lon],15);
+  const clt=(c.lat!=null?c.lat:c.site_lat), cln=(c.lon!=null?c.lon:c.site_lon);
+  if(CANTMAP&&clt!=null) CANTMAP.setView([clt,cln],15);
   side.innerHTML=`<div class="card pad"><div class="spread"><b>${esc(c.code)} · ${esc(c.name)}</b><span class="chip">${esc(COMM_STATI[c.status]||c.status)}</span></div>
     <div class="small mut" style="margin-top:var(--s-4)">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}</div>
     <div class="row" style="gap:var(--s-8);align-items:center;margin-top:var(--s-8)">${progBar(c.progress)}<b>${c.progress}%</b></div>
@@ -2136,12 +2146,14 @@ function comNew(){
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Codice<input id="cmCode" placeholder="C-2026-014"></label>
       ${clientField}</div>
     <label class="small mut">Nome / descrizione<input id="cmName" placeholder="Ristrutturazione capannone"></label>
-    <label class="small mut">Sede / cantiere<select id="cmSite"><option value="">—</option>${sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
+    <label class="small mut">Sede collegata (facoltativa)<select id="cmSite"><option value="">—</option>${sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
+    ${comGeoFields()}
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Inizio<input id="cmStart" type="date"></label><label class="small mut grow">Fine prevista<input id="cmEnd" type="date"></label></div>
     <label class="small mut">Importo contratto (€, facoltativo)<input id="cmBudget" type="number" step="0.01" style="width:160px"></label>
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">CIG (appalto pubblico)<input id="cmCig"></label><label class="small mut grow">CUP<input id="cmCup"></label></div>
     <label class="small mut">Note<input id="cmNote"></label>
     <button class="btn" onclick="comSave()">Crea commessa</button><div class="cfg-msg small"></div></div>`);
+  setTimeout(comGeoInit,60);
 }
 async function comSave(){
   const m=$('.cfg-msg');
@@ -2149,9 +2161,66 @@ async function comSave(){
     client_id:($('#cmClientId')&&$('#cmClientId').value)||null,client_name:($('#cmClient')&&$('#cmClient').value)||null,
     cig:$('#cmCig').value||null,cup:$('#cmCup').value||null,
     start_date:$('#cmStart').value||null,end_date:$('#cmEnd').value||null,
-    budget_amount:$('#cmBudget').value?Number($('#cmBudget').value):null,note:$('#cmNote').value||null};
+    budget_amount:$('#cmBudget').value?Number($('#cmBudget').value):null,note:$('#cmNote').value||null,
+    address:($('#cmAddr')&&$('#cmAddr').value.trim())||null,
+    lat:($('#cmLat')&&$('#cmLat').value!=='')?Number($('#cmLat').value):null,
+    lon:($('#cmLon')&&$('#cmLon').value!=='')?Number($('#cmLon').value):null};
   if(!b.code||!b.name){m.textContent='codice e nome richiesti';m.style.color='var(--bad)';return;}
   try{await api('/commesse',{method:'POST',body:JSON.stringify(b)}); toast('Commessa creata','ok'); closeDrawer(); route();}
+  catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
+}
+// ---- Geo-picker del cantiere (indirizzo -> coord; segnaposto trascinabile). Browser-side (Nominatim). ----
+function comGeoFields(o){ o=o||{}; return `
+  <div class="card-inset" style="padding:var(--s-8)">
+    <label class="small mut">Indirizzo del cantiere<input id="cmAddr" value="${esc(o.address||'')}" placeholder="Via del cantiere 1, Milano"></label>
+    <button class="btn ghost small" type="button" style="margin-top:var(--s-6)" onclick="comGeocode()">📍 Trova sulla mappa dall'indirizzo</button>
+    <div id="cmGeoMap" style="height:200px;border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-top:var(--s-6)"></div>
+    <div class="small mut" style="margin-top:var(--s-4)">Serve per vedere il cantiere sulla <b>Mappa cantieri</b>. Trascina il segnaposto per la posizione esatta.</div>
+    <div class="row" style="gap:var(--s-8);margin-top:var(--s-4)"><label class="small mut grow">Lat<input id="cmLat" type="number" step="any" value="${o.lat!=null?o.lat:''}" oninput="comGeoSync()"></label>
+      <label class="small mut grow">Lon<input id="cmLon" type="number" step="any" value="${o.lon!=null?o.lon:''}" oninput="comGeoSync()"></label></div>
+  </div>`; }
+function comGeoInit(){
+  const el=document.getElementById('cmGeoMap'); if(!el||typeof L==='undefined')return;
+  const lat=parseFloat($('#cmLat').value), lon=parseFloat($('#cmLon').value); const has=!isNaN(lat)&&!isNaN(lon);
+  const map=L.map(el,{zoomControl:true}).setView(has?[lat,lon]:[41.9,12.5], has?16:5);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+  const mk=L.marker(has?[lat,lon]:[41.9,12.5],{draggable:true}).addTo(map);
+  mk.on('dragend',()=>{ const p=mk.getLatLng(); $('#cmLat').value=p.lat.toFixed(6); $('#cmLon').value=p.lng.toFixed(6); });
+  map.on('click',e=>{ mk.setLatLng(e.latlng); $('#cmLat').value=e.latlng.lat.toFixed(6); $('#cmLon').value=e.latlng.lng.toFixed(6); });
+  window._cmGeoMap=map; window._cmGeoMark=mk;
+  setTimeout(()=>map.invalidateSize(),120);
+}
+function comGeoSync(){ const lat=parseFloat($('#cmLat').value), lon=parseFloat($('#cmLon').value);
+  if(window._cmGeoMap&&window._cmGeoMark&&!isNaN(lat)&&!isNaN(lon)){ window._cmGeoMark.setLatLng([lat,lon]); window._cmGeoMap.setView([lat,lon],16); } }
+async function comGeocode(){
+  const m=$('.cfg-msg'); const q=$('#cmAddr').value.trim();
+  if(!q){ if(m){m.textContent='inserisci prima l\'indirizzo';m.style.color='var(--bad)';} return; }
+  if(m){ m.textContent='cerco l\'indirizzo…'; m.style.color=''; }
+  try{
+    const r=await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(q),{headers:{'Accept':'application/json'}});
+    const j=await r.json();
+    if(!j.length){ if(m){m.textContent='indirizzo non trovato: trascina il segnaposto a mano';m.style.color='var(--bad)';} return; }
+    const lat=parseFloat(j[0].lat), lon=parseFloat(j[0].lon);
+    $('#cmLat').value=lat.toFixed(6); $('#cmLon').value=lon.toFixed(6);
+    if(window._cmGeoMap&&window._cmGeoMark){ window._cmGeoMark.setLatLng([lat,lon]); window._cmGeoMap.setView([lat,lon],17); }
+    if(m){ m.textContent='posizione trovata ✓ — controlla col segnaposto'; m.style.color='var(--ok,green)'; }
+  }catch(e){ if(m){m.textContent='ricerca non riuscita: imposta a mano';m.style.color='var(--bad)';} }
+}
+// Editor posizione per una commessa ESISTENTE (dalla scheda).
+function comGeoForm(id,c){ c=c||{};
+  drawer('Posizione cantiere',`<div class="col" style="gap:var(--s-10)">
+    <div class="small mut">${esc(c.code||'')} · ${esc(c.name||'')}</div>
+    ${comGeoFields(c)}
+    <button class="btn" onclick="comGeoSave('${id}')">Salva posizione</button><div class="cfg-msg small"></div></div>`);
+  setTimeout(comGeoInit,60);
+}
+async function comGeoSave(id){
+  const m=$('.cfg-msg');
+  const b={address:($('#cmAddr')&&$('#cmAddr').value.trim())||null,
+    lat:($('#cmLat')&&$('#cmLat').value!=='')?Number($('#cmLat').value):null,
+    lon:($('#cmLon')&&$('#cmLon').value!=='')?Number($('#cmLon').value):null};
+  if(b.lat==null||b.lon==null){m.textContent='imposta la posizione (indirizzo o segnaposto)';m.style.color='var(--bad)';return;}
+  try{await api('/commesse/'+id,{method:'POST',body:JSON.stringify(b)}); toast('Posizione salvata','ok'); closeDrawer(); openCommessa(id);}
   catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
 }
 // Tab del drawer Commessa: mostra/nasconde i gruppi di sezioni senza ricaricare i dati.
@@ -2240,7 +2309,8 @@ async function openCommessa(id){
       <span><input type="file" id="cmFile" accept="image/*,application/pdf" style="font-size:12px"><button class="btn ghost small" onclick="comAttUpload('${id}')">⬆ Carica</button></span></div>
     <div style="margin-top:var(--s-8)">${attRows}</div></div>`;
   drawer('Commessa · '+esc(c.code),`<div class="col" style="gap:var(--s-12)">
-    <div class="row" style="gap:var(--s-6)"><button class="btn ghost small" onclick="comPrint('${id}')">📄 Stampa dossier</button></div>
+    <div class="row" style="gap:var(--s-6);flex-wrap:wrap"><button class="btn ghost small" onclick="comPrint('${id}')">📄 Stampa dossier</button>
+      ${planner?`<button class="btn ghost small" onclick='comGeoForm("${id}",${JSON.stringify({code:c.code,name:c.name,address:c.address,lat:c.lat,lon:c.lon}).replace(/'/g,"&#39;")})'>📍 ${(c.lat!=null&&c.lon!=null)?'Posizione':'Imposta posizione'}</button>`:''}</div>
     <div><div class="spread"><b>${esc(c.name)}</b>${statusSel}</div>
       <div class="small mut" style="margin-top:var(--s-4)">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}${c.start_date?' · '+esc(c.start_date):''}${c.end_date?' → '+esc(c.end_date):''}${c.budget!=null?' · € '+c.budget.toLocaleString('it-IT'):''}${(c.cig||c.cup)?`<br>${c.cig?'CIG: '+esc(c.cig):''}${c.cup?' · CUP: '+esc(c.cup):''}`:''}</div>
       <div class="row" style="gap:var(--s-8);align-items:center;margin-top:var(--s-8)">${progBar(c.progress)}<b>${c.progress}%</b><span class="small mut">avanzamento complessivo (media pesata)</span></div></div>

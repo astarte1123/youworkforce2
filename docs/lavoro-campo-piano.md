@@ -140,6 +140,12 @@ nello stesso commit. Nessun passo distrugge i dati o umilia il prodotto.
 - ✅ **C1 Squadre + presenze** — `commessa_teams` (riuso teams core) + `commessa_presenze`
   (timbrature entrata/uscita, geofiltro GPS opz.) (mig 0092); assegna/rimuovi squadra; timbra
   entrata/uscita; scheda commessa con squadre e presenze. e2e `qa/cantieri-squadre-e2e.sh` 9/9.
+- ✅ **C1b Geolocalizzazione cantiere** — `commesse.address/lat/lon` (mig 0117): un cantiere ha
+  **coordinate proprie** (spesso NON una sede riusabile). Form commessa con geocoding browser
+  (Nominatim) + segnaposto trascinabile; editor "Posizione" dalla scheda e dalla Mappa cantieri
+  (lista "senza posizione" con azione posiziona). **Mappa cantieri** usa le coord della commessa con
+  **fallback alla sede** collegata. Prima nessun cantiere compariva (0 commesse con sede + 0 sedi con
+  coord). e2e `qa/cantieri-e2e.sh` 10/10.
 - ✅ **C2 Cronoprogramma** — lavorazioni con date (start/end) + dipendenza finish-to-start
   (`depends_on`) (mig 0094); vista **Gantt** leggera con barre + avanzamento; rilevamento
   **ritardo** (fine passata e non completata). e2e `qa/cantieri-cronoprogramma-e2e.sh` 7/7.

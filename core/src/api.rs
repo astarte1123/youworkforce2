@@ -4429,6 +4429,7 @@ pub struct CommessaReq {
     #[serde(default)] pub start_date: Option<String>, #[serde(default)] pub end_date: Option<String>,
     #[serde(default)] pub budget_amount: Option<f64>, #[serde(default)] pub status: Option<String>,
     #[serde(default)] pub note: Option<String>,
+    #[serde(default)] pub address: Option<String>, #[serde(default)] pub lat: Option<f64>, #[serde(default)] pub lon: Option<f64>,
 }
 #[derive(Deserialize)]
 pub struct CommessaPatch {
@@ -4437,6 +4438,7 @@ pub struct CommessaPatch {
     #[serde(default)] pub end_date: Option<String>, #[serde(default)] pub budget_amount: Option<f64>,
     #[serde(default)] pub note: Option<String>, #[serde(default)] pub labor_cost_hour: Option<f64>,
     #[serde(default)] pub client_id: Option<Uuid>, #[serde(default)] pub cig: Option<String>, #[serde(default)] pub cup: Option<String>,
+    #[serde(default)] pub address: Option<String>, #[serde(default)] pub lat: Option<f64>, #[serde(default)] pub lon: Option<f64>,
 }
 pub async fn list_commesse(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
@@ -4444,6 +4446,7 @@ pub async fn list_commesse(State(st): State<AppState>, h: HeaderMap) -> R {
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let rows = sqlx::query(
         "SELECT c.id,c.code,c.name,c.status,COALESCE(cl.name,c.client_name) AS client_name,c.start_date,c.end_date,c.budget_amount::float8 AS budget,
+                c.address AS address,c.lat AS lat,c.lon AS lon,
                 si.name AS site,si.id AS site_id,si.lat AS site_lat,si.lon AS site_lon,
                 COALESCE((SELECT CASE WHEN sum(weight)>0 THEN round(sum(weight*progress_pct)/sum(weight)) ELSE 0 END
                           FROM app.commessa_lavorazioni l WHERE l.commessa_id=c.id),0)::int AS progress,
@@ -4457,6 +4460,8 @@ pub async fn list_commesse(State(st): State<AppState>, h: HeaderMap) -> R {
         "status":r.get::<String,_>("status"),"client_name":r.try_get::<String,_>("client_name").ok(),
         "site":r.try_get::<String,_>("site").ok(),"site_id":r.try_get::<Uuid,_>("site_id").ok(),
         "site_lat":r.try_get::<f64,_>("site_lat").ok(),"site_lon":r.try_get::<f64,_>("site_lon").ok(),
+        "address":r.try_get::<String,_>("address").ok(),
+        "lat":r.try_get::<f64,_>("lat").ok(),"lon":r.try_get::<f64,_>("lon").ok(),
         "start_date":r.try_get::<chrono::NaiveDate,_>("start_date").ok().map(|d|d.to_string()),
         "end_date":r.try_get::<chrono::NaiveDate,_>("end_date").ok().map(|d|d.to_string()),
         "budget":r.try_get::<f64,_>("budget").ok(),
@@ -4472,11 +4477,12 @@ pub async fn create_commessa(State(st): State<AppState>, h: HeaderMap, Json(b): 
     let dup: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.commesse WHERE code=$1").bind(b.code.trim()).fetch_optional(&mut *tx).await.map_err(ise)?;
     if dup.is_some() { return Err(err(StatusCode::CONFLICT, "codice commessa già esistente")); }
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO app.commesse(tenant_id,code,name,site_id,client_name,start_date,end_date,budget_amount,status,note,created_by,client_id,cig,cup)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8::numeric,COALESCE($9,'pianificato'),$10,$11,$12,$13,$14) RETURNING id")
+        "INSERT INTO app.commesse(tenant_id,code,name,site_id,client_name,start_date,end_date,budget_amount,status,note,created_by,client_id,cig,cup,address,lat,lon)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8::numeric,COALESCE($9,'pianificato'),$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id")
         .bind(tid).bind(b.code.trim()).bind(b.name.trim()).bind(b.site_id).bind(&b.client_name)
         .bind(parse_date_opt(&b.start_date)).bind(parse_date_opt(&b.end_date)).bind(b.budget_amount)
         .bind(&b.status).bind(&b.note).bind(s.user_id).bind(b.client_id).bind(&b.cig).bind(&b.cup)
+        .bind(&b.address).bind(b.lat).bind(b.lon)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "commessa_create", json!({"code":b.code,"name":b.name})).await;
@@ -4490,7 +4496,7 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
         "SELECT c.id,c.code,c.name,c.status,COALESCE(cl.name,c.client_name) AS client_name,c.client_id,c.cig,c.cup,
                 c.start_date,c.end_date,c.budget_amount::float8 AS budget,
                 c.labor_cost_hour::float8 AS labor_rate,
-                c.note,c.site_id,si.name AS site,
+                c.note,c.site_id,si.name AS site,c.address AS address,c.lat AS lat,c.lon AS lon,si.lat AS site_lat,si.lon AS site_lon,
                 COALESCE((SELECT CASE WHEN sum(weight)>0 THEN round(sum(weight*progress_pct)/sum(weight)) ELSE 0 END
                           FROM app.commessa_lavorazioni l WHERE l.commessa_id=c.id),0)::int AS progress
          FROM app.commesse c LEFT JOIN app.sites si ON si.id=c.site_id LEFT JOIN app.clients cl ON cl.id=c.client_id WHERE c.id=$1")
@@ -4560,6 +4566,9 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
         "id":c.get::<Uuid,_>("id"),"code":c.get::<String,_>("code"),"name":c.get::<String,_>("name"),
         "status":c.get::<String,_>("status"),"client_name":c.try_get::<String,_>("client_name").ok(),
         "site":c.try_get::<String,_>("site").ok(),"site_id":c.try_get::<Uuid,_>("site_id").ok(),
+        "address":c.try_get::<String,_>("address").ok(),
+        "lat":c.try_get::<f64,_>("lat").ok(),"lon":c.try_get::<f64,_>("lon").ok(),
+        "site_lat":c.try_get::<f64,_>("site_lat").ok(),"site_lon":c.try_get::<f64,_>("site_lon").ok(),
         "start_date":c.try_get::<chrono::NaiveDate,_>("start_date").ok().map(|d|d.to_string()),
         "end_date":c.try_get::<chrono::NaiveDate,_>("end_date").ok().map(|d|d.to_string()),
         "budget":c.try_get::<f64,_>("budget").ok(),"note":c.try_get::<String,_>("note").ok(),
@@ -4581,10 +4590,12 @@ pub async fn update_commessa(State(st): State<AppState>, h: HeaderMap, Path(id):
         "UPDATE app.commesse SET name=COALESCE($2,name),status=COALESCE($3,status),client_name=COALESCE($4,client_name),
          start_date=COALESCE($5,start_date),end_date=COALESCE($6,end_date),budget_amount=COALESCE($7::numeric,budget_amount),
          note=COALESCE($8,note),labor_cost_hour=COALESCE($9::numeric,labor_cost_hour),
-         client_id=COALESCE($10,client_id),cig=COALESCE($11,cig),cup=COALESCE($12,cup) WHERE id=$1")
+         client_id=COALESCE($10,client_id),cig=COALESCE($11,cig),cup=COALESCE($12,cup),
+         address=COALESCE($13,address),lat=COALESCE($14,lat),lon=COALESCE($15,lon) WHERE id=$1")
         .bind(id).bind(&b.name).bind(&b.status).bind(&b.client_name)
         .bind(parse_date_opt(&b.start_date)).bind(parse_date_opt(&b.end_date)).bind(b.budget_amount).bind(&b.note).bind(b.labor_cost_hour)
         .bind(b.client_id).bind(&b.cig).bind(&b.cup)
+        .bind(&b.address).bind(b.lat).bind(b.lon)
         .execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "commessa non trovata")); }

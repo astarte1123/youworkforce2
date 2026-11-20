@@ -24,6 +24,11 @@ say "1 crea commessa"
 CID=$(curl -s $H -X POST $BASE/api/commesse -d "{\"code\":\"$CODE\",\"name\":\"Ristrutturazione\",\"client_name\":\"Globex\"}" | jq1 "print(json.load(sys.stdin).get('id',''))")
 [ -n "$CID" ] && ok || no "no id"
 
+say "1b geolocalizza il cantiere (address+lat+lon) e verifica in lista"
+curl -s $H -X POST $BASE/api/commesse/$CID -d '{"address":"Piazza Duomo, Milano","lat":45.4642,"lon":9.1900}' -o /dev/null
+GEO=$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/commesse | jq1 "c=next(c for c in json.load(sys.stdin) if c['id']=='$CID');print(c.get('lat'),c.get('lon'),c.get('address'))")
+[ "$GEO" = "45.4642 9.19 Piazza Duomo, Milano" ] && ok || no "$GEO"
+
 say "2 codice duplicato -> 409"
 c=$(curl -s -o /dev/null -w '%{http_code}' $H -X POST $BASE/api/commesse -d "{\"code\":\"$CODE\",\"name\":\"X\"}")
 [ "$c" = "409" ] && ok || no "got $c"
