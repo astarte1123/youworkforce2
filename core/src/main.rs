@@ -190,6 +190,8 @@ async fn run() -> anyhow::Result<()> {
         // control plane
         .route("/api/superadmin/login", post(api::superadmin_login))
         .route("/api/superadmin/tenants", post(api::create_tenant).get(api::list_tenants))
+        .route("/api/superadmin/tenants/:id/status", post(api::set_tenant_status))
+        .route("/api/superadmin/tenants/:id", axum::routing::delete(api::delete_tenant))
         .route("/api/superadmin/tenants/:id/modules", post(api::set_module).get(api::super_list_modules))
         .route("/api/superadmin/tenants/:id/traccar", get(api::super_get_traccar).post(api::super_set_traccar))
         .route("/api/superadmin/tenants/:id/integrations", get(api::super_integrations_status))

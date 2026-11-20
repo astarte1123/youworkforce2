@@ -68,7 +68,9 @@ async function shell(){
       <div class="small mut" style="margin-top:6px">Con l'invito, l'admin imposta da solo la password (valido 7 giorni). Colori: vuoto = default YouCo. Logo/colori modificabili anche dopo da ⚙ Amministrazione.</div>
       <div id="c_created"></div>
     </div></div>
-    <h2 style="margin-bottom:12px">Tenant</h2>
+    <div class="row" style="align-items:center;gap:12px;margin-bottom:12px">
+      <h2 style="margin:0">Tenant</h2><div class="grow"></div>
+      <input id="t_search" placeholder="🔎 cerca per nome o slug" oninput="tenantFilter()" style="max-width:280px"></div>
     <div id="list" class="col"></div>
   </div>`;
   $('#c_go').onclick=create; ['c_cp','c_ca','c_ck','c_cs'].forEach(syncPair); slugPrev(); loadPlans(); load();
@@ -137,6 +139,7 @@ async function load(){
   TENANTS=await api('/superadmin/tenants').catch(()=>[]);
   const mods=await Promise.all(TENANTS.map(t=>api('/superadmin/tenants/'+t.id+'/modules').catch(()=>[])));
   $('#list').innerHTML=TENANTS.map((t,i)=>tenantCard(t,mods[i])).join('')||'<div class="empty">nessun tenant</div>';
+  if($('#t_search')&&$('#t_search').value) tenantFilter();
 }
 // Moduli raggruppati per PERIMETRO di prodotto (distingue nettamente le aree funzionali).
 const PERIMETRI=[
@@ -161,10 +164,31 @@ function modGroupsHtml(tid,mods){
   if(other.length) h+=`<div class="small mut" style="margin:8px 0 4px;text-transform:uppercase;letter-spacing:.5px">Altro</div><div class="grid g3">${other.map(m=>modTile(tid,m)).join('')}</div>`;
   return h||'<div class="small mut">nessun modulo disponibile</div>';
 }
+function statusChip(t){ return t.status==='sospeso' ? '<span class="chip" style="background:#fee2e2;color:#b91c1c">sospeso</span>' : ''; }
+function readyChip(t){
+  if(t.invite_pending) return '<span class="chip" style="background:#fef3c7;color:#92400e">invito in sospeso</span>';
+  const ok = (t.mods_active>0) && (t.users_tot>0) && (t.sites_tot>0);
+  return ok ? '<span class="chip s-attivo">operativo</span>'
+            : `<span class="chip" title="moduli:${t.mods_active} · utenti:${t.users_tot} · sedi:${t.sites_tot}">da configurare</span>`;
+}
+async function setStatus(tid,status){
+  if(status==='sospeso' && !confirm('Sospendere il tenant? Gli utenti non potranno accedere.')) return;
+  try{ await api('/superadmin/tenants/'+tid+'/status',{method:'POST',body:JSON.stringify({status})});
+    toast(status==='sospeso'?'Tenant sospeso':'Tenant riattivato','ok'); load(); }catch(e){ toast(e.message,'bad'); }
+}
+async function delTenant(tid,slug){
+  const c=prompt('ELIMINAZIONE DEFINITIVA di «'+slug+'» e di TUTTI i suoi dati.\nScrivi lo slug per confermare:');
+  if(c===null) return;
+  if(c.trim()!==slug){ toast('slug non corrispondente: eliminazione annullata','bad'); return; }
+  try{ await api('/superadmin/tenants/'+tid,{method:'DELETE',body:JSON.stringify({slug})});
+    toast('Tenant eliminato','ok'); load(); }catch(e){ toast(e.message,'bad'); }
+}
+function tenantFilter(){ const q=($('#t_search').value||'').toLowerCase().trim();
+  document.querySelectorAll('#list [data-tfind]').forEach(el=>{ el.style.display = el.dataset.tfind.includes(q)?'':'none'; }); }
 function tenantCard(t,mods){
-  return `<div class="card"><div class="card-h">
+  return `<div class="card" data-tfind="${esc((t.name+' '+t.slug).toLowerCase())}"><div class="card-h">
     <div class="row" style="gap:10px"><div class="ava" ${t.has_logo?`style="background:#fff;padding:3px"`:''}>${t.has_logo?`<img src="/api/superadmin/tenants/${t.id}/logo" style="width:100%;height:100%;object-fit:contain">`:initials(t.name)}</div>
-      <div><b>${esc(t.name)}</b><div class="small mut mono">${esc(t.slug)}.loneworker.eu</div></div></div>
+      <div><b>${esc(t.name)}</b> ${statusChip(t)} ${readyChip(t)}<div class="small mut mono">${esc(t.slug)}.loneworker.eu</div></div></div>
     <div class="row" style="gap:6px">${licChip('App mobile',t.mobile_used,t.mobile_app_licenses)} ${licChip('IoT',t.iot_used,t.iot_device_licenses)}</div>
     </div><div class="card-b">
     ${modGroupsHtml(t.id,mods)}
@@ -174,7 +198,11 @@ function tenantCard(t,mods){
         <button class="btn ghost" onclick="impersonate('${t.id}')">👤 Impersona admin</button>
         <button class="btn ghost" onclick="openTools('${t.id}',this)">Strumenti per modulo</button>
         <button class="btn ghost cfgbtn" onclick="scnOpen('${t.id}',this)">Scenari IoT (casi d'uso)</button>
-        <button class="btn ghost cfgbtn" onclick="mapVisOpen('${t.id}',this)">Visibilità mappe</button></div>
+        <button class="btn ghost cfgbtn" onclick="mapVisOpen('${t.id}',this)">Visibilità mappe</button>
+        ${t.status==='sospeso'
+          ? `<button class="btn ghost" onclick="setStatus('${t.id}','attivo')">▶ Riattiva</button>`
+          : `<button class="btn ghost" onclick="setStatus('${t.id}','sospeso')">⏸ Sospendi</button>`}
+        <button class="btn ghost" style="color:var(--bad)" onclick="delTenant('${t.id}','${esc(t.slug)}')">🗑 Elimina</button></div>
       <div class="small mut" style="margin:12px 0 5px;text-transform:uppercase;letter-spacing:.5px">Integrazioni</div>
       <div class="small mut" style="margin-bottom:6px">YouWorkforce è <b>self-contained</b>: escalation, tracking (edge Teltonika/OsmAnd) e IoT sono motori <b>nativi</b>, nessuna connessione a servizi esterni. I provider AI sono l'unica integrazione esterna, opzionale: richiedono la chiave del cliente.</div>
       <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn ghost cfgbtn" onclick="aiConn('${t.id}',this)">Connessione AI</button></div>

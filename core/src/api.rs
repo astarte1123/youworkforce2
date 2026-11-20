@@ -445,19 +445,28 @@ pub async fn list_tenants(State(st): State<AppState>, h: HeaderMap) -> R {
     require_super(&st, &h).await?;
     // seat app mobile = utenti che usano l'app (lavoratore/reperibile); IoT = dispositivi registrati.
     let rows = sqlx::query(
-        "SELECT t.id,t.slug,t.name,t.created_at,
+        "SELECT t.id,t.slug,t.name,t.created_at,t.status,
             t.mobile_app_licenses, t.iot_device_licenses,
             t.brand_primary,t.brand_ink,t.brand_soft,t.brand_accent,(t.logo IS NOT NULL) AS has_logo,
             (SELECT count(*) FROM app.users u WHERE u.tenant_id=t.id AND u.role IN ('lavoratore','reperibile')) AS mobile_used,
-            (SELECT count(*) FROM app.devices d WHERE d.tenant_id=t.id) AS iot_used
+            (SELECT count(*) FROM app.devices d WHERE d.tenant_id=t.id) AS iot_used,
+            (SELECT count(*) FROM app.tenant_modules m WHERE m.tenant_id=t.id AND m.state='attivo') AS mods_active,
+            (SELECT count(*) FROM app.users u WHERE u.tenant_id=t.id) AS users_tot,
+            (SELECT count(*) FROM app.sites s WHERE s.tenant_id=t.id) AS sites_tot,
+            EXISTS(SELECT 1 FROM app.user_invites i WHERE i.tenant_id=t.id AND i.used_at IS NULL AND i.expires_at>now()) AS invite_pending
          FROM app.tenants t ORDER BY t.created_at")
         .fetch_all(&st.owner_pool).await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({
         "id": r.get::<Uuid,_>("id"), "slug": r.get::<String,_>("slug"), "name": r.get::<String,_>("name"),
+        "status": r.try_get::<String,_>("status").unwrap_or_else(|_| "attivo".into()),
         "mobile_app_licenses": r.try_get::<Option<i32>,_>("mobile_app_licenses").ok().flatten(),
         "iot_device_licenses": r.try_get::<Option<i32>,_>("iot_device_licenses").ok().flatten(),
         "mobile_used": r.get::<i64,_>("mobile_used"),
         "iot_used": r.get::<i64,_>("iot_used"),
+        "mods_active": r.get::<i64,_>("mods_active"),
+        "users_tot": r.get::<i64,_>("users_tot"),
+        "sites_tot": r.get::<i64,_>("sites_tot"),
+        "invite_pending": r.get::<bool,_>("invite_pending"),
         "brand_primary": r.try_get::<Option<String>,_>("brand_primary").ok().flatten(),
         "brand_ink": r.try_get::<Option<String>,_>("brand_ink").ok().flatten(),
         "brand_soft": r.try_get::<Option<String>,_>("brand_soft").ok().flatten(),
@@ -465,6 +474,32 @@ pub async fn list_tenants(State(st): State<AppState>, h: HeaderMap) -> R {
         "has_logo": r.get::<bool,_>("has_logo"),
     })).collect();
     Ok(Json(json!(out)))
+}
+#[derive(Deserialize)] pub struct TenantStatusReq { pub status: String }
+/// Sospende/riattiva un tenant (sospeso = login utenti bloccato). Superadmin.
+pub async fn set_tenant_status(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<TenantStatusReq>) -> R {
+    require_super(&st, &h).await?;
+    if !["attivo","sospeso"].contains(&b.status.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "stato non valido")); }
+    let n = sqlx::query("UPDATE app.tenants SET status=$2 WHERE id=$1").bind(tid).bind(&b.status)
+        .execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "tenant inesistente")); }
+    audit(&st, tid, "superadmin", "tenant_status", json!({"status":b.status})).await;
+    Ok(Json(json!({"ok":true,"status":b.status})))
+}
+#[derive(Deserialize)] pub struct DeleteTenantReq { pub slug: String }
+/// Elimina DEFINITIVAMENTE un tenant e tutti i suoi dati (FK ON DELETE CASCADE). Richiede
+/// la conferma dello slug esatto nel body (anti-errore). Superadmin.
+pub async fn delete_tenant(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<DeleteTenantReq>) -> R {
+    require_super(&st, &h).await?;
+    let slug: Option<String> = sqlx::query_scalar("SELECT slug FROM app.tenants WHERE id=$1").bind(tid)
+        .fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let slug = slug.ok_or_else(|| err(StatusCode::NOT_FOUND, "tenant inesistente"))?;
+    if b.slug.trim() != slug { return Err(err(StatusCode::BAD_REQUEST, "conferma slug non corrispondente")); }
+    // audit PRIMA della delete (le righe audit del tenant sparirebbero con la cascade): riga globale.
+    sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES(NULL,'superadmin','delete_tenant',$1)")
+        .bind(json!({"slug":slug,"tenant_id":tid})).execute(&st.owner_pool).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.tenants WHERE id=$1").bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"ok":true,"slug":slug})))
 }
 
 // ---- superadmin: set licenze + branding del tenant (il form invia sempre tutti i campi) ----
@@ -649,6 +684,7 @@ pub async fn set_module(State(st): State<AppState>, h: HeaderMap, Path(tid): Pat
         let dep = crate::modules::dependents_active(&b.module_code, &active);
         if !dep.is_empty() { warning = Some(format!("moduli attivi che dipendono da questo: {}", dep.join(", "))); }
     }
+    audit(&st, tid, "superadmin", "set_module", json!({"module":b.module_code,"state":b.state})).await;
     Ok(Json(json!({"ok":true,"warning":warning})))
 }
 
@@ -1872,10 +1908,13 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
         Some(s) => s,
         None => return (StatusCode::BAD_REQUEST, Json(json!({"error":"no tenant host"}))).into_response(),
     };
-    let trow = sqlx::query("SELECT id FROM app.tenants WHERE slug=$1").bind(&slug)
+    let trow = sqlx::query("SELECT id,status FROM app.tenants WHERE slug=$1").bind(&slug)
         .fetch_optional(&st.owner_pool).await.ok().flatten();
     let Some(trow) = trow else { return (StatusCode::NOT_FOUND, Json(json!({"error":"tenant not found"}))).into_response() };
     let tid: Uuid = trow.get("id");
+    if trow.try_get::<String,_>("status").ok().as_deref() == Some("sospeso") {
+        return (StatusCode::FORBIDDEN, Json(json!({"error":"tenant sospeso — contatta l'assistenza"}))).into_response();
+    }
     let key = format!("{}|{}", slug, rl_key(&h, &b.email));
     if let Some(ra) = rl_check(&st, &key).await { return too_many(ra); }
     // user lookup under tenant context

@@ -161,6 +161,20 @@ Dopo la creazione, un riepilogo mostra l'URL del tenant e (in modalità invito) 
 
 e2e: `qa/tenant-invite-e2e.sh` (15/15: invito, validazioni, pacchetto, licenze, scenario+demo).
 
+**Governance tenant (Ondata 3).** Dalla card di ogni tenant:
+- **Sospendi / Riattiva** (`POST /api/superadmin/tenants/:id/status`): un tenant **sospeso** blocca il
+  login dei suoi utenti (403); l'impersonazione superadmin per assistenza resta. Stato in `tenants.status`
+  (mig 0120), mostrato come chip.
+- **Elimina** (`DELETE /api/superadmin/tenants/:id`): rimozione **definitiva** con cascade su tutti i
+  dati (106 FK `ON DELETE CASCADE`); richiede di **riscrivere lo slug** per conferma; audit globale
+  prima della cancellazione.
+- **Ricerca** nella lista tenant (per nome/slug) e **badge di prontezza** per tenant: «operativo»
+  (moduli attivi + admin + sede), «da configurare», o «invito in sospeso».
+- **Audit** esteso ai cambi modulo (`set_module`) e licenze/branding.
+
+e2e: `qa/tenant-lifecycle-e2e.sh` (10/10: sospendi/riattiva/login, stato in lista, readiness,
+elimina con conferma slug + cascade, audit).
+
 ## 13-bis. Privacy e audit (GDPR + registro attività)
 
 Voce menu **«Privacy e audit»** (Configurazione, solo `tenant_admin`): export dei dati personali
