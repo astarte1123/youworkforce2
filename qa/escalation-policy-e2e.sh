@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# F3 — Policy di escalation multi-step per gruppo (parità GoAlert) + monthly rotation.
+# F3 — Policy di escalation multi-step per gruppo (parità YWAlert) + monthly rotation.
 #  - CRUD policy (replace-all step: canale+attesa, reorder lato client, repeat)
 #  - il runner nativo USA la policy custom (step0 distintivo = voice vs default sms)
 #  - reset a policy vuota => torna alla ladder derivata (default)

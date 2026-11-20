@@ -46,7 +46,7 @@ disattivati). Ogni loro funzione ha un equivalente **nativo**:
 
 | Ex connettore | Sostituito da (nativo) |
 |---------------|------------------------|
-| GoAlert (on-call/escalation) | **escalation nativa** (default, mig 0057) |
+| YWAlert (on-call/escalation) | **escalation nativa** (default, mig 0057) |
 | Traccar (badge/GPS, server esterno) | **edge nativo** Teltonika Codec8/8E + ingest OsmAnd/HTTP |
 | ThingsBoard (pull telemetria esterna) | **IoT nativo**: `iot` (sensor rules) + scenari "IoT Use Cases" |
 
@@ -69,7 +69,7 @@ cliente): vedi modulo `assistant`.
 
 Due perimetri di prodotto, entrambi autonomi e coesistenti (vedi `moduli-autonomia.md`):
 
-- **Sicurezza lavoratore** = loneworker + goalert/traccar/iot/thingsboard.
+- **Sicurezza lavoratore** = loneworker + traccar/iot/thingsboard (escalation = YWAlert nativo, nessun connettore).
 - **Lavoro sul campo** = interventi/giri/consuntivi/workforce.
 
 Regole d'oro:
@@ -136,7 +136,7 @@ i percorsi basati sul tempo **senza attese reali**. Regola:
   auto-coerente) usa `st.clock.now()`.
 - **Confronti contro timestamp scritti da `now()` SQL** (throttle login, elapsed ronda/turno vs
   `started_at`, watchdog heartbeat vs `last_ping_at`) e **interazioni con sistemi esterni** (shadow
-  GoAlert, annunci Slack, suffissi-ID univoci) restano su `chrono::Utc::now()` (wall-clock), con
+  YWAlert, annunci Slack, suffissi-ID univoci) restano su `chrono::Utc::now()` (wall-clock), con
   commento esplicito nel codice: mescolare clock di test e `now()` SQL falserebbe gli elapsed.
 
 ## Nota per ThingsBoard (prossimo lavoro)

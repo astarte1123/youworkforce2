@@ -6,7 +6,7 @@ use crate::state::{AppState, TenantEvent};
 use crate::{api, privacy};
 
 /// Background worker (system scope, owner connection bypasses RLS).
-/// 1) drains the outbox to GoAlert (at-least-once, retry with backoff)
+/// 1) drains the outbox to YWAlert (at-least-once, retry with backoff)
 /// 2) sweeps durable check-in timers using the controllable clock
 pub async fn run(st: AppState) {
     loop {
@@ -32,7 +32,7 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     // #7 ritenzione GDPR (opt-in YW_RETENTION_DAYS): ~ogni ora (1800 tick * 2s)
     if n % 1800 == 0 { Box::pin(privacy::purge_retention(st)).await; }
     // #4 escalation nativo FASE 2 (consegna in ombra): ~ogni 30s, verso sink di prova, idempotente
-    if n % 15 == 7 { Box::pin(api::escalation_delivery_shadow_scan(st)).await; }
+    if n % 15 == 7 { Box::pin(api::escalation_delivery_scan(st)).await; }
     // F3 annunci Slack on-call (onchange/schedulati): ~ogni minuto, best-effort
     if n % 30 == 11 { Box::pin(api::slack_announce_scan(st)).await; }
     // S1 heartbeat monitor nativo: ~ogni 30s controlla i monitor scaduti
@@ -110,7 +110,7 @@ async fn traccar_poll(st: &AppState) -> anyhow::Result<()> {
 
 /// Watchdog della connessione Traccar (sicurezza): se il server e' irraggiungibile
 /// oltre `conn_down_after` secondi alza un incidente critico `traccar_conn_down`
-/// (escalation GoAlert); al ripristino lo chiude. Un episodio = un incidente.
+/// (escalation YWAlert); al ripristino lo chiude. Un episodio = un incidente.
 async fn conn_watchdog(st: &AppState, tid: Uuid, conn_down_after: i32, now: DateTime<Utc>) -> anyhow::Result<()> {
     let Some(r) = sqlx::query("SELECT reachable,down_since,conn_incident_open,conn_incident_corr FROM app.traccar_poll_state WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await? else { return Ok(()); };
@@ -168,7 +168,7 @@ async fn conn_watchdog(st: &AppState, tid: Uuid, conn_down_after: i32, now: Date
             }
         }
     } else if open {
-        // ripristino: chiudi l'incidente e chiedi a GoAlert di chiudere l'alert
+        // ripristino: chiudi l'incidente e chiedi a YWAlert di chiudere l'alert
         if let Some(corr) = &corr {
             if let Some(row) = sqlx::query("UPDATE app.incidents SET state='chiuso',outcome='connessione Traccar ripristinata',closed_at=now(),version=version+1
                  WHERE tenant_id=$1 AND correlation=$2 AND state<>'chiuso' RETURNING id,etype")
@@ -411,15 +411,15 @@ async fn drain_outbox(st: &AppState) -> anyhow::Result<()> {
         let incident_id = payload.get("incident_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok());
         let _ = attempts; // lease gia' incrementato; la consegna nativa e' idempotente, nessun requeue
         // Consegna NATIVA (self-contained): 'notify' scatena subito il runner nativo
-        // (escalation_delivery_shadow_tenant, idempotente, latenza ~drain); 'close' e' no-op (il
+        // (escalation_delivery_run_tenant, idempotente, latenza ~drain); 'close' e' no-op (il
         // runner nativo smette da se' quando l'incidente risulta chiuso). La riga outbox si chiude.
         sqlx::query("UPDATE app.outbox SET state='done' WHERE id=$1").bind(id).execute(&st.owner_pool).await?;
-        if kind == "notify" || kind == "goalert_notify" {
+        if kind == "notify" {
             if let Some(iid) = incident_id {
                 let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'notify_dispatched',$3)")
                     .bind(tid).bind(iid).bind(json!({"engine":"native"})).execute(&st.owner_pool).await;
             }
-            let _ = Box::pin(crate::api::escalation_delivery_shadow_tenant(st, tid)).await;
+            let _ = Box::pin(crate::api::escalation_delivery_run_tenant(st, tid)).await;
             crate::api::publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"notify_sent","incident_id":incident_id})}).await;
         }
     }

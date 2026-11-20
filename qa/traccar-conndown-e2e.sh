@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SICUREZZA — watchdog della CONNESSIONE Traccar. Se il server e' irraggiungibile
 # oltre la soglia, il sistema di sicurezza e' cieco: deve alzare un incidente
-# critico (escalation GoAlert) e chiuderlo al ripristino. Simula il down puntando
+# critico (escalation YWAlert) e chiuderlo al ripristino. Simula il down puntando
 # la connessione a una porta morta, poi ripristina.
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"
@@ -37,7 +37,7 @@ OPEN=$(conndown | python -c 'import sys,json;d=json.load(sys.stdin);print(len([x
 
 # escalation richiesta? outbox goalert_notify per quell'incidente
 GN=$(sql "SELECT count(*) FROM app.outbox o WHERE o.tenant_id=$TIDQ AND o.kind='goalert_notify' AND o.payload->>'etype'='traccar_conn_down'")
-[ "${GN:-0}" -ge 1 ] && ok "escalation GoAlert richiesta per il down (outbox goalert_notify)" || no "nessuna escalation" "goalert_notify=$GN"
+[ "${GN:-0}" -ge 1 ] && ok "escalation YWAlert richiesta per il down (outbox goalert_notify)" || no "nessuna escalation" "goalert_notify=$GN"
 
 # idempotenza: niente raffica (un episodio = un incidente)
 sleep 4
@@ -52,7 +52,7 @@ sleep 8
 STILL=$(conndown | python -c 'import sys,json;print(len([x for x in json.load(sys.stdin) if x.get("state")!="chiuso"]))')
 [ "${STILL:-1}" -eq 0 ] && ok "ripristino connessione -> incidente chiuso (recovery automatico)" || no "non chiuso al ripristino" "aperti=$STILL"
 GC=$(sql "SELECT count(*) FROM app.outbox o WHERE o.tenant_id=$TIDQ AND o.kind='goalert_close' AND o.payload->>'etype'='traccar_conn_down'")
-[ "${GC:-0}" -ge 1 ] && ok "chiusura alert GoAlert richiesta (outbox goalert_close)" || no "nessuna chiusura GoAlert" "goalert_close=$GC"
+[ "${GC:-0}" -ge 1 ] && ok "chiusura alert YWAlert richiesta (outbox goalert_close)" || no "nessuna chiusura YWAlert" "goalert_close=$GC"
 
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

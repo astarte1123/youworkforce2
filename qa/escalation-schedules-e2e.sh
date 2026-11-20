@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Parità Schedules GoAlert — G-A assegnazioni multiple (coperture con finestra) + G-B vista Shifts.
+# Parità Schedules YWAlert — G-A assegnazioni multiple (coperture con finestra) + G-B vista Shifts.
 # Tenant: globex (native). Stato ripristinato a fine run.
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"

@@ -3,8 +3,8 @@
 Ogni tenant riceve dal superadmin un sottoinsieme di moduli (`tenant_modules.state='attivo'`). I due
 perimetri di prodotto devono funzionare **da soli** e **insieme**:
 
-- **Sicurezza lavoratore** — `loneworker` (centrale, check-in, SOS, escalation) + connettori
-  `goalert`/`traccar`/`thingsboard`/`iot`.
+- **Sicurezza lavoratore** — `loneworker` (centrale, check-in, SOS, escalation YWAlert nativa) +
+  sorgenti `traccar`/`thingsboard`/`iot`.
 - **Lavoro sul campo** — `interventi` (ordini), `giri` (ronde), `consuntivi`, `workforce` (turni).
 
 ## Principio di gating

@@ -6,7 +6,7 @@ nessuna console esterna.
 
 Il **motore di escalation è nativo** di YouWorkforce ed è quello usato di default: quando succede
 un allarme, avvisa la persona giusta nel modo giusto (SMS, chiamata, email, Slack) e continua a
-insistere finché qualcuno prende in carico. **GoAlert resta come rete di sicurezza / rollback**
+insistere finché qualcuno prende in carico. **YWAlert resta come rete di sicurezza / rollback**
 (si può riattivare dal superadmin), ma non è più necessario.
 
 > L'escalation **non appartiene solo a "Sicurezza lavoratore"**: serve qualunque modulo che
@@ -31,7 +31,7 @@ esce davvero): la logica di escalation funziona comunque e resta testabile.
 ### 1.2 Motore di escalation (superadmin → scheda tenant)
 Nel pannello superadmin, per ogni tenant, **Motore escalation**:
 - **nativo** (default, consigliato): il motore di YouWorkforce consegna e gestisce ack/chiusura.
-- **GoAlert** (rollback): rimette GoAlert come motore. Da usare solo per tornare indietro.
+- **YWAlert** (rollback): rimette YWAlert come motore. Da usare solo per tornare indietro.
 
 ---
 
@@ -163,7 +163,7 @@ all'URL ottieni un **abbonamento per singolo gruppo** (solo i turni calcolati di
 utile per iscriversi al calendario di un team specifico.
 
 **Diagnostica motore** — mostra il motore corrente, il **report delle consegne** (quante/stato) e il
-**report di parità** (confronto nativo vs GoAlert quando GoAlert è presente).
+**report di parità** (confronto nativo vs YWAlert quando YWAlert è presente).
 
 ---
 
@@ -179,7 +179,7 @@ utile per iscriversi al calendario di un team specifico.
 - **Opt-out rispettato**: un recapito che ha fatto STOP/9 non riceve più nulla finché non viene
   riattivato (START o Riabilita + ri-verifica).
 - **Rientro**: quando la condizione rientra, l'incidente si chiude.
-- **Self-sufficient**: il motore nativo funziona **senza GoAlert**. Se GoAlert è provvisto, viene
+- **Self-sufficient**: il motore nativo funziona **senza YWAlert**. Se YWAlert è provvisto, viene
   usato solo come rete di sicurezza e per il confronto di parità.
 
 ---
@@ -199,7 +199,7 @@ utile per iscriversi al calendario di un team specifico.
 
 ## Riepilogo campi
 
-- **Motore**: nativo (default) / GoAlert (rollback, superadmin).
+- **Motore**: nativo (default) / YWAlert (rollback, superadmin).
 - **Reperibilità**: tutti insieme / a turni (orario·giorn.·settim.·mensile + durata).
 - **Copertura**: 24/7 oppure fasce (dalle–alle + giorni). **Handoff**: ora + giorno.
 - **Policy step**: canale (SMS/Voce/Email/Slack) + attesa minuti, riordino, **ripeti N**.

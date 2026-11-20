@@ -42,7 +42,7 @@ escalation). Soglia % impostabile con `battery_min`.
 - **Push (fast-path opzionale):** il forwarding di Traccar verso di noi riduce la latenza; va impostato all'avvio del container. I due convergono senza duplicare.
 - **Watchdog badge:** badge silente oltre soglia → `perdita_contatto` anche se Traccar non manda `deviceOffline`.
 - **Watchdog connessione:** Traccar irraggiungibile oltre soglia → `traccar_conn_down` + escalation; al ripristino l'incidente si chiude da solo. **Il sistema non resta mai cieco in silenzio.**
-- Ogni allarme critico apre un incidente e richiede l'escalation a GoAlert; la chiusura dell'incidente chiude anche l'alert GoAlert (close-loop).
+- Ogni allarme critico apre un incidente e richiede l'escalation a YWAlert; la chiusura dell'incidente chiude anche l'alert YWAlert (close-loop).
 
 ## Allarmi Traccar mappati
 `sos`→sos/man_down · `fallDown/accident`→man_down · `removing/tampering`→manomissione_badge ·
@@ -61,7 +61,7 @@ escalation). Soglia % impostabile con `battery_min`.
 | SOS / panic button | `sos`→sos/man_down (critico) | device/app, escalato da noi |
 | Check-in ignorato | mancato_checkin (critico) | modulo check-in PWA (non Traccar) |
 | Geolocalizzazione / beacon indoor | posizione sincronizzata, incidente con lat/lon | device che invia fix GPS/rete/beacon |
-| Smistamento (centrale, RSPP, preposti, colleghi) | Gruppi allarme: ogni etype → squadra GoAlert (SMS/voce/push, on-call) | tenant_admin configura |
+| Smistamento (centrale, RSPP, preposti, colleghi) | Gruppi allarme: ogni etype → squadra YWAlert (SMS/voce/push, on-call) | tenant_admin configura |
 | Gestione falso allarme | ack operatore + chiusura con **esito** (registrato) | operatore |
 | Post-evento / audit / DVR | incident_timeline completo (notify_requested, goalert_sent, human_ack, transition+esito, goalert_closed) + comandi + posizione | tracciato automaticamente |
 
@@ -80,12 +80,12 @@ reale. La gestione del falso allarme lato backend avviene con ack + chiusura con
   **provisioning** (un device che non raggiunge "attivo al primo fix" è visibile lì).
 - **Degrado di Traccar** (autentica ma risponde 5xx sui dati): trattato come
   irraggiungibile → scatta `traccar_conn_down` (non resta mai cieco in silenzio).
-- **GoAlert irraggiungibile a lungo**: l'outbox ritenta con **backoff esponenziale**
+- **YWAlert irraggiungibile a lungo**: l'outbox ritenta con **backoff esponenziale**
   (5s→300s). Gli invii di sicurezza (`goalert_notify`/`goalert_close`) **non vengono mai
-  abbandonati**: ritentano a oltranza finché non passano, così un outage di GoAlert non può
+  abbandonati**: ritentano a oltranza finché non passano, così un outage di YWAlert non può
   far sparire un SOS. Gli invii non critici capitolano in `error` dopo 6 tentativi. Le
   notifiche bloccate sono visibili nella card salute (`outbox_stuck` + ultimo errore) e
-  segnalate sul bus. Un canale di trasporto alternativo a GoAlert resta un'estensione futura.
+  segnalate sul bus. Un canale di trasporto alternativo a YWAlert resta un'estensione futura.
 
 ## Verifica (terminale)
 ```bash

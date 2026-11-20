@@ -19,6 +19,11 @@ jobs:
       YW_SECRET_KEY: yw-ci-secret-key
       TEST_CLOCK: "1"
       YW_SEED_DEMO: "1"
+      # motore di escalation YWAlert (nativo): sink webhook per la prova di recapito reale
+      # (ywalert-delivery-e2e). Il receiver è avviato dallo script stesso su :18099.
+      YW_ESC_SINK_URL: http://127.0.0.1:18099/
+      YW_ESC_SINK_LOG: /tmp/yw_sink_shared.log
+      YW_ESC_FROM: "+390000000000"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -30,6 +35,20 @@ jobs:
       - name: build console
         run: go build -o /tmp/console .
         working-directory: console
+      - name: start escalation sink receiver (YWAlert delivery proof)
+        run: |
+          nohup python3 - "$YW_ESC_SINK_LOG" > /tmp/yw_recv.log 2>&1 <<'PY' &
+          import http.server,sys
+          f=open(sys.argv[1],"ab")
+          class H(http.server.BaseHTTPRequestHandler):
+              def do_POST(self):
+                  n=int(self.headers.get("content-length",0)); b=self.rfile.read(n)
+                  f.write(b+b"\n"); f.flush()
+                  self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+              def log_message(self,*a): pass
+          http.server.HTTPServer(("127.0.0.1",18099),H).serve_forever()
+          PY
+          for i in $(seq 1 10); do curl -sf -X POST http://127.0.0.1:18099/ -d ping && break; sleep 1; done
       - name: start core
         run: |
           ./core/target/release/yw-core &
@@ -37,7 +56,8 @@ jobs:
       - name: run core suites
         run: MODE=core bash qa/run-all.sh
 
-  # Best-effort (non blocca): suite dei motori reali (GoAlert/Traccar/ThingsBoard).
+  # Best-effort (non blocca): suite dei motori esterni residui (Traccar/ThingsBoard).
+  # NB: l'escalation (YWAlert) è NATIVA e gira nel gate 'core', non qui.
   # L'orchestrazione dei container è pesante; i fallimenti sono segnalati ma non bloccano.
   engines:
     runs-on: ubuntu-latest
@@ -56,7 +76,6 @@ jobs:
       YW_SECRET_KEY: yw-ci-secret-key
       TEST_CLOCK: "1"
       YW_SEED_DEMO: "1"
-      GOALERT_BASE: http://localhost:8082
       TR: http://localhost:8083
       TB: http://localhost:8084
     steps:
@@ -67,12 +86,11 @@ jobs:
       - name: build core
         run: cargo build --release
         working-directory: core
-      - name: start engines (GoAlert / Traccar / ThingsBoard)
+      - name: start engines (Traccar / ThingsBoard)
         run: |
-          bash qa/run-goalert.sh || true
           bash qa/run-traccar.sh || true
           bash qa/run-thingsboard.sh || true
-      - name: start core (with GoAlert transport)
+      - name: start core
         run: |
           ./core/target/release/yw-core &
           for i in $(seq 1 30); do curl -sf http://localhost:8080/health && break; sleep 1; done

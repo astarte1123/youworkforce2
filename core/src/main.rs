@@ -1,6 +1,6 @@
 mod state; mod clock; mod auth; mod db; mod worker; mod api; mod crypto;
-#[allow(dead_code)] mod escalation; // #4 FASE 0: libreria pura (non ancora wirata; GoAlert resta il motore)
-mod delivery; // #4 FASE 2: adapter di consegna in ombra (sink di prova; GoAlert resta il motore)
+#[allow(dead_code)] mod escalation; // #4 FASE 0: libreria pura (non ancora wirata; YWAlert resta il motore)
+mod delivery; // #4 FASE 2: adapter di consegna in ombra (sink di prova; YWAlert resta il motore)
 mod modules; // #3 FASE 1: registry manifest moduli (dipendenze + metadata)
 mod teltonika; // edge nativo Teltonika Codec8/8E su TCP (decode-edge senza Traccar)
 mod mqtt; // broker MQTT nativo (IoT): ingest telemetria + downlink comandi su TCP 1883
@@ -101,7 +101,7 @@ fn main() -> anyhow::Result<()> {
     // frame profondi; sotto carico concorrente il default tokio (2 MB) andava in stack-overflow.
     // Default YW 32 MB (era 16, marginale al picco di concorrenza: un worker sforava). Oltre allo
     // stack, i frame profondi sono ridotti con Box::pin sui leaf caldi (esc_dispatch) e con
-    // l'esecuzione per-tenant su task dedicato in escalation_delivery_shadow_scan.
+    // l'esecuzione per-tenant su task dedicato in escalation_delivery_scan.
     let stack = std::env::var("YW_WORKER_STACK_MB").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(32);
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -348,7 +348,7 @@ async fn run() -> anyhow::Result<()> {
     let app = app
         .route("/api/oncall", get(api::list_oncall).post(api::create_oncall))
         .route("/api/oncall/:id", axum::routing::delete(api::delete_oncall))
-        // GoAlert parity: impostazioni, recapiti+verifica, assenze, manutenzione, calendario
+        // YWAlert parity: impostazioni, recapiti+verifica, assenze, manutenzione, calendario
         .route("/api/oncall-settings", get(api::oncall_settings_get).post(api::oncall_settings_set))
         .route("/api/oncall-contacts", get(api::oncall_contacts))
         .route("/api/oncall-contacts/verify", post(api::oncall_contact_verify))

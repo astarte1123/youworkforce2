@@ -11,11 +11,11 @@ forza lavoro, IoT e consuntivi — un solo prodotto, attivabile per capacità e 
 - Modularità per profili (Sicurezza dimostrato end-to-end).
 
 ## Integrazioni sperimentali / da verificare sul sito
-GoAlert reale (2 livelli, canali), badge Traccar + firmware, ThingsBoard, YouWorker.ai (RAG/STT),
+YWAlert reale (2 livelli, canali), badge Traccar + firmware, ThingsBoard, YouWorker.ai (RAG/STT),
 OpenDuty. Nessuna è provata in questa build.
 
 ## Prerequisiti sito/hardware per avviare il pilota
-1. Istanza GoAlert autorizzata + recapiti di prova controllati (no numeri d'emergenza reali).
+1. Istanza YWAlert autorizzata + recapiti di prova controllati (no numeri d'emergenza reali).
 2. Badge/gateway con modello e firmware documentati; campione di eventi originali.
 3. Staging con DNS `{slug}.loneworker.eu` + TLS; MFA superadmin.
 4. Procedura di soccorso concordata e responsabilità di chi risponde.

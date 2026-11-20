@@ -23,7 +23,7 @@ Cinque fatti alla radice di ogni gap di portabilità:
    segreti `enc:v1:` a riposo.
 5. **Un'unica pipeline condivisa ingest→incident→escalation.** `persist_ingest` + `eval_sensor_rules`
    + l'insieme `CRITICAL` alzano `incidents`, scrivono `incident_timeline`, accodano
-   `outbox('goalert_notify')` in una tx; il worker drena l'outbox→GoAlert e fa `traccar_poll`/
+   `outbox('goalert_notify')` in una tx; il worker drena l'outbox→YWAlert e fa `traccar_poll`/
    `thingsboard_poll` cross-tenant su `owner_pool`. È il tessuto connettivo che accoppia
    traccar/iot/thingsboard/loneworker → goalert.
 
@@ -38,7 +38,7 @@ Sicurezza field: check-in timer, SOS, presenza turno, console incidenti/centrale
 `checkins`, `shifts`, `operator_sites`, cluster alarm-routing (`alarm_groups`, `alarm_group_members`,
 `alarm_routing`); condivide la catena incidenti core. **Dipendenza dura da `goalert`**. Hook AI:
 `checkin_ai_anomaly`, `incident_ai_summary`. Gap: la console legge incidenti prodotti da ALTRI moduli →
-non è davvero standalone (è il *consumer* della pipeline); SOS hardcoda GoAlert via outbox; overlap
+non è davvero standalone (è il *consumer* della pipeline); SOS hardcoda YWAlert via outbox; overlap
 alarm-routing con `workforce`; nessun teardown. Piano: tenere `events`/`incidents`/`outbox` come
 **core platform** (non loneworker-owned) e far *sottoscrivere* loneworker all'evento incidente; dep
 goalert esplicita nel manifest; lifecycle con drain timer + invariante "no disable con incidenti aperti".
@@ -48,7 +48,7 @@ Unico motore escalation. Possiede `goalert_services` (enc), `goalert_routing`, `
 `user_phone`. Tutto il critico passa da `outbox('goalert_notify')`. Gap: contratto implicito (le stringhe
 kind dell'outbox sono l'interfaccia di fatto); segreti non-RLS; nessuna interfaccia "escalation provider"
 formale. Piano: promuovere i kind a **interfaccia EscalationProvider** (trait Rust `notify/close/ack/status`,
-GoAlert unico impl); i chiamanti accodano richieste provider-agnostiche; manifest `provides: escalation`.
+YWAlert unico impl); i chiamanti accodano richieste provider-agnostiche; manifest `provides: escalation`.
 
 ### traccar — connettore GPS badge (Effort: L)
 Superficie più grande. Possiede `traccar_connections`, `traccar_poll_state`, `geofences`,
@@ -126,7 +126,7 @@ ModuleManifest { code, name, kind: product|connector, available,
 | enable(tenant) | superadmin → attivo/da_configurare | **auto-provision**: seed default, crea righe connettore `da_configurare`, registra provider/poll, enforce `requires`. SM: `non_abilitato → da_configurare → attivo`/`degradato` |
 | disable(tenant) | → in_disattivazione/non_abilitato | **teardown**: ferma job/poll, drena in-flight, **rifiuta se invariante** (loneworker+incidenti aperti), storico leggibile ai ruoli autorizzati |
 | uninstall(tenant) | rimozione hard | drop/anonimizza per retention (opt-in, audited) |
-| reconcile(tenant) | periodico/on-config | converge desiderato↔attuale (registra poll, ri-provisiona GoAlert, re-sync recapiti) |
+| reconcile(tenant) | periodico/on-config | converge desiderato↔attuale (registra poll, ri-provisiona YWAlert, re-sync recapiti) |
 | health(tenant) | endpoint stato | probe upstream → mappa su `attivo`/`degradato` |
 
 Così i 5 stati UI (`non_abilitato · da_configurare · attivo · degradato · in_disattivazione`) hanno un
@@ -176,5 +176,5 @@ attivo invece degli join hardcoded.
 - loneworker↔console: incidenti prodotti da altri moduli; disabilitare moduli device non deve orfanare la
   console → tenere `events`/`incidents`/`outbox` come core.
 - `devices`/`sites`/catalog condivisi → infrastruttura core, non di un modulo.
-- invariante "unico motore" GoAlert → `EscalationProvider` single-impl per policy.
+- invariante "unico motore" YWAlert → `EscalationProvider` single-impl per policy.
 - teardown/retention → disable conserva lo storico; solo `uninstall` rimuove dati, sempre audited.

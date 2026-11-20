@@ -4439,7 +4439,7 @@ async function ocCalendarRevoke(){
 async function ocContacts(btn){
   const out=$('#ocContactsOut'); out.innerHTML='<div class="small mut">Carico…</div>';
   try{ const r=await api('/oncall-contacts');
-    // Recapiti NATIVI: telefono dell'utente + stato verifica (OTP via SMS). Nessun GoAlert.
+    // Recapiti NATIVI: telefono dell'utente + stato verifica (OTP via SMS). Nessun YWAlert.
     out.innerHTML = (r.members||[]).map(m=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
       <b class="small">${esc(m.email)}</b>
       <div class="row small" style="gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px">

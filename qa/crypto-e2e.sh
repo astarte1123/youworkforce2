@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# P3 — encryption-at-rest dei segreti upstream (password Traccar, gql_pass GoAlert).
+# P3 — encryption-at-rest dei segreti upstream (password Traccar). NB: YWAlert è nativo,
+# nessun segreto esterno da cifrare lato escalation.
 # Richiede core avviato con YW_SECRET_KEY. Verifica che i valori nel DB siano cifrati
 # ("enc:v1:...") e che le integrazioni funzionino ancora (decifratura trasparente).
 set -uo pipefail
@@ -16,15 +17,7 @@ case "$TR" in
   *)        no "password Traccar in chiaro" "$TR";;
 esac
 
-# 2) gql_pass GoAlert cifrata a riposo (se presente)
-GA=$(sql "SELECT gql_pass FROM app.goalert_services WHERE gql_pass IS NOT NULL LIMIT 1")
-case "$GA" in
-  enc:v1:*) ok "gql_pass GoAlert cifrata a riposo (enc:v1:)";;
-  "")       ok "nessun gql_pass salvato (niente da cifrare)";;
-  *)        no "gql_pass in chiaro" "$GA";;
-esac
-
-# 3) decifratura trasparente: il poller Traccar fa login con la password decifrata
+# 2) decifratura trasparente: il poller Traccar fa login con la password decifrata
 #    (se fosse decifrata male, reachable sarebbe false)
 JA=$(mktemp)
 curl -s -o /dev/null -c "$JA" -X POST "http://localhost:8080/api/login" -H 'content-type: application/json' \

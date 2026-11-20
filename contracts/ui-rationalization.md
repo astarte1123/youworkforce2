@@ -54,7 +54,7 @@ Tre fusioni strutturali: **Piantine → tab dentro Mappa** (segmented `Allarmi �
 
 ## 7. reperibile — il buco funzionale — ✅ RISOLTO (commit vista "I miei allarmi")
 - **Obiettivo:** sapere quando è reperibile; ricevere/agire sugli allarmi escalati; note.
-- **Problema (era strutturale):** gli incidenti possono essere *assegnati a* `reperibile` e GoAlert vi escala, ma non aveva una vista incidenti → la persona a cui l'allarme escalava non poteva vederlo/agirlo in app (solo la notifica GoAlert).
+- **Problema (era strutturale):** gli incidenti possono essere *assegnati a* `reperibile` e YWAlert vi escala, ma non aveva una vista incidenti → la persona a cui l'allarme escalava non poteva vederlo/agirlo in app (solo la notifica YWAlert).
 - **Soluzione implementata:** nuova voce menu **"I miei allarmi"** (`vMieiAllarmi`, ruoli `reperibile`+`responsabile`, modulo loneworker): lista incidenti aperti prioritizzati, badge on-call da `/oncall-now`, tocco → drawer incidente con **Prendi in carico** e **Chiudi con esito**. Backend: `ack_incident`/`close_incident` ora ammettono il ruolo `reperibile` (oltre a operatore/tenant_admin); `list_incidents` era già aperto (filtrato per sito). Drawer: `canResp=['operatore','tenant_admin','reperibile']` per ack/close; assegna/nota restano operatore/admin.
 - **Residuo:** integrazione con Diario/note della PWA lavoratore (opzionale).
 
@@ -64,9 +64,9 @@ Tre fusioni strutturali: **Piantine → tab dentro Mappa** (segmented `Allarmi �
 - **Proposta:** **badge "Sola lettura"** in topbar; promuovere **Report** in cima + Panoramica = sintesi compliance (incidenti aperti, tempi di risposta già calcolati); stati empty/forbidden che dicono "visibile in sola lettura".
 
 ## 9. superadmin
-- **Obiettivo:** creare tenant; moduli/licenze; cablare connessioni motori (Traccar/TB/GoAlert/AI); impersonare per supporto; scenari demo.
+- **Obiettivo:** creare tenant; moduli/licenze; cablare connessioni motori (Traccar/TB/YWAlert/AI); impersonare per supporto; scenari demo.
 - **Problemi:** **~10 bottoni per tenant** sulla card principale (muro illeggibile a scala); nessun search/filtro/sort; **due vocabolari** config ("Connessione" vs "Config" vs "Trasporto notifiche" vs "Ambienti"); **tre pattern di conferma** diversi (askConfirm / arm-timer a due click / toggle senza conferma).
-- **Proposta:** **collassare ogni tenant in una riga compatta** (logo, nome, chip licenze, semaforo integrazioni — i dot `loadInteg` sono già perfetti), che si espande in dettaglio a **tab** (*Moduli & licenze · Integrazioni · Ambienti demo · Branding*); azioni primarie di riga = Apri · Impersona; **un solo pattern di conferma** (askConfirm per scnRemove e toggle moduli); **search tenant**; rinomine ("Connessione Traccar"→"Traccar · connessione", "Config Traccar"→"Traccar · impostazioni avanzate", "Trasporto notifiche"→"GoAlert · canali (SMS/email)", "Ambienti"→"Scenari demo").
+- **Proposta:** **collassare ogni tenant in una riga compatta** (logo, nome, chip licenze, semaforo integrazioni — i dot `loadInteg` sono già perfetti), che si espande in dettaglio a **tab** (*Moduli & licenze · Integrazioni · Ambienti demo · Branding*); azioni primarie di riga = Apri · Impersona; **un solo pattern di conferma** (askConfirm per scnRemove e toggle moduli); **search tenant**; rinomine ("Connessione Traccar"→"Traccar · connessione", "Config Traccar"→"Traccar · impostazioni avanzate", "Trasporto notifiche"→"YWAlert · canali (SMS/email)", "Ambienti"→"Scenari demo").
 
 ## 10. Cross-cutting
 - **10.2 Icone uniche** per ogni voce nav (oggi `home`×3, `receipt`×3, `sliders`×4).

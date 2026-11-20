@@ -2,10 +2,10 @@
 # End-to-end proof of the REAL Traccar badge source (UPSTREAM REALE):
 #   device (OsmAnd protocol) -> Traccar 6.x (real) -> event forwarding
 #     -> core adapter /api/ingress/traccar -> normalized SOS -> incident
-#       -> outbox -> GoAlert (real, if GOALERT_BASE set) -> timeline.
+#       -> outbox -> YWAlert (real, if GOALERT_BASE set) -> timeline.
 #
 # Prereqs: qa/run-traccar.sh has been run; core on :8080 (GOALERT_BASE set for the
-# UPSTREAM REALE GoAlert step, otherwise that step is SIMULATO and still passes shape).
+# UPSTREAM REALE YWAlert step, otherwise that step is SIMULATO and still passes shape).
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"
 OSMAND="${OSMAND:-http://localhost:5055}"
@@ -46,7 +46,7 @@ echo "   incident $IID -> $INFO"
 echo "$INFO" | grep -q '^sos ' && ok "mapped to etype=sos (critical)" || no "wrong etype: $INFO"
 echo "$INFO" | grep -q 'Milano' && ok "site inherited from device (Milano)" || no "site not inherited: $INFO"
 
-echo "== 3) timeline shows notify from source=traccar and GoAlert ack =="
+echo "== 3) timeline shows notify from source=traccar and YWAlert ack =="
 TL=""
 for i in $(seq 1 6); do
   TL=$(curl -s -b "$J" -H 'x-tenant-slug: acme' "$BASE/api/incidents/$IID/timeline")
@@ -54,9 +54,9 @@ for i in $(seq 1 6); do
 done
 echo "$TL" | grep -q '"source": *"traccar"' || echo "$TL" | grep -q '"source":"traccar"' && ok "notify_requested carries source=traccar" || no "no source=traccar in timeline"
 echo "$TL" | grep -q goalert_sent && ok "goalert_sent present" || no "no goalert_sent"
-if echo "$TL" | grep -q 'UPSTREAM REALE'; then ok "GoAlert step profile: UPSTREAM REALE"; else
-  echo "INFO  GoAlert step is SIMULATO (GOALERT_BASE not set) — set it for UPSTREAM REALE"; fi
-echo "$TL" | grep -q "\"dedup\": *\"$NEWCORR\"" || echo "$TL" | grep -q "\"dedup\":\"$NEWCORR\"" && ok "GoAlert dedup carries the Traccar correlation" || no "dedup missing correlation"
+if echo "$TL" | grep -q 'UPSTREAM REALE'; then ok "YWAlert step profile: UPSTREAM REALE"; else
+  echo "INFO  YWAlert step is SIMULATO (GOALERT_BASE not set) — set it for UPSTREAM REALE"; fi
+echo "$TL" | grep -q "\"dedup\": *\"$NEWCORR\"" || echo "$TL" | grep -q "\"dedup\":\"$NEWCORR\"" && ok "YWAlert dedup carries the Traccar correlation" || no "dedup missing correlation"
 
 echo "== $PASS passed, $FAIL failed =="
 exit $FAIL

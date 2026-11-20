@@ -6,7 +6,7 @@
 - Centrale: il flusso live mostra "flusso interrotto"; al ritorno riconcilia dal backend.
 - Azione: verificare sorgente; procedura di sito alternativa. L'app dichiara l'assenza di connettività.
 
-## GoAlert indisponibile
+## YWAlert indisponibile
 - L'outbox accumula `pending` → il worker ritenta (lease 30s, backoff).
 - Dopo 6 tentativi → stato `error` + evento bus `notify_failed` (allarme operativo / degrado).
 - L'incidente **resta in centrale**: nessun secondo motore di escalation viene creato.
@@ -33,7 +33,7 @@ docker exec ywdb pg_dump -U postgres youworkforce > backup.sql     # backup
 ## CI / run-all (regressione completa)
 `qa/run-all.sh` esegue le suite e2e contro lo stack in esecuzione, raggruppate per dipendenza:
 - `MODE=core` — 31 suite che richiedono solo core+Postgres (gate CI **obbligatorio**).
-- `MODE=engines` — 16 suite affidabili dei motori (GoAlert/Traccar/ThingsBoard); auto-SKIP se un motore è giù. In CI è un job **best-effort** (`continue-on-error`).
+- `MODE=engines` — 16 suite affidabili dei motori (YWAlert/Traccar/ThingsBoard); auto-SKIP se un motore è giù. In CI è un job **best-effort** (`continue-on-error`).
 - `MODE=all` (default) — core + engines.
 - `RUN_SETUP=1` — include anche le 5 suite che richiedono setup esterno o un acme appena seedato
   (`goalert-e2e` serve KEY da `goalert-setup.sh`; `goalert-delivery` serve un receiver webhook;

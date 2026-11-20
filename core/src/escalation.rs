@@ -2,7 +2,7 @@
 //!
 //! Decide *chi* è reperibile a un istante t (on-call resolver) e *quando* avanzare
 //! un'escalation (macchina a stati). Nessun I/O, nessuna rete, nessun DB: solo logica
-//! deterministica e testabile. GoAlert resta il motore in produzione finché questa libreria
+//! deterministica e testabile. YWAlert resta il motore in produzione finché questa libreria
 //! non supera la validazione a specchio (shadow, fasi successive del progetto).
 //!
 //! Limiti noti di FASE 0 (documentati, da chiudere nelle fasi successive):
@@ -84,15 +84,15 @@ impl Rotation {
         self.members.get(idx).copied()
     }
 
-    /// Prossimo handoff STRETTAMENTE dopo `t` (`Rotation.EndTime` di GoAlert).
+    /// Prossimo handoff STRETTAMENTE dopo `t` (`Rotation.EndTime` di YWAlert).
     pub fn end_time(&self, t: DateTime<Utc>) -> DateTime<Utc> { self.boundary(self.k_le(t) + 1) }
-    /// Boundary più recente <= t (`Rotation.StartTime` di GoAlert).
+    /// Boundary più recente <= t (`Rotation.StartTime` di YWAlert).
     pub fn start_time(&self, t: DateTime<Utc>) -> DateTime<Utc> { self.boundary(self.k_le(t)) }
 }
 
-/// Stato persistente di una rotation, come GoAlert (`rotation_state`): `position` e `shift_start`.
+/// Stato persistente di una rotation, come YWAlert (`rotation_state`): `position` e `shift_start`.
 /// Alla creazione: `position = 0`, `shift_start = now()` (semina). Poi avanza di 1 a ogni boundary.
-/// Questo rende l'indice indipendente da quanto `start` è nel passato (combacia con GoAlert).
+/// Questo rende l'indice indipendente da quanto `start` è nel passato (combacia con YWAlert).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RotationState { pub position: usize, pub shift_start: DateTime<Utc> }
 
@@ -100,14 +100,14 @@ impl RotationState {
     /// Semina alla creazione: posizione 0, turno corrente ancorato a `seeded_at`.
     pub fn seed(seeded_at: DateTime<Utc>) -> Self { RotationState { position: 0, shift_start: seeded_at } }
 
-    /// Avanza lo stato fino all'istante `now`, replica `calcAdvance` di GoAlert:
+    /// Avanza lo stato fino all'istante `now`, replica `calcAdvance` di YWAlert:
     /// per ogni boundary <= now, `position = (position+1) % count` e `shift_start = boundary`.
     /// `count` = numero partecipanti (>0). Se `position >= count` (partecipante rimosso) resetta a 0.
     pub fn advanced_to(&self, rot: &Rotation, now: DateTime<Utc>, count: usize) -> RotationState {
         if count == 0 { return *self; }
         let mut pos = if self.position >= count { 0 } else { self.position };
         let mut ss = self.shift_start;
-        // tetto di sicurezza come GoAlert (panic a 10k): qui ci fermiamo e basta.
+        // tetto di sicurezza come YWAlert (panic a 10k): qui ci fermiamo e basta.
         for _ in 0..10_000 {
             let next = rot.end_time(ss);
             if next > now { break; }
@@ -165,8 +165,8 @@ impl Schedule {
         self.on_call_at_rot(t, rot_member)
     }
 
-    /// Come `on_call_at` ma col membro della rotation già risolto a monte (stato GoAlert-like,
-    /// vedi [`RotationState`]). Usato dallo shadow/engine per la parità con GoAlert.
+    /// Come `on_call_at` ma col membro della rotation già risolto a monte (stato YWAlert-like,
+    /// vedi [`RotationState`]). Usato dallo shadow/engine per la parità con YWAlert.
     pub fn on_call_at_rot(&self, t: DateTime<Utc>, rot_member: Option<Uuid>) -> Vec<Uuid> {
         // 1) copertura: se ci sono regole e nessuna copre t -> nessuno (prima degli override 'add')
         let covered = self.rules.is_empty() || self.rules.iter().any(|r| r.covers(t));
@@ -280,8 +280,8 @@ mod tests {
     }
     #[test]
     fn rotation_state_seed_at_creation_is_index0() {
-        // Semantica GoAlert: start lontano nel passato, ma rotation creata ORA -> indice 0.
-        // Riproduce il finding shadow: native idx1 (formula pura) vs GoAlert idx0 (stateful).
+        // Semantica YWAlert: start lontano nel passato, ma rotation creata ORA -> indice 0.
+        // Riproduce il finding shadow: native idx1 (formula pura) vs YWAlert idx0 (stateful).
         let r = Rotation{ kind:RotationType::Weekly, shift_len:1, start:ts("2024-01-01T00:00:00Z"), members:vec![u(1),u(2),u(3)], tz:chrono_tz::UTC };
         let created = ts("2026-11-11T10:00:00Z"); // mercoledì
         let st = RotationState::seed(created);

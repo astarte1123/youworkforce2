@@ -3,8 +3,8 @@
 #  F3) un check-in puo' essere confermato SOLO dal proprietario (no soppressione allarme altrui)
 #  SOS worker -> incidente + richiesta notifica (timeline notify_requested/notify_dispatched nativo)
 #  lifecycle incidente: ack (preso_in_carico) -> close (chiuso) + outbox kind='close' (close-loop nativo)
-#  GoAlert piloted da YouWorkforce: gruppo+membri+routing -> sync -> goalert_routing popolato
-#     (se GoAlert non e' provisionato per acme, la parte sync e' saltata e dichiarata)
+#  YWAlert piloted da YouWorkforce: gruppo+membri+routing -> sync -> goalert_routing popolato
+#     (se YWAlert non e' provisionato per acme, la parte sync e' saltata e dichiarata)
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"
 PASS=0; FAIL=0
@@ -56,45 +56,10 @@ oapi -H 'content-type: application/json' -X POST "$BASE/api/incidents/$IID/close
 [ "$(sql "SELECT state FROM app.incidents WHERE id='$IID'")" = "chiuso" ] && ok "operatore chiude con outcome -> chiuso" || no "close non ha chiuso" "-"
 [ "$(sql "SELECT count(*) FROM app.outbox WHERE tenant_id=$TIDQ AND kind='close' AND payload->>'incident_id'='$IID'")" -ge 1 ] && ok "close -> kind='close' in outbox (close-loop nativo)" || no "manca close" "-"
 
-# ---- GoAlert piloted: gruppo -> EP/servizio/routing ----
-GNAME="E2E Centrale $RANDOM"
-aapi -H 'content-type: application/json' -X POST "$BASE/api/groups" -d "{\"name\":\"$GNAME\"}" >/dev/null
-GID=$(aapi "$BASE/api/groups" | python -c "import sys,json;d=json.load(sys.stdin);print([g['id'] for g in d['groups'] if g['name']=='$GNAME'][0])")
-PUID=$(aapi "$BASE/api/users" | jv '[u["id"] for u in d if u["email"].startswith("operatore")][0]')
-aapi -H 'content-type: application/json' -X POST "$BASE/api/groups/$GID/members" -d "{\"user_id\":\"$PUID\",\"position\":1}" >/dev/null
-aapi -H 'content-type: application/json' -X POST "$BASE/api/routing" -d "{\"etype\":\"sos\",\"group_id\":\"$GID\"}" >/dev/null
-SY=$(aapi -H 'content-type: application/json' -X POST "$BASE/api/alarm/sync-goalert")
-if echo "$SY" | grep -q '"ok":true'; then
-  echo "$SY" | grep -q '"groups_synced"' && ok "sync GoAlert eseguito ($(echo "$SY" | jv 'd["groups_synced"]') gruppi, $(echo "$SY" | jv 'd["routes"]') routes)" || no "sync senza conteggi" "$SY"
-  [ "$(sql "SELECT integration_key FROM app.goalert_routing WHERE tenant_id=$TIDQ AND etype='sos'")" = "$(sql "SELECT goalert_key FROM app.alarm_groups WHERE id='$GID'")" ] \
-    && ok "routing sos -> integration key del gruppo (destinatari reali)" || no "goalert_routing non collegato al gruppo" "-"
-  [ -n "$(sql "SELECT goalert_ep_id FROM app.alarm_groups WHERE id='$GID'")" ] && ok "gruppo -> escalation policy GoAlert creata" || no "EP non creata" "-"
-  # recapiti: il risultato espone trasporto + conteggio; con trasporto spento avvisa onestamente
-  echo "$SY" | grep -q '"transport"' && ok "sync espone stato trasporto (sms/email)" || no "manca transport nel risultato" "-"
-  SMS_ON=$(echo "$SY" | jv 'str(d["transport"]["sms"]).lower()'); EMAIL_ON=$(echo "$SY" | jv 'str(d["transport"]["email"]).lower()')
-  if [ "$SMS_ON" = "false" ] && [ "$EMAIL_ON" = "false" ]; then
-    echo "$SY" | jv 'd.get("warning") or ""' | grep -qi "trasporto" && ok "trasporto spento -> avviso onesto (nessuna consegna)" || no "manca avviso trasporto spento" "-"
-    [ "$(echo "$SY" | jv 'd["contact_methods_created"]')" = "0" ] && ok "trasporto spento -> 0 recapiti creati (coerente)" || no "recapiti creati senza trasporto" "-"
-  else
-    ok "trasporto attivo ($SMS_ON/$EMAIL_ON): recapiti creati=$(echo "$SY" | jv 'd["contact_methods_created"]')"
-  fi
-  # turni di reperibilita': mode 'turni' -> rotation GoAlert + step che la punta
-  aapi -H 'content-type: application/json' -X POST "$BASE/api/groups/$GID/oncall" -d '{"mode":"turni","oncall_type":"weekly","shift":1}' >/dev/null
-  [ "$(aapi "$BASE/api/groups" | python -c "import sys,json;print([g['oncall_mode'] for g in json.load(sys.stdin)['groups'] if g['id']=='$GID'][0])")" = "turni" ] \
-    && ok "gruppo impostato a turni (reperibilità)" || no "oncall_mode non salvato" "-"
-  SY2=$(aapi -H 'content-type: application/json' -X POST "$BASE/api/alarm/sync-goalert")
-  [ "$(echo "$SY2" | jv 'd["rotations"]')" -ge 1 ] && ok "sync turni -> rotation GoAlert creata" || no "rotation non creata" "$SY2"
-  [ -n "$(sql "SELECT goalert_rotation_id FROM app.alarm_groups WHERE id='$GID'")" ] && ok "rotation id memorizzato sul gruppo" || no "rotation id assente" "-"
-  ROT1=$(sql "SELECT goalert_rotation_id FROM app.alarm_groups WHERE id='$GID'")
-  aapi -H 'content-type: application/json' -X POST "$BASE/api/alarm/sync-goalert" >/dev/null
-  [ "$ROT1" = "$(sql "SELECT goalert_rotation_id FROM app.alarm_groups WHERE id='$GID'")" ] && ok "re-sync turni idempotente (rotation invariata)" || no "rotation ricreata" "-"
-else
-  echo "SKIP  sync GoAlert non eseguibile (GoAlert non provisionato per acme): $(echo "$SY" | head -c 120)"
-fi
-# cleanup gruppo di test (lascia routing sos? no: ripristina)
-aapi -H 'content-type: application/json' -X POST "$BASE/api/routing" -d '{"etype":"sos","group_id":null}' >/dev/null
-sql "DELETE FROM app.alarm_group_members WHERE group_id='$GID'; DELETE FROM app.alarm_groups WHERE id='$GID'" >/dev/null
-sql "DELETE FROM app.goalert_routing WHERE tenant_id=$TIDQ AND etype='sos'" >/dev/null
+# NB: la vecchia sezione "provisioning YWAlert esterno" (sync-goalert -> EP/servizio/routing/rotation
+# su GoAlert) è stata RIMOSSA: l'escalation è nativa (nessun provisioning esterno). La parità del
+# motore nativo (rotation/turni/policy/override/consegna reale) è coperta dalle suite escalation-*
+# e ywalert-delivery-e2e.
 
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

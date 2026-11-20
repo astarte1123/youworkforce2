@@ -31,7 +31,7 @@ profilo (email, ruolo, telefono, date, `anonymized_at`), check-in, diario, reper
 ### Anonimizza (diritto all'oblio)
 `POST /api/gdpr/anonymize/:uid`. Non elimina la riga (preserva l'integrità storica degli
 incidenti): scrubba la PII e blocca il login. In pratica:
-- email → `anon-<8hex>@anonymized.invalid`, telefono → NULL, `goalert_user_id` → NULL,
+- email → `anon-<8hex>@anonymized.invalid`, telefono → NULL,
   password → token casuale (login impossibile), `anonymized_at` = ora;
 - corpo delle voci di diario → `[rimosso: anonimizzato]`;
 - sessioni attive dell'utente cancellate.

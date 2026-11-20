@@ -14,7 +14,7 @@ Uno scenario NON è codice nuovo per use-case: è un **profilo parametrico** nel
 4. **Stato** in `app.tenant_scenarios` (per attivare/rimuovere in modo pulito).
 
 Gli allarmi usano gli **etype esistenti** (`sensore_critico`, `man_down`, `telemetria`, …):
-gli etype critici entrano nella catena incidenti già pronta (incidente → GoAlert → routing →
+gli etype critici entrano nella catena incidenti già pronta (incidente → YWAlert → routing →
 turni) e sono leggibili/azionabili anche dall'**agente AI**. Pull e push ThingsBoard
 convergono sullo stesso motore regole.
 
@@ -65,7 +65,7 @@ convergono sullo stesso motore regole.
 scenario, 1 payload tutto-normale (telemetria) + 1 payload d'allarme per ogni regola critica
 (max 3). I valori sono derivati dalle soglie (`demo_alarm_value`/`demo_normal_value`) e passano
 dallo **stesso percorso del push** (`eval_sensor_rules` → `persist_ingest`): gli allarmi
-diventano **incidenti reali** in Centrale (con GoAlert/routing). UI: pulsante **⚡ Demo** accanto
+diventano **incidenti reali** in Centrale (con YWAlert/routing). UI: pulsante **⚡ Demo** accanto
 allo scenario attivo. Non lascia regole/device nuovi: solo eventi/incidenti (correlation
 `scndemo-<code>-…`).
 

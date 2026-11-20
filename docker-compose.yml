@@ -1,6 +1,6 @@
 # YouWorkforce — local reproducible pilot profile (Docker Compose).
-# Base profile = Workforce + Sicurezza (SOS chain) with GoAlert SIMULATO.
-# Optional connectors (goalert real, thingsboard) behind compose profiles, OFF by default.
+# Base profile = Workforce + Sicurezza (SOS chain). Escalation = YWAlert NATIVO (nessun connettore).
+# Optional external source (thingsboard) behind a compose profile, OFF by default.
 services:
   db:
     image: postgres:18
@@ -23,7 +23,6 @@ services:
       YW_DB_RT: postgres://app_rt:app_rt_pw@db:5432/youworkforce
       YW_BIND: 0.0.0.0:8080
       TEST_CLOCK: "1"               # enables /api/_test/advance (pilot: set 0)
-      # GOALERT_BASE: http://goalert:8081   # set to switch GoAlert to UPSTREAM REALE
       RUST_LOG: info,sqlx=warn
     depends_on:
       db: { condition: service_healthy }
@@ -36,33 +35,6 @@ services:
       YW_CONSOLE_BIND: 0.0.0.0:8081
     depends_on: [core]
     ports: ["8081:8081"]
-
-  # ---- Optional: real GoAlert (profile "goalert") ----
-  goalert-db:
-    image: postgres:18
-    profiles: ["goalert"]
-    environment:
-      POSTGRES_USER: goalert
-      POSTGRES_PASSWORD: goalert
-      POSTGRES_DB: goalert
-    volumes: ["goalert_db:/var/lib/postgresql/data"]
-  # Test recipient for REAL notification delivery (webhook transport, no real phone).
-  # qa/goalert-delivery.sh verifies a webhook contact method and proves GoAlert
-  # actually delivers the alert here. Internal only (no host port needed).
-  webhook:
-    image: mendhak/http-https-echo:latest
-    profiles: ["goalert"]
-    environment:
-      HTTP_PORT: "8080"
-  goalert:
-    image: goalert/goalert:v0.35.0   # verified in this repo (UPSTREAM REALE)
-    profiles: ["goalert"]
-    # migrate + seed users once: see qa/run-goalert.sh. Then qa/goalert-setup.sh prints the
-    # integration KEY; set it per-tenant via superadmin API. Core: GOALERT_BASE=http://goalert:8081
-    command: ["goalert", "--db-url", "postgres://goalert:goalert@goalert-db:5432/goalert?sslmode=disable",
-              "--listen", "0.0.0.0:8081", "--public-url", "http://localhost:8082", "--disable-https-redirect"]
-    depends_on: [goalert-db]
-    ports: ["8082:8081"]
 
   # ---- Optional: real Traccar badge source (profile "traccar") ----
   # device (OsmAnd) -> Traccar -> event forwarding -> core /api/ingress/traccar.
@@ -95,5 +67,4 @@ services:
 
 volumes:
   db_data:
-  goalert_db:
   tb_data:

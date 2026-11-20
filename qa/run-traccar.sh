@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Launch a REAL Traccar server and wire its event forwarding to the YouWorkforce core.
-# Evidence profile: UPSTREAM REALE (device -> Traccar -> forward -> core -> incident -> GoAlert).
+# Evidence profile: UPSTREAM REALE (device -> Traccar -> forward -> core -> incident -> YWAlert).
 #
 # Prereqs: docker, the docker network `ywnet` (created by qa/run-goalert.sh), and the
 # core running on :8080 reachable from the container as host.docker.internal:8080.

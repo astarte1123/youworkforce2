@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Parità pagina Profile GoAlert (G1-G4):
+# Parità pagina Profile YWAlert (G1-G4):
 #  G1 opt-out/DNC (STOP via SMS inbound disabilita il recapito; il runner lo salta; START riabilita)
 #  G2 verifica OTP su recapito aggiuntivo
 #  G3 preferenza status-update per-utente (set/effettivo)

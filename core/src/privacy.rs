@@ -70,7 +70,7 @@ pub async fn gdpr_anonymize(State(st): State<AppState>, h: HeaderMap, Path(uid):
     if open > 0 { return Err(err(StatusCode::CONFLICT, "l'utente ha incidenti aperti assegnati: riassegnali o chiudili prima")); }
     let anon_email = format!("anon-{}@anonymized.invalid", &uid.to_string()[..8]);
     let lock = auth::new_token();
-    sqlx::query("UPDATE app.users SET email=$2, phone=NULL, goalert_user_id=NULL, pass_hash=$3, anonymized_at=now() WHERE id=$1 AND tenant_id=$4")
+    sqlx::query("UPDATE app.users SET email=$2, phone=NULL, pass_hash=$3, anonymized_at=now() WHERE id=$1 AND tenant_id=$4")
         .bind(uid).bind(&anon_email).bind(&lock).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
     let _ = sqlx::query("UPDATE app.diary_entries SET body='[rimosso: anonimizzato]' WHERE user_id=$1 AND tenant_id=$2")
         .bind(uid).bind(tid).execute(&st.owner_pool).await;

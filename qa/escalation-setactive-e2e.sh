@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Parità Rotations GoAlert — R1 Set Active: imposta subito il reperibile di turno.
+# Parità Rotations YWAlert — R1 Set Active: imposta subito il reperibile di turno.
 # Tenant: globex (native). Stato ripristinato a fine run.
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"

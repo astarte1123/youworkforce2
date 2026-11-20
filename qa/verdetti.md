@@ -2,20 +2,20 @@
 
 ## DEMO — **RAGGIUNTO** ✅
 La catena critica è riproducibile su una macchina pulita e i simulatori sono dichiarati:
-- SOS (badge simulato **e** PWA) → incidente → outbox → GoAlert SIMULATO → presa in carico → chiusura, con ID di correlazione end-to-end.
+- SOS (badge simulato **e** PWA) → incidente → outbox → YWAlert SIMULATO → presa in carico → chiusura, con ID di correlazione end-to-end.
 - Isolamento multitenant applicato in database (RLS), non solo in UI.
 - Moduli attivabili/disattivabili per tenant senza deploy; disattivazione bloccata se toglie un percorso essenziale.
 - Check-in con timer durevole che scade indipendentemente dai dati del badge.
 
 Evidenza: `qa/smoke.sh`.
 
-## PILOTA CONTROLLATO — **NON RAGGIUNTO** (ma GoAlert e Traccar ora reali)
+## PILOTA CONTROLLATO — **NON RAGGIUNTO** (ma YWAlert e Traccar ora reali)
 Fatto in questa build:
-- **GoAlert v0.35.0 reale** integrato: il core crea allarmi reali sul servizio con policy di escalation a **2 livelli** (oncall1→oncall2) e correlazione tracciata. Evidenza `qa/goalert-e2e.sh` (6/6). Routing per-tenant via chiave di integrazione.
-- **Traccar v6.17.0 reale** integrato come sorgente badge: device (protocollo OsmAnd) → Traccar → *event forwarding* → adapter core `/api/ingress/traccar` → stessa catena SOS normalizzata → incidente → GoAlert reale. Due upstream reali in catena. Mapping allarmi `sos→sos`, `fallDown→man_down`. Tenant dal token di ingest (mai dal body). Evidenza `qa/traccar-e2e.sh` (8/8).
-- **ThingsBoard v3.8.1 reale** integrato come sorgente IoT: telemetria device → *Rule Engine* reale (nodo REST API Call aggiunto alla Root Rule Chain) → adapter core `/api/ingress/thingsboard` → gate di severità (soglia → `sensore_critico`) → incidente → GoAlert reale. Tre upstream reali. Evidenza `qa/thingsboard-e2e.sh` (8/8). ThingsBoard CE è BUSL: istanza esterna.
+- **YWAlert v0.35.0 reale** integrato: il core crea allarmi reali sul servizio con policy di escalation a **2 livelli** (oncall1→oncall2) e correlazione tracciata. Evidenza `qa/goalert-e2e.sh` (6/6). Routing per-tenant via chiave di integrazione.
+- **Traccar v6.17.0 reale** integrato come sorgente badge: device (protocollo OsmAnd) → Traccar → *event forwarding* → adapter core `/api/ingress/traccar` → stessa catena SOS normalizzata → incidente → YWAlert reale. Due upstream reali in catena. Mapping allarmi `sos→sos`, `fallDown→man_down`. Tenant dal token di ingest (mai dal body). Evidenza `qa/traccar-e2e.sh` (8/8).
+- **ThingsBoard v3.8.1 reale** integrato come sorgente IoT: telemetria device → *Rule Engine* reale (nodo REST API Call aggiunto alla Root Rule Chain) → adapter core `/api/ingress/thingsboard` → gate di severità (soglia → `sensore_critico`) → incidente → YWAlert reale. Tre upstream reali. Evidenza `qa/thingsboard-e2e.sh` (8/8). ThingsBoard CE è BUSL: istanza esterna.
 
-- **Consegna reale della notifica di 2° livello**: contact-method **webhook verificato** end-to-end (il codice di verifica è consegnato e letto dal receiver reale) e allarme core → GoAlert → escalation → **il receiver esterno riceve davvero** la notifica con la correlazione del core. Recapito di test (nessun numero reale), come da vincolo. Evidenza `qa/goalert-delivery.sh` (10/10).
+- **Consegna reale della notifica di 2° livello**: contact-method **webhook verificato** end-to-end (il codice di verifica è consegnato e letto dal receiver reale) e allarme core → YWAlert → escalation → **il receiver esterno riceve davvero** la notifica con la correlazione del core. Recapito di test (nessun numero reale), come da vincolo. Evidenza `qa/goalert-delivery.sh` (10/10).
 
 Mancano ancora per il perimetro:
 - Trasporto **SMS/voce** reale (Twilio) per il sito: il motore e la consegna via webhook sono provati; il canale telefonico richiede provider+credenziali del cliente.
@@ -33,4 +33,4 @@ piano di migrazione e **rollback verificato** sul cliente, evidenza sul sito, su
 collaudo dei guasti, autorizzazione al passaggio operativo.
 
 > Le 48 ore non attestano parità né autorizzano la sostituzione in produzione.
-> Un local ack di GoAlert SIMULATO **non** prova la consegna di una notifica reale.
+> Un local ack di YWAlert SIMULATO **non** prova la consegna di una notifica reale.

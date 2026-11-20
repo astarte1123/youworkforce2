@@ -1,16 +1,16 @@
-# Progetto: Escalation Engine nativo YouWorkforce (drop GoAlert)
+# Progetto: Escalation Engine nativo YouWorkforce (drop YWAlert)
 
-Stato: PROPOSTA (plan-only) · Owner: core · Obiettivo: sostituire GoAlert con un motore
+Stato: PROPOSTA (plan-only) · Owner: core · Obiettivo: sostituire YWAlert con un motore
 di escalation/on-call/consegna **nativo**, senza perdere affidabilità sulla catena di sicurezza.
 Prerequisito culturale: **un SOS non deve MAI sparire.** Ogni scelta progettuale è subordinata
-a questo. GoAlert resta acceso finché il nativo non prova parità a specchio (shadow).
+a questo. YWAlert resta acceso finché il nativo non prova parità a specchio (shadow).
 
-Contesto: oggi YouWorkforce **pilota** GoAlert (vedi [[goalert-parity]], `goalert.rs`,
-`sync_goalert`). GoAlert resta il "cervello" (calcolo on-call, esecuzione escalation, ladder
+Contesto: oggi YouWorkforce **pilota** YWAlert (vedi [[ywalert-parity]], `goalert.rs`,
+`sync_goalert`). YWAlert resta il "cervello" (calcolo on-call, esecuzione escalation, ladder
 notifiche, consegna Twilio/SMTP/Slack, ack a due vie, heartbeat). Questo progetto porta quei
 motori dentro YouWorkforce.
 
-## 1. Cosa va riscritto (i motori di GoAlert)
+## 1. Cosa va riscritto (i motori di YWAlert)
 1. **On-call resolver** — dato rotation + schedule + regole orarie + override + temporary,
    calcola *chi è reperibile in un istante t* (e nel futuro, per il calendario).
 2. **Escalation engine** — macchina a stati per alert: step ordinati, attesa per-step, repeat,
@@ -20,7 +20,7 @@ motori dentro YouWorkforce.
 4. **Delivery adapters** — consegna reale: Twilio (SMS + voce TwiML/IVR), SMTP, Slack, webhook.
 5. **Ack bidirezionale** — webhook inbound: risposta SMS (ACK/STOP), IVR a tasti in chiamata.
 6. **Heartbeat/watchdog** — monitor "sorgente silente" (già in parte nostro, da generalizzare).
-7. **Verifica recapiti** — invio codice + conferma (oggi delega a GoAlert).
+7. **Verifica recapiti** — invio codice + conferma (oggi delega a YWAlert).
 
 ## 2. Architettura proposta
 Tutto dentro `core` (Rust/Axum), stesso DB, stessa outbox at-least-once. Niente nuovi runtime.
@@ -46,7 +46,7 @@ incidente ──▶ escalation_engine ──▶ oncall_resolver ─▶ destinata
 
 ## 3. Modello dati (nuove tabelle, prefisso esc_)
 - `esc_contact_methods(id, tenant_id, user_id, kind[sms|voice|email|slack|webhook], value,
-  verified_at, status_updates bool)` — recapiti nativi (rimpiazza i contactMethods GoAlert).
+  verified_at, status_updates bool)` — recapiti nativi (rimpiazza i contactMethods YWAlert).
 - `esc_notification_rules(id, contact_method_id, delay_s)` — ladder per utente.
 - `esc_policies(id, tenant_id, group_id, repeat, …)` + `esc_steps(id, policy_id, pos, delay_s)`
   + `esc_step_targets(step_id, kind[user|rotation|schedule|slack], ref_id)`.
@@ -84,57 +84,57 @@ Tutti gli adapter: timeout, retry con backoff, marcati **critici** nell'outbox (
 
 ## 6. Verifica recapiti (nativa)
 `sendVerification` (codice OTP via SMS/voce/email) + `verifyCode`. Stato `verified_at` sul
-contact method. Stessa UX già costruita in [[goalert-parity]] (invia codice / inserisci / prova),
+contact method. Stessa UX già costruita in [[ywalert-parity]] (invia codice / inserisci / prova),
 solo con backend nostro.
 
 ## 7. Affidabilità (requisito #1: SOS mai perso)
 - Outbox at-least-once + idempotenza su `esc_delivery_log` (nessun doppio invio, nessun buco).
 - Il motore gira nel worker con lo stesso loop del drain; stato in DB, riavvio-safe.
 - **Dead-man**: se il worker non tocca `esc_alert_state` entro X, un watchdog esterno (heartbeat
-  verso un endpoint di monitoring) allerta. (Oggi GoAlert faceva da guardia reciproca.)
+  verso un endpoint di monitoring) allerta. (Oggi YWAlert faceva da guardia reciproca.)
 - Multi-istanza: lock ottimistico su `next_fire_at` (SKIP LOCKED) per non doppiare l'escalation.
 
-## 8. Roadmap (GoAlert in parallelo fino a parità)
+## 8. Roadmap (YWAlert in parallelo fino a parità)
 **Fase 0 — Decisione pura, nessuna consegna. ✅ FATTO** (`core/src/escalation.rs`). On-call resolver
 (`Rotation::active_at`, `Schedule::on_call_at` con regole di copertura a fasce incl. wrap notturno,
 `Override` replace/remove/add anche fuori copertura) + escalation state machine (`tick` → FireStep/
 Wait/Exhausted/Stop con step/delay/repeat/ack). 7 test a tabella verdi (`cargo test escalation::`).
-Nessun effetto esterno, modulo non wirato (GoAlert resta il motore). Limite noto FASE 0: fasce in UTC
+Nessun effetto esterno, modulo non wirato (YWAlert resta il motore). Limite noto FASE 0: fasce in UTC
 (fuso/DST da applicare a monte / fase successiva). Prossimo: Fase 1 shadow (calcolo in parallelo a
-GoAlert + diff).
+YWAlert + diff).
 
 **Fase 1 — Shadow mode. ✅ IN ESERCIZIO** (mig 0052 `esc_shadow_log`). Il worker (`escalation_shadow_scan`,
 ~ogni 5 min) e il trigger manuale (`POST /api/escalation/shadow/run`) calcolano l'on-call nativo
 (`esc_build_schedule` dalla stessa config di `sync_goalert` → `escalation::Schedule::on_call_at`) e lo
-confrontano con l'on-call corrente di GoAlert (`service.onCallUsers.userName` = email), loggando match/diff.
-Report: `GET /api/escalation/shadow` (match-rate 7gg + ultime divergenze). **Nessuna consegna**, GoAlert
+confrontano con l'on-call corrente di YWAlert (`service.onCallUsers.userName` = email), loggando match/diff.
+Report: `GET /api/escalation/shadow` (match-rate 7gg + ultime divergenze). **Nessuna consegna**, YWAlert
 resta il motore.
 
 **DIVERGENZA WEEKLY — RISOLTA (mig 0053 `esc_rotation_state`).** La prima iterazione shadow (formula
-pura `shift_number(now) % N`) divergeva sui gruppi 'turni' weekly (native idx1 vs GoAlert
-activeUserIndex=0). **Root cause** (studiata la sorgente GoAlert: `schedule/rotation/rotation.go` +
-`engine/rotationmanager` `RotMgrStart`/`calcAdvance`): **l'indice GoAlert NON è funzione dello `start`**,
+pura `shift_number(now) % N`) divergeva sui gruppi 'turni' weekly (native idx1 vs YWAlert
+activeUserIndex=0). **Root cause** (studiata la sorgente YWAlert: `schedule/rotation/rotation.go` +
+`engine/rotationmanager` `RotMgrStart`/`calcAdvance`): **l'indice YWAlert NON è funzione dello `start`**,
 è *stato mutabile* — alla CREAZIONE della rotation `RotMgrStart` semina `position=0`, `shift_start=now()`,
 poi `calcAdvance` fa `position=(position+1)%N` a ogni boundary. Lo `start` definisce solo la *griglia*
 dei handoff, non l'indice. Formula corretta: `index = (shift_number(now) − shift_number(creazione)) mod N`
-(non `shift_number(now) % N`): per una rotation creata nella settimana corrente → 0, come GoAlert.
+(non `shift_number(now) % N`): per una rotation creata nella settimana corrente → 0, come YWAlert.
 **Fix:** `escalation::RotationState{position,shift_start}` + `seed(creato)`/`advanced_to` (replica
 `calcAdvance`: +1 per boundary, reset su partecipante rimosso) e `Rotation::start_time/end_time` (replica
 `StartTime/EndTime`). Lo shadow carica/semina lo stato in `esc_rotation_state`: alla prima osservazione
-semina dal **ground-truth GoAlert** (indice del membro on-call corrente), poi avanza indipendente sulla
-stessa griglia. Robustezza: se GoAlert non ha ancora un on-call (warm-up engine post-sync) non semina un
+semina dal **ground-truth YWAlert** (indice del membro on-call corrente), poi avanza indipendente sulla
+stessa griglia. Robustezza: se YWAlert non ha ancora un on-call (warm-up engine post-sync) non semina un
 indice inventato → native vuoto = match, niente falsa divergenza. **3 nuovi unit test** (semina a creazione
 = idx0; avanza +1 per boundary con wrap; reset su rimozione) → `cargo test escalation::` 10/10.
 **Verificato live su globex** (goalert riabilitato temporaneamente, poi ripristinato): rotation weekly
-**multi-membro** (admin/qa-b/qa-c, start 2024-01-01) → GoAlert on-call = admin (idx0), native = admin →
-**match**, `match_rate 1.0`. Discriminatore: la formula pura avrebbe dato `149%3=2` (qa-c) ≠ GoAlert →
+**multi-membro** (admin/qa-b/qa-c, start 2024-01-01) → YWAlert on-call = admin (idx0), native = admin →
+**match**, `match_rate 1.0`. Discriminatore: la formula pura avrebbe dato `149%3=2` (qa-c) ≠ YWAlert →
 il vecchio codice divergeva, il nuovo combacia. Artefatti di test ripuliti.
 
 **RESIDUO FASE 1 — CHIUSO.** Override (assenze) ora modellati lato nativo (`esc_goalert_overrides`,
 commit 8130b27). **Verifica LIVE su globex (2026-11-11):** override reale di rimozione (assenza admin
-per finestra) via `POST /api/oncall-overrides` → GoAlert on-call `{}`, native `{}`, **match, overrides=1**
+per finestra) via `POST /api/oncall-overrides` → YWAlert on-call `{}`, native `{}`, **match, overrides=1**
 (2 giri stabili); rimosso l'override → entrambi `{admin}`, match. Pre-fix il native avrebbe mostrato
-`{admin}` contro GoAlert `{}` = divergenza. Nota minore: subito dopo `sync-goalert` GoAlert ha un transiente
+`{admin}` contro YWAlert `{}` = divergenza. Nota minore: subito dopo `sync-goalert` YWAlert ha un transiente
 di warm-up (`onCallUsers` vuoto per 1 ciclo) → falso `match=f` sui gruppi fixed-user/'tutti'; il guard
 warm-up oggi copre solo le rotation, va esteso ai fixed-user.
 
@@ -150,7 +150,7 @@ UNIQUE `(tenant,incident,step,channel,to)` su `esc_delivery_log` → ogni rung c
 volta anche tra riavvii (claim `INSERT … ON CONFLICT DO NOTHING RETURNING`). `esc_alert_state` =
 macchina a stati per incidente; ack/chiusura incidente → `tick` Stop ferma l'escalation. Worker
 scan ~ogni 30s. API: `GET /api/escalation/delivery` (conteggi+ultime), `POST …/run`. Timeline
-`esc_shadow_delivery`. **Nessun carrier reale, GoAlert resta il motore.** 22/22 test verdi.
+`esc_shadow_delivery`. **Nessun carrier reale, YWAlert resta il motore.** 22/22 test verdi.
 **Fase 2 — Consegna. ✅ COMPLETATA** (mig 0055, commit 50b5cdf). Chiusi tutti i residui:
 (a) **Twilio REST live** `deliver_twilio_live` (Messages/Calls, TwiML+Gather `action`, Basic auth) dietro
 gate `YW_ESC_TWILIO_LIVE=1` + env `YW_ESC_TWILIO_SID/AUTH`+`YW_ESC_FROM`; default OFF → sink/dry.
@@ -158,7 +158,7 @@ gate `YW_ESC_TWILIO_LIVE=1` + env `YW_ESC_TWILIO_SID/AUTH`+`YW_ESC_FROM`; defaul
 (HMAC-SHA1+base64, confronto costante, validata contro openssl col vettore ufficiale) OBBLIGATORIA se
 `YW_ESC_TWILIO_AUTH` set. SMS `OK/ACK/1/PRESO`→ack, `CHIUDI/CLOSE/RISOLTO`→close; voce DTMF `1`→ack.
 `esc_apply_ack` registra stato+timeline `esc_ack_inbound`; **in shadow NON muta `incidents.state`**
-(GoAlert resta il motore) — applica la transizione reale solo col gate `YW_ESC_ACK_APPLY=1` (cutover).
+(YWAlert resta il motore) — applica la transizione reale solo col gate `YW_ESC_ACK_APPLY=1` (cutover).
 (c) **Slack** `deliver_slack_live` (chat.postMessage) + **email** `deliver_email_relay` (webhook→SMTP,
 nessuna dipendenza SMTP pesante). (d) **repeat**: `tenant_oncall_cfg.esc_repeat`; la chiave di idempotenza
 ora include `attempt` (= giro di repeat) → ri-consegna solo nel nuovo giro. (e) **Verifica LIVE globex**
@@ -175,20 +175,20 @@ Worker Safety Fase D): i nuovi tenant nascono nativi; gli esistenti si migrano o
 `scripts/flip-escalation-native.sql`. I fallback hardcoded in `api.rs` (engine_get, esc_suppress_goalert,
 delivery runner) ora assumono `native` quando la riga manca. Flag per-tenant: `native` = nativo autoritativo
 (adapter live se configurati + ack che applica la transizione sull'incidente); `goalert` = shadow
-(sink, nessun effetto sugli incidenti). **GoAlert NON soppresso** (resta rete di sicurezza attiva;
+(sink, nessun effetto sugli incidenti). **YWAlert NON soppresso** (resta rete di sicurezza attiva;
 spegnimento = FASE 4) — scelta per non perdere mai un SOS. `esc_apply_ack` applica se `native` (o gate
 globale `YW_ESC_ACK_APPLY`). Consegna: `esc_dispatch` (scelta adapter) + `esc_persist_delivery` (su
 FALLIMENTO rimuove il claim → ritenta al giro dopo, at-least-once). API: `GET /api/escalation/engine`
 (admin), `POST /api/superadmin/tenants/:id/escalation-engine` (superadmin, native|goalert; **rollback =
 goalert**, immediato). Verifica LIVE globex: delivery sms+slack=sent; ack in shadow `applied=false`
 (incidente aperto), dopo cutover `native` `applied=true` (incidente→preso_in_carico), rollback ok. 23/23.
-RESIDUO verso FASE 4: soppressione notify GoAlert per tenant native (oggi doppio path) + consegna nativa
+RESIDUO verso FASE 4: soppressione notify YWAlert per tenant native (oggi doppio path) + consegna nativa
 immediata (ora al prossimo scan ~30s) + hardening retry.
 
-**Fase 4 — Spegnimento GoAlert. ⏳ PREP FATTA** (commit c5dadd3). Chiusi i due prerequisiti:
-(1) **Soppressione notify GoAlert** per i tenant `native` con percorso di consegna reale
+**Fase 4 — Spegnimento YWAlert. ⏳ PREP FATTA** (commit c5dadd3). Chiusi i due prerequisiti:
+(1) **Soppressione notify YWAlert** per i tenant `native` con percorso di consegna reale
 (`api::esc_suppress_goalert`: true se engine=`native` E credenziali Twilio live, OPPURE override
-`YW_ESC_SUPPRESS_GOALERT=1`; **guardia SOS**: native senza percorso reale NON sopprime → GoAlert
+`YW_ESC_SUPPRESS_GOALERT=1`; **guardia SOS**: native senza percorso reale NON sopprime → YWAlert
 continua a pagare). Nel `drain_outbox`: se soppresso → `outbox=done` + timeline
 `goalert_suppressed_native`. (2) **Consegna nativa immediata**: per `goalert_notify` soppresso il drain
 chiama subito `escalation_delivery_shadow_tenant` (latenza ~drain 2s, non il scan ~30s). Verifica LIVE
@@ -204,11 +204,11 @@ provisioning, `goalert.rs` e dipendenza dal container + aggiornamento manuale. O
   fallback vocale, alert "trasporto giù".
 - **Doppio invio in multi-istanza** → SKIP LOCKED + idempotenza delivery_log.
 - **Regressione silenziosa** → la fase shadow è bloccante: nessun cutover senza 0-diff.
-- **Superficie di sicurezza nuova** → mantenere GoAlert come fallback attivabile a flag fino a
+- **Superficie di sicurezza nuova** → mantenere YWAlert come fallback attivabile a flag fino a
   fiducia piena.
 
 ## 10. Cosa NON cambia
-UI admin (già astratta da [[goalert-parity]]: Gruppi + Reperibilità avanzata), catena incidenti,
+UI admin (già astratta da [[ywalert-parity]]: Gruppi + Reperibilità avanzata), catena incidenti,
 outbox, calendario iCal (già nativo), principio "tutto configurabile da YouWorkforce".
 Per l'admin il cambio è invisibile: stesse schermate, motore diverso sotto.
 
@@ -221,10 +221,10 @@ Settimane, non giorni. Catena di sicurezza → niente scorciatoie, shadow obblig
 ## 12. Task (alla partenza)
 - [ ] Fase 0: crate/modulo `escalation` (resolver puro + state machine) + test a tabella
 - [ ] mig esc_* (contact methods, rules, policies, steps, schedules, rotations, overrides, state, delivery_log, heartbeats)
-- [ ] Fase 1: shadow runner nel worker + esc_shadow_log + diff GoAlert vs nativo (globex)
+- [ ] Fase 1: shadow runner nel worker + esc_shadow_log + diff YWAlert vs nativo (globex)
 - [ ] Fase 2: adapter Twilio SMS/voce (TwiML+DTMF) + SMTP + Slack + inbound webhooks firmati
 - [ ] verifica recapiti nativa (OTP) + wiring UID esistente
 - [ ] Fase 3: flag `escalation_engine` per-tenant + cutover globex + rollback
-- [ ] parità e2e nativo (mirror di `goalert-parity-e2e.sh`) senza GoAlert
-- [ ] Fase 4: spegnimento GoAlert + rimozione provisioning + aggiornamento `docs/goalert-manuale.md`
+- [ ] parità e2e nativo (mirror di `goalert-parity-e2e.sh`) senza YWAlert
+- [ ] Fase 4: spegnimento YWAlert + rimozione provisioning + aggiornamento `docs/ywalert-manuale.md`
 - [ ] Fase 5: deprecazione schema goalert_*

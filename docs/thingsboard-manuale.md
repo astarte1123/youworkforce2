@@ -14,7 +14,7 @@ YouWorkforce. Split dei ruoli:
 
 ThingsBoard è la piattaforma IoT integrata: raccoglie la telemetria dei sensori e i suoi allarmi.
 YouWorkforce li **pulla** (+ riceve push), applica le **regole sensori** e gli **allarmi nativi
-TB**, e apre incidenti con notifica via GoAlert.
+TB**, e apre incidenti con notifica via YWAlert.
 
 ---
 
@@ -79,7 +79,7 @@ Default safety-first:
   `/api/ingress/thingsboard`) e via polling (specchio device + ultima telemetria + allarmi).
   Convergono sulla stessa catena incidenti (nessun doppione: dedup per id alarm/evento).
 - **Regole**: ogni telemetria passa per le *regole sensori*; gli allarmi nativi TB per la
-  *policy allarmi*. I critici aprono incidente e fanno partire GoAlert.
+  *policy allarmi*. I critici aprono incidente e fanno partire YWAlert.
 - **Inventario**: i device TB sono specchiati automaticamente a ogni sync.
 
 ---
@@ -117,7 +117,7 @@ Default safety-first:
 ---
 
 ## Note
-- **Notifiche**: la consegna (SMS/voce/Slack) passa da **GoAlert**, non dai notificator TB.
+- **Notifiche**: la consegna (SMS/voce/Slack) passa da **YWAlert**, non dai notificator TB.
 - **Dashboard/cruscotti**: usiamo i nostri (Cruscotti IoT), non le dashboard TB.
 - **Rule Engine / Calculated Fields TB**: l'equivalente nostro sono le **regole sensori**.
 - **Provisioning/claiming, OTA, Edge, integrazioni/converter**: spettano al deployment TB

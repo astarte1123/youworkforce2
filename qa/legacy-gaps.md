@@ -30,7 +30,7 @@ Colonne: `funzione/entità | chi la usa (da confermare) | evidenza legacy richie
 | Assegnazioni/ordini | pianificazione, campo | export ordini + stati | `work_orders` (bozza→assegnato→in_corso→completato→annullato) | nomenclatura stati/transizioni | non_verificata |
 | Turni | pianificazione | definizione turni/calendari | `shifts` (inizio/fine) | ottimizzatore turni non previsto (H48) | non_verificata |
 | Consuntivi ore/spese | campo, amministrazione | export righe + regole tariffarie | `timesheets`+`timesheet_lines`+`expenses` (centesimi, CSV) | arrotondamenti/valute/regole costo | non_verificata |
-| Allarmi/escalation | centrale | policy escalation + reperibilità | GoAlert reale (EP multi-livello, consegna webhook verificata) | motore unico GoAlert; mapping policy | da_decidere |
+| Allarmi/escalation | centrale | policy escalation + reperibilità | YWAlert reale (EP multi-livello, consegna webhook verificata) | motore unico YWAlert; mapping policy | da_decidere |
 | IoT/telemetria | tecnico | sorgenti/soglie | ThingsBoard reale → `sensore_critico` | soglie/allarmi da ricalibrare | non_verificata |
 | Diario/note di lavoro | campo | formato note/allegati | `diary_entries` (voce browser/manuale) | allegati/foto = backlog | non_verificata |
 | Storico/audit | amministrazione, auditor | formato log + retention | `audit_log` + timeline incidenti | granularità/retention diverse | non_verificata |

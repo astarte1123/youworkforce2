@@ -1,4 +1,4 @@
-//! Encryption-at-rest dei segreti upstream (password Traccar, gql_pass GoAlert).
+//! Encryption-at-rest dei segreti upstream (password Traccar, gql_pass YWAlert).
 //! Chiave simmetrica derivata da YW_SECRET_KEY (qualsiasi passphrase -> sha256).
 //! Formato memorizzato: "enc:v1:<hex nonce>:<hex ciphertext>". I valori senza
 //! prefisso sono trattati come plaintext (percorso di migrazione retrocompatibile).

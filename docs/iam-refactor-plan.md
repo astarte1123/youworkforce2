@@ -121,7 +121,7 @@ Oggi i gruppi condivisi servono solo l'import nei gruppi allarme. Estensione pro
    `admin_only` di `api.rs`. 7 nuove capability nel catalogo: `users.manage` (utenti/gruppi/permessi/
    ruoli custom/sedi/squadre/asset), `devices.admin` (censimento/token/onboarding/geofence/
    provisioning — distinta da `devices.manage`=comandi, assegnata a operatore), `iot.manage`
-   (Traccar/ThingsBoard/GoAlert/regole sensori/email ingest), `escalation.manage` (gruppi allarme/
+   (Traccar/ThingsBoard/YWAlert/regole sensori/email ingest), `escalation.manage` (gruppi allarme/
    on-call/override/profili/trigger/recapiti), `settings.manage` (UI/impostazioni), `gdpr.manage`,
    `audit.view`. Ogni `admin_only(&s)?` → `require_cap(&s,"<area>")?` (script per funzione; i 3 site
    dentro `ag_run` mappati per riga). **Nessun** ruolo le ha di default (solo `tenant_admin` via

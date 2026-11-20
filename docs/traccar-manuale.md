@@ -5,8 +5,8 @@ YouWorkforce. **Non serve mai aprire la console Traccar**: ogni cosa si fa dalle
 
 Traccar è il motore GPS integrato: riceve le posizioni dei badge/dispositivi, rileva eventi
 (movimento, soste, geofence, allarmi, inattività) e YouWorkforce li trasforma in incidenti e
-notifiche. La **consegna** delle notifiche (SMS/voce/Slack) resta a GoAlert — vedi
-`docs/goalert-manuale.md`.
+notifiche. La **consegna** delle notifiche (SMS/voce/Slack) resta a YWAlert — vedi
+`docs/ywalert-manuale.md`.
 
 **Chi fa cosa**
 | Ruolo | Può |
@@ -92,7 +92,7 @@ sostituzione o manutenzione).
 Decidi, per ogni tipo di evento che Traccar genera, cosa deve fare YouWorkforce:
 - **ignora**: non registrato (rumore, non interessa).
 - **registra**: salvato come evento, **non** critico (consultabile, nessuna escalation).
-- **critico**: genera **allarme + escalation** (come un SOS: parte la reperibilità via GoAlert).
+- **critico**: genera **allarme + escalation** (come un SOS: parte la reperibilità via YWAlert).
 
 **Tabella eventi e default (safety-first per il lavoratore isolato):**
 | Evento Traccar | Significato | Default |
@@ -167,7 +167,7 @@ Regole:
 - **Ricezione doppia**: posizioni/eventi via webhook (forward) **e** polling (backfill +
   rilevazione badge silenti). I due convergono nello stesso incidente (nessun doppione).
 - **Eventi → incidenti**: ogni evento è mappato secondo la **policy eventi**; i *critici* aprono
-  un incidente e fanno partire la notifica (GoAlert).
+  un incidente e fanno partire la notifica (YWAlert).
 - **Presenza**: YouWorkforce confronta le posizioni con le geofence (Mappa) — calcolo nativo,
   non serve configurare geofence in Traccar.
 - **Batteria**: la policy batteria (off/warning/critico, in ⚙ Impostazioni sicurezza) decide la
@@ -209,12 +209,12 @@ Regole:
 | Evento importante non allarma | policy su *registra* | mettilo su *critico* |
 | Attributo calcolato assente | espressione errata o device non collegato | correggi l'espressione / collega il device |
 | Conducente non riconosciuto | ID non combacia col lettore | allinea l'ID RFID/iButton |
-| Nessuno avvisato sui critici | nessun trasporto in GoAlert | vedi `docs/goalert-manuale.md` |
+| Nessuno avvisato sui critici | nessun trasporto in YWAlert | vedi `docs/ywalert-manuale.md` |
 
 ---
 
 ## Note
-- **Notifiche**: la consegna (SMS/voce/Slack) passa da **GoAlert**, non dai notificator Traccar.
+- **Notifiche**: la consegna (SMS/voce/Slack) passa da **YWAlert**, non dai notificator Traccar.
 - **Geofence**: si disegnano e gestiscono in **YouWorkforce** (Mappa/Piantine), non in Traccar.
 - **Filtri posizione / reverse-geocoding**: configurati lato server dal superadmin.
 - **Fonte dati**: drivers, manutenzioni e attributi calcolati vivono **in Traccar** (YW li

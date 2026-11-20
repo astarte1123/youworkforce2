@@ -44,8 +44,8 @@ L'entità che oggi **manca** è il legante dei 5 stadi: un **"Profilo di protezi
 | 1 App | `worker_sos api.rs:4909`; login cookie HttpOnly+CSRF+argon2 `api.rs:2567`; PWA `worker/index.html` | **no geolocalizzazione** nella PWA; nessun bearer/JWT per app mobile vera |
 | 2 Worker↔device | `devices.assigned_user` `0001_init:74`; `assign_device api.rs:2937`; UI `app.html:1344` | associazione **solo informativa** (report/JOIN), non vincola auth né correla il fix al lavoratore/token |
 | 3 Trigger | `map_traccar_alarm api.rs:21` (sos/fallDown→man_down/deviceStopped→immobilità); `sweep_checkins worker.rs:501`; `conn_watchdog worker.rs:109`; `persist_ingest api.rs:3590`; `CRITICAL api.rs:14` | no_motion/dead-man letterali assenti (coperti da `immobilita`+`mancato_checkin`); **fuori-area non critico di default** |
-| 4 Escalation | nativo `escalation.rs`+`delivery.rs`; flag `escalation_engine` `api.rs:6522/6545` mig `0056`; GoAlert upstream | **default=goalert**, nativo in shadow → doppio path; UI config sotto sezione "GoAlert"; Slack per-gruppo non cablato; UTC-only |
-| 5 Gestione | `ack_incident/close_incident api.rs:4862/4883` (operatore/admin/reperibile); `vCentrale`/`vMieiAllarmi` | naming legacy "GoAlert" nella config |
+| 4 Escalation | nativo `escalation.rs`+`delivery.rs`; flag `escalation_engine` `api.rs:6522/6545` mig `0056`; YWAlert upstream | **default=goalert**, nativo in shadow → doppio path; UI config sotto sezione "YWAlert"; Slack per-gruppo non cablato; UTC-only |
+| 5 Gestione | `ack_incident/close_incident api.rs:4862/4883` (operatore/admin/reperibile); `vCentrale`/`vMieiAllarmi` | naming legacy "YWAlert" nella config |
 
 **Diagnosi:** il flusso esiste tutto ma è **frammentato** su 3 mondi (Traccar/ThingsBoard/loneworker)
 + 2 motori escalation + UI sparsa. I difetti strutturali sono: anello 1↔2 non vincolante, app lavoratore
@@ -60,13 +60,13 @@ senza geoloc, doppio motore escalation, nessun oggetto unificante.
 ### E — Menu unico "Sicurezza Lavoratore"
 
 Oggi gli allarmi/sicurezza vivono su più voci (Centrale, Mappa, Piantine, Report, "Gruppi allarme",
-sezione GoAlert). Si introduce **un gruppo nav dedicato** che raccoglie l'intero perimetro, in ordine
+sezione YWAlert). Si introduce **un gruppo nav dedicato** che raccoglie l'intero perimetro, in ordine
 di flusso di configurazione poi operatività:
 
 | Gruppo nav | Voci (nuova etichetta ← attuale) | Chi vede |
 |---|---|---|
 | **Sicurezza Lavoratore** → *Operatività* | Centrale allarmi · I miei allarmi · Mappa (assorbe Piantine) | operatore, admin, auditor, reperibile, responsabile |
-| **Sicurezza Lavoratore** → *Configurazione* (admin) | Dispositivi & App · Lavoratori e assegnazioni ← Anagrafiche(sottoinsieme) · Trigger di sicurezza · Escalation e reperibilità ← Gruppi allarme/GoAlert | tenant_admin |
+| **Sicurezza Lavoratore** → *Configurazione* (admin) | Dispositivi & App · Lavoratori e assegnazioni ← Anagrafiche(sottoinsieme) · Trigger di sicurezza · Escalation e reperibilità ← Gruppi allarme/YWAlert | tenant_admin |
 
 - Riusa il meccanismo `NAV` con `group` già previsto da `ui-rationalization.md §1`.
 - Allineato al glossario (`ui-rationalization.md §10.6`): **Reperibilità** (non on-call), **Escalation**,
@@ -75,17 +75,17 @@ di flusso di configurazione poi operatività:
   (sos, man_down, immobilita, mancato_checkin, fuori-area) e la loro mappatura sorgente (Traccar
   alarm → etype, config `sos_as`/`stopped_as_immobilita`), oggi sparsa nel codice (`map_traccar_alarm`).
 
-### D — Escalation nativa come default + de-branding GoAlert
+### D — Escalation nativa come default + de-branding YWAlert
 
 1. **Flip del default** `tenant_oncall_cfg.escalation_engine` da `goalert` → `native` (nuova migrazione;
-   GoAlert resta selezionabile per rollback per-tenant via `escalation_engine_set api.rs:6545`).
+   YWAlert resta selezionabile per rollback per-tenant via `escalation_engine_set api.rs:6545`).
 2. **Soppressione doppio-path** attiva quando `native` (`esc_suppress_goalert api.rs:6533`), così un
    incidente non notifica due volte.
-3. **UI**: rinominare la sezione "GoAlert" → **"Escalation e reperibilità"**; i canali SMS/voce/mail/Slack
+3. **UI**: rinominare la sezione "YWAlert" → **"Escalation e reperibilità"**; i canali SMS/voce/mail/Slack
    diventano "Canali di notifica"; il motore (native/goalert) è un dettaglio avanzato/superadmin, non il
    titolo della funzione.
-4. **Contratto da aggiornare**: `module-matrix.md` riga 22 ("GoAlert è l'unico motore… Nessun secondo
-   motore") è **obsoleta** → sostituire con "motore escalation = nativo di default, GoAlert opzionale per
+4. **Contratto da aggiornare**: `module-matrix.md` riga 22 ("YWAlert è l'unico motore… Nessun secondo
+   motore") è **obsoleta** → sostituire con "motore escalation = nativo di default, YWAlert opzionale per
    rollback". Allineare `native-escalation-engine-project.md` (Fase 3 cutover → promuovere a default).
 
 ### Residui da chiudere in D (già tracciati)
@@ -152,10 +152,10 @@ di flusso di configurazione poi operatività:
 1. **Nav**: aggiungere gruppo `safety` in `NAV` (`app.html`), spostare Centrale/I miei allarmi/Mappa +
    le voci di config sotto le due sezioni; icone distinte (`ui-rationalization.md §10.2`).
 2. **Pagina "Trigger di sicurezza"** (lettura+toggle etype critici per-tenant; sorgente→etype).
-3. **Rinomine UI** sezione GoAlert → Escalation e reperibilità; "Canali di notifica".
+3. **Rinomine UI** sezione YWAlert → Escalation e reperibilità; "Canali di notifica".
 4. **Migrazione** `00XX_escalation_engine_default_native.sql`: default colonna → `native` (nuovi tenant);
-   script opt-in per flippare gli esistenti; GoAlert resta per rollback.
-5. **Soppressione path** verificata: un incidente native → una sola catena di consegna (no outbox GoAlert).
+   script opt-in per flippare gli esistenti; YWAlert resta per rollback.
+5. **Soppressione path** verificata: un incidente native → una sola catena di consegna (no outbox YWAlert).
 6. **Aggiornare contratti**: `module-matrix.md`, `native-escalation-engine-project.md`.
 7. **Verifica live** su tenant pilota (globex): incidente SOS → una sola escalation nativa, ack/close dalla
    Centrale, audit coerente.
@@ -163,13 +163,13 @@ di flusso di configurazione poi operatività:
 ## 6. Criteri di "fatto" (D+E)
 
 - Un solo menu copre l'intero perimetro sicurezza; nessuna voce sicurezza fuori dal gruppo.
-- Nessun incidente critico genera doppia notifica (native default, GoAlert soppresso salvo rollback).
-- La parola "GoAlert" non compare più nella UI tenant (resta nei dettagli superadmin/avanzati).
+- Nessun incidente critico genera doppia notifica (native default, YWAlert soppresso salvo rollback).
+- La parola "YWAlert" non compare più nella UI tenant (resta nei dettagli superadmin/avanzati).
 - I contratti non si contraddicono sul numero di motori escalation.
 
 ## 7. F1+F2 — Escalation disaccoppiata e self-sufficient (FATTO 2026-11-12)
 
-Analisi gap vs GoAlert (goalert.me/docs) → scelta F1+F2. Migrazione `0061_native_escalation_selfsufficient.sql`.
+Analisi gap vs YWAlert (goalert.me/docs) → scelta F1+F2. Migrazione `0061_native_escalation_selfsufficient.sql`.
 
 **F1 — Disaccoppiamento modulo + maintenance nativo**
 - L'escalation/centrale è condivisa da OGNI modulo che produce incidenti: const `ESCALATION_MODS =
@@ -180,20 +180,20 @@ Analisi gap vs GoAlert (goalert.me/docs) → scelta F1+F2. Migrazione `0061_nati
 - Sanata l'asimmetria: le mutation gruppi/routing (prima senza gate) ora sono gated come i GET.
 - Nav app.html: `centrale`, `miei-allarmi`, `gruppi` visibili ai 4 moduli.
 - Maintenance NATIVO: `tenant_oncall_cfg.maintenance_until`; il runner nativo sospende le consegne nella
-  finestra (prima era solo su GoAlert = no-op per tenant nativi). GoAlert allineato best-effort se presente.
+  finestra (prima era solo su YWAlert = no-op per tenant nativi). YWAlert allineato best-effort se presente.
 
-**F2 — Autosufficienza del motore nativo (no GoAlert richiesto)**
-- Il runner `escalation_delivery_shadow_tenant` non richiede più una sessione GoAlert; GoAlert resta
+**F2 — Autosufficienza del motore nativo (no YWAlert richiesto)**
+- Il runner `escalation_delivery_shadow_tenant` non richiede più una sessione YWAlert; YWAlert resta
   ground-truth opzionale solo per la semina rotation (compat shadow).
-- Override/assenze NATIVI: tabella `esc_overrides` (CRUD nativo; mirror GoAlert best-effort per rollback).
-- Seed rotation NATIVO (posizione 0 deterministica) quando non c'è GoAlert; in shadow resta `None` per
+- Override/assenze NATIVI: tabella `esc_overrides` (CRUD nativo; mirror YWAlert best-effort per rollback).
+- Seed rotation NATIVO (posizione 0 deterministica) quando non c'è YWAlert; in shadow resta `None` per
   non generare false divergenze (param `allow_native_seed`).
 - Verifica recapiti NATIVA: OTP via SMS (`users.phone_verified_at/phone_verify_code/_expires`), adapter
   Twilio live o sink/dry. Endpoint recapiti riscritti native (richiesta `{user_id}`).
 - Scan consegna = tenant con incidenti aperti UNION goalert_services (non più solo goalert).
 
 **Verifica:** `qa/escalation-decouple-e2e.sh` 13/13 (globex loneworker OFF + thingsboard ON → escalation 200;
-override + OTP + consegna nativi senza GoAlert; maintenance sospende/riprende) + `loneworker-e2e.sh` 15/15.
+override + OTP + consegna nativi senza YWAlert; maintenance sospende/riprende) + `loneworker-e2e.sh` 15/15.
 
 **Nota operativa (RLS):** `YW_DB_RT` deve connettersi come `app_rt` (NOBYPASSRLS), non come `postgres`
 (superuser, bypassa RLS). L'isolamento tenant dipende dal ruolo non-superuser + `set_config(app.current_tenant)`.
@@ -206,7 +206,7 @@ bundling; label/ricerca; annunci Slack schedulati; iCal dalla rotazione calcolat
 
 Migrazione `0062_escalation_policy_steps.sql`.
 
-**Policy escalation multi-step per gruppo** (parità GoAlert: step ordinati con canale+attesa, reorder,
+**Policy escalation multi-step per gruppo** (parità YWAlert: step ordinati con canale+attesa, reorder,
 repeat-up-to). Tabella `esc_policy_steps` + `alarm_groups.esc_repeat`. Se un gruppo ha step custom il
 runner li usa (policy costruita PER-GRUPPO dentro il loop di consegna), altrimenti ladder derivata
 (SMS→VOICE) retro-compatibile. CRUD `GET/POST /api/groups/:id/policy` (replace-all). UI: editor "⛓ Policy
@@ -225,7 +225,7 @@ loneworker 15/15.
 (ladder a 2 livelli policy×utente); dedup esplicito + bundling; label/ricerca; annunci Slack schedulati;
 iCal dalla rotazione calcolata; engine-toggle in UI superadmin.
 
-## 9. F3-residui — Parità GoAlert completata (FATTO 2026-11-12)
+## 9. F3-residui — Parità YWAlert completata (FATTO 2026-11-12)
 
 Migrazione `0063_escalation_parity_rest.sql`. Chiusi tutti i gap residui:
 
@@ -234,19 +234,19 @@ Migrazione `0063_escalation_parity_rest.sql`. Chiusi tutti i gap residui:
 - **Multi-recapito + regole di notifica per-utente** (`user_contact_methods`, `user_notif_rules`): ladder a
   2 livelli policy×utente. Il runner espande ogni on-call nelle SUE regole (contact method + ritardo),
   altrimenti fallback al canale dello step. `/api/oncall-contacts/:uid/methods|rules` (CRUD). UI nei recapiti.
-- **Dedup esplicito** (parità dedup key GoAlert): un 2° critico con la stessa `correlation` di un incidente
+- **Dedup esplicito** (parità dedup key YWAlert): un 2° critico con la stessa `correlation` di un incidente
   aperto non ne apre un altro (`deduplicated:true`, timeline `dedup_suppressed`).
 - **Bundling maintenance**: gli incidenti accumulati durante la finestra generano UN riepilogo a fine finestra.
 - **Label/ricerca** (`alarm_groups.labels` jsonb): `POST /api/groups/:id/labels`, `GET /api/groups/search`.
 - **Annunci Slack schedulati** (`slack_announce_scan` nel worker): onchange (handoff) o orario giornaliero.
 - **iCal dalla rotazione calcolata**: il feed include i turni calcolati dal resolver nativo (30 giorni).
-- **Engine-toggle in UI superadmin**: select nativo/GoAlert per tenant.
+- **Engine-toggle in UI superadmin**: select nativo/YWAlert per tenant.
 
 **Verifica:** `qa/escalation-rest-e2e.sh` 10/10; regression policy 8/8, decouple 13/13, loneworker 15/15,
 unit 12/12. Slack live richiede token (non testabile in dev). La verifica OTP su contact method aggiuntivi
 (oltre al telefono primario) resta una nicety non implementata.
 
-## 10. Parità pagina Profile GoAlert — G1-G4 (FATTO 2026-11-12)
+## 10. Parità pagina Profile YWAlert — G1-G4 (FATTO 2026-11-12)
 
 Migrazione `0064_profile_parity.sql`. Tutto gated `ESCALATION_MODS` (config tenant admin, modulo superadmin).
 
@@ -258,17 +258,17 @@ Migrazione `0064_profile_parity.sql`. Tutto gated `ESCALATION_MODS` (config tena
   (`/api/oncall-contacts/methods/:id/verify|code|test`).
 - **G3 — Alert Status Updates per-utente + consegna nativa:** `users.status_updates_on` (override del
   default tenant); alla presa in carico/chiusura gli ALTRI on-call con opt-in ricevono un avviso
-  nativo (rispetta opt-out). Prima il flag era solo GoAlert.
+  nativo (rispetta opt-out). Prima il flag era solo YWAlert.
 - **G4 — Note di passaggio turno + playbook:** `esc_handoff_notes` per gruppo; `alarm_groups.playbook`
   ("cosa fare") mostrato nella config gruppo.
 
-**Divergenza voluta da GoAlert:** YouWorkforce **non blocca** la consegna su recapito non verificato
+**Divergenza voluta da YWAlert:** YouWorkforce **non blocca** la consegna su recapito non verificato
 (priorità: non perdere mai un SOS); il blocco duro è solo l'**opt-out** (compliance).
 
 **Verifica:** `qa/escalation-profile-e2e.sh` 14/14. Regression totale: profile 14 + rest 10 + policy 8 +
 decouple 13 + loneworker 15 + escalation unit 12. Manuale `docs/escalation-manuale.md` aggiornato.
 
-## 11. Parità pagina Services GoAlert — S1-S4 (FATTO 2026-11-12)
+## 11. Parità pagina Services YWAlert — S1-S4 (FATTO 2026-11-12)
 
 Migrazione `0065_services_parity.sql`. YouWorkforce non ha un oggetto "Service" unico: compone lo stesso
 ruolo con ingest-token + routing + gruppo + policy. Aggiunta `incidents.forced_group_id` (override in
@@ -276,19 +276,19 @@ testa alla risoluzione del gruppo). Tutto gated `ESCALATION_MODS`.
 
 - **S1 — Heartbeat monitor nativo:** un sistema esterno POSTa all'URL del monitor; se smette oltre il
   timeout, il watchdog apre `heartbeat_down` instradato; alla ripresa del ping l'incidente si chiude.
-  È l'opposto del ping che YW fa verso GoAlert. CRUD `/api/heartbeat-monitors`, ping
+  È l'opposto del ping che YW fa verso YWAlert. CRUD `/api/heartbeat-monitors`, ping
   `/api/ingress/heartbeat/:token`.
 - **S2 — Ingress email → allarme:** indirizzo per-tenant (`/api/email-inboxes`); un'email ricevuta via
   webhook (`/api/ingress/email`) diventa `email_alarm` instradato; tenant dal local-part, mai dal corpo;
   dedup via `+chiave`.
 - **S3 — Bulk ack/close:** `/api/incidents/ack-all` e `/close-all` (ACL per sito), pulsanti in Centrale.
-- **S4 — On-call-now nativo:** `/api/oncall-now-native` (chi è reperibile ora per gruppo, senza GoAlert);
-  la Centrale ora lo usa (prima leggeva GoAlert → vuoto per tenant nativo).
+- **S4 — On-call-now nativo:** `/api/oncall-now-native` (chi è reperibile ora per gruppo, senza YWAlert);
+  la Centrale ora lo usa (prima leggeva YWAlert → vuoto per tenant nativo).
 
 **Verifica:** `qa/escalation-services-e2e.sh` 13/13. Regression totale: services 13 + profile 14 + rest 10
 + policy 8 + decouple 13 + loneworker 15 + unit 12. Manuale `docs/escalation-manuale.md` aggiornato.
 
-Con questo la parità GoAlert è completa su tutte le pagine docs lette (overview, alerting, escalation
+Con questo la parità YWAlert è completa su tutte le pagine docs lette (overview, alerting, escalation
 policies, schedules, rotations, profile, services, recommended-practices).
 
 ## 12. Target per-step (parità Escalation Policies) + code review (FATTO 2026-11-12)
@@ -311,7 +311,7 @@ FASE 0); timeline per-incidente sui bulk.
 
 ## 13. Rotations: Set Active + Timezone nativo (R1+R2, FATTO 2026-11-12)
 
-Parità con la pagina Rotations di GoAlert.
+Parità con la pagina Rotations di YWAlert.
 
 - **R1 — Set Active:** `POST /api/groups/:id/rotation/set-active {user_id}` rende subito reperibile il
   membro scelto (imposta `esc_rotation_state`, `seeded_from='manual'`), senza aspettare l'handoff.
@@ -321,7 +321,7 @@ Parità con la pagina Rotations di GoAlert.
   (`oncall_tz`), con DST gestito. Hourly resta assoluto. Il motore nativo non è più UTC-only.
 
 **Verifica:** `qa/escalation-setactive-e2e.sh` 4/4 + 2 unit test tz/DST (escalation unit 14/14).
-Regression totale 79 e2e + 14 unit. YouWorkforce supera inoltre GoAlert con la rotazione **mensile**.
+Regression totale 79 e2e + 14 unit. YouWorkforce supera inoltre YWAlert con la rotazione **mensile**.
 
 ## 14. Schedules: assegnazioni multiple + vista Shifts (G-A+G-B, FATTO 2026-11-12)
 
@@ -337,7 +337,7 @@ Migrazione `0067_schedule_assignments.sql`. Chiude gli ultimi gap della pagina S
 
 **Verifica:** `qa/escalation-schedules-e2e.sh` 5/5. Regression 73 e2e + 14 unit (tz/DST inclusi).
 
-**Parità GoAlert completa su tutte le pagine docs** (overview, alerting, escalation policies, schedules,
+**Parità YWAlert completa su tutte le pagine docs** (overview, alerting, escalation policies, schedules,
 rotations, profile, services, recommended-practices, calendar-subscriptions). Residui minori: assegnazioni
 di tipo rotazione a sé stante; "Allow gaps" sul temporary schedule; abbonamenti iCal per-schedule.
 
@@ -354,6 +354,6 @@ Migrazione `0068_schedule_minors.sql`.
 
 **Verifica:** `qa/escalation-schedule-minors-e2e.sh` 6/6.
 
-Con questo la parità GoAlert è completa anche sui dettagli minori. **Nota operativa:** sotto carico
+Con questo la parità YWAlert è completa anche sui dettagli minori. **Nota operativa:** sotto carico
 concorrente pesante il core è morto senza log (stack-overflow dev Windows noto); non è una regressione
 (tutti i test ripassano dopo riavvio). Da indagare se ricorre in produzione.

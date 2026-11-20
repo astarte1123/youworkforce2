@@ -1,13 +1,12 @@
-//! #4 Escalation engine nativo — FASE 2: adapter di consegna (modalità OMBRA).
+//! Motore di escalation YWAlert — adapter di consegna (NATIVO, autoritativo).
 //!
-//! In shadow NON si contattano i carrier reali: ogni rung viene "consegnata" a un SINK DI PROVA
-//! (receiver webhook, es. `goalert-delivery.sh`) o, se il sink non è configurato, resta DRY
-//! (solo log). Serve a validare la catena decisione→consegna + idempotenza + ack inbound PRIMA
-//! di spegnere GoAlert. Il corpo della richiesta è modellato come una vera chiamata Twilio REST
-//! (`Messages`/`Calls`) così lo shaping è già pronto per il cutover.
+//! Consegna reale ai carrier: SMS/voce via Twilio REST (`Messages`/`Calls`), Slack via
+//! `chat.postMessage`, email via relay HTTP. Se nessun carrier è configurato la rung va a un
+//! SINK webhook (`YW_ESC_SINK_URL`, usato dagli e2e per provare il recapito reale) oppure, in
+//! assenza anche di quello, resta DRY (solo log) in sviluppo.
 //!
 //! Parte PURA (ladder, shaping, chiave idempotenza): testabile senza rete. Parte async: un solo
-//! POST al sink, best-effort.
+//! POST per rung, best-effort con ritentativo a oltranza sugli invii di sicurezza.
 
 use serde_json::{json, Value};
 
@@ -24,7 +23,7 @@ impl Channel {
 pub struct Rung { pub delay_s: i64, pub channel: Channel, pub to: String }
 
 /// Ladder per un singolo destinatario on-call, dai recapiti noti e dalla config vocale del tenant.
-/// Replica la ladder GoAlert tipica: SMS immediato, poi VOICE dopo `voice_fallback_min` minuti se
+/// Replica la ladder YWAlert tipica: SMS immediato, poi VOICE dopo `voice_fallback_min` minuti se
 /// abilitata. Email come fallback finale se non c'è telefono. Deterministica.
 pub fn ladder_for(phone: Option<&str>, email: Option<&str>, voice_on: bool, voice_fallback_min: i64) -> Vec<Rung> {
     let mut out = vec![];
@@ -50,7 +49,7 @@ pub fn delivery_key(incident_id: &str, step: i64, channel: Channel, to: &str) ->
 pub fn request_body(channel: Channel, from: &str, to: &str, text: &str, incident_id: &str, step: i64) -> Value {
     let base = json!({
         "channel": channel.as_str(), "incident_id": incident_id, "step": step,
-        "shadow": true, "engine": "native",
+        "shadow": false, "engine": "native",
     });
     let mut v = base;
     match channel {
@@ -98,7 +97,7 @@ pub async fn deliver_to_sink(http: &reqwest::Client, sink_url: &str, body: &Valu
 // --------------------------- Adapter LIVE (carrier reali) ---------------------------
 // Attivi solo col gate `YW_ESC_TWILIO_LIVE=1` (Twilio) / token presente (Slack). Default OFF:
 // in shadow non si tocca nessun carrier. Account Twilio NATIVO (env), separato dalla config
-// GoAlert per-tenant: un solo numero/credenziali per il motore nativo durante il pilota.
+// YWAlert per-tenant: un solo numero/credenziali per il motore nativo durante il pilota.
 
 /// Credenziali Twilio del motore nativo, da env. `None` se non configurate → live non disponibile.
 pub struct TwilioCfg { pub sid: String, pub auth: String, pub from: String }
@@ -251,7 +250,7 @@ mod tests {
         let v = request_body(Channel::Sms, "+39000", "+39111", "ciao", "inc1", 0);
         assert_eq!(v.pointer("/twilio/resource").unwrap(), "Messages");
         assert_eq!(v.pointer("/twilio/Body").unwrap(), "ciao");
-        assert_eq!(v["shadow"], true);
+        assert_eq!(v["shadow"], false);
     }
     #[test]
     fn twilio_signature_official_vector() {

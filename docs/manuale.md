@@ -65,8 +65,8 @@ Due pagine distinte (amministratore):
 
 Pagina a **tab**: Gruppi, Routing (evento→gruppo), Notifiche (fallback vocale, calendario
 reperibilità, manutenzione), Recapiti (con verifica OTP), Assenze & turni, Monitor (diagnostica).
-Motore di escalation **nativo** (parità con GoAlert). Dettagli: [escalation-manuale](escalation-manuale.md),
-[goalert-manuale](goalert-manuale.md).
+Motore di escalation **nativo** (parità con YWAlert). Dettagli: [escalation-manuale](escalation-manuale.md),
+[ywalert-manuale](ywalert-manuale.md).
 
 ## 6. Dispositivi e app
 
@@ -136,7 +136,7 @@ Modulo **assistant**.
 ## 13. Amministrazione multi-tenant (superadmin)
 
 Licenze e branding (logo, palette), attivazione moduli e scenari per tenant, impersonazione del
-tenant per assistenza. Le integrazioni (GoAlert/Traccar/ThingsBoard) si **auto-configurano** dai
+tenant per assistenza. Le integrazioni (YWAlert/Traccar/ThingsBoard) si **auto-configurano** dai
 default di prodotto.
 
 ## 13-bis. Privacy e audit (GDPR + registro attività)
@@ -152,7 +152,7 @@ Vedi [gdpr-privacy-audit](gdpr-privacy-audit.md).
 | Area | Manuale |
 |---|---|
 | Console (UI, ricerca, mappe, tema, responsive, i18n) | [console-ui-manuale.md](console-ui-manuale.md) |
-| Escalation e reperibilità | [escalation-manuale.md](escalation-manuale.md) · [goalert-manuale.md](goalert-manuale.md) |
+| Escalation e reperibilità | [escalation-manuale.md](escalation-manuale.md) · [ywalert-manuale.md](ywalert-manuale.md) |
 | Traccar (badge/GPS) | [traccar-manuale.md](traccar-manuale.md) |
 | ThingsBoard (IoT) | [thingsboard-manuale.md](thingsboard-manuale.md) |
 | Edge nativo Teltonika (TCP/IO/GPRS) | [teltonika-edge.md](teltonika-edge.md) |

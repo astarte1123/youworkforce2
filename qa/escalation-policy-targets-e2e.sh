@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Parità Escalation Policies GoAlert — target PER-STEP: uno step può notificare un destinatario
+# Parità Escalation Policies YWAlert — target PER-STEP: uno step può notificare un destinatario
 # diverso (on-call del gruppo, un ALTRO gruppo, una persona, un canale Slack).
 # Tenant: globex (native). Stato ripristinato a fine run.
 set -uo pipefail

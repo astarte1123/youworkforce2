@@ -9,9 +9,9 @@
 - **Incidente**: `aperto → preso_in_carico → intervento → chiuso(esito)`. Autorità: Rust.
 - **Sessione di protezione** / **check-in**: timer durevole nel core, indipendente dai dati del badge.
 - **Turno pianificato / presenza / ordine / riga consuntivo**: registri **distinti**; l'avvio di uno non certifica gli altri.
-- **Outbox**: richiesta notifica persistita nella stessa transazione dell'incidente; drenata dal worker verso GoAlert (at-least-once).
+- **Outbox**: richiesta notifica persistita nella stessa transazione dell'incidente; drenata dal worker verso YWAlert (at-least-once).
 - **Profilo evidenza**: `SIMULATO | UPSTREAM REALE | HARDWARE REALE | SITO PILOTA`.
 
 ## Autorità singola per regola
-- ThingsBoard rileva soglie sensori → Rust **crea e governa** incidenti → GoAlert esegue la reperibilità.
+- ThingsBoard rileva soglie sensori → Rust **crea e governa** incidenti → YWAlert esegue la reperibilità.
 - Perdita motore/canale ⇒ **degrado** visibile, mai un secondo motore di escalation.

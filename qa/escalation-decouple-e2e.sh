@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# F1+F2 — Escalation nativa DISACCOPPIATA e SELF-SUFFICIENT (strada nuova), senza GoAlert.
+# F1+F2 — Escalation nativa DISACCOPPIATA e SELF-SUFFICIENT (strada nuova), senza YWAlert.
 #  F1) con "Sicurezza lavoratore" (loneworker) SPENTO ma un altro modulo che genera incidenti
 #      ATTIVO (thingsboard), la centrale + l'escalation restano visibili/configurabili (no 403).
 #  F1) maintenance NATIVO: persistito su tenant_oncall_cfg, sospende le consegne del runner nativo.
 #  F2) override/assenze NATIVI (app.esc_overrides), verifica recapiti NATIVA (OTP via SMS/sink),
-#      runner nativo che CONSEGNA senza alcuna sessione GoAlert.
+#      runner nativo che CONSEGNA senza alcuna sessione YWAlert.
 # Tenant di prova: globex (isolato), stato ripristinato a fine run.
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"
@@ -21,12 +21,11 @@ CS=$(awk '$6=="yw_csrf"{print $7}' "$JAR" | tail -1)
 api(){ curl -s -b "$JAR" -H "x-tenant-slug: $SLUG" -H "x-csrf-token: $CS" "$@"; }
 TID="(SELECT id FROM app.tenants WHERE slug='$SLUG')"
 
-# ---- setup scenario: loneworker OFF, altro modulo nativo che genera incidenti (iot) ON, no GoAlert ----
+# ---- setup scenario: loneworker OFF, altro modulo nativo che genera incidenti (iot) ON, no YWAlert ----
 # NB: thingsboard e' RITIRATO (mig 0078). ESCALATION_MODS = loneworker,iot -> con loneworker OFF
 # e iot ON la centrale/escalation resta raggiungibile (no 403) via un modulo nativo.
 sql "UPDATE app.tenant_modules tm SET state='non_abilitato' FROM app.tenants t WHERE t.id=tm.tenant_id AND t.slug='$SLUG' AND tm.module_code='loneworker'" >/dev/null
 sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) SELECT id,'iot','attivo' FROM app.tenants WHERE slug='$SLUG' ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
-sql "DELETE FROM app.goalert_services gs USING app.tenants t WHERE t.id=gs.tenant_id AND t.slug='$SLUG'" >/dev/null
 
 # ---- F1: escalation/centrale raggiungibili con loneworker OFF ----
 [ "$(code "$BASE/api/incidents")" = 200 ]       && ok "F1 centrale incidenti 200 (loneworker OFF, iot ON)" || no "incidenti non raggiungibili" "$(code "$BASE/api/incidents")"
@@ -42,7 +41,7 @@ sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id,escalation_eng
 UID1=$(sql "WITH t AS (SELECT id FROM app.tenants WHERE slug='$SLUG') INSERT INTO app.users(tenant_id,email,pass_hash,role,phone) SELECT id,'dec1-$R@globex.loneworker.eu','x','operatore','+393977000001' FROM t RETURNING id" | head -1)
 api -H 'content-type: application/json' -X POST "$BASE/api/groups/$GID/members" -d "{\"user_id\":\"$UID1\",\"position\":1}" >/dev/null
 
-# ---- F2: override nativo CRUD (senza GoAlert) ----
+# ---- F2: override nativo CRUD (senza YWAlert) ----
 OID=$(api -H 'content-type: application/json' -X POST "$BASE/api/oncall-overrides" -d "{\"group_id\":\"$GID\",\"start\":\"2026-12-01T08:00:00Z\",\"end\":\"2026-12-01T18:00:00Z\",\"add_user_id\":\"$UID1\"}" | python -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
 [ -n "$OID" ] && ok "F2 override nativo creato" || no "override non creato" "-"
 CNT=$(api "$BASE/api/oncall-overrides?group_id=$GID" | python -c "import sys,json;print(len(json.load(sys.stdin)['overrides']))")
@@ -59,11 +58,11 @@ api -H 'content-type: application/json' -X POST "$BASE/api/oncall-contacts/code"
 VER=$(sql "SELECT phone_verified_at IS NOT NULL FROM app.users WHERE id='$UID1'")
 [ "$VER" = t ] && ok "F2 recapito verificato (nativo)" || no "recapito non verificato" "$VER"
 
-# ---- F2: runner nativo CONSEGNA senza GoAlert ----
+# ---- F2: runner nativo CONSEGNA senza YWAlert ----
 sql "DELETE FROM app.esc_rotation_state rs USING app.tenants t WHERE t.id=rs.tenant_id AND t.slug='$SLUG'" >/dev/null
 sql "INSERT INTO app.incidents(tenant_id,etype,state,priority,correlation,opened_at,forced_group_id) SELECT $TID,'sos','nuovo',1,'e2e-selfsuff-'||gen_random_uuid(),now(),'$GID'" >/dev/null
 DLV=$(api -H 'content-type: application/json' -X POST "$BASE/api/escalation/delivery/run" -d '{}' | python -c "import sys,json;d=json.load(sys.stdin);print(d['deliveries'])")
-[ "$DLV" -ge 1 ] && ok "F2 consegna nativa SENZA GoAlert ($DLV rung)" || no "nessuna consegna nativa" "$DLV"
+[ "$DLV" -ge 1 ] && ok "F2 consegna nativa SENZA YWAlert ($DLV rung)" || no "nessuna consegna nativa" "$DLV"
 
 # ---- F1: maintenance nativo sospende la consegna ----
 sql "INSERT INTO app.incidents(tenant_id,etype,state,priority,correlation,opened_at,forced_group_id) SELECT $TID,'sos','nuovo',1,'e2e-maint-'||gen_random_uuid(),now(),'$GID'" >/dev/null

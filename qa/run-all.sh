@@ -2,7 +2,7 @@
 # Runner di TUTTE le suite e2e contro lo stack in esecuzione, raggruppate per
 # dipendenza. Usato in locale e in CI (dopo l'avvio dei servizi).
 #   MODE=core    -> solo le suite che richiedono core+Postgres (gating affidabile)
-#   MODE=engines -> solo le suite dei motori (GoAlert/Traccar/ThingsBoard), auto-skip se giù
+#   MODE=engines -> solo le suite dei motori (YWAlert/Traccar/ThingsBoard), auto-skip se giù
 #   MODE=all     -> tutto (default)
 # RUN_SETUP=1    -> include anche le suite che richiedono setup esterno/stato acme fresco
 #                   (goalert-e2e: KEY; goalert-delivery: receiver; goalert-p4/traccar-p1/
@@ -10,7 +10,6 @@
 # Uscita != 0 se almeno una suite eseguita fallisce. Ogni suite gira su globex/throwaway, MAI acme.
 set -u
 BASE=${BASE:-http://localhost:8080}
-GA=${GOALERT_BASE:-http://localhost:8082}
 TR=${TR:-http://localhost:8083}
 TB=${TB:-http://localhost:8084}
 MODE=${MODE:-all}; RUN_SETUP=${RUN_SETUP:-0}
@@ -38,29 +37,46 @@ CORE="smoke.sh loneworker-e2e.sh acl-e2e.sh \
  clients-e2e.sh listino-e2e.sh dispatch-e2e.sh richieste-e2e.sh contratti-e2e.sh anagrafiche-e2e.sh commessa-allegati-e2e.sh \
  vigilanza-e2e.sh vigilanza-piani-e2e.sh vigilanza-autopunch-e2e.sh \
  escalation-decouple-e2e.sh escalation-setactive-e2e.sh escalation-rest-e2e.sh escalation-schedules-e2e.sh \
+ escalation-policy-e2e.sh escalation-policy-targets-e2e.sh escalation-profile-e2e.sh escalation-services-e2e.sh escalation-schedule-minors-e2e.sh ywalert-delivery-e2e.sh \
  iot-telemetry-e2e.sh iot-attr-cmd-e2e.sh iot-threshold-e2e.sh iot-normalize-e2e.sh iot-blueprint-e2e.sh iot-mqtt-e2e.sh iot-alerts-e2e.sh iot-monitor-e2e.sh iot-catalog-e2e.sh"
-GOALERT_OK="goalert-config-e2e.sh goalert-p123-e2e.sh goalert-parity-e2e.sh"
+# NB: motore di escalation YWAlert = NATIVO (nessun connettore esterno). Le suite 'escalation-*' +
+# 'ywalert-delivery' coprono la parità; le vecchie suite 'goalert-*' (prodotto esterno) sono rimosse.
 TRACCAR_OK="traccar-e2e.sh traccar-config-e2e.sh traccar-p2-e2e.sh traccar-poll-e2e.sh \
  traccar-sync-e2e.sh traccar-cmd-e2e.sh traccar-battery-policy-e2e.sh traccar-degraded-e2e.sh traccar-parity-e2e.sh \
  crypto-e2e.sh"
-# suite che richiedono setup esterno o acme appena seedato (escluse se RUN_SETUP=0)
-# outbox-resilience: serve un receiver GoAlert che fallisca in modo deterministico + recovery
-GOALERT_SETUP="goalert-e2e.sh goalert-delivery.sh goalert-p4-e2e.sh outbox-resilience-e2e.sh"
 TRACCAR_SETUP="traccar-p1-e2e.sh traccar-conndown-e2e.sh"
 
 [ "$(up "$BASE/health")" = "200" ] || { echo "core down ($BASE) — abort"; exit 2; }
+
+# Sink webhook condiviso per la prova di recapito reale YWAlert (ywalert-delivery-e2e). Se core è
+# avviato con YW_ESC_SINK_URL, TUTTE le consegne lo colpiscono: dev'essere raggiungibile o le suite
+# di escalation vedrebbero consegne 'failed'. Se non c'è già un receiver, ne avviamo uno effimero.
+RECV_PID=""
+if [ -n "${YW_ESC_SINK_URL:-}" ] && [ "$(up "${YW_ESC_SINK_URL}")" = "000" ]; then
+  export YW_ESC_SINK_LOG="${YW_ESC_SINK_LOG:-/tmp/yw_sink_shared.log}"
+  : > "$YW_ESC_SINK_LOG"
+  python3 - "$YW_ESC_SINK_LOG" <<'PY' &
+import http.server,sys
+f=open(sys.argv[1],"ab")
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n=int(self.headers.get("content-length",0)); b=self.rfile.read(n)
+        f.write(b+b"\n"); f.flush()
+        self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+    def log_message(self,*a): pass
+http.server.HTTPServer(("127.0.0.1",18099),H).serve_forever()
+PY
+  RECV_PID=$!
+  for i in 1 2 3 4 5; do [ "$(up "${YW_ESC_SINK_URL}")" != "000" ] && break; sleep 1; done
+  echo "sink receiver avviato (pid $RECV_PID, log $YW_ESC_SINK_LOG)"
+fi
+trap '[ -n "$RECV_PID" ] && kill "$RECV_PID" 2>/dev/null || true' EXIT
 
 if [ "$MODE" = "core" ] || [ "$MODE" = "all" ]; then
   echo "== CORE =="; for s in $CORE; do run "$s"; done
 fi
 
 if [ "$MODE" = "engines" ] || [ "$MODE" = "all" ]; then
-  echo "== GOALERT =="
-  if [ "$(up "$GA")" != "000" ]; then
-    for s in $GOALERT_OK; do run "$s"; done
-    [ "$RUN_SETUP" = "1" ] && for s in $GOALERT_SETUP; do run "$s"; done
-  else for s in $GOALERT_OK; do skip "$s" "GoAlert $GA giù"; done; fi
-
   echo "== TRACCAR =="
   if [ "$(up "$TR/api/server")" != "000" ]; then
     for s in $TRACCAR_OK; do run "$s"; done

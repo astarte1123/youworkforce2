@@ -74,7 +74,7 @@ mondo sicurezza. In console: menu **IoT Dashboard → Alert IoT** (notifica nati
 - **Watchdog offline**: per-device `offline_after_s` (impostato dal blueprint all'attivazione);
   il worker confronta `last_telemetry_at` con l'orologio controllabile (coerente, pilotabile in
   test). Alla ripresa della telemetria l'alert offline si chiude e nasce un `ripristino`.
-- **Notifica nativa**: evento SSE `iot_alert` (nessun GoAlert: self-contained). Il record in
+- **Notifica nativa**: evento SSE `iot_alert` (nessun YWAlert: self-contained). Il record in
   `iot_alerts` è il registro persistente consultabile dalla vista.
 - **Coesistenza**: con Lone Worker attivo la soglia alza **anche** l'incidente di sicurezza (bridge
   in `persist_telemetry`), così i due perimetri restano autonomi ma collaborano.

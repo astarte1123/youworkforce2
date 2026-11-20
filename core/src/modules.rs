@@ -4,7 +4,7 @@
 //!                 di persone, sedi, permessi/ruoli, privacy/audit, dashboard). Non attivabili dal
 //!                 superadmin: ci sono sempre.
 //!   - `product`   moduli funzionali attivabili per-tenant (loneworker, interventi, giri, ...).
-//!   - `connector` integrazioni esterne attivabili (goalert, traccar, thingsboard, iot).
+//!   - `connector` integrazioni esterne attivabili (traccar, thingsboard, iot). Escalation = YWAlert nativo.
 //! Il catalogo DB (app.modules_catalog) resta la fonte per l'ELENCO attivabile (product+connector);
 //! qui si aggiungono le relazioni/metadata che il DB non modella + lo strato `core`.
 

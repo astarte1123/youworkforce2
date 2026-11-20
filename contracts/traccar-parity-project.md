@@ -43,8 +43,8 @@ jamming/lowBattery, offline, stopped→immobilità, geofenceEnter/Exit), presenc
     positionPeriodic, custom) nella UI comandi (oggi solo type libero).
 
 ### ⚪ Non-gap (coperti diversamente, documentato)
-- **Notificators** Traccar (email/SMS/Telegram/WhatsApp/push): instradiamo via GoAlert.
-- **Calendars** su notifiche/geofence: lo scheduling è nostro (vedi copertura in [[goalert-parity]]).
+- **Notificators** Traccar (email/SMS/Telegram/WhatsApp/push): instradiamo via YWAlert.
+- **Calendars** su notifiche/geofence: lo scheduling è nostro (vedi copertura in [[ywalert-parity]]).
 - **Geofence push a Traccar**: presence calcolata nativamente (no doppi eventi). Opzionale futuro.
 - **Forwarding** json/kafka/AMQP/MQTT: usiamo HTTP forward.
 - **Auth** OpenID/LDAP/TOTP, horizontal scaling, scelta DB, filtri/geocoding server: motore/infra.

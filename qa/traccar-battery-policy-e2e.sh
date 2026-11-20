@@ -36,7 +36,7 @@ if [ "$IID" != "None" ] && [ -n "$IID" ]; then ok "critico: batteria 5% -> incid
 ET=$(docker exec ywdb psql -U postgres -d youworkforce -tAc "SELECT etype FROM app.incidents WHERE id='$IID'" 2>/dev/null)
 [ "$ET" = "batteria_critica" ] && ok "critico: etype=batteria_critica (in CRITICAL)" || no "etype errato" "$ET"
 GN=$(docker exec ywdb psql -U postgres -d youworkforce -tAc "SELECT count(*) FROM app.outbox WHERE tenant_id=$TIDQ AND kind='goalert_notify' AND payload->>'etype'='batteria_critica'")
-[ "${GN:-0}" -ge 1 ] && ok "critico: escalation GoAlert richiesta (outbox)" || no "nessuna escalation" "goalert_notify=$GN"
+[ "${GN:-0}" -ge 1 ] && ok "critico: escalation YWAlert richiesta (outbox)" || no "nessuna escalation" "goalert_notify=$GN"
 # anche l'alarm lowBattery deve seguire la policy
 R=$(send_alarm lowBattery); [ "$R" != "None" ] && [ -n "$R" ] && ok "critico: alarm lowBattery -> incidente" || no "lowBattery non critico sotto policy critico" "$R"
 

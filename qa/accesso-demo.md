@@ -10,7 +10,7 @@ modificabile (comodità dev).
 > Il core va avviato con `YW_BASE_DOMAIN=localhost` e `YW_CONTROL_HOST=tenants.localhost`
 > (in produzione: il dominio reale e `tenants.<dominio>`). Imposta anche
 > `YW_SECRET_KEY=<passphrase>` per cifrare a riposo i segreti upstream (password
-> Traccar, gql_pass GoAlert); senza, restano in chiaro e il log avvisa.
+> Traccar, gql_pass YWAlert); senza, restano in chiaro e il log avvisa.
 
 ## URL (prod-like, per-sottodominio)
 | Cosa | URL |
@@ -19,7 +19,6 @@ modificabile (comodità dev).
 | Console tenant globex (isolamento) | http://globex.localhost:8081 |
 | App lavoratore (PWA mobile) | http://acme.localhost:8081/worker/ |
 | Piano di controllo (superadmin) | http://tenants.localhost:8081/superadmin.html |
-| GoAlert (escalation reale) | http://localhost:8082 — `admin` / `goalertadmin1` |
 | Traccar (badge reale) | http://localhost:8083 — `op@acme.test` / `Passw0rd!` |
 | ThingsBoard (IoT reale) | http://localhost:8084 — `tenant@thingsboard.org` / `tenant` |
 
@@ -68,7 +67,7 @@ modificabile (comodità dev).
    - Apri un ordine → **Modifica / ripianifica** (cambia finestra/priorità/assegnatario, concorrenza ottimistica).
    - L'app lavoratore mostra orario e priorità sull'ordine.
 10. **Connettori e IoT (Fase 4)** — menu **Connettori** (come `admin@acme`):
-    - Riepilogo per connettore (Traccar/ThingsBoard/GoAlert/IoT): stato modulo, token, endpoint.
+    - Riepilogo per connettore (Traccar/ThingsBoard/YWAlert/IoT): stato modulo, token, endpoint.
     - **Credenziali di ingest**: genera/copia/revoca i token macchina (il tenant deriva dal token).
     - **Dispositivi** → colonna **Ultimo contatto** (telemetria/eventi ricevuti).
     - **Mappa** (operatore/admin): posizioni dei device su **OpenStreetMap** (Leaflet), popup con
@@ -77,17 +76,12 @@ modificabile (comodità dev).
 
 ## Provare gli upstream REALI (terminale)
 ```bash
-# SOS da "badge" reale: device -> Traccar -> core -> GoAlert
+# SOS da "badge" reale: device -> Traccar -> core -> YWAlert (escalation nativa)
 curl "http://localhost:5055/?id=BADGE-001&lat=45.47&lon=9.19&timestamp=$(date +%s)&alarm=sos"
 # telemetria critica IoT: device -> ThingsBoard Rule Engine -> core
 #   (token device in qa/run-thingsboard.sh; o manda da UI ThingsBoard)
-# consegna reale notifica di 2° livello (webhook verificato):
-bash qa/goalert-delivery.sh
-# GoAlert P1+P2+P3 (close-loop, stato ack/close, on-call, provisioning, heartbeat):
-bash qa/goalert-p123-e2e.sh
-# GoAlert config trasporto + ack/escalate + validazione Twilio (da YouWorkforce):
-bash qa/goalert-config-e2e.sh
-bash qa/goalert-p4-e2e.sh
+# consegna reale notifica di 2° livello (motore NATIVO YWAlert -> receiver webhook):
+bash qa/ywalert-delivery-e2e.sh
 # Config server Traccar da YouWorkforce:
 bash qa/traccar-config-e2e.sh
 # Traccar P1 pull: polling via API con cursore (recupero eventi persi) + watchdog
@@ -124,7 +118,7 @@ bash qa/device-onboarding-e2e.sh # 11 catalogo + wizard + asset + attivo-al-prim
 bash qa/sse-scale.sh             # 2   eventi live via NOTIFY/LISTEN
 bash qa/traccar-e2e.sh           # 8   badge reale
 bash qa/thingsboard-e2e.sh       # 8   IoT reale
-bash qa/goalert-delivery.sh      # 10  consegna reale
+bash qa/ywalert-delivery-e2e.sh  # 10  consegna reale (motore nativo YWAlert)
 bash qa/auth-hardening.sh        # 5   argon2id
 bash qa/session-hardening.sh     # 7   sessioni persistenti
 bash qa/ratelimit-hardening.sh   # 4   anti brute-force

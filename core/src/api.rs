@@ -560,7 +560,7 @@ pub async fn super_set_traccar(State(st): State<AppState>, h: HeaderMap, Path(ti
 }
 
 // ============ Auto-integrazioni: moduli integrati configurati dal prodotto, non dall'uomo ============
-// I motori integrati (GoAlert, Traccar, ThingsBoard) girano sulla nostra infrastruttura: base URL e
+// I motori integrati (YWAlert, Traccar, ThingsBoard) girano sulla nostra infrastruttura: base URL e
 // credenziali admin vengono dai default del prodotto (env), così l'attivazione di un modulo li
 // configura DA SOLA, senza intervento dell'amministratore. I provider AI restano esterni (chiave cliente).
 fn env_opt(k: &str) -> Option<String> { std::env::var(k).ok().filter(|s| !s.trim().is_empty()) }
@@ -648,13 +648,13 @@ pub async fn reconcile_integrations(st: &AppState) {
     }
 }
 
-// ---- "YouWorkforce pilota GoAlert": sincronizza Gruppi/Routing/Escalation -> GoAlert ----
+// ---- "YouWorkforce pilota YWAlert": sincronizza Gruppi/Routing/Escalation -> YWAlert ----
 // Escapa una stringa per inserirla in un literal GraphQL.
 fn parse_hhmm(s: &str) -> Option<(u32,u32)> {
     let mut it = s.split(':'); let h: u32 = it.next()?.trim().parse().ok()?; let m: u32 = it.next()?.trim().parse().ok()?;
     if h < 24 && m < 60 { Some((h,m)) } else { None }
 }
-/// Start della rotation GoAlert: l'istante determina l'ora (e per 'weekly' il giorno) di
+/// Start della rotation YWAlert: l'istante determina l'ora (e per 'weekly' il giorno) di
 /// handoff. 2024-01-01 e' un lunedi'; handoff_day 0=lun..6=dom mappa 2024-01-01..07.
 fn rotation_start(handoff_time: Option<&str>, handoff_day: Option<i32>) -> String {
     let day = handoff_day.unwrap_or(0).clamp(0,6);
@@ -1862,13 +1862,13 @@ pub async fn traccar_status(State(st): State<AppState>, h: HeaderMap) -> R {
         None => (false, None, None, None, 0, 0, 0),
     };
     let lag_seconds = last_ok_at.map(|t| (now - t).num_seconds());
-    // #6 — invii di sicurezza bloccati: notifiche/chiusure GoAlert che non passano
+    // #6 — invii di sicurezza bloccati: notifiche/chiusure YWAlert che non passano
     // (oltre soglia, ancora in coda a ritentare). Visibile all'admin come degrado.
     let outbox_stuck: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM app.outbox WHERE tenant_id=$1 AND kind IN ('notify','close','goalert_notify','goalert_close') AND state<>'done' AND attempts>=6")
+        "SELECT count(*) FROM app.outbox WHERE tenant_id=$1 AND kind IN ('notify','close') AND state<>'done' AND attempts>=6")
         .bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
     let outbox_last_error: Option<String> = sqlx::query_scalar(
-        "SELECT last_error FROM app.outbox WHERE tenant_id=$1 AND kind IN ('notify','close','goalert_notify','goalert_close') AND state<>'done' AND attempts>=6 ORDER BY attempts DESC LIMIT 1")
+        "SELECT last_error FROM app.outbox WHERE tenant_id=$1 AND kind IN ('notify','close') AND state<>'done' AND attempts>=6 ORDER BY attempts DESC LIMIT 1")
         .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
     Ok(Json(json!({
         "configured": configured,
@@ -2155,9 +2155,9 @@ pub async fn alarm_group_import_members(State(st): State<AppState>, h: HeaderMap
 pub fn cap_modules(cap: &str) -> &'static [&'static str] {
     match cap {
         "incidents.view" | "incidents.handle" => &["loneworker"],
-        "escalation.manage"                    => &["loneworker","goalert"],
+        "escalation.manage"                    => &["loneworker"],
         "devices.manage" | "devices.admin"     => &["loneworker","traccar","iot","thingsboard"],
-        "iot.manage"                           => &["iot","traccar","thingsboard","goalert"],
+        "iot.manage"                           => &["iot","traccar","thingsboard"],
         "plan"                                 => &["interventi","cantieri","giri","workforce"],
         "approve" | "timesheets.view_all"      => &["consuntivi"],
         _ => &[], // core: utenti/ruoli/privacy/audit/dashboard/impostazioni/diagnostica
@@ -2176,7 +2176,7 @@ pub const CAPABILITIES: &[(&str,&str)] = &[
     // (solo `tenant_admin` via `admin` super); assegnabili a ruoli custom per delega mirata.
     ("users.manage",         "Amministrazione: utenti, gruppi di persone, permessi, ruoli custom, sedi/squadre/asset"),
     ("devices.admin",        "Amministrazione dispositivi: censimento, token/onboarding, geofence, provisioning"),
-    ("iot.manage",           "IoT e connettori: Traccar/ThingsBoard/GoAlert, regole sensori, email ingest"),
+    ("iot.manage",           "IoT e connettori: Traccar/ThingsBoard/YWAlert, regole sensori, email ingest"),
     ("escalation.manage",    "Escalation e reperibilità: gruppi allarme, turni on-call, override, profili, trigger"),
     ("settings.manage",      "Impostazioni tenant: funzionalità UI e configurazione generale"),
     ("gdpr.manage",          "Privacy GDPR: export e anonimizzazione dati personali"),
@@ -2959,7 +2959,7 @@ pub struct GroupOncallReq {
     pub slack_channel_id: Option<String>, pub slack_notify: Option<String>,
 }
 fn valid_hhmm(s: &str) -> bool { parse_hhmm(s).is_some() }
-// Turni + copertura + slack del gruppo (effetto alla prossima Sincronizza con GoAlert).
+// Turni + copertura + slack del gruppo (effetto alla prossima Sincronizza con YWAlert).
 pub async fn set_group_oncall(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GroupOncallReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
@@ -2992,7 +2992,7 @@ pub async fn set_group_oncall(State(st): State<AppState>, h: HeaderMap, Path(id)
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente")); }
     Ok(Json(json!({"ok":true})))
 }
-// ---- F3: policy di escalation multi-step del gruppo (parità GoAlert) ----
+// ---- F3: policy di escalation multi-step del gruppo (parità YWAlert) ----
 pub async fn group_policy_get(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
@@ -3060,7 +3060,7 @@ pub async fn group_policy_set(State(st): State<AppState>, h: HeaderMap, Path(gid
     Ok(Json(json!({"ok":true,"steps":b.steps.len()})))
 }
 
-// ---- F3: label/metadata sui gruppi (parità GoAlert labels) + ricerca ----
+// ---- F3: label/metadata sui gruppi (parità YWAlert labels) + ricerca ----
 #[derive(Deserialize)] pub struct LabelsReq { pub labels: std::collections::HashMap<String,String> }
 pub async fn group_labels_set(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<LabelsReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
@@ -3079,7 +3079,7 @@ pub async fn group_labels_set(State(st): State<AppState>, h: HeaderMap, Path(gid
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)] pub struct LabelSearchQuery { pub key: Option<String>, pub value: Option<String>, pub q: Option<String> }
-/// Ricerca gruppi per label (key, key+value) o testo nel nome. Parità GoAlert search.
+/// Ricerca gruppi per label (key, key+value) o testo nel nome. Parità YWAlert search.
 pub async fn group_search(State(st): State<AppState>, h: HeaderMap, axum::extract::Query(q): axum::extract::Query<LabelSearchQuery>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
@@ -3154,7 +3154,7 @@ pub async fn group_playbook_set(State(st): State<AppState>, h: HeaderMap, Path(g
     Ok(Json(json!({"ok":true})))
 }
 
-// ---- R1: Set Active (parità Rotations GoAlert) — imposta SUBITO il reperibile di turno ----
+// ---- R1: Set Active (parità Rotations YWAlert) — imposta SUBITO il reperibile di turno ----
 #[derive(Deserialize)] pub struct SetActiveReq { pub user_id: Uuid }
 pub async fn rotation_set_active(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<SetActiveReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
@@ -5103,7 +5103,7 @@ pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
         return Ok(Json(json!({"event_id":eid,"suppressed_by_profile":true,"etype":n.etype,"correlation":n.correlation})));
     }
     if CRITICAL.contains(&n.etype.as_str()) || n.etype.ends_with("_critico") {
-        // DEDUP esplicito (parità GoAlert): se esiste già un incidente APERTO con la stessa chiave
+        // DEDUP esplicito (parità YWAlert): se esiste già un incidente APERTO con la stessa chiave
         // di dedup (correlation), NON se ne apre un altro — l'evento resta a trail e si annota sulla
         // timeline dell'incidente esistente. La correlation di default è casuale (nessun dedup
         // involontario); il dedup scatta solo quando il chiamante fornisce una chiave stabile.
@@ -7096,7 +7096,7 @@ pub async fn list_device_positions(State(st): State<AppState>, h: HeaderMap, Pat
 /// `?token=`), NEVER from the body. `?device=<name>` carries the TB device name.
 /// The ThingsBoard rule chain decides WHAT to forward; the core decides severity:
 /// an explicit alarm flag or a temperature threshold breach -> `sensore_critico`
-/// (critical -> incident -> GoAlert); anything else is stored as `telemetria`.
+/// (critical -> incident -> YWAlert); anything else is stored as `telemetria`.
 // ---------------- Motore regole sensori (parametrico, da YouWorkforce) ----------------
 fn rule_num(v: &Value) -> Option<f64> { v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())) }
 fn rule_truthy(v: &Value) -> bool {
@@ -7304,7 +7304,7 @@ pub async fn close_incident(State(st): State<AppState>, h: HeaderMap, Path(iid):
     let correlation: String = row.get("correlation"); let etype: String = row.get("etype");
     sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'transition',$3)")
         .bind(tid).bind(iid).bind(json!({"to":"chiuso","outcome":b.outcome,"by":s.email})).execute(&mut *tx).await.map_err(ise)?;
-    // P1 close-loop: chiedi a GoAlert di chiudere l'alert con lo stesso dedup (=correlation)
+    // P1 close-loop: chiedi a YWAlert di chiudere l'alert con lo stesso dedup (=correlation)
     sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'close',$2)")
         .bind(tid).bind(json!({"incident_id":iid,"summary":format!("close {}",correlation),"dedup":correlation,"etype":etype}))
         .execute(&mut *tx).await.map_err(ise)?;
@@ -7997,7 +7997,7 @@ pub(crate) async fn trigger_suppressed(st: &AppState, tid: Uuid, worker: Option<
 }
 
 /// SOS escalation policy (loneworker/sos_escalation): incident priority + repeat cadence.
-/// priority "alta"->3, "media"->2. repeat_seconds carried to the GoAlert connector payload.
+/// priority "alta"->3, "media"->2. repeat_seconds carried to the YWAlert connector payload.
 async fn sos_escalation(st: &AppState, tid: Uuid) -> (i32, i64) {
     let c = tool_config(st, tid, "loneworker", "sos_escalation").await;
     let p = match c.get("priority").and_then(|v| v.as_str()) { Some("media") => 2, _ => 3 };
@@ -9930,7 +9930,7 @@ pub async fn ai_agent(State(st): State<AppState>, h: HeaderMap, Json(b): Json<Ag
         for call in &calls {
             // difesa: nomi sospetti sulla catena di sicurezza -> rifiuto esplicito
             let lname = call.name.to_lowercase();
-            let danger = ["close","ack","escalat","silence","silenzia","delete","drop","module","imperson","connection","secret","goalert"];
+            let danger = ["close","ack","escalat","silence","silenzia","delete","drop","module","imperson","connection","secret","ywalert"];
             if danger.iter().any(|w| lname.contains(w)) {
                 turns.push(AgTurn::ToolResult{ id: call.id.clone(), content: "VIETATO: l'agente non agisce sulla catena di sicurezza ne' su configurazioni; resta manuale.".into() });
                 continue;
@@ -10037,7 +10037,7 @@ mod async_stream {
 }
 
 // ============================================================================
-// GoAlert parity: impostazioni reperibilita', recapiti+verifica, assenze,
+// YWAlert parity: impostazioni reperibilita', recapiti+verifica, assenze,
 // manutenzione, calendario iCal. Tutto pilotato da YouWorkforce (tenant_admin).
 // ============================================================================
 
@@ -10085,13 +10085,13 @@ pub async fn oncall_settings_set(State(st): State<AppState>, h: HeaderMap, Json(
     Ok(Json(json!({"ok":true,"voice_fallback_on":voice_on,"voice_fallback_min":voice_min,"status_updates_on":status_on})))
 }
 
-// ---- Recapiti GoAlert dei membri (stato verifica) ----
+// ---- Recapiti YWAlert dei membri (stato verifica) ----
 pub async fn oncall_contacts(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     // NATIVO: recapiti = telefono/email dell'utente + stato verifica (users.phone_verified_at).
-    // Nessuna dipendenza da GoAlert. Membri = utenti presenti in almeno un gruppo di escalation.
+    // Nessuna dipendenza da YWAlert. Membri = utenti presenti in almeno un gruppo di escalation.
     let rows = sqlx::query(
         "SELECT DISTINCT u.id,u.email,u.phone,u.phone_verified_at,u.phone_opt_out_at
            FROM app.users u JOIN app.alarm_group_members m ON m.user_id=u.id
@@ -10155,7 +10155,7 @@ pub async fn oncall_contact_test(State(st): State<AppState>, h: HeaderMap, Json(
     Ok(Json(json!({"ok":true,"delivery":res.state,"note":"messaggio di prova inviato"})))
 }
 
-// ---- F3: multi-recapito + regole di notifica per-utente (ladder a 2 livelli, parità GoAlert) ----
+// ---- F3: multi-recapito + regole di notifica per-utente (ladder a 2 livelli, parità YWAlert) ----
 pub async fn user_cm_list(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
@@ -10252,7 +10252,7 @@ async fn cm_fetch(st: &AppState, tid: Uuid, cmid: Uuid) -> Option<(String,String
         .map(|r| (r.get::<String,_>("kind"), r.get::<String,_>("value")))
 }
 /// Invia un testo (es. OTP) sul canale del recapito, riusando gli adapter: sms/voice via Twilio o
-/// sink, email via relay o sink. Nessuna dipendenza da GoAlert.
+/// sink, email via relay o sink. Nessuna dipendenza da YWAlert.
 async fn esc_send_code_native(st: &AppState, kind: &str, value: &str, text: &str) -> crate::delivery::SinkResult {
     let from = std::env::var("YW_ESC_FROM").unwrap_or_else(|_| "+10000000000".into());
     let sink = std::env::var("YW_ESC_SINK_URL").unwrap_or_default();
@@ -10316,17 +10316,13 @@ pub async fn user_status_pref_set(State(st): State<AppState>, h: HeaderMap, Path
     Ok(Json(json!({"ok":true,"status_updates_on":b.on})))
 }
 
-// ---- Assenze / sostituzioni (override sulla schedule del gruppo) ----
-async fn group_schedule_id(st: &AppState, tid: Uuid, gid: Uuid) -> Option<String> {
-    sqlx::query_scalar("SELECT goalert_schedule_id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
-        .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten()
-}
+// ---- Assenze / sostituzioni (override nativi sul gruppo, tabella app.esc_overrides) ----
 #[derive(Deserialize)] pub struct OverrideQuery { pub group_id: Uuid }
 pub async fn oncall_overrides_list(State(st): State<AppState>, h: HeaderMap, axum::extract::Query(q): axum::extract::Query<OverrideQuery>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
-    // Sorgente NATIVA (app.esc_overrides); nomi utente risolti localmente. GoAlert non richiesto.
+    // Sorgente NATIVA (app.esc_overrides); nomi utente risolti localmente. YWAlert non richiesto.
     let rows = sqlx::query(
         "SELECT o.id,o.start_at,o.end_at,o.add_user,o.remove_user,
                 au.email AS add_email, ru.email AS rem_email
@@ -10385,7 +10381,7 @@ pub async fn oncall_override_del(State(st): State<AppState>, h: HeaderMap, Json(
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)] pub struct OverrideUpdate { pub id: Uuid, pub start: String, pub end: String, pub add_user_id: Option<Uuid>, pub remove_user_id: Option<Uuid> }
-/// Modifica un override esistente (edit in-place, parità GoAlert).
+/// Modifica un override esistente (edit in-place, parità YWAlert).
 pub async fn oncall_override_update(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OverrideUpdate>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
@@ -10405,7 +10401,7 @@ pub async fn oncall_override_update(State(st): State<AppState>, h: HeaderMap, Js
     Ok(Json(json!({"ok":true})))
 }
 
-// ---- F3: Temporary schedule (sostituzione a tempo, parità GoAlert) ----
+// ---- F3: Temporary schedule (sostituzione a tempo, parità YWAlert) ----
 pub async fn temp_schedule_list(State(st): State<AppState>, h: HeaderMap, axum::extract::Query(q): axum::extract::Query<OverrideQuery>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
@@ -10434,7 +10430,7 @@ pub async fn temp_schedule_add(State(st): State<AppState>, h: HeaderMap, Json(b)
         let ok = sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.users WHERE id=$1 AND tenant_id=$2").bind(blk.user_id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.is_some();
         if !ok { return Err(err(StatusCode::BAD_REQUEST, "utente blocco non nel tenant")); }
     }
-    // Allow gaps (parità GoAlert): se i blocchi non coprono tutta la finestra e non è consentito, rifiuta.
+    // Allow gaps (parità YWAlert): se i blocchi non coprono tutta la finestra e non è consentito, rifiuta.
     let window_h = (end - start).num_seconds() as f64 / 3600.0;
     if !b.allow_gaps && total_h + 0.001 < window_h {
         return Err(err(StatusCode::BAD_REQUEST, "buco di copertura: i blocchi non coprono tutta la finestra (spunta 'consenti buchi')"));
@@ -10470,8 +10466,8 @@ pub async fn oncall_maintenance(State(st): State<AppState>, h: HeaderMap, Json(b
     let hours = b.hours.unwrap_or(0).clamp(0, 24);
     let exp = if hours > 0 { st.clock.now() + chrono::Duration::hours(hours) } else { st.clock.now() - chrono::Duration::minutes(1) };
     let exp_s = exp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    // Sorgente di verità NATIVA: il runner nativo (escalation_delivery_shadow_tenant) sospende
-    // le consegne finché now() < maintenance_until. Indipendente da GoAlert.
+    // Sorgente di verità NATIVA: il runner nativo (escalation_delivery_run_tenant) sospende
+    // le consegne finché now() < maintenance_until. Indipendente da YWAlert.
     let until_db: Option<chrono::DateTime<chrono::Utc>> = if hours > 0 { Some(exp) } else { None };
     sqlx::query("INSERT INTO app.tenant_oncall_cfg(tenant_id,maintenance_until) VALUES($1,$2)
         ON CONFLICT (tenant_id) DO UPDATE SET maintenance_until=EXCLUDED.maintenance_until,updated_at=now()")
@@ -10764,8 +10760,8 @@ pub async fn calendar_ics(State(st): State<AppState>, axum::extract::Query(q): a
     ([(axum::http::header::CONTENT_TYPE, "text/calendar; charset=utf-8")], ics).into_response()
 }
 
-/// #5 Sync ack/chiusura da GoAlert -> incidente YW. Se il reperibile prende in carico o
-/// chiude via SMS/voce/console GoAlert, lo stato dell'incidente YW lo riflette.
+/// #5 Sync ack/chiusura da YWAlert -> incidente YW. Se il reperibile prende in carico o
+/// chiude via SMS/voce/console YWAlert, lo stato dell'incidente YW lo riflette.
 /// Girata periodicamente dal worker. Best-effort: un tenant giu' non blocca gli altri.
 // ============================================================================
 // Traccar parity: event policy, report proxy, drivers, maintenance, computed
@@ -11268,8 +11264,8 @@ yw_checkins_active {ck_active}
 
 // ============================================================================
 // #4 escalation engine nativo — FASE 1 (shadow). Calcola l'on-call col motore nativo
-// (crate::escalation) in parallelo a GoAlert, confronta e logga. NESSUNA consegna:
-// GoAlert resta il motore in produzione. Obiettivo: 0 divergenze prima del cutover.
+// (crate::escalation) in parallelo a YWAlert, confronta e logga. NESSUNA consegna:
+// YWAlert resta il motore in produzione. Obiettivo: 0 divergenze prima del cutover.
 // ============================================================================
 
 /// RotationType nativo dal tipo on-call del gruppo. Monthly ora è calendar-aware (nessuna approssimazione).
@@ -11282,8 +11278,8 @@ fn esc_rot_kind(oc_type: &str) -> (crate::escalation::RotationType, i64) {
         _        => (RT::Weekly, 1),
     }
 }
-/// Costruisce la Schedule nativa dalla config del gruppo (stessi input di sync_goalert).
-/// Gli override (assenze) sono tirati da GoAlert e innestati a valle da [`esc_goalert_overrides`]
+/// Costruisce la Schedule nativa dalla config del gruppo (stessi input della sync nativa).
+/// Gli override (assenze) sono tirati da YWAlert e innestati a valle da [`esc_goalert_overrides`]
 /// (qui `overrides` parte vuoto; serve una query GraphQL async che non appartiene a questa fn pura).
 fn esc_build_schedule(g: &sqlx::postgres::PgRow, members: &[Uuid]) -> crate::escalation::Schedule {
     let mode: String = g.try_get("oncall_mode").unwrap_or_else(|_| "tutti".into());
@@ -11338,9 +11334,9 @@ fn esc_synth_uuid(email: &str) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
-/// Risolve il membro on-call della rotation con STATO persistente (semantica GoAlert
+/// Risolve il membro on-call della rotation con STATO persistente (semantica YWAlert
 /// `rotation_state`): carica/semina lo stato, lo avanza fino a `now`, lo persiste, ritorna il membro.
-/// Semina alla prima osservazione dal ground-truth GoAlert (indice del membro on-call corrente).
+/// Semina alla prima osservazione dal ground-truth YWAlert (indice del membro on-call corrente).
 async fn esc_resolve_rot_member(
     st: &AppState, tid: Uuid, gid: Uuid, rot: &crate::escalation::Rotation,
     members: &[Uuid], email_of: &std::collections::HashMap<Uuid,String>, ga: &[String],
@@ -11353,15 +11349,15 @@ async fn esc_resolve_rot_member(
     let state = match row {
         Some(r) => RotationState{ position: r.get::<i32,_>("position").max(0) as usize, shift_start: r.get("shift_start") },
         None => {
-            // SEMINA: preferisci il ground-truth GoAlert (indice del membro on-call ora) per restare
-            // allineati finché GoAlert è il motore. Senza GoAlert:
+            // SEMINA: preferisci il ground-truth YWAlert (indice del membro on-call ora) per restare
+            // allineati finché YWAlert è il motore. Senza YWAlert:
             //  - in CONSEGNA (allow_native_seed=true) semina nativamente alla posizione 0 e PERSISTE;
             //  - in LETTURA (read_transient=true) calcola la posizione 0 ma NON persiste (una GET non
-            //    deve mutare lo stato né pre-emptare la semina GoAlert fatta dalla consegna);
+            //    deve mutare lo stato né pre-emptare la semina YWAlert fatta dalla consegna);
             //  - in SHADOW (entrambi false) ritorna None per non generare false divergenze.
             let ga_idx = ga.first().and_then(|e| members.iter().position(|u| email_of.get(u).map(|x| x==e).unwrap_or(false)));
             let (idx, src) = match ga_idx {
-                Some(i) => (i, "goalert"),
+                Some(i) => (i, "seed"),
                 None if allow_native_seed => (0usize, "native"),
                 None if read_transient => { transient = true; (0usize, "native") },
                 None => return None,
@@ -11383,27 +11379,27 @@ async fn esc_resolve_rot_member(
     adv.active_member(members)
 }
 
-/// Runner shadow per un tenant: per ogni gruppo con servizio GoAlert, confronta on-call
-/// nativo vs GoAlert e logga. Best-effort, nessun effetto esterno oltre al log.
+/// Runner shadow per un tenant: per ogni gruppo con servizio YWAlert, confronta on-call
+/// nativo vs YWAlert e logga. Best-effort, nessun effetto esterno oltre al log.
 // ============================================================================
-// #4 escalation nativo — FASE 2: CONSEGNA IN OMBRA (sink di prova, GoAlert resta il motore)
+// #4 escalation nativo — FASE 2: CONSEGNA IN OMBRA (sink di prova, YWAlert resta il motore)
 // ============================================================================
 
 /// On-call nativo di un gruppo a `now`, risolto con la stessa catena dello shadow (rotation
 /// stateful + override), ma restituendo i recapiti (telefono/email) per costruire la ladder.
-/// Richiede una sessione GoAlert (ground-truth per semina rotation + override), coerente con la
-/// filosofia shadow: GoAlert è il motore in parallelo finché non si prova la parità.
+/// Richiede una sessione YWAlert (ground-truth per semina rotation + override), coerente con la
+/// filosofia shadow: YWAlert è il motore in parallelo finché non si prova la parità.
 /// On-call nativo di un gruppo a `now`, con i recapiti per la ladder. SELF-SUFFICIENT:
 /// gli override/assenze sono quelli NATIVI (app.esc_overrides); la rotation è seminata
-/// nativamente (posizione 0 deterministica) quando non c'è una sessione GoAlert.
-/// `ga` è opzionale: se presente (base,cookie) GoAlert viene usato SOLO come ground-truth per la
-/// semina iniziale della rotation (compat shadow), ma non è più richiesto per funzionare.
+/// nativamente (posizione 0 deterministica) quando non c'è una sessione YWAlert.
+/// `_ga` è un parametro vestigiale (ground-truth GoAlert esterno, ora sempre None dopo il ritiro):
+/// mantenuto nella firma per compat dei chiamanti, non più usato.
 /// `seed=true` SOLO nella consegna (persiste la semina rotation). Le letture (on-call-now, slack,
 /// status-update, bundle) passano `seed=false`: calcolano l'on-call senza MAI mutare lo stato.
 async fn esc_native_oncall_contacts(
-    st: &AppState, tid: Uuid, gid: Uuid, ga: Option<(&str, &str)>, now: chrono::DateTime<chrono::Utc>, seed: bool,
+    st: &AppState, tid: Uuid, gid: Uuid, _ga: Option<(&str, &str)>, now: chrono::DateTime<chrono::Utc>, seed: bool,
 ) -> Vec<(Uuid, Option<String>, String)> {
-    let Some(g) = sqlx::query("SELECT id,name,oncall_mode,oncall_type,oncall_shift,oncall_tz,coverage_mode,cov_start,cov_end,cov_days,handoff_time,handoff_day,goalert_service_id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
+    let Some(g) = sqlx::query("SELECT id,name,oncall_mode,oncall_type,oncall_shift,oncall_tz,coverage_mode,cov_start,cov_end,cov_days,handoff_time,handoff_day FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
         .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten() else { return vec![]; };
     let gtz: chrono_tz::Tz = g.try_get::<String,_>("oncall_tz").ok().and_then(|s| s.parse().ok()).unwrap_or(chrono_tz::UTC);
     let mrows = sqlx::query("SELECT u.id,u.email,u.phone FROM app.alarm_group_members m JOIN app.users u ON u.id=m.user_id WHERE m.group_id=$1 ORDER BY m.position")
@@ -11425,11 +11421,11 @@ async fn esc_native_oncall_contacts(
         return match email { Some(em) => vec![(tu, phone, em)], None => vec![] };
     }
     let mut sched = esc_build_schedule(&g, &members);
-    // override/assenze NATIVE (indipendenti da GoAlert)
+    // override/assenze NATIVE (indipendenti da YWAlert)
     sched.overrides = esc_native_overrides(st, tid, gid, &email_of).await;
     let rot_member = match &sched.rotation {
         Some(rot) => {
-            // seed rotation NATIVO (GoAlert ritirato: nessun ground-truth esterno).
+            // seed rotation NATIVO (YWAlert ritirato: nessun ground-truth esterno).
             let gae: Vec<String> = vec![];
             // consegna (seed): semina+persiste; lettura (!seed): calcolo transiente senza persistere.
             esc_resolve_rot_member(st, tid, gid, rot, &members, &email_of, &gae, now, seed, !seed).await
@@ -11457,7 +11453,7 @@ async fn esc_native_oncall_contacts(
 async fn esc_group_shifts(st: &AppState, tid: Uuid, gid: Uuid, now: chrono::DateTime<chrono::Utc>, days: i64)
     -> Vec<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>, Vec<String>)> {
     use crate::escalation::RotationState;
-    let Some(g) = sqlx::query("SELECT id,name,oncall_mode,oncall_type,oncall_shift,oncall_tz,coverage_mode,cov_start,cov_end,cov_days,handoff_time,handoff_day,goalert_service_id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
+    let Some(g) = sqlx::query("SELECT id,name,oncall_mode,oncall_type,oncall_shift,oncall_tz,coverage_mode,cov_start,cov_end,cov_days,handoff_time,handoff_day FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
         .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten() else { return vec![]; };
     let mrows = sqlx::query("SELECT u.id,u.email FROM app.alarm_group_members m JOIN app.users u ON u.id=m.user_id WHERE m.group_id=$1 ORDER BY m.position")
         .bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
@@ -11630,7 +11626,7 @@ async fn esc_native_overrides(
     }).collect()
 }
 
-/// Temporary schedule attivo (parità GoAlert): se un gruppo ha una pianificazione temporanea che
+/// Temporary schedule attivo (parità YWAlert): se un gruppo ha una pianificazione temporanea che
 /// copre `now`, essa SOSTITUISCE le assegnazioni: on-call = l'utente del blocco corrente (blocchi
 /// sequenziali {user_id, hours} a partire da start_at). None se nessuna temp schedule attiva.
 async fn esc_temp_schedule_oncall(
@@ -11653,10 +11649,10 @@ async fn esc_temp_schedule_oncall(
     None
 }
 
-/// Turni di rotazione CALCOLATI di un utente (parità GoAlert calendar): per ogni gruppo 'turni'
+/// Turni di rotazione CALCOLATI di un utente (parità YWAlert calendar): per ogni gruppo 'turni'
 /// di cui è membro, cammina i boundary della rotation su `days` giorni e ritorna i segmenti in cui
 /// l'utente è on-call. Usa lo stato persistente (esc_rotation_state) se presente, altrimenti semina
-/// nativamente alla posizione 0. Indipendente da GoAlert.
+/// nativamente alla posizione 0. Indipendente da YWAlert.
 async fn esc_user_rotation_shifts(
     st: &AppState, tid: Uuid, uid: Uuid, now: chrono::DateTime<chrono::Utc>, days: i64,
 ) -> Vec<(String, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> {
@@ -11668,7 +11664,7 @@ async fn esc_user_rotation_shifts_g(
 ) -> Vec<(String, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> {
     use crate::escalation::RotationState;
     let mut out = vec![];
-    let groups = sqlx::query("SELECT g.id,g.name,g.oncall_mode,g.oncall_type,g.oncall_shift,g.coverage_mode,g.cov_start,g.cov_end,g.cov_days,g.handoff_time,g.handoff_day,g.goalert_service_id
+    let groups = sqlx::query("SELECT g.id,g.name,g.oncall_mode,g.oncall_type,g.oncall_shift,g.coverage_mode,g.cov_start,g.cov_end,g.cov_days,g.handoff_time,g.handoff_day
          FROM app.alarm_groups g JOIN app.alarm_group_members m ON m.group_id=g.id
         WHERE g.tenant_id=$1 AND m.user_id=$2 AND g.oncall_mode='turni' AND ($3::uuid IS NULL OR g.id=$3)")
         .bind(tid).bind(uid).bind(group).fetch_all(&st.owner_pool).await.unwrap_or_default();
@@ -11704,7 +11700,7 @@ async fn esc_user_rotation_shifts_g(
 }
 
 /// Invio SMS nativo one-shot (verifica/test recapiti), riusando gli adapter di delivery:
-/// Twilio LIVE se configurato, altrimenti sink/dry (dev). Nessuna dipendenza da GoAlert.
+/// Twilio LIVE se configurato, altrimenti sink/dry (dev). Nessuna dipendenza da YWAlert.
 async fn esc_send_sms_native(st: &AppState, to: &str, text: &str) -> crate::delivery::SinkResult {
     use crate::delivery::Channel;
     let from = std::env::var("YW_ESC_FROM").unwrap_or_else(|_| "+10000000000".into());
@@ -11745,10 +11741,10 @@ fn esc_channel_from_str(s: &str) -> crate::delivery::Channel {
     match s { "voice"=>Channel::Voice, "email"=>Channel::Email, "slack"=>Channel::Slack, _=>Channel::Sms }
 }
 
-/// Policy di consegna di un GRUPPO. Parità GoAlert: se il gruppo ha step personalizzati
+/// Policy di consegna di un GRUPPO. Parità YWAlert: se il gruppo ha step personalizzati
 /// (app.esc_policy_steps) usa quelli (sequenza arbitraria canale+attesa + repeat); altrimenti
 /// torna alla ladder derivata dalle impostazioni vocali del tenant (retro-compatibile).
-/// Target di uno step di policy: canale + CHI notificare (parità Escalation Policies GoAlert).
+/// Target di uno step di policy: canale + CHI notificare (parità Escalation Policies YWAlert).
 #[derive(Clone)]
 struct EscStepTarget {
     channel: crate::delivery::Channel,
@@ -11826,7 +11822,7 @@ struct EscTransport<'a> {
     live_on: bool, live_cfg: Option<&'a crate::delivery::TwilioCfg>,
 }
 
-/// Consegna le rung DOVUTE di uno step per gli on-call. Parità GoAlert a 2 livelli:
+/// Consegna le rung DOVUTE di uno step per gli on-call. Parità YWAlert a 2 livelli:
 /// - se l'utente ha REGOLE DI NOTIFICA (user_notif_rules) la ladder è la sua (contact method + ritardo
 ///   rispetto all'accensione dello step): le regole con ritardo già trascorso vengono consegnate;
 /// - altrimenti fallback al canale dello step sul recapito di base (telefono/email).
@@ -11920,21 +11916,21 @@ async fn esc_persist_delivery(st: &AppState, tid: Uuid, iid: Uuid, log_id: i64, 
     }
 }
 
-/// Runner di consegna per un tenant. In SHADOW (`escalation_engine='goalert'`, rollback) consegna al
-/// SINK di prova e NON tocca gli incidenti: GoAlert resta il motore. Con il motore NATIVO
-/// (`escalation_engine='native'`, default di prodotto) usa gli adapter live (se configurati) ed è autoritativo
-/// (l'ack applica la transizione). Idempotenza su `esc_delivery_log`; i fallimenti si ritentano.
-pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64, i64) {
+/// Runner di consegna YWAlert (nativo) per un tenant. Motore SEMPRE autoritativo: usa gli adapter
+/// live (Twilio/Slack/relay se configurati), altrimenti il sink webhook, altrimenti DRY in dev;
+/// l'ack applica la transizione sull'incidente. Idempotenza su `esc_delivery_log`; i fallimenti si
+/// ritentano a oltranza sugli invii di sicurezza.
+pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i64) {
     use crate::escalation::{self, AlertState, EscAction};
     // MAINTENANCE nativo: finestra attiva -> sospendi le consegne (gli incidenti continuano a
-    // essere creati; la ladder riparte a fine finestra). Indipendente da GoAlert.
+    // essere creati; la ladder riparte a fine finestra). Indipendente da YWAlert.
     if maintenance_active(st, tid).await {
         // segna gli incidenti aperti come "in bundle": a fine finestra verrà inviato UN riepilogo.
         let _ = sqlx::query("UPDATE app.incidents SET bundled_at=now() WHERE tenant_id=$1 AND state<>'chiuso' AND bundled_at IS NULL")
             .bind(tid).execute(&st.owner_pool).await;
         return (0,0);
     }
-    // USCITA manutenzione: se ci sono incidenti accumulati, invia UN solo riepilogo (parità GoAlert
+    // USCITA manutenzione: se ci sono incidenti accumulati, invia UN solo riepilogo (parità YWAlert
     // alert bundling) agli on-call del gruppo di default, poi riprende l'escalation normale.
     let bundled: i64 = sqlx::query_scalar("SELECT count(*) FROM app.incidents WHERE tenant_id=$1 AND state<>'chiuso' AND bundled_at IS NOT NULL")
         .bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
@@ -11955,7 +11951,7 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
         let _ = sqlx::query("UPDATE app.incidents SET bundled_at=NULL WHERE tenant_id=$1 AND bundled_at IS NOT NULL")
             .bind(tid).execute(&st.owner_pool).await;
     }
-    // Motore nativo autoritativo: nessun ground-truth esterno (GoAlert ritirato). Seed rotation nativo.
+    // Motore nativo autoritativo: nessun ground-truth esterno (YWAlert ritirato). Seed rotation nativo.
     let ga_opt: Option<(&str,&str)> = None;
     // riferimento temporale del motore nativo = orologio controllabile: step_fired_at viene SCRITTO
     // e confrontato con lo stesso `now` (vedi escalation::tick), quindi e' auto-coerente e testabile
@@ -12071,7 +12067,7 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
                 // avanza/semina lo stato alla rung appena sparata (repeat_count aggiornato)
                 let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,repeat_count,status) VALUES($1,$2,$3,$4,$5,'unack') ON CONFLICT (tenant_id,incident_id) DO UPDATE SET step=$3,step_fired_at=$4,repeat_count=$5,updated_at=now()")
                     .bind(tid).bind(iid).bind(idx as i32).bind(now).bind(new_rc).execute(&st.owner_pool).await;
-                let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_shadow_delivery',$3)")
+                let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_delivery',$3)")
                     .bind(tid).bind(iid).bind(json!({"step":idx,"channel":spec.channel.as_str(),"target":spec.kind,"attempt":attempt,"live":live_on,"engine":engine})).execute(&st.owner_pool).await;
             }
         }
@@ -12079,7 +12075,7 @@ pub async fn escalation_delivery_shadow_tenant(st: &AppState, tid: Uuid) -> (i64
     (seen, delivered)
 }
 
-/// F3 — Annunci Slack dell'on-call (parità GoAlert "On-Call Notifications"): per ogni gruppo con
+/// F3 — Annunci Slack dell'on-call (parità YWAlert "On-Call Notifications"): per ogni gruppo con
 /// `slack_notify` != off e un canale Slack, posta chi è reperibile. `onchange` = a ogni handoff
 /// (cambia lo shift_start della rotation); `HH:MM` = una volta al giorno dopo quell'ora.
 /// Best-effort: senza token Slack live non fa nulla.
@@ -12128,7 +12124,7 @@ pub async fn slack_announce_scan(st: &AppState) {
 
 /// Scansione consegna del motore nativo (dal worker). SELF-SUFFICIENT: copre OGNI tenant che ha
 /// incidenti aperti (qualunque modulo li produca: safety/IoT/Traccar).
-pub async fn escalation_delivery_shadow_scan(st: &AppState) {
+pub async fn escalation_delivery_scan(st: &AppState) {
     let tids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT DISTINCT tenant_id FROM app.incidents WHERE state <> 'chiuso'")
         .fetch_all(&st.owner_pool).await.unwrap_or_default();
@@ -12138,7 +12134,7 @@ pub async fn escalation_delivery_shadow_scan(st: &AppState) {
     // concorrenza che causava lo stack-overflow.
     for tid in tids {
         let st2 = st.clone();
-        let _ = tokio::spawn(async move { escalation_delivery_shadow_tenant(&st2, tid).await }).await;
+        let _ = tokio::spawn(async move { escalation_delivery_run_tenant(&st2, tid).await }).await;
     }
 }
 
@@ -12160,14 +12156,14 @@ pub async fn escalation_delivery_report(State(st): State<AppState>, h: HeaderMap
     let sink = std::env::var("YW_ESC_SINK_URL").unwrap_or_default();
     Ok(Json(json!({"window_days":7,"by_state":by_state,"recent":out,
         "sink_configured": !sink.is_empty(),
-        "note":"Consegna FASE 2 in OMBRA: sink di prova, nessun carrier reale. GoAlert resta il motore. 'dry' = nessun sink configurato."})))
+        "note":"Consegna FASE 2 in OMBRA: sink di prova, nessun carrier reale. YWAlert resta il motore. 'dry' = nessun sink configurato."})))
 }
 
 /// Trigger manuale (admin) di un giro di consegna in ombra sul proprio tenant.
 pub async fn escalation_delivery_run(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
-    let (seen, delivered) = escalation_delivery_shadow_tenant(&st, tid).await;
+    let (seen, delivered) = escalation_delivery_run_tenant(&st, tid).await;
     Ok(Json(json!({"ok":true,"incidents":seen,"deliveries":delivered})))
 }
 
@@ -12202,14 +12198,14 @@ async fn esc_incident_by_number(st: &AppState, number: &str) -> Option<(Uuid, Uu
 }
 
 /// Registra l'ack: stato macchina + delivery_log(acked) + timeline. In SHADOW NON tocca
-/// `incidents.state` (GoAlert resta il motore). Col gate `YW_ESC_ACK_APPLY=1` (cutover) applica
+/// `incidents.state` (YWAlert resta il motore). Col gate `YW_ESC_ACK_APPLY=1` (cutover) applica
 /// la transizione reale (preso_in_carico / chiuso).
 async fn esc_apply_ack(st: &AppState, tid: Uuid, iid: Uuid, action: &str, via: &str) {
     let status = if action == "close" { "closed" } else { "ack" };
     let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,status) VALUES($1,$2,0,now(),$3) ON CONFLICT (tenant_id,incident_id) DO UPDATE SET status=$3,updated_at=now()")
         .bind(tid).bind(iid).bind(status).execute(&st.owner_pool).await;
-    // applica la transizione reale se il tenant è in CUTOVER (escalation_engine='native', FASE 3)
-    // oppure col gate globale YW_ESC_ACK_APPLY=1. In shadow (goalert) NON tocca l'incidente.
+    // motore YWAlert nativo: engine='native' (default di prodotto) -> applica la transizione reale.
+    // Il gate globale YW_ESC_ACK_APPLY=1 resta per forzarla anche su eventuali tenant non-native.
     let native = sqlx::query_scalar::<_, String>("SELECT escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().as_deref() == Some("native");
     let apply = native || std::env::var("YW_ESC_ACK_APPLY").ok().as_deref() == Some("1");
@@ -12227,7 +12223,7 @@ async fn esc_apply_ack(st: &AppState, tid: Uuid, iid: Uuid, action: &str, via: &
 }
 
 // ============================================================================
-// Parità Services GoAlert — S1 heartbeat monitor, S2 email ingress, S3 bulk, S4 on-call-now (nativi)
+// Parità Services YWAlert — S1 heartbeat monitor, S2 email ingress, S3 bulk, S4 on-call-now (nativi)
 // ============================================================================
 
 /// Crea un incidente critico INSTRADATO senza device (heartbeat/email/watchdog): usa la catena
@@ -12343,7 +12339,7 @@ pub async fn ingest_email(State(st): State<AppState>, Json(b): Json<EmailIn>) ->
     let Some(row) = row else { return (StatusCode::NOT_FOUND, "inbox inesistente").into_response(); };
     let tid: Uuid = row.get("tenant_id"); let g: Option<Uuid> = row.try_get("group_id").ok().flatten();
     let subject = if b.subject.trim().is_empty() { "(senza oggetto)".to_string() } else { b.subject.trim().to_string() };
-    // dedup (parità GoAlert email): chiave custom (+key) oppure firma STABILE dell'oggetto, così email
+    // dedup (parità YWAlert email): chiave custom (+key) oppure firma STABILE dell'oggetto, così email
     // ripetute con lo stesso subject confluiscono sullo stesso incidente aperto (niente flood).
     let corr = match dedup {
         Some(d) => format!("email-{}-{}", token, d),

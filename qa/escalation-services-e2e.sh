@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Parità pagina Services GoAlert (S1-S4):
+# Parità pagina Services YWAlert (S1-S4):
 #  S1 heartbeat monitor (recovery su ping; apertura via watchdog se silenzio oltre timeout)
 #  S2 ingress email -> incidente instradato (+ dedup via +chiave)
 #  S3 bulk ack-all / close-all
-#  S4 on-call-now NATIVO (per gruppo, senza GoAlert)
+#  S4 on-call-now NATIVO (per gruppo, senza YWAlert)
 # Tenant: globex (native). Stato ripristinato a fine run. NB: un test attende il watchdog (~30s).
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"
