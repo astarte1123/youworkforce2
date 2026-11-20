@@ -196,6 +196,11 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,va
 .table tr.clk td:last-child::after{content:"\203A";position:absolute;top:50%;right:var(--gutter);
   transform:translateY(-50%);color:var(--faint);font-size:18px;font-weight:700;line-height:1;transition:color .12s,transform .12s}
 .table tr.clk:hover td:last-child::after{color:var(--brand);transform:translateY(-50%) translateX(3px)}
+/* Elemento cliccabile FUORI da una tabella (card/riga, es. agenda appuntamenti): stessa affordance. */
+.clk-card{cursor:pointer;transition:background .12s,border-color .12s}
+.clk-card:hover{background:var(--surface2);border-color:var(--brand)}
+.clk-go{color:var(--faint);font-size:18px;font-weight:700;line-height:1;transition:color .12s,transform .12s}
+.clk-card:hover .clk-go{color:var(--brand);transform:translateX(2px)}
 
 /* ---- riga incidente APERTO (non ancora preso in carico): evidenziata + lampeggiante ---- */
 tr.inc-live td{animation:incBlink 1.15s ease-in-out infinite}

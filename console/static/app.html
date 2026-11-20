@@ -2010,38 +2010,59 @@ async function schSave(){ const m=$('.cfg-msg'); let mask=''; for(let i=0;i<7;i+
 }
 async function schDel(id){ if(!await askConfirm('Eliminare il piano?'))return; try{await api('/patrol-schedules/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
 // Assistenza / manutenzione a visite: appuntamenti dal cliente, rapporto, firma, (listino/consuntivo).
-async function vOrdini(v){
-  const O=await api('/orders').catch(()=>[]);
-  const canCreate=can(['pianificatore','tenant_admin']);
-  // agenda: pianificati (con finestra) separati dai non pianificati
+let ORD_CACHE=[]; let ORD_TAB='agenda';
+async function vOrdini(v){ ORD_CACHE=await api('/orders').catch(()=>[]); renderOrdini(v); }
+function ordTab(t){ ORD_TAB=t; renderOrdini($('#view')); }
+async function ordCSV(scope){
+  const O=ORD_CACHE.filter(o=>scope==='agenda'?o.scheduled_start:!o.scheduled_start);
+  downloadCSV((scope==='agenda'?'agenda':'da-pianificare')+'-interventi.csv',
+    [['Quando','Titolo','Cliente','Sede','Assegnatario','Priorità','Stato'],
+     ...O.map(o=>[o.scheduled_start?new Date(o.scheduled_start).toLocaleString('it-IT'):'',o.title,o.client_name||'',o.site||'',o.assignee||o.group_name||'',o.priority,o.state])]);
+  toast('CSV scaricato','ok');
+}
+function renderOrdini(v){
+  const O=ORD_CACHE, canCreate=can(['pianificatore','tenant_admin']);
   const sched=O.filter(o=>o.scheduled_start), unsched=O.filter(o=>!o.scheduled_start);
-  const asgLabel=o=>o.assignee?esc(o.assignee):(o.group_name?('👥 '+esc(o.group_name)):'—');
-  const row=o=>`<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b></td><td>${esc(o.site||'—')}</td>
-    <td>${asgLabel(o)}</td><td class="small">${schedLabel(o)}</td><td>${priBadge(o.priority)}</td><td>${chip(o.state)}</td></tr>`;
-  v.innerHTML=`<div class="page-h"><div><h1>Interventi</h1><div class="mut">${O.length} interventi · ${sched.length} pianificati · assistenza/manutenzione a visite</div></div>
-    <span><button class="btn ghost" onclick="interventiCSV()">⬇ CSV</button> ${canCreate?`<button class="btn" onclick="newOrder()">+ Nuovo intervento</button>`:''}</span></div>
+  const toAssign=sched.filter(o=>!o.assignee&&!o.group_name).length;
+  const next=sched.slice().sort((a,b)=>new Date(a.scheduled_start)-new Date(b.scheduled_start))[0];
+  const nextLbl=next?new Date(next.scheduled_start).toLocaleDateString('it-IT',{weekday:'short',day:'2-digit',month:'short'}):'—';
+  const tabs=`<div class="seg" style="margin-bottom:var(--s-14)">
+    <button class="seg-btn${ORD_TAB==='agenda'?' on':''}" onclick="ordTab('agenda')">Agenda appuntamenti <span class="seg-n">${sched.length}</span></button>
+    <button class="seg-btn${ORD_TAB==='todo'?' on':''}" onclick="ordTab('todo')">Da pianificare <span class="seg-n">${unsched.length}</span></button></div>`;
+  let body;
+  if(ORD_TAB==='agenda'){
+    body=`<div class="card"><div class="card-h"><div><h2>Agenda appuntamenti</h2>
+        <div class="small mut">${sched.length} pianificati · prossimo: <b>${nextLbl}</b>${toAssign?` · <span style="color:var(--bad)">${toAssign} da assegnare</span>`:''}</div></div>
+        ${sched.length?`<button class="btn ghost small" onclick="ordCSV('agenda')">⬇ CSV</button>`:''}</div>
+      ${agendaBody(sched)}</div>`;
+  } else {
+    const asgLabel=o=>o.assignee?esc(o.assignee):(o.group_name?('👥 '+esc(o.group_name)):'<span style="color:var(--bad)">da assegnare</span>');
+    const row=o=>`<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b></td><td>${esc(o.site||'—')}</td><td>${asgLabel(o)}</td><td>${priBadge(o.priority)}</td><td>${chip(o.state)}</td></tr>`;
+    body=`<div class="card"><div class="card-h"><div><h2>Da pianificare</h2>
+        <div class="small mut">${unsched.length} interventi senza appuntamento — assegna una persona e una data</div></div></div>
+      <table class="table" data-export="interventi-da-pianificare"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Priorità</th><th>Stato</th></tr></thead>
+      <tbody>${unsched.map(row).join('')||emptyRow(5, ICON.clipboard, 'Niente da pianificare', 'Tutti gli interventi hanno un appuntamento. Creane uno nuovo o controlla l\'agenda.', canCreate?{fn:'newOrder()',label:'+ Nuovo intervento'}:null)}</tbody></table></div>`;
+  }
+  v.innerHTML=`<div class="page-h"><div><h1>Interventi</h1><div class="mut">${O.length} totali · assistenza/manutenzione a visite</div></div>
+    <span>${canCreate?`<button class="btn" onclick="newOrder()">+ Nuovo intervento</button>`:''}</span></div>
   <div class="small mut" style="margin:-4px 0 var(--s-12)">🔧 Interventi = il tecnico va dal cliente: appuntamenti con rapporto, firma, materiali e consuntivo per visita.</div>
-  ${agendaByDay(sched)}
-  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Da pianificare</h2></div>
-    <table class="table" data-export="interventi"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Quando</th><th>Priorità</th><th>Stato</th></tr></thead>
-    <tbody>${unsched.map(row).join('')||emptyRow(6, ICON.clipboard, 'Nessun intervento', 'Gli interventi sono ordini di lavoro da assegnare e svolgere. Crea il primo o pianificalo.', canCreate?{fn:'newOrder()',label:'+ Nuovo intervento'}:null)}</tbody></table></div>`;
+  ${tabs}${body}`;
   bindRows(v);
 }
-// R2 — Agenda appuntamenti: raggruppa i pianificati per giorno, in ordine cronologico.
-function agendaByDay(sched){
+// Agenda: righe pianificate raggruppate per giorno (cliccabili → dettaglio). Solo il corpo (senza card).
+function agendaBody(sched){
   const items=(sched||[]).slice().sort((a,b)=>new Date(a.scheduled_start)-new Date(b.scheduled_start));
-  if(!items.length) return `<div class="card"><div class="card-h"><h2>Agenda appuntamenti</h2></div><div class="small mut" style="padding:var(--s-12) var(--s-14)">Nessun appuntamento pianificato.</div></div>`;
+  if(!items.length) return `<div class="card-b"><div class="small mut">Nessun appuntamento pianificato. Dai una data a un intervento «Da pianificare» per vederlo qui.</div></div>`;
   const byDay={}; items.forEach(o=>{ const d=new Date(o.scheduled_start).toISOString().slice(0,10); (byDay[d]=byDay[d]||[]).push(o); });
   const today=new Date().toISOString().slice(0,10);
   const dayLabel=d=>{ const dt=new Date(d+'T00:00:00'); const base=dt.toLocaleDateString('it-IT',{weekday:'long',day:'2-digit',month:'long'}); return d===today?base+' · oggi':base; };
   const hhmm=o=>new Date(o.scheduled_start).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
   const asg=o=>o.assignee?esc(o.assignee.split('@')[0]):(o.group_name?('👥 '+esc(o.group_name)):'<span style="color:var(--bad)">da assegnare</span>');
-  const blocks=Object.keys(byDay).sort().map(d=>`<div style="padding:var(--s-8) var(--s-14)">
+  return Object.keys(byDay).sort().map(d=>`<div style="padding:var(--s-8) var(--gutter)">
     <div class="small" style="font-weight:600;text-transform:capitalize;margin-bottom:var(--s-4)">${dayLabel(d)}</div>
-    ${byDay[d].map(o=>`<div class="spread clk" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6) var(--s-8);margin:var(--s-4) 0">
+    ${byDay[d].map(o=>`<div class="spread clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin:var(--s-6) 0">
       <div style="min-width:0"><b class="small">${hhmm(o)}</b> · ${esc(o.title)}<div class="small mut">${esc(o.client_name||o.site||'—')} · ${asg(o)}</div></div>
-      ${priBadge(o.priority)}${chip(o.state)}</div>`).join('')}</div>`).join('');
-  return `<div class="card"><div class="card-h"><h2>Agenda appuntamenti</h2></div>${blocks}</div>`;
+      <div class="row" style="gap:var(--s-6);align-items:center">${priBadge(o.priority)}${chip(o.state)}<span class="clk-go">›</span></div></div>`).join('')}</div>`).join('');
 }
 // ===== Modulo Cantieri: commessa (progetto) -> lavorazioni (WBS) -> SAL =====
 const COMM_STATI={pianificato:'Pianificato',in_corso:'In corso',sospeso:'Sospeso',chiuso:'Chiuso'};
