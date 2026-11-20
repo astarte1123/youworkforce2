@@ -303,6 +303,14 @@ tr.inc-live b{color:var(--bad)}
 .empty svg{width:48px;height:48px;opacity:.5;margin-bottom:var(--s-12)}
 .empty .empty-t{color:var(--fg);font-weight:600;font-size:15px}
 .empty .empty-h{color:var(--mut);font-size:13px;margin-top:var(--s-4);max-width:42ch;margin-left:auto;margin-right:auto;line-height:1.45}
+
+/* ---- Configurazione guidata: pallino passo + barra avanzamento ---- */
+.setup-ck{flex:none;width:28px;height:28px;border-radius:999px;display:flex;align-items:center;justify-content:center;
+  background:var(--surface2);color:var(--mut);border:1px solid var(--line);font-weight:700;font-size:13px}
+.setup-ck.ok{background:var(--ok-soft);color:var(--ok);border-color:transparent}
+.setup-ck svg{width:16px;height:16px}
+.setup-bar{height:10px;border-radius:999px;background:var(--surface2);overflow:hidden}
+.setup-bar>div{height:100%;background:var(--brand);transition:width .3s}
 .timeline{list-style:none;margin:0;padding:0}
 .timeline li{position:relative;padding:0 0 var(--s-16) var(--s-24);border-left:2px solid var(--line)}
 .timeline li:last-child{border-left-color:transparent}

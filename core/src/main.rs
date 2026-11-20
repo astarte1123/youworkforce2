@@ -479,6 +479,7 @@ async fn run() -> anyhow::Result<()> {
     let app = app
         // ThingsBoard parity: sub-router separato (merge).
         .merge(tb_parity_routes())
+        .route("/api/setup-status", get(api::setup_status))
         .route("/api/scenarios", get(api::tenant_scenarios_list))
         .route("/api/scenarios/:code/dashboard", get(api::scenario_dashboard))
         .route("/api/scenarios/:code/aeration", post(api::scenario_aeration_set))

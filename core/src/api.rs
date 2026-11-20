@@ -7632,6 +7632,76 @@ pub async fn module_active(st: &AppState, tid: Uuid, code: &str) -> bool {
         .bind(tid).bind(code).fetch_optional(&st.owner_pool).await.ok().flatten()
         .map(|s| s == "attivo").unwrap_or(false)
 }
+
+/// Stato della configurazione del tenant: checklist "cosa manca per essere operativi", calcolata
+/// dallo stato REALE del DB e condizionata ai moduli attivi. Unica fonte per il wizard di primo
+/// avvio e per la checklist persistente. Solo tenant_admin.
+pub async fn setup_status(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo l'amministratore del tenant")); }
+    let tid = s.tenant_id.unwrap();
+    let pool = st.owner_pool.clone();
+    let cnt = |sql: &'static str| {
+        let pool = pool.clone();
+        async move { sqlx::query_scalar::<_, i64>(sql).bind(tid).fetch_one(&pool).await.unwrap_or(0) }
+    };
+    // moduli attivi (per decidere quali item mostrare)
+    let lw = module_active(&st, tid, "loneworker").await;
+    let iot = module_active(&st, tid, "iot").await;
+    let traccar = module_active(&st, tid, "traccar").await;
+    let cantieri = module_active(&st, tid, "cantieri").await;
+    let interventi = module_active(&st, tid, "interventi").await;
+    let workforce = module_active(&st, tid, "workforce").await;
+    let safety = lw || iot || traccar;        // moduli che generano allarmi/escalation
+    let devices_mod = lw || iot || traccar;   // moduli con dispositivi
+    let field = cantieri || interventi;       // lavoro sul campo con clienti
+
+    let n_sites = cnt("SELECT count(*) FROM app.sites WHERE tenant_id=$1").await;
+    let n_users = cnt("SELECT count(*) FROM app.users WHERE tenant_id=$1 AND anonymized_at IS NULL").await;
+    let n_groups = cnt("SELECT count(*) FROM app.alarm_groups WHERE tenant_id=$1").await;
+    let has_default_group: i64 = sqlx::query_scalar("SELECT count(*) FROM app.tenant_oncall_cfg WHERE tenant_id=$1 AND default_group_id IS NOT NULL")
+        .bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
+    let n_verified = cnt("SELECT count(*) FROM app.users WHERE tenant_id=$1 AND phone_verified_at IS NOT NULL").await;
+    let n_routing = cnt("SELECT count(*) FROM app.alarm_routing WHERE tenant_id=$1").await;
+    let n_rules = cnt("SELECT count(*) FROM app.sensor_rules WHERE tenant_id=$1").await;
+    let n_devices = cnt("SELECT count(*) FROM app.devices WHERE tenant_id=$1").await;
+    let n_clients = cnt("SELECT count(*) FROM app.clients WHERE tenant_id=$1").await;
+
+    let mut items: Vec<Value> = vec![];
+    let mut push = |key:&str, show:bool, done:bool, title:&str, why:&str, detail:String, link:&str, cta:&str| {
+        if show { items.push(json!({"key":key,"done":done,"title":title,"why":why,"detail":detail,"link":link,"cta":cta})); }
+    };
+    push("sites", true, n_sites>0, "Crea le sedi",
+        "Le sedi sono i luoghi di lavoro a cui colleghi dispositivi, turni e allarmi.",
+        format!("{n_sites} sedi"), "anagrafiche", "Aggiungi una sede");
+    push("users", true, n_users>1, "Invita utenti e assegna i ruoli",
+        "Le persone del team accedono secondo il ruolo (operatore, pianificatore, lavoratore…).",
+        format!("{n_users} utenti"), "utenti-ruoli", "Invita utenti");
+    push("groups", safety, n_groups>0 && has_default_group>0, "Configura la reperibilità",
+        "Senza un gruppo on-call predefinito, gli allarmi non raggiungono nessuno.",
+        if n_groups==0 {"nessun gruppo".into()} else if has_default_group==0 {"gruppo senza default on-call".into()} else {format!("{n_groups} gruppi")},
+        "gruppi", "Crea un gruppo");
+    push("contacts", safety, n_verified>0, "Verifica i recapiti",
+        "SMS e chiamate di escalation partono solo verso telefoni verificati.",
+        format!("{n_verified} recapiti verificati"), "turni", "Verifica recapiti");
+    push("routing", lw, n_routing>0, "Instrada gli allarmi",
+        "Definisci a quale gruppo va ogni tipo di allarme (SOS, uomo a terra…).",
+        format!("{n_routing} regole di instradamento"), "trigger", "Aggiungi instradamento");
+    push("rules", iot, n_rules>0, "Imposta le regole dei sensori",
+        "Le soglie decidono quando un dato IoT diventa un incidente.",
+        format!("{n_rules} regole sensore"), "trigger", "Aggiungi regola");
+    push("devices", devices_mod, n_devices>0, "Collega i dispositivi",
+        "Badge, tracker GPS o sensori IoT: la procedura guidata ti accompagna.",
+        format!("{n_devices} dispositivi"), "dispositivi", "Aggiungi dispositivo");
+    push("clients", field, n_clients>0, "Aggiungi i clienti",
+        "I committenti di commesse e interventi: servono per collegarli al lavoro.",
+        format!("{n_clients} clienti"), "clienti", "Aggiungi cliente");
+    let _ = workforce; // (workforce usa gli stessi item: utenti/sedi/turni)
+
+    let total = items.len() as i64;
+    let done = items.iter().filter(|i| i["done"].as_bool().unwrap_or(false)).count() as i64;
+    Ok(Json(json!({"ready": done==total, "done":done, "total":total, "items":items})))
+}
 /// Modulo spento dal superadmin -> la gestione sparisce anche via API.
 async fn require_module(st: &AppState, tid: Uuid, code: &str) -> Result<(), (StatusCode, String)> {
     if module_active(st, tid, code).await { Ok(()) }

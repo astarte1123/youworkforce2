@@ -32,6 +32,39 @@ function emptyRow(colspan, icon, title, hint, cta){
     `${hint?`<div class="empty-h">${hint}</div>`:''}`+
     `${cta?`<button class="btn small" style="margin-top:var(--s-12)" onclick="${cta.fn}">${cta.label}</button>`:''}</td></tr>`;
 }
+
+// ---- Configurazione guidata (checklist "cosa manca" + wizard) — fonte: GET /api/setup-status ----
+async function vSetup(v){
+  const d=await api('/setup-status').catch(()=>null);
+  if(!d){ v.innerHTML='<div class="card pad">Configurazione non disponibile per questo ruolo.</div>'; return; }
+  const pct=d.total?Math.round(d.done/d.total*100):0;
+  const item=i=>`<div class="card" style="margin-top:var(--s-12)"><div class="row" style="gap:var(--s-12);align-items:flex-start;padding:var(--gutter)">
+    <div class="setup-ck${i.done?' ok':''}">${i.done?ICON.check:(d.items.filter(x=>!x.done).indexOf(i)+1)}</div>
+    <div class="grow"><div class="spread" style="gap:var(--s-8)"><b>${esc(i.title)}</b><span class="chip${i.done?' s-attivo':''}">${esc(i.detail)}</span></div>
+      <div class="small mut" style="margin-top:var(--s-4)">${esc(i.why)}</div>
+      ${i.done?'':`<button class="btn small" style="margin-top:var(--s-10)" onclick="location.hash='#/'+${JSON.stringify(i.link)}">${esc(i.cta)} →</button>`}</div></div></div>`;
+  v.innerHTML=`<div class="page-h"><div><h1>Configurazione</h1><div class="mut">${d.done} di ${d.total} passi completati${d.ready?' · tutto pronto 🎉':''}</div></div>
+    ${!d.ready?`<button class="btn" onclick="setupWizard()">Configurazione guidata</button>`:''}</div>
+  <div class="card pad"><div class="setup-bar"><div style="width:${pct}%"></div></div>
+    <div class="small mut" style="margin-top:var(--s-6)">${pct}% completato — i passi si aggiornano da soli man mano che configuri.</div></div>
+  ${d.items.map(item).join('')}`;
+}
+// Wizard a step: mostra il PROSSIMO passo mancante con spiegazione + azione; "salta" passa al dopo.
+async function setupWizard(skip){
+  const d=await api('/setup-status').catch(()=>null); if(!d) return;
+  const missing=d.items.filter(i=>!i.done);
+  if(!missing.length){ closeDrawer&&closeDrawer(); toast('Configurazione completata 🎉','ok'); location.hash='#/setup'; return; }
+  const idx=Math.min(skip||0, missing.length-1); const i=missing[idx];
+  drawer('Configurazione guidata', `<div class="col" style="gap:var(--s-12)">
+    <div class="small mut">Passo ${idx+1} di ${missing.length} da completare</div>
+    <div><b style="font-size:16px">${esc(i.title)}</b><div class="small mut" style="margin-top:var(--s-6)">${esc(i.why)}</div>
+      <div class="small" style="margin-top:var(--s-6)">Stato attuale: <b>${esc(i.detail)}</b></div></div>
+    <div class="row" style="gap:var(--s-8)">
+      <button class="btn" onclick="location.hash='#/'+${JSON.stringify(i.link)};closeDrawer()">${esc(i.cta)} →</button>
+      ${idx<missing.length-1?`<button class="btn ghost" onclick="setupWizard(${idx+1})">Salta per ora</button>`:''}
+    </div>
+    <div class="small faint">Puoi riaprire questa guida quando vuoi da «Configurazione».</div></div>`);
+}
 // mod = modulo/i richiesti: la voce appare solo se ALMENO UNO è attivo sul tenant.
 const DEVICE_MODS=['loneworker','traccar','iot']; // thingsboard ritirato: IoT industriale è nativo in 'iot'
 // Moduli dell'area "Lavoro sul campo": la Mappa dispositivi appartiene a questi, non a Lone Worker.
@@ -72,6 +105,7 @@ const NAV = [
   {k:'vigilanza', t:'Cruscotto vigilanza', ico:'shield', roles:['pianificatore','tenant_admin','operatore','auditor'], mod:['giri'], grp:'work'},
   {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], mod:['consuntivi'], grp:'work'},
   {k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], mod:['workforce'], grp:'work'},
+  {k:'setup',     t:'Configurazione', ico:'check', roles:['tenant_admin'], grp:'cfg'},
   {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'cfg'},
   // --- Configurazione generale (non specifica del perimetro sicurezza) ---
   {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','thingsboard','iot'], grp:'cfg'},
@@ -360,6 +394,14 @@ function renderShell(){
   route();
   startI18n();
   startExports();
+  maybeSetupFirstRun();
+}
+// Primo avvio: una sola volta, se l'admin non ha finito la configurazione, apre la guida.
+async function maybeSetupFirstRun(){
+  if(!ME || ME.role!=='tenant_admin') return;
+  try{ if(localStorage.getItem('yw_setup_v1')==='1') return; }catch(e){}
+  try{ const d=await api('/setup-status'); if(d && !d.ready) setupWizard(); }catch(e){}
+  try{ localStorage.setItem('yw_setup_v1','1'); }catch(e){}
 }
 // Nav mobile: la barra laterale diventa un drawer a scomparsa sotto 820px.
 function toggleNav(force){
@@ -381,7 +423,7 @@ function route(){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'iot-monitor':vIotMonitor,'iot-alerts':vIotAlerts,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- Export unificato (CSV / Excel / PDF / Markdown) ----------------
