@@ -177,6 +177,7 @@ pub async fn csrf_guard(req: axum::extract::Request, next: axum::middleware::Nex
     let path = req.uri().path().to_string();
     let exempt = safe
         || path == "/api/login" || path == "/api/superadmin/login" || path == "/api/logout"
+        || path == "/api/invite/accept"
         || path == "/api/events" || path.starts_with("/api/ingress/")
         || path == "/api/_test/advance" || path == "/api/_test/iot-watchdog" || path == "/health";
     if exempt { return next.run(req).await; }
@@ -298,32 +299,100 @@ pub async fn superadmin_login(State(st): State<AppState>, h: HeaderMap, Json(b):
 }
 
 #[derive(Deserialize)]
-pub struct CreateTenant { pub slug: String, pub name: String, pub admin_email: String, pub admin_password: String,
+pub struct CreateTenant { pub slug: String, pub name: String, pub admin_email: String,
+    #[serde(default)] pub admin_password: Option<String>,
     pub brand_primary: Option<String>, pub brand_ink: Option<String>, pub brand_soft: Option<String>, pub brand_accent: Option<String> }
+/// Normalizza+valida uno slug tenant (finisce nel sottodominio): minuscole, a-z0-9-, 2..40, niente trattini ai bordi.
+fn clean_slug(raw: &str) -> Result<String, (StatusCode,String)> {
+    let s: String = raw.trim().to_lowercase().chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c=='-' { c } else if c==' '||c=='_' { '-' } else { '\0' })
+        .filter(|c| *c!='\0').collect();
+    let s = s.trim_matches('-').to_string();
+    let ok = (2..=40).contains(&s.len()) && s.chars().next().map(|c| c.is_ascii_alphanumeric()).unwrap_or(false);
+    if !ok { return Err(err(StatusCode::BAD_REQUEST, "slug non valido: usa 2-40 caratteri a-z, 0-9, trattino")); }
+    Ok(s)
+}
+/// Validazione email minimale (formato), non deliverability.
+fn valid_email(e: &str) -> bool {
+    let e=e.trim(); let at=e.find('@');
+    matches!(at, Some(i) if i>0 && i<e.len()-1) && e.rsplit('@').next().map(|d| d.contains('.')).unwrap_or(false) && !e.contains(' ')
+}
 
 pub async fn create_tenant(State(st): State<AppState>, h: HeaderMap, Json(b): Json<CreateTenant>) -> R {
     require_super(&st, &h).await?;
-    let slug = b.slug.to_lowercase();
-    const RESERVED: &[&str] = &["tenants","www","admin","api","app"];
-    if RESERVED.contains(&slug.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "reserved slug")); }
+    let slug = clean_slug(&b.slug)?;
+    const RESERVED: &[&str] = &["tenants","www","admin","api","app","invite","static","health"];
+    if RESERVED.contains(&slug.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "slug riservato")); }
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    if !valid_email(&b.admin_email) { return Err(err(StatusCode::BAD_REQUEST, "email admin non valida")); }
     let (bp, bi, bs, ba) = (clean_color(&b.brand_primary)?, clean_color(&b.brand_ink)?, clean_color(&b.brand_soft)?, clean_color(&b.brand_accent)?);
+    // Modalità onboarding: password esplicita (demo/dev) oppure INVITO monouso (produzione, default).
+    let direct_pw = b.admin_password.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
     let mut tx = st.owner_pool.begin().await.map_err(ise)?;
     let trow = sqlx::query("INSERT INTO app.tenants(slug,name,brand_primary,brand_ink,brand_soft,brand_accent) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
-        .bind(&slug).bind(&b.name).bind(bp).bind(bi).bind(bs).bind(ba).fetch_one(&mut *tx).await
-        .map_err(|_| err(StatusCode::CONFLICT, "slug exists"))?;
+        .bind(&slug).bind(b.name.trim()).bind(bp).bind(bi).bind(bs).bind(ba).fetch_one(&mut *tx).await
+        .map_err(|_| err(StatusCode::CONFLICT, "slug già esistente"))?;
     let tid: Uuid = trow.get("id");
-    // first admin via single-use invite is the production path; demo seeds directly.
-    sqlx::query("INSERT INTO app.users(tenant_id,email,pass_hash,role) VALUES($1,$2,$3,'tenant_admin')")
-        .bind(tid).bind(&b.admin_email).bind(auth::hash_password(&b.admin_password))
-        .execute(&mut *tx).await.map_err(ise)?;
+    // L'admin è sempre creato; la password è quella fornita (demo) o una random inutilizzabile finché
+    // l'admin non accetta l'invito e imposta la propria (produzione: nessuna password nota al superadmin).
+    let pass_hash = auth::hash_password(direct_pw.unwrap_or(&auth::new_token()));
+    let uid: Uuid = sqlx::query_scalar("INSERT INTO app.users(tenant_id,email,pass_hash,role) VALUES($1,$2,$3,'tenant_admin') RETURNING id")
+        .bind(tid).bind(b.admin_email.trim()).bind(&pass_hash)
+        .fetch_one(&mut *tx).await.map_err(ise)?;
     // seed module rows (all non_abilitato; core identity always on)
     sqlx::query("INSERT INTO app.tenant_modules(tenant_id,module_code,state)
         SELECT $1, code, 'non_abilitato' FROM app.modules_catalog")
         .bind(tid).execute(&mut *tx).await.map_err(ise)?;
+    // Invito monouso (se non è stata data una password diretta): token in chiaro una volta sola.
+    let mut invite_token: Option<String> = None;
+    if direct_pw.is_none() {
+        let tok = auth::new_token();
+        let exp = st.clock.now() + chrono::Duration::days(7);
+        sqlx::query("INSERT INTO app.user_invites(token_hash,tenant_id,user_id,email,expires_at) VALUES($1,$2,$3,$4,$5)")
+            .bind(hash_token(&tok)).bind(tid).bind(uid).bind(b.admin_email.trim()).bind(exp)
+            .execute(&mut *tx).await.map_err(ise)?;
+        invite_token = Some(tok);
+    }
     sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES(NULL,'superadmin','create_tenant',$1)")
-        .bind(json!({"slug":slug})).execute(&mut *tx).await.map_err(ise)?;
+        .bind(json!({"slug":slug,"onboarding": if invite_token.is_some() {"invite"} else {"password"}})).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    Ok(Json(json!({"id":tid,"slug":slug})))
+    Ok(Json(json!({"id":tid,"slug":slug,"invite_token":invite_token})))
+}
+#[derive(Deserialize)]
+pub struct InviteAccept { pub slug: String, pub token: String, pub password: String }
+/// Accetta un invito: l'admin imposta la PROPRIA password. Pubblico (no sessione), CSRF-exempt, monouso.
+pub async fn accept_invite(State(st): State<AppState>, Json(b): Json<InviteAccept>) -> R {
+    if b.password.trim().len() < 8 { return Err(err(StatusCode::BAD_REQUEST, "la password deve avere almeno 8 caratteri")); }
+    let tid: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.tenants WHERE slug=$1").bind(b.slug.trim().to_lowercase())
+        .fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let tid = tid.ok_or_else(|| err(StatusCode::NOT_FOUND, "tenant inesistente"))?;
+    let row = sqlx::query("SELECT user_id,expires_at,used_at FROM app.user_invites WHERE token_hash=$1 AND tenant_id=$2")
+        .bind(hash_token(b.token.trim())).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let row = row.ok_or_else(|| err(StatusCode::NOT_FOUND, "invito non valido"))?;
+    if row.try_get::<chrono::DateTime<chrono::Utc>,_>("used_at").is_ok() { return Err(err(StatusCode::CONFLICT, "invito già usato")); }
+    let exp: chrono::DateTime<chrono::Utc> = row.get("expires_at");
+    if exp < st.clock.now() { return Err(err(StatusCode::GONE, "invito scaduto")); }
+    let uid: Uuid = row.get("user_id");
+    let mut tx = st.owner_pool.begin().await.map_err(ise)?;
+    sqlx::query("UPDATE app.users SET pass_hash=$1 WHERE id=$2").bind(auth::hash_password(b.password.trim())).bind(uid).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("UPDATE app.user_invites SET used_at=now() WHERE token_hash=$1").bind(hash_token(b.token.trim())).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true,"slug":b.slug.trim().to_lowercase()})))
+}
+/// Verifica un invito (per la pagina di accettazione): ritorna l'email destinataria se valido.
+pub async fn check_invite(State(st): State<AppState>, axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let (slug, token) = (q.get("slug").cloned().unwrap_or_default(), q.get("token").cloned().unwrap_or_default());
+    let tid: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.tenants WHERE slug=$1").bind(slug.trim().to_lowercase())
+        .fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let Some(tid) = tid else { return Ok(Json(json!({"valid":false}))) };
+    let row = sqlx::query("SELECT email,expires_at,used_at FROM app.user_invites WHERE token_hash=$1 AND tenant_id=$2")
+        .bind(hash_token(token.trim())).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    match row {
+        Some(r) if r.try_get::<chrono::DateTime<chrono::Utc>,_>("used_at").is_err()
+                && r.get::<chrono::DateTime<chrono::Utc>,_>("expires_at") >= st.clock.now()
+            => Ok(Json(json!({"valid":true,"email":r.get::<String,_>("email")}))),
+        _ => Ok(Json(json!({"valid":false}))),
+    }
 }
 
 pub async fn list_tenants(State(st): State<AppState>, h: HeaderMap) -> R {

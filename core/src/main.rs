@@ -210,6 +210,8 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/branding/logo", get(api::branding_logo))
         .route("/api/impersonate/stop", post(api::impersonate_stop))
         // tenant plane
+        .route("/api/invite/check", get(api::check_invite))
+        .route("/api/invite/accept", post(api::accept_invite))
         .route("/api/login", post(api::tenant_login))
         .route("/api/me", get(api::me))
         .route("/api/logout", post(api::logout))

@@ -139,6 +139,19 @@ Licenze e branding (logo, palette), attivazione moduli e scenari per tenant, imp
 tenant per assistenza. Le integrazioni (YWAlert/Traccar) si **auto-configurano** dai
 default di prodotto. L'IoT è nativo (nessun ThingsBoard).
 
+**Creazione tenant — onboarding admin sicuro.** Il form valida lo **slug** (normalizzato a
+`a-z0-9-`, con anteprima dell'indirizzo `slug.<host>`) e l'**email** admin. Per l'attivazione
+dell'amministratore ci sono due modalità:
+- **Invito monouso (default, produzione)**: non si imposta alcuna password. Il core genera un
+  token (salvato solo come **hash**, valido 7 giorni) e restituisce un **link di attivazione** che
+  il superadmin consegna all'admin. L'admin apre `/invite.html?token=…`, imposta la **propria**
+  password (min 8) e accede. Nessuna password è nota al superadmin. Endpoint: `GET /api/invite/check`,
+  `POST /api/invite/accept` (pubblico, monouso). Tabella `app.user_invites` (mig 0119).
+- **Password diretta (demo/dev)**: si imposta subito una password (min 8) e l'admin accede senza invito.
+
+Dopo la creazione, un riepilogo mostra l'URL del tenant e (in modalità invito) il link copiabile.
+e2e: `qa/tenant-invite-e2e.sh` (12/12).
+
 ## 13-bis. Privacy e audit (GDPR + registro attività)
 
 Voce menu **«Privacy e audit»** (Configurazione, solo `tenant_admin`): export dei dati personali
