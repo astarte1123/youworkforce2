@@ -313,7 +313,7 @@ function renderShell(){
       <div class="foot">
         <div class="row"><div class="ava">${initials(ME.email)}</div>
           <div class="grow" style="min-width:0"><div class="small" style="font-weight:650;overflow:hidden;text-overflow:ellipsis">${esc(ME.email.split('@')[0])}</div>
-          <div class="chip" style="padding:1px 7px">${esc(ME.role)}</div></div></div>
+          <div class="chip" style="padding:var(--s-2) var(--s-8)">${esc(ME.role)}</div></div></div>
       </div>
     </aside>
     <div style="display:flex;flex-direction:column;min-width:0">
@@ -327,7 +327,7 @@ function renderShell(){
         <button id="themeBtn" class="btn-ico btn ghost" title="Tema" onclick="toggleTheme()">${themeIconHtml()}</button>
         <button class="btn-ico btn ghost" title="${t('logout','Esci')}" onclick="logout()">${ICON.logout}</button>
       </div>
-      ${ME.impersonator?`<div style="background:var(--warn-soft);color:#7a5a00;border-bottom:1px solid var(--line);padding:7px var(--s-16);font-size:13px;display:flex;align-items:center;gap:var(--s-10)">
+      ${ME.impersonator?`<div style="background:var(--warn-soft);color:#7a5a00;border-bottom:1px solid var(--line);padding:var(--s-8) var(--s-16);font-size:13px;display:flex;align-items:center;gap:var(--s-10)">
         <b>👤 Stai impersonando</b> ${brandName()} come <b>${esc(ME.email)}</b> · supporto superadmin (${esc(ME.impersonator)})
         <button class="btn ghost small" style="margin-left:auto" onclick="stopImpersonate()">Esci impersonazione</button></div>`:''}
       <div class="content"><div id="view"></div></div>
@@ -672,7 +672,7 @@ function kpi(ico,label,n,cls='',small){return `<div class="kpi"><div class="ico"
 function card(title,inner,gotoK){return `<div class="card"><div class="card-h"><h2>${title}</h2>
   ${gotoK?`<a onclick="location.hash='#/${gotoK}'">apri →</a>`:''}</div>
   <table class="table"><tbody>${inner}</tbody></table></div>`;}
-function emptyRow(t){return `<tr><td class="empty" style="padding:26px">${t}</td></tr>`;}
+function emptyRow(t){return `<tr><td class="empty" style="padding:var(--s-24)">${t}</td></tr>`;}
 function incRow(i){return `<tr class="clk" data-inc="${i.id}"><td><b>${esc(i.etype)}</b><div class="small mut">${esc(i.site||'—')}</div></td>
   <td>${chip(i.state)}</td></tr>`;}
 function ordRow(o){return `<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b><div class="small mut">${esc(o.site||'—')} · ${esc(o.assignee||'non assegnato')}</div></td>
@@ -1373,7 +1373,7 @@ async function renderDevices(admin){
   const D=D0.filter(d=>d.last_lat!=null&&d.last_lon!=null);
   $('#mapCtl').innerHTML=admin?`<span class="small mut">Disegna geofence:</span>
     <button class="btn ghost small" id="fhBtn" onclick="toggleFreehand(this)">✎ Mano libera</button>
-    <label class="small mut" style="display:inline-flex;align-items:center;gap:var(--s-4)">Colore <input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" style="width:34px;height:26px;padding:1px"></label>
+    <label class="small mut" style="display:inline-flex;align-items:center;gap:var(--s-4)">Colore <input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" style="width:34px;height:26px;padding:var(--s-2)"></label>
     <span class="small mut">(o usa gli strumenti ⬡ in alto a sinistra)</span>`:'';
   const GFo=GF.filter(g=>!g.floorplan_id);
   GFLAYER=L.layerGroup().addTo(MAP); GF_LAYERS={}; window._GF_CACHE=GFo; GF.forEach(g=>{ if(!g.floorplan_id) drawGeofence(g,admin); });
@@ -1705,7 +1705,7 @@ function gfRefresh(id){ if(gfIsIndoor(id)){ if(typeof fpOpen==='function') fpOpe
 // Blocco azioni (identico su mappa e piantine), come link per il popup Leaflet.
 function gfPopupActions(g,admin){ if(!admin)return'';
   return `<br><div style="margin-top:var(--s-6);display:flex;gap:var(--s-8);flex-wrap:wrap;align-items:center">
-    <label style="display:inline-flex;align-items:center;gap:var(--s-3)">🎨<input type="color" value="${g.color||'#16a34a'}" onchange="gfColor('${g.id}',this.value)" style="width:26px;height:22px;padding:1px"></label>
+    <label style="display:inline-flex;align-items:center;gap:var(--s-3)">🎨<input type="color" value="${g.color||'#16a34a'}" onchange="gfColor('${g.id}',this.value)" style="width:26px;height:22px;padding:var(--s-2)"></label>
     <a href="#" onclick="gfRename('${g.id}');return false">✎ Rinomina</a>
     <a href="#" onclick="gfEditShape('${g.id}');return false">✥ Modifica forma</a>
     <a href="#" onclick="gfAssoc('${g.id}');return false">🔗 Associa</a>
@@ -1721,7 +1721,7 @@ function geofencePanel(GF,admin){ if(!admin)return'';
       <div class="row" style="gap:var(--s-6);flex-wrap:wrap;align-items:center">
         <button class="btn ghost small" onclick="gfEditShape('${g.id}')">✥ Forma</button>
         <button class="btn ghost small" onclick="gfRename('${g.id}')">✎ Rinomina</button>
-        <input type="color" value="${g.color||'#16a34a'}" onchange="gfColor('${g.id}',this.value)" title="Colore area" style="width:30px;height:26px;padding:1px;border:1px solid var(--line);border-radius:6px;cursor:pointer">
+        <input type="color" value="${g.color||'#16a34a'}" onchange="gfColor('${g.id}',this.value)" title="Colore area" style="width:30px;height:26px;padding:var(--s-2);border:1px solid var(--line);border-radius:6px;cursor:pointer">
         <button class="btn ghost small" onclick="gfAssoc('${g.id}')">🔗 Associa</button>
         <button class="btn ghost small" onclick="gfDel('${g.id}')">🗑 Elimina</button></div></div>`).join(''):'<div class="small mut">Nessuna area. Disegnane una con gli strumenti ⬡.</div>'}`;
 }
