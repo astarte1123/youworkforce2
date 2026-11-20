@@ -218,6 +218,17 @@ un tenant non vede né modifica i gruppi di un altro. Backend: tabelle `app.user
 `app.user_group_members` (mig `0072`), API `/api/user-groups*` e
 `POST /api/groups/:id/members/import`.
 
+## Caricamento file (upload)
+Ogni campo di upload accetta sia **Sfoglia** sia il **trascinamento** (drag-and-drop) di file o
+immagini sul suo riquadro: il modulo `armDropzones` in `app.js` arma automaticamente ogni
+`input[type=file]` (anche nei drawer/form dinamici), rispettando il filtro `accept` e il
+single/multiple. Vale per piantine, allegati intervento/commessa, logo tenant.
+
+## Branding tenant
+Il logo **YouWorkforce** resta sempre nel suo slot e non viene mai sostituito. Il logo del tenant,
+se caricato dal superadmin, prende il posto del **nome** del tenant (senza logo si mostra il nome
+testuale). I colori brand del tenant sono applicati come variabili CSS.
+
 ## Note tecniche
 - File coinvolti: `console/static/app.html`, `console/static/app.js`, `console/static/app.css`.
 - Avvio console: dalla cartella `console/`, `./console.exe` (o `go run .`) → `:8081`,

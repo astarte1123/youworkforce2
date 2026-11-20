@@ -276,13 +276,10 @@ function applyBranding(b){
   set('--brand', b.brand_primary); set('--brand-ink', b.brand_ink);
   set('--brand-soft', b.brand_soft); set('--brand2', b.brand_accent);
 }
-// Marchio: logo del tenant se caricato, altrimenti il logomark YouWorkforce.
-function brandMark(){ return BRANDING.has_logo
-  ? `<img src="/api/branding/logo" alt="logo" style="width:100%;height:100%;object-fit:contain;border-radius:inherit">`
-  : ICON.logomark; }
 function brandName(){ return esc(BRANDING.name||'YouWorkforce'); }
-// Nello spazio del NOME del tenant: se il tenant ha un logo caricato mostra quello (al posto del
-// nome), altrimenti il nome (es. "Acme SpA"). Il logomark YouWorkforce resta nel suo slot.
+// REGOLA BRANDING: il logo YouWorkforce (ICON.logomark) resta SEMPRE nel suo slot e non va mai
+// sostituito. Il logo del tenant, se caricato, prende il posto del NOME del tenant (non del logo
+// YW); senza logo si mostra il nome testuale (es. "Acme SpA").
 function brandNameOrLogo(){ return BRANDING.has_logo
   ? `<img src="/api/branding/logo" alt="${brandName()}" title="${brandName()}" style="height:24px;max-width:160px;object-fit:contain;display:block">`
   : `<span>${brandName()}</span>`; }

@@ -159,3 +159,46 @@ function initComboUI(){
 }
 if(document.readyState!=='loading') initComboUI();
 else document.addEventListener('DOMContentLoaded', initComboUI);
+
+// ===== Drag & drop universale su OGNI <input type=file> =====
+// Trascinando file/immagini sul contenitore dell'input (label/field/row) vengono assegnati
+// all'input e parte l'evento change, esattamente come con "Sfoglia". Vale per tutti gli input
+// file presenti e futuri (drawer, form dinamici), su app.html e superadmin.html.
+function armDropzones(root){
+  (root||document).querySelectorAll('input[type=file]:not([data-dnd])').forEach(inp=>{
+    inp.dataset.dnd='1';
+    const zone=inp.closest('label')||inp.closest('.field')||inp.closest('.row')||inp.parentElement||inp;
+    if(zone.dataset.dz) return; zone.dataset.dz='1';
+    zone.title=(zone.title?zone.title+' · ':'')+'Trascina qui il file, oppure usa Sfoglia';
+    const on=()=>{ zone.style.outline='2px dashed var(--brand,#e2001a)'; zone.style.outlineOffset='3px'; zone.style.borderRadius=zone.style.borderRadius||'8px'; };
+    const off=()=>{ zone.style.outline=''; zone.style.outlineOffset=''; };
+    zone.addEventListener('dragenter',e=>{ e.preventDefault(); on(); });
+    zone.addEventListener('dragover',e=>{ e.preventDefault(); e.dataTransfer.dropEffect='copy'; on(); });
+    zone.addEventListener('dragleave',e=>{ if(!zone.contains(e.relatedTarget)) off(); });
+    zone.addEventListener('drop',e=>{
+      e.preventDefault(); off();
+      const files=e.dataTransfer&&e.dataTransfer.files; if(!files||!files.length) return;
+      // rispetta single/multiple e il filtro accept (se presente)
+      const acc=(inp.getAttribute('accept')||'').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
+      const okType=f=>!acc.length||acc.some(a=>{
+        if(a==='image/*') return f.type.startsWith('image/');
+        if(a.endsWith('/*')) return f.type.startsWith(a.slice(0,-1));
+        if(a.startsWith('.')) return f.name.toLowerCase().endsWith(a);
+        return f.type.toLowerCase()===a; });
+      let list=Array.from(files).filter(okType);
+      if(!list.length){ try{toast&&toast('Tipo di file non supportato qui','bad');}catch(_){} return; }
+      if(!inp.multiple) list=[list[0]];
+      try{ const dt=new DataTransfer(); list.forEach(f=>dt.items.add(f)); inp.files=dt.files; }
+      catch(_){ try{ inp.files=files; }catch(__){ return; } }
+      inp.dispatchEvent(new Event('change',{bubbles:true}));
+    });
+  });
+}
+(function(){
+  const run=()=>armDropzones(document);
+  if(document.readyState!=='loading') run(); else document.addEventListener('DOMContentLoaded',run);
+  let t=null;
+  const mo=new MutationObserver(ms=>{ for(const m of ms){ if(m.addedNodes&&m.addedNodes.length){ if(!t)t=setTimeout(()=>{t=null;armDropzones(document);},40); break; } } });
+  if(document.body) mo.observe(document.body,{childList:true,subtree:true});
+  else document.addEventListener('DOMContentLoaded',()=>mo.observe(document.body,{childList:true,subtree:true}));
+})();
