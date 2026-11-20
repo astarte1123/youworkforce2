@@ -738,7 +738,7 @@ function card(title,inner,gotoK){return `<div class="card"><div class="card-h"><
 function emptyRow(t){return `<tr><td class="empty" style="padding:var(--s-24)">${t}</td></tr>`;}
 function incRow(i){return `<tr class="clk" data-inc="${i.id}"><td><b>${esc(i.etype)}</b><div class="small mut">${esc(i.site||'—')}</div></td>
   <td>${chip(i.state)}</td></tr>`;}
-function ordRow(o){return `<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b><div class="small mut">${esc(o.site||'—')} · ${esc(o.assignee||'non assegnato')}</div></td>
+function ordRow(o){return `<tr class="clk-card" data-ord="${o.id}"><td><b>${esc(o.title)}</b><div class="small mut">${esc(o.site||'—')} · ${esc(o.assignee||'non assegnato')}</div></td>
   <td>${chip(o.state)}</td></tr>`;}
 function bindRows(v){
   $$('[data-inc]',v).forEach(r=>r.onclick=()=>openIncident(r.dataset.inc));
@@ -911,7 +911,7 @@ async function vMieiAllarmi(v){
   const onc = OC.available ? `<span class="chip s-attivo wrap" title="reperibili di turno">📞 di turno: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
   v.innerHTML=`<div class="page-h"><div><h1>I miei allarmi</h1><div class="mut">${aperti.length} aperti · prendi in carico e chiudi</div></div><div>${onc}</div></div>
   <div class="col" style="gap:var(--s-10)">${aperti.map(i=>`
-    <div class="card clk" data-inc="${i.id}" style="padding:var(--s-14);border-left:4px solid ${i.priority>=3?'var(--bad)':i.priority>=2?'#ea580c':'var(--line)'}">
+    <div class="card clk-card" data-inc="${i.id}" style="padding:var(--s-14);border-left:4px solid ${i.priority>=3?'var(--bad)':i.priority>=2?'#ea580c':'var(--line)'}">
       <div class="spread"><b>${esc(etLab(i.etype))}</b>${chip(i.state)}</div>
       <div class="small mut" style="margin-top:var(--s-4)">${esc(i.site||'sede n/d')}${i.assignee?' · 👤 '+esc(i.assignee):''}</div>
       <div class="small" style="margin-top:var(--s-6);color:var(--brand)">Tocca per gestire →</div>
@@ -1389,7 +1389,7 @@ async function loadAlarmsOnMap(){
       AMARK[a.id]=m; m.addTo(ALARMLAYER); pts.push([a.lat,a.lon]);
     });
     if(pts.length) MAP.fitBounds(pts,{padding:[40,40],maxZoom:16});
-    const row=a=>`<div class="clk alarm-row" data-aid="${a.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)" onclick="focusAlarm('${a.id}',${a.lat},${a.lon})">
+    const row=a=>`<div class="clk-card alarm-row" data-aid="${a.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)" onclick="focusAlarm('${a.id}',${a.lat},${a.lon})">
       <div class="spread"><b class="small">${esc(a.label)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString('it-IT')}</span></div>
       <div class="small">${a.indoor?'🏭 indoor · '+esc(a.zone||'zona non mappata'):'📍 outdoor'} · ${a.state==='chiuso'?'🟢 chiuso':'🔴 aperto'}</div>
       <div class="small mut">${a.device?('📟 '+esc(a.device)):''}${a.person?(' · 👤 '+esc(a.person)):''}</div></div>`;
@@ -2037,7 +2037,7 @@ function renderOrdini(v){
       ${agendaBody(sched)}</div>`;
   } else {
     const asgLabel=o=>o.assignee?esc(o.assignee):(o.group_name?('👥 '+esc(o.group_name)):'<span style="color:var(--bad)">da assegnare</span>');
-    const row=o=>`<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b></td><td>${esc(o.site||'—')}</td><td>${asgLabel(o)}</td><td>${priBadge(o.priority)}</td><td>${chip(o.state)}</td></tr>`;
+    const row=o=>`<tr class="clk-card" data-ord="${o.id}"><td><b>${esc(o.title)}</b></td><td>${esc(o.site||'—')}</td><td>${asgLabel(o)}</td><td>${priBadge(o.priority)}</td><td>${chip(o.state)}</td></tr>`;
     body=`<div class="card"><div class="card-h"><div><h2>Da pianificare</h2>
         <div class="small mut">${unsched.length} interventi senza appuntamento — assegna una persona e una data</div></div></div>
       <table class="table" data-export="interventi-da-pianificare"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Priorità</th><th>Stato</th></tr></thead>
@@ -2128,7 +2128,7 @@ async function vMappaCantieri(v){
     if(pts.length) CANTMAP.fitBounds(pts,{padding:[40,40],maxZoom:15});
     setTimeout(()=>CANTMAP&&CANTMAP.invalidateSize(),150);
   },60);
-  const list=open.map(c=>`<div class="spread clk" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)" onclick='cantSide(${JSON.stringify(c).replace(/'/g,"&#39;")})'>
+  const list=open.map(c=>`<div class="spread clk-card" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)" onclick='cantSide(${JSON.stringify(c).replace(/'/g,"&#39;")})'>
     <div><b class="small">${esc(c.code)}</b> <span class="small mut">${esc(c.name)}</span><div class="small mut">${esc(c.client_name||'—')} · ${c.progress}%</div></div>
     <span class="chip">${esc(COMM_STATI[c.status]||c.status)}</span></div>`).join('')||'<div class="small mut">Nessun cantiere aperto geolocalizzato.</div>';
   const side=document.getElementById('cantSide'); if(side) side.innerHTML=`<h2 style="margin:0 0 var(--s-8)">Cantieri aperti (${open.length})</h2>${list}
@@ -2609,7 +2609,7 @@ async function vDispatch(v){
   const weekCols=weekDays.map((d,i)=>{ const list=schedOn(d);
     return `<div class="card pad" style="min-width:150px;flex:1;${d===today?'outline:2px solid var(--brand)':''}">
       <div class="small" style="font-weight:600">${dnames[i]} ${d.slice(8,10)}/${d.slice(5,7)}</div>
-      ${list.map(o=>`<div class="clk" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:6px;padding:var(--s-4) var(--s-6);margin:var(--s-4) 0">
+      ${list.map(o=>`<div class="clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:6px;padding:var(--s-4) var(--s-6);margin:var(--s-4) 0">
         <b class="small">${new Date(o.scheduled_start).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}</b>
         <div class="small" style="overflow:hidden;text-overflow:ellipsis">${esc(o.title)}</div>
         <div class="small mut">${o.assignee?esc(o.assignee.split('@')[0]):'<span style="color:var(--bad)">—</span>'}</div></div>`).join('')||'<div class="small mut" style="margin-top:var(--s-6)">—</div>'}
@@ -3029,7 +3029,7 @@ async function wizardStart(){
   const run=async()=>{ const p=new URLSearchParams({q:$('#wzQ').value,manufacturer:$('#wzMan').value,category:$('#wzCat').value,scope:'safety'});
     let L; try{ L=await api('/catalog/devices?'+p); }catch(e){ $('#wzList').innerHTML=`<div class="small" style="color:var(--bad)">Errore nel caricare il catalogo: ${esc(e.message)}</div>`; return; }
     const box=$('#wzList');
-    box.innerHTML=L.map(m=>`<div class="card pad clk" onclick='wizardStep2(${JSON.stringify(m).replace(/'/g,"&#39;")})'>
+    box.innerHTML=L.map(m=>`<div class="card pad clk-card" onclick='wizardStep2(${JSON.stringify(m).replace(/'/g,"&#39;")})'>
       <div class="spread"><b>${esc(m.manufacturer)} ${esc(m.model_name)}</b>${m.recommended?'<span class="chip s-attivo">consigliato</span>':''}</div>
       <div class="small mut" style="margin:var(--s-3) 0">${esc(catLabel(m.category))} · ${esc(m.protocol)}${m.default_port?':'+m.default_port:''}${m.osmand?' · OsmAnd':''}</div>
       <div class="row" style="flex-wrap:wrap;gap:var(--s-4)">${(m.capabilities||[]).map(c=>`<span class="tag">${esc(c)}</span>`).join('')}</div>
@@ -3156,7 +3156,7 @@ async function dokBulkStart(){
     <div id="bkOut" class="small" style="margin-top:var(--s-4)"></div></div>`);
   const run=async()=>{ const q=$('#bkQ').value.trim(); const box=$('#bkModels'); if(!q){box.innerHTML='';return;}
     const L=await api('/catalog/devices?'+new URLSearchParams({q})).catch(()=>[]);
-    box.innerHTML=(L||[]).slice(0,8).map(m=>`<div class="card pad clk" style="padding:var(--s-6) var(--s-8)" onclick='dokBulkPick(${JSON.stringify(m).replace(/'/g,"&#39;")})'>
+    box.innerHTML=(L||[]).slice(0,8).map(m=>`<div class="card pad clk-card" style="padding:var(--s-6) var(--s-8)" onclick='dokBulkPick(${JSON.stringify(m).replace(/'/g,"&#39;")})'>
       <b class="small">${esc(m.manufacturer)} ${esc(m.model_name)}</b> <span class="chip">${esc(m.category)}</span>
       <div class="row" style="flex-wrap:wrap;gap:var(--s-3);margin-top:var(--s-2)">${(m.capabilities||[]).map(c=>`<span class="tag">${esc(c)}</span>`).join('')}</div></div>`).join('')||'<div class="small mut">nessun modello</div>'; };
   $('#bkQ').oninput=run;
