@@ -28,20 +28,23 @@ say "2 lista piani contiene il nuovo"
 echo "$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/patrol-schedules)" | grep -q "$RN" && ok || no "not listed"
 
 say "3 cruscotto: slot dovuti + mancanti>0"
-# deterministico anche a cavallo di mezzanotte UTC: porta il test-clock avanti di 2h
-# cosi' almeno gli slot 00:00/01:00 risultano scaduti (non punzonati); poi ripristino.
-curl -s -X POST $BASE/api/_test/advance -H 'content-type: application/json' -d '{"seconds":7200}' -o /dev/null
+# DETERMINISTICO a qualsiasi ora del giorno: porta il test-clock esattamente alle 12:00:00Z di OGGI
+# (stesso giorno di 'now'), così gli slot 00:00..10:00 risultano scaduti e non punzonati -> mancanti.
+# Evita il caso 'now appena dopo mezzanotte' (nessuno slot ancora scaduto) del vecchio +2h.
+NOW=$(curl -s -X POST $BASE/api/_test/advance -H 'content-type: application/json' -d '{"seconds":0}' | jq1 "print(json.load(sys.stdin)['now'])")
+DELTA=$(python -c "import sys,datetime as d; s='$NOW'.replace('Z','+00:00'); n=d.datetime.fromisoformat(s); t=n.replace(hour=12,minute=0,second=0,microsecond=0); print(int((t-n).total_seconds()))")
+curl -s -X POST $BASE/api/_test/advance -H 'content-type: application/json' -d "{\"seconds\":$DELTA}" -o /dev/null
 D=$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/patrol-dashboard)
 NS=$(echo "$D" | jq1 "print(len(json.load(sys.stdin)['slots']))")
 MA=$(echo "$D" | jq1 "print(json.load(sys.stdin)['summary']['mancanti'])")
-curl -s -X POST $BASE/api/_test/advance -H 'content-type: application/json' -d '{"seconds":-7200}' -o /dev/null
-[ "${NS:-0}" -ge 1 ] && [ "${MA:-0}" -ge 1 ] && ok || no "slots=$NS mancanti=$MA"
+curl -s -X POST $BASE/api/_test/advance -H 'content-type: application/json' -d "{\"seconds\":$((-DELTA))}" -o /dev/null
+[ "${NS:-0}" -ge 1 ] && [ "${MA:-0}" -ge 1 ] && ok || no "slots=$NS mancanti=$MA (now=$NOW delta=$DELTA)"
 
 say "4 giorno escluso dal mask -> nessuno slot di quel giro"
 # metti mask tutto 0 tranne un giorno diverso da oggi: ricreo con mask che esclude oggi
 curl -s $H -X DELETE $BASE/api/patrol-schedules/$SID -o /dev/null
 # weekday in UTC: il server valuta il mask con clock UTC (clock.rs), non ora locale -> allineati anche a cavallo di mezzanotte
-TODOW=$(python -c "import datetime;print(datetime.datetime.utcnow().weekday())")
+TODOW=$(python -c "import datetime as d;print(d.datetime.now(d.timezone.utc).weekday())")
 MASK=$(python -c "i=$TODOW;print(''.join('0' if k==i else '1' for k in range(7)))")
 SID2=$(curl -s $H -X POST $BASE/api/patrol-schedules -d "{\"route_id\":\"$RID\",\"days_mask\":\"$MASK\",\"from_time\":\"00:00\",\"to_time\":\"23:00\",\"every_minutes\":60}" | jq1 "print(json.load(sys.stdin).get('id',''))")
 NS2=$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/patrol-dashboard | jq1 "print(len([s for s in json.load(sys.stdin)['slots'] if s['route_name']=='$RN']))")
