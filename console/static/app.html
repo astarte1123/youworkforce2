@@ -1969,7 +1969,7 @@ async function vOrdini(v){
   ${agendaByDay(sched)}
   <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Da pianificare</h2></div>
     <table class="table" data-export="interventi"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Quando</th><th>Priorità</th><th>Stato</th></tr></thead>
-    <tbody>${unsched.map(row).join('')||`<tr><td colspan="6" class="empty">${ICON.clipboard}<div>Nessun intervento</div></td></tr>`}</tbody></table></div>`;
+    <tbody>${unsched.map(row).join('')||emptyRow(6, ICON.clipboard, 'Nessun intervento', 'Gli interventi sono ordini di lavoro da assegnare e svolgere. Crea il primo o pianificalo.', canCreate?{fn:'newOrder()',label:'+ Nuovo intervento'}:null)}</tbody></table></div>`;
   bindRows(v);
 }
 // R2 — Agenda appuntamenti: raggruppa i pianificati per giorno, in ordine cronologico.
@@ -2560,7 +2560,7 @@ async function vRichieste(v){
   v.innerHTML=`<div class="page-h"><div><h1>Richieste</h1><div class="mut">${R.length} richieste · canale d'ingresso prima dell'intervento</div></div>
     <button class="btn" onclick="reqNew()">+ Nuova richiesta</button></div>
   <div class="card"><table class="table" data-export="richieste"><thead><tr><th>Richiesta</th><th>Cliente</th><th>Priorità</th><th>Stato</th><th></th></tr></thead>
-    <tbody>${R.map(row).join('')||`<tr><td colspan="5" class="empty">${ICON.clipboard}<div>Nessuna richiesta</div></td></tr>`}</tbody></table></div>`;
+    <tbody>${R.map(row).join('')||emptyRow(5, ICON.clipboard, 'Nessuna richiesta', 'Le richieste raccolgono le segnalazioni da evadere (es. da cliente o campo). Aprine una per tracciarla.', {fn:'reqNew()',label:'+ Nuova richiesta'})}</tbody></table></div>`;
 }
 function reqNew(){ const v=$('#view'); const clients=v._clients||[];
   drawer('Nuova richiesta',`<div class="col" style="gap:var(--s-10)">
@@ -2911,7 +2911,7 @@ async function vDispositivi(v){
     <td class="mono">${esc(d.external_id)}</td><td class="small">${model(d)}</td><td>${esc(d.label||'—')}</td>
     <td class="small">${who(d)}</td><td class="small">${(d.capabilities||[]).slice(0,4).map(c=>`<span class="tag">${esc(c)}</span>`).join('')||'—'}</td>
     <td class="small">${seen(d)}</td><td>${prov(d.prov_step)||(d.enabled?'<span class="chip s-attivo">attivo</span>':'<span class="chip">off</span>')}</td></tr>`).join('')
-    ||`<tr><td colspan="7" class="empty">${ICON.shield}<div>${t('dev_empty','Nessun dispositivo. Usa "+ Aggiungi (guidato)".')}</div></td></tr>`}</tbody></table></div>`;
+    ||emptyRow(7, ICON.shield, t('dev_empty_t','Nessun dispositivo'), t('dev_empty_h','Collega badge, tracker GPS o sensori IoT. La procedura guidata ti accompagna passo-passo.'), {fn:'wizardStart()',label:t('dev_add_guided','+ Aggiungi (guidato)')})}</tbody></table></div>`;
   $$('[data-dev]',v).forEach(r=>r.onclick=()=>devEdit(JSON.parse(decodeURIComponent(r.dataset.dev))));
 }
 // Testo ricercabile (full-text) di un dispositivo: unisce tutte le colonne mostrate + sinonimi utili.
@@ -4750,7 +4750,7 @@ async function vAnagrafiche(v){
     <table class="table" data-export="asset-mezzi"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th>Sede</th><th></th></tr></thead>
     <tbody>${assets.map(a=>`<tr class="clk" data-asset='${JSON.stringify(a).replace(/'/g,"&#39;")}'><td><b>${esc(a.name)}</b></td><td><span class="chip">${esc(a.kind)}</span></td><td class="small mut">${esc(a.identifier||'—')}</td><td class="small mut">${esc(a.site||'—')}</td>
       <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();assetDel('${a.id}')">${ICON.x}</button></td></tr>`).join('')
-      ||'<tr><td colspan="5" class="empty">nessun asset</td></tr>'}</tbody></table></div>`;
+      ||emptyRow(5, ICON.building, 'Nessun asset', 'Mezzi e attrezzature da assegnare a squadre e interventi. Aggiungine uno per poterlo pianificare.', {fn:'assetNew()',label:'+ Nuovo asset'})}</tbody></table></div>`;
   v.querySelectorAll('tr[data-asset]').forEach(tr=>tr.onclick=()=>{ try{ assetForm(JSON.parse(tr.dataset.asset)); }catch(e){} });
 }
 const ASSET_KINDS=['veicolo','attrezzatura','mezzo','strumento','altro'];
@@ -4788,7 +4788,7 @@ async function vUtentiRuoli(v){
   <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
     <table class="table" data-export="utenti"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
     <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
-      <td style="text-align:right"><button class="btn ghost small" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'>gestisci</button></td></tr>`).join('')||'<tr><td colspan="3" class="empty">nessun utente</td></tr>'}</tbody></table></div>
+      <td style="text-align:right"><button class="btn ghost small" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'>gestisci</button></td></tr>`).join('')||emptyRow(3, null, 'Nessun utente', 'Invita le persone del team e assegna i ruoli: potranno accedere secondo i permessi.', {fn:'userNew()',label:'+ Invita utente'})}</tbody></table></div>
   <div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><div><h2>Gruppi di persone (${ugroups.length})</h2><div class="small mut">insiemi di persone condivisi, riusabili da qualunque modulo (es. importabili nei gruppi di allarme)</div></div><a onclick="ugNew()">+ nuovo gruppo</a></div>
     <div class="grid g2" style="margin-top:var(--s-10)">${ugroups.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10)">
       <div class="spread"><b>${esc(g.name)} <span class="chip" title="${esc(g.kind)}">${esc(groupKindLabel(g.kind))}</span></b>
@@ -5223,7 +5223,7 @@ async function vTurni(v){
     <table class="table" data-export="reperibilita"><thead><tr><th>Utente</th><th>Dalle</th><th>Alle</th><th>Nota</th><th></th></tr></thead>
     <tbody>${OC.map(o=>`<tr><td>${esc(o.email)}</td><td class="small">${dtLocal(o.starts_at)}</td><td class="small">${dtLocal(o.ends_at)}</td>
       <td class="small mut">${esc(o.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="ocDel('${o.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
-      ||`<tr><td colspan="5" class="empty">Nessuna reperibilità</td></tr>`}</tbody></table></div>`;
+      ||emptyRow(5, ICON.shield, 'Nessuna reperibilità', 'Definisci chi è reperibile e in quale finestra: riceverà gli allarmi quando è di turno.', planner?{fn:'ocNew()',label:'+ Aggiungi reperibilità'}:null)}</tbody></table></div>`;
   const absKind=k=>`<span class="chip">${esc(k)}</span>`;
   const absCard=`<div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Assenze e indisponibilità</h2>
     ${planner?`<a onclick="absNew()">+ aggiungi</a>`:''}</div>
@@ -5231,7 +5231,7 @@ async function vTurni(v){
     <table class="table" data-export="assenze"><thead><tr><th>Lavoratore</th><th>Tipo</th><th>Dal</th><th>Al</th><th>Nota</th><th></th></tr></thead>
     <tbody>${(A||[]).map(a=>`<tr><td>${esc(a.email)}</td><td>${absKind(a.kind)}</td><td class="small">${dtLocal(a.starts_at)}</td><td class="small">${dtLocal(a.ends_at)}</td>
       <td class="small mut">${esc(a.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="absDel('${a.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
-      ||`<tr><td colspan="6" class="empty">Nessuna assenza</td></tr>`}</tbody></table></div>`;
+      ||emptyRow(6, ICON.clipboard, 'Nessuna assenza', 'Registra ferie, malattie o indisponibilità: il pianificatore non assegnerà turni in quei periodi.', planner?{fn:'absNew()',label:'+ Aggiungi assenza'}:null)}</tbody></table></div>`;
   // Qualifiche (solo se il modulo è attivo: l'endpoint ritorna dati; altrimenti Q è vuoto per il 403)
   const qualCard=(planner && ACTIVE_MODS.has('qualifiche'))?`<div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Qualifiche e competenze</h2>
     <span><a onclick="qualNew()">+ nuova</a> · <a onclick="qualAssign()">assegna a persona</a></span></div>
@@ -5245,7 +5245,7 @@ async function vTurni(v){
     <table class="table" data-export="copertura-turni"><thead><tr><th>Sede</th><th>Giorni</th><th>Fascia</th><th>Min</th><th>Competenza</th><th></th></tr></thead>
     <tbody>${(CV||[]).map(c=>`<tr><td>${esc(c.site||'ovunque')}</td><td class="small">${esc(dmTxt(c.days_mask))}</td><td class="small">${esc(c.cov_start)}–${esc(c.cov_end)}</td>
       <td>${c.min_people}</td><td class="small mut">${esc(c.qual||'—')}</td><td style="text-align:right"><button class="btn-ico btn ghost" onclick="covDel('${c.id}')">${ICON.x}</button></td></tr>`).join('')
-      ||`<tr><td colspan="6" class="empty">Nessun requisito di copertura</td></tr>`}</tbody></table>
+      ||emptyRow(6, ICON.clipboard, 'Nessun requisito di copertura', 'Dichiara quante persone servono per sede, fascia e giorni: la verifica troverà i turni scoperti.', planner?{fn:'covNew()',label:'+ Aggiungi requisito'}:null)}</tbody></table>
     <div id="covGaps" class="card-inset-b"></div></div>`:'';
   v.innerHTML=`<div class="page-h"><div><h1>${t('turni_title','Turni')}</h1><div class="mut">${P.length} turni pianificati${planner?'':' (i tuoi)'}</div></div>${createBtn}</div>
   <div class="card"><table class="table" data-export="check-in-pianificati"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Quando</th><th>Stato</th><th></th></tr></thead>
