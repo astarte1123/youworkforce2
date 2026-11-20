@@ -5022,7 +5022,7 @@ async function vPrivacyAudit(v){
   v.innerHTML=`<div class="page-h"><div><h1>${t('priv_title','Privacy e audit')}</h1><div class="mut">GDPR (accesso e oblio), ritenzione e registro attività del tenant</div></div></div>
   ${err}
   <div class="card pad" style="margin-top:0"><div class="spread"><div><h2>GDPR · dati personali</h2><div class="small mut">esporta i dati di una persona (diritto d'accesso) o anonimizzala (diritto all'oblio, preserva lo storico).</div></div>
-    <button class="btn ghost small" onclick="gdUsersExport()">⬇ esporta CSV</button></div>
+    </div>
     <div class="row" style="gap:var(--s-8);margin-top:var(--s-10);flex-wrap:wrap">
       <input id="gdQ" class="small" placeholder="🔎 cerca email" onkeydown="if(event.key==='Enter')gdReload()">
       <select id="gdRole" class="small" onchange="gdReload()"><option value="">tutti i ruoli</option>${roles.map(r=>`<option value="${esc(r)}">${esc(roleLabel(r))}</option>`).join('')}</select>
@@ -5038,7 +5038,7 @@ async function vPrivacyAudit(v){
     <div style="margin-top:var(--s-8)">${retTxt}</div></div>
 
   <div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><div><h2>Registro attività (audit log)</h2><div class="small mut">azioni tracciate nel tenant. Sola lettura.</div></div>
-    <button class="btn ghost small" onclick="auditExport()">⬇ esporta CSV</button></div>
+    </div>
     <div class="row" style="gap:var(--s-8);margin-top:var(--s-10);flex-wrap:wrap">
       <input id="auQ" class="small" placeholder="🔎 cerca (attore/azione/dettaglio)" onkeydown="if(event.key==='Enter')auditReload()">
       <select id="auAction" class="small" onchange="auditReload()"><option value="">tutte le azioni</option>${actions.map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join('')}</select>
@@ -5092,16 +5092,6 @@ function auditClear(){
   ['auQ','auActor','auSince','auUntil'].forEach(id=>{const e=$('#'+id);if(e)e.value='';});
   const a=$('#auAction'); if(a)a.value=''; AU_STATE.offset=0; auditReload();
 }
-async function auditExport(){
-  try{
-    const qs=auQuery(); qs.delete('limit'); qs.delete('offset');
-    const r=await fetch('/api/audit-log/export?'+qs.toString(),{credentials:'include',headers:{'x-tenant-slug':store.slug}});
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    const blob=await r.blob(); const url=URL.createObjectURL(blob); const a=document.createElement('a');
-    a.href=url; a.download='audit-log.csv'; document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
-    toast('CSV scaricato','ok');
-  }catch(e){ toast(e.message,'bad'); }
-}
 function gdQuery(){
   const qs=new URLSearchParams();
   const q=$('#gdQ')?.value.trim(), role=$('#gdRole')?.value, status=$('#gdStatus')?.value, lim=$('#gdLimit')?.value||GD_STATE.limit;
@@ -5143,16 +5133,6 @@ function gdClear(){
   const q=$('#gdQ'); if(q)q.value='';
   ['gdRole','gdStatus'].forEach(id=>{const e=$('#'+id);if(e)e.value='';});
   GD_STATE.offset=0; gdReload();
-}
-async function gdUsersExport(){
-  try{
-    const qs=gdQuery(); qs.delete('limit'); qs.delete('offset');
-    const r=await fetch('/api/gdpr/users/export?'+qs.toString(),{credentials:'include',headers:{'x-tenant-slug':store.slug}});
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    const blob=await r.blob(); const url=URL.createObjectURL(blob); const a=document.createElement('a');
-    a.href=url; a.download='gdpr-utenti.csv'; document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
-    toast('CSV scaricato','ok');
-  }catch(e){ toast(e.message,'bad'); }
 }
 async function gdprExport(uid,email){
   try{
