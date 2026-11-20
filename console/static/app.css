@@ -301,6 +301,8 @@ tr.inc-live b{color:var(--bad)}
 /* ---- misc ---- */
 .empty{text-align:center;padding:48px var(--s-20);color:var(--faint)}
 .empty svg{width:48px;height:48px;opacity:.5;margin-bottom:var(--s-12)}
+.empty .empty-t{color:var(--fg);font-weight:600;font-size:15px}
+.empty .empty-h{color:var(--mut);font-size:13px;margin-top:var(--s-4);max-width:42ch;margin-left:auto;margin-right:auto;line-height:1.45}
 .timeline{list-style:none;margin:0;padding:0}
 .timeline li{position:relative;padding:0 0 var(--s-16) var(--s-24);border-left:2px solid var(--line)}
 .timeline li:last-child{border-left-color:transparent}

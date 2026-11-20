@@ -24,6 +24,14 @@
 <script>
 let ME=null, SSE=null, CACHE={}, ACTIVE_MODS=new Set(), UI_FEAT={map_outdoor:true,map_indoor:false}, AI_FEAT={};
 const can = r => ME && r.includes(ME.role);
+// Empty-state GUIDATO per una tabella: icona + titolo + spiegazione + (opz.) azione per iniziare.
+// Uso: emptyRow(colspan, ICON.x, 'Nessuna commessa', 'Crea la prima per…', {fn:"comNew()",label:"+ Nuova"})
+// L'azione si passa solo se l'utente ha i permessi (il chiamante decide). Pattern unico per tutte le liste.
+function emptyRow(colspan, icon, title, hint, cta){
+  return `<tr><td colspan="${colspan}" class="empty">${icon||''}<div class="empty-t">${title}</div>`+
+    `${hint?`<div class="empty-h">${hint}</div>`:''}`+
+    `${cta?`<button class="btn small" style="margin-top:var(--s-12)" onclick="${cta.fn}">${cta.label}</button>`:''}</td></tr>`;
+}
 // mod = modulo/i richiesti: la voce appare solo se ALMENO UNO è attivo sul tenant.
 const DEVICE_MODS=['loneworker','traccar','iot']; // thingsboard ritirato: IoT industriale è nativo in 'iot'
 // Moduli dell'area "Lavoro sul campo": la Mappa dispositivi appartiene a questi, non a Lone Worker.
@@ -1838,7 +1846,7 @@ async function vRonde(v){
     </div>
     <div class="card pad"><h2>Ronde eseguite (${rounds.length})</h2>
       <table class="table" data-export="ronde" style="margin-top:var(--s-8)"><thead><tr><th>Giro</th><th>Operatore</th><th>Avvio</th><th>Stato</th></tr></thead>
-      <tbody>${rounds.map(r=>`<tr style="cursor:pointer" onclick="ronView('${r.id}')"><td>${esc(r.route_name)}</td><td class="small">${esc(r.email)}</td><td class="small mut">${r.started_at?new Date(r.started_at).toLocaleString():''}</td><td>${stChip(r.status)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessuna ronda</td></tr>'}</tbody></table>
+      <tbody>${rounds.map(r=>`<tr class="clk" onclick="ronView('${r.id}')"><td>${esc(r.route_name)}</td><td class="small">${esc(r.email)}</td><td class="small mut">${r.started_at?new Date(r.started_at).toLocaleString():''}</td><td>${stChip(r.status)}</td></tr>`).join('')||emptyRow(4, ICON.clipboard, 'Nessuna ronda', 'Qui compaiono i giri di controllo eseguiti. Crea un giro con i suoi checkpoint per iniziare.', canCfg?{fn:'ronNew()',label:'+ Nuovo giro'}:null)}</tbody></table>
     </div>
   </div>`;
   v._sites=sites;
@@ -1998,7 +2006,7 @@ async function vCantieri(v){
     <span>${planner?`<button class="btn" onclick="comNew()">+ Nuova commessa</button>`:''}</span></div>
   <div class="small mut" style="margin:-4px 0 var(--s-12)">🏗️ Cantiere = progetto su un sito, scomposto in <b>lavorazioni</b> con avanzamento; lo stato complessivo è la media pesata. I <b>SAL</b> fotografano l'avanzamento nel tempo. I turni possono essere legati alla commessa.</div>
   <div class="card"><table class="table" data-export="cantieri"><thead><tr><th>Commessa</th><th>Committente</th><th>Sede</th><th>Stato</th><th>Avanzamento</th></tr></thead>
-    <tbody>${C.map(row).join('')||`<tr><td colspan="5" class="empty">${ICON.building}<div>Nessuna commessa</div></td></tr>`}</tbody></table></div>`;
+    <tbody>${C.map(row).join('')||emptyRow(5, ICON.building, 'Nessuna commessa', 'Un cantiere è un progetto su un sito, scomposto in lavorazioni con avanzamento. Crea la prima per pianificare turni e SAL.', planner?{fn:'comNew()',label:'+ Nuova commessa'}:null)}</tbody></table></div>`;
   v.querySelectorAll('tr[data-com]').forEach(tr=>tr.onclick=()=>openCommessa(tr.dataset.com));
 }
 // Mappa cantieri: pin caschetto per i cantieri aperti + dispositivi nei siti + (se Lone Worker) allarmi.
@@ -2360,7 +2368,7 @@ async function vClienti(v){
   v.innerHTML=`<div class="page-h"><div><h1>Clienti</h1><div class="mut">${C.length} clienti · committenti dell'assistenza</div></div>
     ${canEdit?`<button class="btn" onclick="cliNew()">+ Nuovo cliente</button>`:''}</div>
   <div class="card"><table class="table" data-export="clienti"><thead><tr><th>Cliente</th><th>Contatto</th><th>Indirizzo</th><th></th></tr></thead>
-    <tbody>${C.map(row).join('')||`<tr><td colspan="4" class="empty">${ICON.building}<div>Nessun cliente</div></td></tr>`}</tbody></table></div>`;
+    <tbody>${C.map(row).join('')||emptyRow(4, ICON.building, 'Nessun cliente', 'I clienti sono i committenti di commesse e ordini. Aggiungine uno per poterlo collegare.', canEdit?{fn:'cliNew()',label:'+ Nuovo cliente'}:null)}</tbody></table></div>`;
   v.querySelectorAll('tr[data-cli]').forEach(tr=>tr.onclick=()=>openClient(tr.dataset.cli));
 }
 function cliForm(c){ c=c||{}; return `<div class="col" style="gap:var(--s-10)">
@@ -5208,7 +5216,7 @@ async function vTurni(v){
     return `<tr><td>${esc(p.email)}${p.order_title?`<div class="small mut">🔧 ${esc(p.order_title)}</div>`:''}${p.commessa_name?`<div class="small mut">🏗️ ${esc(p.commessa_code||'')} ${esc(p.commessa_name)}</div>`:''}</td><td>${esc(p.site||'—')}</td>
       <td class="small">${dtLocal(p.starts_at)} → ${dtLocal(p.ends_at)}</td><td>${stChip(p.state)}</td>
       <td style="text-align:right">${acts.join(' ')}</td></tr>`;}).join('')
-    ||`<tr><td colspan="5" class="empty">Nessun turno pianificato</td></tr>`;
+    ||emptyRow(5, ICON.clipboard, 'Nessun turno pianificato', 'Pianifica i turni del personale per sede e fascia; potrai legarli alle commesse e verificare la copertura minima.', planner?{fn:'spNew()',label:'+ Pianifica turno'}:null);
   const createBtn=planner?`<button class="btn" onclick="spNew()">+ Pianifica turno</button>`:'';
   const oncallCard=`<div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Reperibilità</h2>
     ${planner?`<a onclick="ocNew()">+ aggiungi</a>`:''}</div>
