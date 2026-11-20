@@ -2635,30 +2635,55 @@ async function dispCSV(){ const O=await api('/orders').catch(()=>[]);
 const REQ_STATI={nuova:'Nuova',presa:'Presa in carico',convertita:'Convertita',chiusa:'Chiusa'};
 async function vRichieste(v){
   const [R,clients]=await Promise.all([api('/requests').catch(()=>[]),api('/clients').catch(()=>[])]);
-  v._clients=clients; const canEdit=can(['pianificatore','tenant_admin']);
-  const row=r=>`<tr><td><b class="small">${esc(r.title)}</b>${r.requester?`<div class="small mut">da ${esc(r.requester)}</div>`:''}</td>
+  v._clients=clients; v._reqs=R; const canEdit=can(['pianificatore','tenant_admin']);
+  const row=r=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick="reqOpen('${r.id}')"`:''}><td><b class="small">${esc(r.title)}</b>${r.requester?`<div class="small mut">da ${esc(r.requester)}</div>`:''}</td>
     <td class="small">${esc(r.client_name||'—')}</td><td>${priBadge(r.priority)}</td><td><span class="chip">${esc(REQ_STATI[r.status]||r.status)}</span></td>
-    <td style="text-align:right">${canEdit&&r.status!=='convertita'?`<button class="btn ghost small" onclick="reqConvert('${r.id}')">→ intervento</button> `:''}${canEdit?`<button class="btn-ico btn ghost" onclick="reqDel('${r.id}')">${ICON.x}</button>`:''}</td></tr>`;
+    <td style="text-align:right">${canEdit&&r.status!=='convertita'?`<button class="btn ghost small" onclick="event.stopPropagation();reqConvert('${r.id}')">→ intervento</button> `:''}${canEdit?`<button class="btn-ico btn ghost" onclick="event.stopPropagation();reqDel('${r.id}')">${ICON.x}</button>`:''}</td></tr>`;
   v.innerHTML=`<div class="page-h"><div><h1>Richieste</h1><div class="mut">${R.length} richieste · canale d'ingresso prima dell'intervento</div></div>
-    <button class="btn" onclick="reqNew()">+ Nuova richiesta</button></div>
+    ${canEdit?`<button class="btn" onclick="reqNew()">+ Nuova richiesta</button>`:''}</div>
+  <div class="card card-note">Le richieste sono le segnalazioni in arrivo (da cliente o dal campo). Aprile per modificarle o cambiarne lo stato; convertile in intervento quando decidi di procedere.</div>
   <div class="card"><table class="table" data-export="richieste"><thead><tr><th>Richiesta</th><th>Cliente</th><th>Priorità</th><th>Stato</th><th></th></tr></thead>
-    <tbody>${R.map(row).join('')||emptyRow(5, ICON.clipboard, 'Nessuna richiesta', 'Le richieste raccolgono le segnalazioni da evadere (es. da cliente o campo). Aprine una per tracciarla.', {fn:'reqNew()',label:'+ Nuova richiesta'})}</tbody></table></div>`;
+    <tbody>${R.map(row).join('')||emptyRow(5, ICON.clipboard, 'Nessuna richiesta', 'Le richieste raccolgono le segnalazioni da evadere (es. da cliente o campo). Aprine una per tracciarla.', canEdit?{fn:'reqNew()',label:'+ Nuova richiesta'}:null)}</tbody></table></div>`;
 }
+// Campi comuni del form richiesta (nuova + modifica).
+function reqFields(r,clients){ r=r||{}; const pri=r.priority||2;
+  return `<label class="small mut">Titolo<input id="rqTitle" placeholder="Perdita acqua bagno" value="${esc(r.title||'')}"></label>
+    <label class="small mut">Cliente<select id="rqClient"><option value="">—</option>${clients.map(c=>`<option value="${c.id}" ${r.client_id===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></label>
+    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Priorità<select id="rqPri">${[1,2,3].map(p=>`<option value="${p}" ${p===pri?'selected':''}>${PRI_LAB[p]}</option>`).join('')}</select></label>
+      <label class="small mut grow">Segnalato da<input id="rqBy" placeholder="nome / telefono" value="${esc(r.requester||'')}"></label></div>
+    <label class="small mut">Descrizione<textarea id="rqDesc" style="width:100%;height:60px">${esc(r.description||'')}</textarea></label>`; }
+function reqBody(status){ return {title:$('#rqTitle').value.trim(),client_id:$('#rqClient').value||null,priority:+$('#rqPri').value,requester:$('#rqBy').value||null,description:$('#rqDesc').value||null,status:status||undefined}; }
 function reqNew(){ const v=$('#view'); const clients=v._clients||[];
   drawer('Nuova richiesta',`<div class="col" style="gap:var(--s-10)">
-    <label class="small mut">Titolo<input id="rqTitle" placeholder="Perdita acqua bagno"></label>
-    <label class="small mut">Cliente<select id="rqClient"><option value="">—</option>${clients.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
-    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Priorità<select id="rqPri">${[1,2,3].map(p=>`<option value="${p}" ${p===2?'selected':''}>${PRI_LAB[p]}</option>`).join('')}</select></label>
-      <label class="small mut grow">Segnalato da<input id="rqBy" placeholder="nome / telefono"></label></div>
-    <label class="small mut">Descrizione<textarea id="rqDesc" style="width:100%;height:60px"></textarea></label>
+    ${reqFields(null,clients)}
     <button class="btn" onclick="reqSave()">Crea</button><div class="cfg-msg small"></div></div>`); }
-async function reqSave(){ const m=$('.cfg-msg'); const t=$('#rqTitle').value.trim(); if(!t){m.textContent='titolo richiesto';m.style.color='var(--bad)';return;}
-  const b={title:t,client_id:$('#rqClient').value||null,priority:+$('#rqPri').value,requester:$('#rqBy').value||null,description:$('#rqDesc').value||null};
+async function reqSave(){ const m=$('.cfg-msg'); const b=reqBody(); if(!b.title){m.textContent='titolo richiesto';m.style.color='var(--bad)';return;}
   try{await api('/requests',{method:'POST',body:JSON.stringify(b)}); toast('Richiesta creata','ok'); closeDrawer(); route();}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
+function reqOpen(id){ const v=$('#view'); const r=(v._reqs||[]).find(x=>x.id===id); if(!r)return; const clients=v._clients||[];
+  const st=r.status; const conv=st==='convertita';
+  // Pulsanti di stato disponibili in base allo stato corrente.
+  const stBtns=[];
+  if(!conv){
+    if(st!=='presa'&&st!=='chiusa') stBtns.push(`<button class="btn ghost small" onclick="reqSetStatus('${id}','presa')">Prendi in carico</button>`);
+    if(st==='chiusa') stBtns.push(`<button class="btn ghost small" onclick="reqSetStatus('${id}','nuova')">Riapri</button>`);
+    else stBtns.push(`<button class="btn ghost small" onclick="reqSetStatus('${id}','chiusa')">Chiudi</button>`);
+    stBtns.push(`<button class="btn ghost small" onclick="reqConvert('${id}')">→ intervento</button>`);
+  }
+  drawer('Richiesta',`<div class="col" style="gap:var(--s-10)">
+    <div class="row" style="gap:var(--s-8);align-items:center"><span class="chip">${esc(REQ_STATI[st]||st)}</span>${conv&&r.order_id?`<a class="small" href="#" onclick="openOrder('${r.order_id}');return false">vai all'intervento ›</a>`:''}</div>
+    ${reqFields(r,clients)}
+    ${conv?`<div class="mut small">Richiesta già convertita in intervento: non modificabile.</div>`:`<button class="btn" onclick="reqUpdate('${id}')">Salva modifiche</button>`}
+    ${stBtns.length?`<div class="row" style="gap:var(--s-8);flex-wrap:wrap">${stBtns.join('')}</div>`:''}
+    <button class="btn ghost small" style="color:var(--bad)" onclick="reqDel('${id}')">Elimina richiesta</button>
+    <div class="cfg-msg small"></div></div>`); }
+async function reqUpdate(id){ const m=$('.cfg-msg'); const b=reqBody(); if(!b.title){m.textContent='titolo richiesto';m.style.color='var(--bad)';return;}
+  try{await api('/requests/'+id,{method:'POST',body:JSON.stringify(b)}); toast('Richiesta aggiornata','ok'); closeDrawer(); route();}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
+async function reqSetStatus(id,status){ const b=reqBody(status); if(!b.title){toast('titolo richiesto','bad');return;}
+  try{await api('/requests/'+id,{method:'POST',body:JSON.stringify(b)}); toast('Stato: '+(REQ_STATI[status]||status),'ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 async function reqConvert(id){ if(!await askConfirm('Convertire la richiesta in un intervento (bozza)?'))return;
-  try{await api('/requests/'+id+'/convert',{method:'POST',body:'{}'}); toast('Convertita in intervento','ok'); route();}catch(e){toast(e.message,'bad');} }
+  try{await api('/requests/'+id+'/convert',{method:'POST',body:'{}'}); toast('Convertita in intervento','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 async function reqDel(id){ if(!await askConfirm('Eliminare la richiesta?'))return;
-  try{await api('/requests/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
+  try{await api('/requests/'+id,{method:'DELETE'}); toast('Eliminata','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 // ===== Interventi A4: Contratti/SLA + piani di manutenzione =====
 async function vContratti(v){
   const [C,P,clients,sites]=await Promise.all([api('/contracts').catch(()=>[]),api('/maintenance-plans').catch(()=>[]),api('/clients').catch(()=>[]),api('/sites').catch(()=>[])]);

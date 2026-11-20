@@ -157,8 +157,11 @@ nello stesso commit. Nessun passo distrugge i dati o umilia il prodotto.
 - ✅ **A4 Contratti/SLA + ricorrenze** — `service_contracts` (SLA ore, monte ore) +
   `maintenance_plans` (cadenza + generazione appuntamento che avanza la prossima data) +
   `work_orders.contract_id` (mig 0097); menu "Contratti". e2e `qa/contratti-e2e.sh` 6/6.
-- ✅ **A5 Richieste/ticket** — `service_requests` (mig 0098); inbox "Richieste" + conversione in
-  intervento (stato→convertita, order_id). e2e `qa/richieste-e2e.sh` 7/7.
+- ✅ **A5 Richieste/ticket** — `service_requests` (mig 0098); inbox "Richieste" (riga cliccabile →
+  drawer dettaglio): modifica campi (titolo/cliente/priorità/segnalato-da/descrizione via
+  `POST /api/requests/:id`) e gestione stato **nuova → presa in carico → chiusa/riapri** oltre alla
+  **conversione in intervento** (stato→convertita, order_id, link all'intervento). Editing/stato gated
+  `plan` (pianificatore/admin). e2e `qa/richieste-e2e.sh` 8/8.
 - ✅ **C4 Giornale di cantiere** — `commessa_diario` (data, meteo, presenti, note) (mig 0099);
   sezione "Giornale di cantiere" nella commessa. e2e in `qa/cantieri-giornale-fatture-e2e.sh`.
 - ✅ **C5 Fatturazione da SAL** — `commessa_fatture` (numero, importo, stato emessa/pagata/annullata,

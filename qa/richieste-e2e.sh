@@ -26,6 +26,11 @@ say "2 richiesta è 'nuova'"
 ST=$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/requests | jq1 "import sys,json;print(next(r['status'] for r in json.load(sys.stdin) if r['id']=='$RQ'))")
 [ "$ST" = "nuova" ] && ok || no "status=$ST"
 
+say "2b modifica campi + stato 'presa in carico'"
+curl -s $H -X POST $BASE/api/requests/$RQ -d "{\"title\":\"$T mod\",\"priority\":2,\"requester\":\"Mario\",\"description\":\"perdita in bagno\",\"status\":\"presa\"}" -o /dev/null
+R=$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/requests | jq1 "r=next(r for r in json.load(sys.stdin) if r['id']=='$RQ');print(r['status'], r.get('description'), r['title'].endswith(' mod'))")
+echo "$R" | grep -q "presa perdita in bagno True" && ok || no "$R"
+
 say "3 converti in intervento"
 OID=$(curl -s $H -X POST $BASE/api/requests/$RQ/convert -d '{}' | jq1 "print(json.load(sys.stdin).get('id',''))")
 [ -n "$OID" ] && ok || no "no order"
