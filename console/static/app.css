@@ -9,6 +9,11 @@
   /* Gutter orizzontale unico di una card: intestazioni, corpo, bordi tabella e note di sezione
      partono tutti da qui. Unica fonte di verità, niente padding hardcoded nel markup. */
   --gutter:18px;
+  /* Scala di spaziatura — unica fonte di verità per padding/margin/gap. Copre i valori reali
+     oggi in uso (Fase 1: tokenizzazione senza cambi visivi). Una futura razionalizzazione della
+     scala (es. 6->8, 10->12) si fa QUI, in un punto solo, con verifica visiva. */
+  --s-2:2px; --s-3:3px; --s-4:4px; --s-5:5px; --s-6:6px; --s-8:8px; --s-10:10px;
+  --s-12:12px; --s-14:14px; --s-16:16px; --s-18:18px; --s-20:20px; --s-24:24px; --s-28:28px;
   --sh:0 1px 2px rgba(16,32,64,.06),0 6px 20px rgba(16,32,64,.06);
   --sh-lg:0 10px 40px rgba(16,32,64,.16);
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
