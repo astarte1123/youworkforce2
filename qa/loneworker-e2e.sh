@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # LONEWORKER — audit del cuore sicurezza:
 #  F3) un check-in puo' essere confermato SOLO dal proprietario (no soppressione allarme altrui)
-#  SOS worker -> incidente + richiesta notifica (timeline notify_requested/goalert_sent)
-#  lifecycle incidente: ack (preso_in_carico) -> close (chiuso) + goalert_close
+#  SOS worker -> incidente + richiesta notifica (timeline notify_requested/notify_dispatched nativo)
+#  lifecycle incidente: ack (preso_in_carico) -> close (chiuso) + outbox kind='close' (close-loop nativo)
 #  GoAlert piloted da YouWorkforce: gruppo+membri+routing -> sync -> goalert_routing popolato
 #     (se GoAlert non e' provisionato per acme, la parte sync e' saltata e dichiarata)
 set -uo pipefail
@@ -45,7 +45,7 @@ IID=$(echo "$SOS" | jv 'd["incident_id"]')
 sleep 2
 TL=$(oapi "$BASE/api/incidents/$IID/timeline")
 echo "$TL" | grep -q 'notify_requested' && ok "timeline: notify_requested" || no "manca notify_requested" "$TL"
-echo "$TL" | grep -q 'goalert_sent' && ok "timeline: goalert_sent (inviato a GoAlert)" || no "manca goalert_sent" "$TL"
+echo "$TL" | grep -q 'notify_dispatched' && ok "timeline: notify_dispatched (consegna nativa)" || no "manca notify_dispatched" "$TL"
 
 # ---- lifecycle: ack -> close ----
 echo "$(oapi -X POST "$BASE/api/incidents/$IID/ack")" | grep -q '"ok":true' && ok "operatore ack incidente" || no "ack fallito" "-"
@@ -54,7 +54,7 @@ echo "$(oapi -X POST "$BASE/api/incidents/$IID/ack")" | grep -q '"ok":true' && o
 echo "$(mapi -H 'content-type: application/json' -X POST "$BASE/api/incidents/$IID/close" -d '{"outcome":"test"}')" | grep -qiE 'forbidden|cannot|role' && ok "lavoratore NON puo' chiudere incidenti" || no "ruolo non applicato su close" "-"
 oapi -H 'content-type: application/json' -X POST "$BASE/api/incidents/$IID/close" -d '{"outcome":"falso allarme (test e2e)"}' >/dev/null
 [ "$(sql "SELECT state FROM app.incidents WHERE id='$IID'")" = "chiuso" ] && ok "operatore chiude con outcome -> chiuso" || no "close non ha chiuso" "-"
-[ "$(sql "SELECT count(*) FROM app.outbox WHERE tenant_id=$TIDQ AND kind='goalert_close' AND payload->>'incident_id'='$IID'")" -ge 1 ] && ok "close -> goalert_close in outbox (close-loop)" || no "manca goalert_close" "-"
+[ "$(sql "SELECT count(*) FROM app.outbox WHERE tenant_id=$TIDQ AND kind='close' AND payload->>'incident_id'='$IID'")" -ge 1 ] && ok "close -> kind='close' in outbox (close-loop nativo)" || no "manca close" "-"
 
 # ---- GoAlert piloted: gruppo -> EP/servizio/routing ----
 GNAME="E2E Centrale $RANDOM"
