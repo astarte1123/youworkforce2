@@ -6,6 +6,9 @@
   --ok:#11a06b; --ok-soft:#dcf5ea; --warn:#c7820a; --warn-soft:#fdf0d4;
   --bad:#c81e3a; --bad-soft:#fbe0e5; --info:#2f84c7; --info-soft:#def0fb;
   --r:14px; --r-sm:9px; --r-lg:20px; --sp:16px;
+  /* Gutter orizzontale unico di una card: intestazioni, corpo, bordi tabella e note di sezione
+     partono tutti da qui. Unica fonte di verità, niente padding hardcoded nel markup. */
+  --gutter:18px;
   --sh:0 1px 2px rgba(16,32,64,.06),0 6px 20px rgba(16,32,64,.06);
   --sh-lg:0 10px 40px rgba(16,32,64,.16);
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -98,9 +101,14 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,va
 
 /* ---- surfaces ---- */
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh)}
-.card.pad{padding:18px}
-.card-h{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px}
-.card-b{padding:18px}
+.card.pad{padding:var(--gutter)}
+.card-h{padding:14px var(--gutter);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px}
+.card-b{padding:var(--gutter)}
+/* Nota esplicativa sotto l'intestazione di una card: allineata al gutter, niente stile inline. */
+.card-note{padding:2px var(--gutter) 10px;color:var(--mut);font-size:13px;line-height:1.45}
+/* Blocco inset dentro una card (griglie, riepiloghi) allineato al gutter. */
+.card-inset{margin:10px var(--gutter)}
+.card-inset-b{padding:0 var(--gutter) 12px}
 .grid{display:grid;gap:14px}
 .g2{grid-template-columns:repeat(2,1fr)} .g3{grid-template-columns:repeat(3,1fr)} .g4{grid-template-columns:repeat(4,1fr)} .g5{grid-template-columns:repeat(5,1fr)}
 @media(max-width:1000px){.g5{grid-template-columns:repeat(3,1fr)}}
@@ -168,6 +176,10 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,va
   font-weight:700;padding:10px 14px;border-bottom:1px solid var(--line)}
 .table td{padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:middle}
 .table tr:last-child td{border-bottom:none}
+/* Allinea i bordi delle tabelle (figlie dirette di una card senza card-b) al gutter della card
+   (18px, come .card-h): così intestazioni di sezione, testi e colonne partono dallo stesso bordo. */
+.card>.table th:first-child,.card>.table td:first-child{padding-left:var(--gutter)}
+.card>.table th:last-child,.card>.table td:last-child{padding-right:var(--gutter)}
 .table tr.clk{cursor:pointer} .table tr.clk:hover td{background:var(--surface2)}
 
 /* ---- riga incidente APERTO (non ancora preso in carico): evidenziata + lampeggiante ---- */

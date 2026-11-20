@@ -2586,7 +2586,7 @@ async function vContratti(v){
     <table class="table" data-export="contratti"><thead><tr><th>Contratto</th><th>Cliente</th><th>SLA</th><th>Monte ore</th><th>Stato</th><th></th></tr></thead>
     <tbody>${C.map(crow).join('')||`<tr><td colspan="6" class="empty">Nessun contratto</td></tr>`}</tbody></table></div>
   <div class="card" style="margin-top:16px"><div class="card-h"><h2>Piani di manutenzione ricorrente</h2></div>
-    <div class="small mut" style="padding:0 14px">«Genera ora» crea l'intervento alla data prevista e sposta avanti la prossima scadenza.</div>
+    <div class="card-note">«Genera ora» crea l'intervento alla data prevista e sposta avanti la prossima scadenza.</div>
     <table class="table" data-export="piani-manutenzione"><thead><tr><th>Piano</th><th>Cliente / sede</th><th>Cadenza</th><th>Prossimo</th><th></th></tr></thead>
     <tbody>${P.map(prow).join('')||`<tr><td colspan="5" class="empty">Nessun piano</td></tr>`}</tbody></table></div>`;
 }
@@ -5219,7 +5219,7 @@ async function vTurni(v){
   const absKind=k=>`<span class="chip">${esc(k)}</span>`;
   const absCard=`<div class="card" style="margin-top:16px"><div class="card-h"><h2>Assenze e indisponibilità</h2>
     ${planner?`<a onclick="absNew()">+ aggiungi</a>`:''}</div>
-    <div class="small mut" style="padding:0 14px">Un'assenza impedisce di pianificare turni sulla persona in quel periodo.</div>
+    <div class="card-note">Un'assenza impedisce di pianificare turni sulla persona in quel periodo.</div>
     <table class="table" data-export="assenze"><thead><tr><th>Lavoratore</th><th>Tipo</th><th>Dal</th><th>Al</th><th>Nota</th><th></th></tr></thead>
     <tbody>${(A||[]).map(a=>`<tr><td>${esc(a.email)}</td><td>${absKind(a.kind)}</td><td class="small">${dtLocal(a.starts_at)}</td><td class="small">${dtLocal(a.ends_at)}</td>
       <td class="small mut">${esc(a.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="absDel('${a.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
@@ -5227,18 +5227,18 @@ async function vTurni(v){
   // Qualifiche (solo se il modulo è attivo: l'endpoint ritorna dati; altrimenti Q è vuoto per il 403)
   const qualCard=(planner && ACTIVE_MODS.has('qualifiche'))?`<div class="card" style="margin-top:16px"><div class="card-h"><h2>Qualifiche e competenze</h2>
     <span><a onclick="qualNew()">+ nuova</a> · <a onclick="qualAssign()">assegna a persona</a></span></div>
-    <div class="small mut" style="padding:0 14px">Un turno può richiedere una qualifica: solo chi la possiede (non scaduta) può coprirlo.</div>
-    <div class="grid g2" style="margin:10px 14px">${(Q||[]).map(q=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px" class="spread"><b class="small">${esc(q.name)}</b><button class="btn-ico btn ghost" onclick="qualDel('${q.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessuna qualifica. Creane una e assegnala alle persone.</div>'}</div></div>`:'';
+    <div class="card-note">Un turno può richiedere una qualifica: solo chi la possiede (non scaduta) può coprirlo.</div>
+    <div class="grid g2 card-inset">${(Q||[]).map(q=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px" class="spread"><b class="small">${esc(q.name)}</b><button class="btn-ico btn ghost" onclick="qualDel('${q.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessuna qualifica. Creane una e assegnala alle persone.</div>'}</div></div>`:'';
   const DOW=['lun','mar','mer','gio','ven','sab','dom'];
   const dmTxt=m=>DOW.filter((_,i)=>m[i]==='1').join(' ');
   const covCard=planner?`<div class="card" style="margin-top:16px"><div class="card-h"><h2>Copertura minima</h2>
     <span><a onclick="covNew()">+ requisito</a> · <a onclick="covCheck()">verifica copertura</a> · <a onclick="covFairness()">equità</a></span></div>
-    <div class="small mut" style="padding:0 14px">Dichiara quante persone servono per sede/fascia/giorni; la verifica trova i giorni scoperti del piano.</div>
+    <div class="card-note">Dichiara quante persone servono per sede/fascia/giorni; la verifica trova i giorni scoperti del piano.</div>
     <table class="table" data-export="copertura-turni"><thead><tr><th>Sede</th><th>Giorni</th><th>Fascia</th><th>Min</th><th>Competenza</th><th></th></tr></thead>
     <tbody>${(CV||[]).map(c=>`<tr><td>${esc(c.site||'ovunque')}</td><td class="small">${esc(dmTxt(c.days_mask))}</td><td class="small">${esc(c.cov_start)}–${esc(c.cov_end)}</td>
       <td>${c.min_people}</td><td class="small mut">${esc(c.qual||'—')}</td><td style="text-align:right"><button class="btn-ico btn ghost" onclick="covDel('${c.id}')">${ICON.x}</button></td></tr>`).join('')
       ||`<tr><td colspan="6" class="empty">Nessun requisito di copertura</td></tr>`}</tbody></table>
-    <div id="covGaps" style="padding:0 14px 12px"></div></div>`:'';
+    <div id="covGaps" class="card-inset-b"></div></div>`:'';
   v.innerHTML=`<div class="page-h"><div><h1>${t('turni_title','Turni')}</h1><div class="mut">${P.length} turni pianificati${planner?'':' (i tuoi)'}</div></div>${createBtn}</div>
   <div class="card"><table class="table" data-export="check-in-pianificati"><thead><tr><th>Lavoratore</th><th>Sede</th><th>Quando</th><th>Stato</th><th></th></tr></thead>
     <tbody>${planRows}</tbody></table></div>${oncallCard}${absCard}${qualCard}${covCard}`;
