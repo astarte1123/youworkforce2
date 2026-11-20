@@ -2588,13 +2588,13 @@ async function vDispatch(v){
   v._users=users; const workers=users.filter(u=>['lavoratore','operatore'].includes(u.role));
   const day=v._day;
   const sameDay=o=>o.scheduled_start && new Date(o.scheduled_start).toISOString().slice(0,10)===day;
-  const tostr=o=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6) var(--s-8);margin:var(--s-4) 0">
+  const tostr=o=>`<div class="spread clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6) var(--s-8);margin:var(--s-4) 0">
     <div style="min-width:0"><b class="small">${esc(o.title)}</b><div class="small mut">${esc(o.site||'—')}${o.client_name?' · '+esc(o.client_name):''} ${o.scheduled_start?'· '+new Date(o.scheduled_start).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}):''}</div></div>
-    ${chip(o.state)}</div>`;
+    <div class="row" style="gap:var(--s-6);align-items:center">${chip(o.state)}<span class="clk-go">›</span></div></div>`;
   const unassigned=O.filter(o=>!o.assignee && !o.group_name && o.state!=='completato' && o.state!=='annullato');
-  const unRows=unassigned.map(o=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6) var(--s-8);margin:var(--s-4) 0">
+  const unRows=unassigned.map(o=>`<div class="spread clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6) var(--s-8);margin:var(--s-4) 0">
     <div style="min-width:0"><b class="small">${esc(o.title)}</b><div class="small mut">${esc(o.site||'—')}${o.client_name?' · '+esc(o.client_name):''} · ${schedLabel(o)}</div></div>
-    <button class="btn ghost small" onclick="ordSuggestTech('${o.id}',${o.version})">✦ assegna</button></div>`).join('')
+    <button class="btn ghost small" onclick="event.stopPropagation();ordSuggestTech('${o.id}',${o.version})">✦ assegna</button></div>`).join('')
     ||'<div class="small mut">Nessun intervento da assegnare.</div>';
   const lanes=workers.map(w=>{ const list=O.filter(o=>o.assignee===w.email && sameDay(o));
     return `<div class="card pad" style="min-width:220px;flex:1"><div class="spread"><b class="small">${esc(w.email.split('@')[0])}</b><span class="chip">${list.length}</span></div>
@@ -2616,8 +2616,8 @@ async function vDispatch(v){
         <div class="small mut">${o.assignee?esc(o.assignee.split('@')[0]):'<span style="color:var(--bad)">—</span>'}</div></div>`).join('')||'<div class="small mut" style="margin-top:var(--s-6)">—</div>'}
     </div>`; }).join('');
   const toggle=`<span class="row" style="gap:var(--s-4)"><button class="btn ${mode==='day'?'':'ghost'} small" onclick="(function(){$('#view')._dmode='day';route();})()">Giorno</button><button class="btn ${mode==='week'?'':'ghost'} small" onclick="(function(){$('#view')._dmode='week';route();})()">Settimana</button></span>`;
-  v.innerHTML=`<div class="page-h"><div><h1>Agenda tecnici</h1><div class="mut">dispatch degli interventi</div></div>
-    <span class="row" style="gap:var(--s-8)">${toggle}<input type="date" value="${day}" onchange="(function(e){$('#view')._day=e;route();})(this.value)"></span></div>
+  v.innerHTML=`<div class="page-h"><div><h1>Agenda tecnici</h1><div class="mut">dispatch degli interventi · ${O.filter(o=>o.scheduled_start&&o.state!=='annullato').length} programmati</div></div>
+    <span class="row" style="gap:var(--s-8)">${toggle}<input type="date" value="${day}" onchange="(function(e){$('#view')._day=e;route();})(this.value)"><button class="btn ghost small" onclick="dispCSV()">⬇ CSV</button></span></div>
   <div class="card" style="margin-bottom:var(--s-14)"><div class="card-h"><h2>Da assegnare (${unassigned.length})</h2></div><div style="padding:0 var(--s-12) var(--s-12)">${unRows}</div></div>
   ${mode==='week'
     ? `<h2 style="margin:var(--s-4) 0 var(--s-8)">Settimana ${weekDays[0].slice(8,10)}/${weekDays[0].slice(5,7)} – ${weekDays[6].slice(8,10)}/${weekDays[6].slice(5,7)}</h2>
@@ -2626,6 +2626,11 @@ async function vDispatch(v){
        <div class="row" style="gap:var(--s-12);flex-wrap:wrap;align-items:flex-start">${lanes||'<div class="small mut">Nessun tecnico.</div>'}</div>`}`;
   bindRows(v);
 }
+async function dispCSV(){ const O=await api('/orders').catch(()=>[]);
+  const rows=O.filter(o=>o.state!=='annullato').sort((a,b)=>new Date(a.scheduled_start||0)-new Date(b.scheduled_start||0));
+  downloadCSV('agenda-tecnici.csv',[['Tecnico','Giorno','Ora','Titolo','Cliente','Sede','Stato'],
+    ...rows.map(o=>[o.assignee||o.group_name||'(da assegnare)',o.scheduled_start?new Date(o.scheduled_start).toLocaleDateString('it-IT'):'',o.scheduled_start?new Date(o.scheduled_start).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}):'',o.title,o.client_name||'',o.site||'',o.state])]);
+  toast('CSV agenda tecnici scaricato','ok'); }
 // ===== Interventi A5: Richieste / ticket =====
 const REQ_STATI={nuova:'Nuova',presa:'Presa in carico',convertita:'Convertita',chiusa:'Chiusa'};
 async function vRichieste(v){
