@@ -19,6 +19,10 @@ TOK=$(sql "SELECT token FROM app.ingest_tokens WHERE tenant_id=$TIDQ AND source=
 # crea una regola di test univoca (metrica e2e_co)
 RID=$(api -H 'content-type: application/json' -X POST "$BASE/api/sensor-rules" -d '{"metric":"e2e_co","op":">=","threshold":35,"etype":"sensore_critico","label":"E2E CO"}' | python -c 'import sys,json;print(json.load(sys.stdin).get("id",""))')
 [ -n "$RID" ] && ok "regola creata (e2e_co >= 35 -> sensore_critico)" || no "regola non creata" "-"
+# modifica regola (soglia 35 -> 50, etichetta) e verifica via GET
+api -H 'content-type: application/json' -X POST "$BASE/api/sensor-rules/$RID" -d '{"metric":"e2e_co","op":">=","threshold":30,"etype":"sensore_critico","label":"E2E CO rev"}' >/dev/null
+UPD=$(api "$BASE/api/sensor-rules" | python -c 'import sys,json;r=next((x for x in json.load(sys.stdin) if x["id"]=="'$RID'"),{});print(r.get("threshold"),r.get("label"))')
+[ "$UPD" = "30.0 E2E CO rev" ] && ok "regola modificata (soglia 30, etichetta)" || no "update regola fallito" "$UPD"
 # operatore senza soglia -> 400
 api -H 'content-type: application/json' -X POST "$BASE/api/sensor-rules" -d '{"metric":"x","op":">=","etype":"sensore_critico"}' | grep -qi "soglia" && ok "operatore numerico senza soglia respinto" || no "validazione soglia assente" "-"
 # etype non ammesso -> 400

@@ -3922,6 +3922,23 @@ pub async fn create_absence(State(st): State<AppState>, h: HeaderMap, Json(b): J
     audit(&st, tid, &s.email, "create_absence", json!({"user":b.user_id,"kind":kind})).await;
     Ok(Json(json!({"id":row.get::<Uuid,_>("id")})))
 }
+pub async fn update_absence(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<AbsenceReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "workforce").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let (a,z) = (parse_ts(&b.starts_at)?, parse_ts(&b.ends_at)?);
+    if z <= a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); }
+    let kind = b.kind.clone().unwrap_or_else(|| "assenza".into());
+    if !["ferie","malattia","permesso","assenza"].contains(&kind.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "tipo non valido")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.worker_absences SET user_id=$2,starts_at=$3,ends_at=$4,kind=$5,note=$6 WHERE id=$1")
+        .bind(id).bind(b.user_id).bind(a).bind(z).bind(&kind).bind(&b.note).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "assenza inesistente")); }
+    audit(&st, tid, &s.email, "update_absence", json!({"user":b.user_id,"kind":kind})).await;
+    Ok(Json(json!({"ok":true})))
+}
 pub async fn delete_absence(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
@@ -4035,6 +4052,24 @@ pub async fn create_coverage(State(st): State<AppState>, h: HeaderMap, Json(b): 
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":row.get::<Uuid,_>("id")})))
+}
+pub async fn update_coverage(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<CoverageBody>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "workforce").await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let (sh, eh) = (parse_hhmm(&b.cov_start), parse_hhmm(&b.cov_end));
+    if sh.is_none() || eh.is_none() { return Err(err(StatusCode::BAD_REQUEST, "orari HH:MM richiesti")); }
+    let (sh, eh) = (sh.unwrap(), eh.unwrap());
+    if (eh.0*60+eh.1) <= (sh.0*60+sh.1) { return Err(err(StatusCode::BAD_REQUEST, "la fine deve essere dopo l'inizio (stessa giornata)")); }
+    let dm = b.days_mask.clone().unwrap_or_else(|| "1111111".into());
+    if dm.len()!=7 || !dm.chars().all(|c| c=='0'||c=='1') { return Err(err(StatusCode::BAD_REQUEST, "giorni: 7 cifre 0/1 (lun..dom)")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.coverage_requirements SET site_id=$2,days_mask=$3,cov_start=$4,cov_end=$5,min_people=$6,required_qualification=$7,note=$8 WHERE id=$1")
+        .bind(id).bind(b.site_id).bind(&dm).bind(&b.cov_start).bind(&b.cov_end).bind(b.min_people.unwrap_or(1).max(1)).bind(b.required_qualification).bind(&b.note)
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND,"inesistente")); }
+    Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_coverage(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
@@ -4877,6 +4912,20 @@ pub async fn create_oncall(State(st): State<AppState>, h: HeaderMap, Json(b): Js
         .bind(tid).bind(b.user_id).bind(a).bind(z).bind(&b.note).fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":row.get::<Uuid,_>("id")})))
+}
+pub async fn update_oncall(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OncallReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    need_workforce(&st, tid).await?;
+    if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    let (a,z) = (parse_ts(&b.starts_at)?, parse_ts(&b.ends_at)?);
+    if z <= a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.oncall SET user_id=$2,starts_at=$3,ends_at=$4,note=$5 WHERE id=$1")
+        .bind(id).bind(b.user_id).bind(a).bind(z).bind(&b.note).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "reperibilita' inesistente")); }
+    Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_oncall(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
@@ -7161,6 +7210,23 @@ pub async fn create_sensor_rule(State(st): State<AppState>, h: HeaderMap, Json(b
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "sensor_rule_create", json!({"metric":b.metric,"op":b.op,"etype":b.etype})).await;
     Ok(Json(json!({"id": row.get::<Uuid,_>("id")})))
+}
+pub async fn update_sensor_rule(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<SensorRuleReq>) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
+    let tid = s.tenant_id.unwrap();
+    if b.metric.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "metrica richiesta")); }
+    if !RULE_OPS.contains(&b.op.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "operatore non valido")); }
+    if !RULE_ETYPES.contains(&b.etype.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "etype non ammesso")); }
+    let numeric = !matches!(b.op.as_str(), "is_true"|"is_false");
+    if numeric && b.threshold.is_none() { return Err(err(StatusCode::BAD_REQUEST, "soglia richiesta per questo operatore")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.sensor_rules SET metric=$2,op=$3,threshold=$4,etype=$5,label=$6,sort=COALESCE($7,sort) WHERE id=$1")
+        .bind(id).bind(b.metric.trim()).bind(&b.op).bind(if numeric { b.threshold } else { None })
+        .bind(&b.etype).bind(&b.label).bind(b.sort).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "regola inesistente")); }
+    audit(&st, tid, &s.email, "sensor_rule_update", json!({"metric":b.metric,"op":b.op,"etype":b.etype})).await;
+    Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_sensor_rule(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;

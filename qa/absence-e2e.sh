@@ -29,6 +29,11 @@ AB=$(P -X POST $BASE/api/absences -d "{\"user_id\":\"$MARIO\",\"kind\":\"ferie\"
 say "1 assenza creata"
 [ -n "$AB" ] && ok || no "no id"
 
+say "1b modifica assenza (ferie -> malattia)"
+P -X POST $BASE/api/absences/$AB -d "{\"user_id\":\"$MARIO\",\"kind\":\"malattia\",\"starts_at\":\"$A0\",\"ends_at\":\"$AE\"}" -o /dev/null
+K=$(P $BASE/api/absences | jq1 "import json,sys;print(next((a['kind'] for a in json.load(sys.stdin) if a['id']=='$AB'),''))")
+[ "$K" = "malattia" ] && ok || no "kind=$K"
+
 IN="\"user_id\":\"$MARIO\",\"starts_at\":\"${MID}T08:00:00Z\",\"ends_at\":\"${MID}T16:00:00Z\""
 say "2 validate turno in assenza -> ok:false, code absence"
 V=$(P -X POST $BASE/api/shift-plans/validate -d "{$IN}")

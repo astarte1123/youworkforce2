@@ -3664,11 +3664,11 @@ async function renderSensorRules(){
     <div id="srSuggest"></div>
     <div class="small mut" style="margin-bottom:var(--s-8)">Trasformano la telemetria in allarmi, in modo parametrico: <b>metrica</b> (chiave nel payload) + <b>operatore</b> + <b>soglia</b> → <b>evento</b>. Gli eventi critici attivano la catena allarmi nativa (incidente + escalation).</div>
     <table class="table" data-export="regole-sensori"><thead><tr><th>Metrica</th><th>Condizione</th><th>Evento</th><th>Etichetta</th><th></th></tr></thead>
-    <tbody>${R.map(r=>`<tr><td class="mono small">${esc(r.metric)}</td>
+    <tbody>${R.map(r=>`<tr class="clk" onclick='ruleEdit(${JSON.stringify(r).replace(/'/g,"&#39;")})'><td class="mono small">${esc(r.metric)}</td>
       <td class="small">${opLab(r.op)}${numeric(r.op)?' '+(r.threshold??''):''}</td>
       <td><span class="chip ${r.etype==='telemetria'?'':'s-critico'}">${esc(RULE_ET_LAB[r.etype]||r.etype)}</span></td>
       <td class="small mut">${esc(r.label||'')}</td>
-      <td style="text-align:right"><button class="btn-ico btn ghost" onclick="ruleDel('${r.id}')">${ICON.x}</button></td></tr>`).join('')
+      <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();ruleDel('${r.id}')">${ICON.x}</button></td></tr>`).join('')
       ||emptyRow(5, null, 'Nessuna regola sensore', 'Le regole decidono quando un dato di un sensore diventa un incidente (es. temperatura oltre soglia). Senza regole si applica solo la soglia temperatura di base.', null)}</tbody></table>
     <div class="card pad" style="margin-top:var(--s-8);background:var(--bg2)"><b class="small">Nuova regola</b>
       <div class="row" style="gap:var(--s-6);margin-top:var(--s-8);flex-wrap:wrap;align-items:flex-end">
@@ -3689,6 +3689,21 @@ async function ruleAdd(btn){
   try{ await api('/sensor-rules',{method:'POST',body:JSON.stringify(body)}); toast('Regola aggiunta','ok'); renderSensorRules(); }
   catch(e){ toast(e.message,'bad'); }
 }
+function ruleEdit(r){ r=r||{}; const numeric=!['is_true','is_false'].includes(r.op);
+  drawer('Regola sensore',`<div class="col" style="gap:var(--s-10)">
+    <label class="small mut">Metrica<input id="reMetric" value="${esc(r.metric||'')}" placeholder="es. gas, co, smoke, temperature, water"></label>
+    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Operatore<select id="reOp" onchange="reOpChange()">${RULE_OPS.map(o=>`<option value="${o[0]}" ${o[0]===r.op?'selected':''}>${o[1]}</option>`).join('')}</select></label>
+      <label class="small mut grow" id="reThrWrap" style="${numeric?'':'display:none'}">Soglia<input id="reThr" type="number" step="any" value="${r.threshold??''}"></label></div>
+    <label class="small mut">Evento<select id="reEtype">${RULE_ETYPES.map(e=>`<option value="${e}" ${e===r.etype?'selected':''}>${RULE_ET_LAB[e]}</option>`).join('')}</select></label>
+    <label class="small mut">Etichetta<input id="reLabel" value="${esc(r.label||'')}" placeholder="opz."></label>
+    <button class="btn" onclick="ruleSave('${r.id}')">Salva</button><div class="cfg-msg small"></div></div>`); }
+function reOpChange(){ const num=!['is_true','is_false'].includes($('#reOp').value); const w=$('#reThrWrap'); if(w)w.style.display=num?'inline-flex':'none'; }
+async function ruleSave(id){ const m=$('.cfg-msg'); const op=$('#reOp').value, numeric=!['is_true','is_false'].includes(op);
+  const body={metric:$('#reMetric').value.trim(), op, etype:$('#reEtype').value, label:$('#reLabel').value.trim()||null};
+  if(!body.metric){m.textContent='metrica richiesta';m.style.color='var(--bad)';return;}
+  if(numeric){ const t=$('#reThr').value; if(t===''){m.textContent='soglia richiesta';m.style.color='var(--bad)';return;} body.threshold=Number(t); }
+  try{ await api('/sensor-rules/'+id,{method:'POST',body:JSON.stringify(body)}); toast('Regola aggiornata','ok'); closeDrawer(); renderSensorRules(); }
+  catch(e){ m.textContent=e.message; m.style.color='var(--bad)'; } }
 async function ruleDel(id){ if(!await askConfirm('Eliminare la regola?'))return;
   try{ await api('/sensor-rules/'+id,{method:'DELETE'}); toast('Eliminata','ok'); renderSensorRules(); }catch(e){ toast(e.message,'bad'); } }
 // ---------------- AI · youworker.ai (impostazioni per-processo) ----------------
@@ -5302,6 +5317,8 @@ async function siteDel(id){ if(!await askConfirm('Eliminare sede?'))return;
 // ---------------- Turni (pianificazione) ----------------
 function dtLocal(iso){ const d=new Date(iso); return d.toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }
 function toISO(localVal){ if(!localVal)return null; const d=new Date(localVal); return isNaN(d)?null:d.toISOString(); }
+// ISO -> valore per <input type=datetime-local> in ora LOCALE (niente shift UTC).
+function dtInput(iso){ if(!iso)return''; const d=new Date(iso); if(isNaN(d))return''; const p=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes()); }
 async function vTurni(v){
   const planner=can(['pianificatore','tenant_admin']);
   const hasInterventi=ACTIVE_MODS.has('interventi');
@@ -5341,16 +5358,16 @@ function renderTurni(v){
   const oncallCard=`<div class="card"><div class="card-h"><div><h2>Reperibilità</h2><div class="small mut">${OC.length} finestre di reperibilità</div></div>
     ${planner?`<button class="btn ghost small" onclick="ocNew()">+ aggiungi</button>`:''}</div>
     <table class="table" data-export="reperibilita"><thead><tr><th>Utente</th><th>Dalle</th><th>Alle</th><th>Nota</th><th></th></tr></thead>
-    <tbody>${OC.map(o=>`<tr><td>${esc(o.email)}</td><td class="small">${dtLocal(o.starts_at)}</td><td class="small">${dtLocal(o.ends_at)}</td>
-      <td class="small mut">${esc(o.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="ocDel('${o.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
+    <tbody>${OC.map(o=>`<tr class="${planner?'clk':''}" ${planner?`onclick='ocForm(${JSON.stringify(o).replace(/'/g,"&#39;")})'`:''}><td>${esc(o.email)}</td><td class="small">${dtLocal(o.starts_at)}</td><td class="small">${dtLocal(o.ends_at)}</td>
+      <td class="small mut">${esc(o.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="event.stopPropagation();ocDel('${o.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
       ||emptyRow(5, ICON.shield, 'Nessuna reperibilità', 'Definisci chi è reperibile e in quale finestra: riceverà gli allarmi quando è di turno.', planner?{fn:'ocNew()',label:'+ Aggiungi reperibilità'}:null)}</tbody></table></div>`;
   const absKind=k=>`<span class="chip">${esc(k)}</span>`;
   const absCard=`<div class="card"><div class="card-h"><div><h2>Assenze e indisponibilità</h2><div class="small mut">${(A||[]).length} registrate</div></div>
     ${planner?`<button class="btn ghost small" onclick="absNew()">+ aggiungi</button>`:''}</div>
     <div class="card-note">Un'assenza impedisce di pianificare turni sulla persona in quel periodo.</div>
     <table class="table" data-export="assenze"><thead><tr><th>Lavoratore</th><th>Tipo</th><th>Dal</th><th>Al</th><th>Nota</th><th></th></tr></thead>
-    <tbody>${(A||[]).map(a=>`<tr><td>${esc(a.email)}</td><td>${absKind(a.kind)}</td><td class="small">${dtLocal(a.starts_at)}</td><td class="small">${dtLocal(a.ends_at)}</td>
-      <td class="small mut">${esc(a.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="absDel('${a.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
+    <tbody>${(A||[]).map(a=>`<tr class="${planner?'clk':''}" ${planner?`onclick='absForm(${JSON.stringify(a).replace(/'/g,"&#39;")})'`:''}><td>${esc(a.email)}</td><td>${absKind(a.kind)}</td><td class="small">${dtLocal(a.starts_at)}</td><td class="small">${dtLocal(a.ends_at)}</td>
+      <td class="small mut">${esc(a.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="event.stopPropagation();absDel('${a.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
       ||emptyRow(6, ICON.clipboard, 'Nessuna assenza', 'Registra ferie, malattie o indisponibilità: il pianificatore non assegnerà turni in quei periodi.', planner?{fn:'absNew()',label:'+ Aggiungi assenza'}:null)}</tbody></table></div>`;
   const qualCard=hasQual?`<div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Qualifiche e competenze</h2>
     <span><a onclick="qualNew()">+ nuova</a> · <a onclick="qualAssign()">assegna a persona</a></span></div>
@@ -5362,8 +5379,8 @@ function renderTurni(v){
     <span><a onclick="covCheck()">verifica copertura</a> · <a onclick="covFairness()">equità</a> · <button class="btn ghost small" onclick="covNew()">+ requisito</button></span></div>
     <div class="card-note">Dichiara quante persone servono per sede/fascia/giorni; la verifica trova i giorni scoperti del piano.</div>
     <table class="table" data-export="copertura-turni"><thead><tr><th>Sede</th><th>Giorni</th><th>Fascia</th><th>Min</th><th>Competenza</th><th></th></tr></thead>
-    <tbody>${(CV||[]).map(c=>`<tr><td>${esc(c.site||'ovunque')}</td><td class="small">${esc(dmTxt(c.days_mask))}</td><td class="small">${esc(c.cov_start)}–${esc(c.cov_end)}</td>
-      <td>${c.min_people}</td><td class="small mut">${esc(c.qual||'—')}</td><td style="text-align:right"><button class="btn-ico btn ghost" onclick="covDel('${c.id}')">${ICON.x}</button></td></tr>`).join('')
+    <tbody>${(CV||[]).map(c=>`<tr class="clk" onclick='covForm(${JSON.stringify(c).replace(/'/g,"&#39;")})'><td>${esc(c.site||'ovunque')}</td><td class="small">${esc(dmTxt(c.days_mask))}</td><td class="small">${esc(c.cov_start)}–${esc(c.cov_end)}</td>
+      <td>${c.min_people}</td><td class="small mut">${esc(c.qual||'—')}</td><td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();covDel('${c.id}')">${ICON.x}</button></td></tr>`).join('')
       ||emptyRow(6, ICON.clipboard, 'Nessun requisito di copertura', 'Dichiara quante persone servono per sede, fascia e giorni: la verifica troverà i turni scoperti.', planner?{fn:'covNew()',label:'+ Aggiungi requisito'}:null)}</tbody></table>
     <div id="covGaps" class="card-inset-b"></div></div>`:'';
   const tab=(k,lab,n)=>`<button class="seg-btn${TUR_TAB===k?' on':''}" onclick="turTab('${k}')">${lab} <span class="seg-n">${n}</span></button>`;
@@ -5377,23 +5394,24 @@ function renderTurni(v){
   v.innerHTML=`<div class="page-h"><div><h1>${t('turni_title','Turni')}</h1><div class="mut">organizza turni, reperibilità, assenze e copertura del personale</div></div></div>
   ${tabs}${body}`;
 }
-function covNew(){
-  const v=$('#view'); const sites=v._sites||[], quals=v._quals||[];
-  drawer('Requisito di copertura',`<div class="col" style="gap:var(--s-10)">
-    <label class="small mut">Sede<select id="cvS"><option value="">ovunque</option>${sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
+function covNew(){ covForm(); }
+function covForm(c){ c=c||{}; const v=$('#view'); const sites=v._sites||[], quals=v._quals||[];
+  const mask=(c.days_mask&&c.days_mask.length===7)?c.days_mask:'1111100';
+  drawer(c.id?'Requisito di copertura':'Requisito di copertura',`<div class="col" style="gap:var(--s-10)">
+    <label class="small mut">Sede<select id="cvS"><option value="">ovunque</option>${sites.map(s=>`<option value="${s.id}" ${s.id===c.site_id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label>
     <label class="small mut">Giorni</label>
-    <div class="row" style="gap:var(--s-6);flex-wrap:wrap">${['lun','mar','mer','gio','ven','sab','dom'].map((d,i)=>`<label class="row small" style="gap:var(--s-3)"><input type="checkbox" class="cvD" data-i="${i}" ${i<5?'checked':''}>${d}</label>`).join('')}</div>
-    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Dalle<input id="cvA" type="time" value="08:00"></label><label class="small mut grow">Alle<input id="cvZ" type="time" value="17:00"></label></div>
-    <label class="small mut">Minimo persone<input id="cvN" type="number" value="1" min="1" style="width:90px"></label>
-    ${quals.length?`<label class="small mut">Competenza richiesta (facoltativa)<select id="cvQ"><option value="">—</option>${quals.map(q=>`<option value="${q.id}">${esc(q.name)}</option>`).join('')}</select></label>`:''}
-    <button class="btn" onclick="covSave()">Salva</button><div class="cfg-msg small"></div></div>`);
+    <div class="row" style="gap:var(--s-6);flex-wrap:wrap">${['lun','mar','mer','gio','ven','sab','dom'].map((d,i)=>`<label class="row small" style="gap:var(--s-3)"><input type="checkbox" class="cvD" data-i="${i}" ${mask[i]==='1'?'checked':''}>${d}</label>`).join('')}</div>
+    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Dalle<input id="cvA" type="time" value="${esc(c.cov_start||'08:00')}"></label><label class="small mut grow">Alle<input id="cvZ" type="time" value="${esc(c.cov_end||'17:00')}"></label></div>
+    <label class="small mut">Minimo persone<input id="cvN" type="number" value="${c.min_people!=null?c.min_people:1}" min="1" style="width:90px"></label>
+    ${quals.length?`<label class="small mut">Competenza richiesta (facoltativa)<select id="cvQ"><option value="">—</option>${quals.map(q=>`<option value="${q.id}" ${q.id===c.required_qualification?'selected':''}>${esc(q.name)}</option>`).join('')}</select></label>`:''}
+    <button class="btn" onclick="covSave('${c.id||''}')">Salva</button><div class="cfg-msg small"></div></div>`);
 }
-async function covSave(){
+async function covSave(id){
   const m=$('.cfg-msg');
   let mask=''; for(let i=0;i<7;i++){ mask+= (document.querySelector('.cvD[data-i="'+i+'"]')?.checked)?'1':'0'; }
   const b={site_id:$('#cvS').value||null,days_mask:mask,cov_start:$('#cvA').value,cov_end:$('#cvZ').value,min_people:Number($('#cvN').value)||1,required_qualification:($('#cvQ')&&$('#cvQ').value)||null};
   if(mask==='0000000'){m.textContent='scegli almeno un giorno';m.style.color='var(--bad)';return;}
-  try{await api('/coverage',{method:'POST',body:JSON.stringify(b)}); toast('Requisito salvato','ok'); closeDrawer(); route();}
+  try{await api(id?('/coverage/'+id):'/coverage',{method:'POST',body:JSON.stringify(b)}); toast('Requisito salvato','ok'); closeDrawer(); route();}
   catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
 }
 async function covDel(id){ if(!await askConfirm('Eliminare il requisito?'))return; try{await api('/coverage/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
@@ -5436,22 +5454,24 @@ async function qualAssignSave(){
   try{await api('/users/'+uid+'/qualifications',{method:'POST',body:JSON.stringify(body)}); toast('Assegnata','ok'); closeDrawer();}
   catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
 }
-function absNew(){
+function absNew(){ absForm(); }
+function absForm(a){ a=a||{};
   const v=$('#view'); const users=v._users||[];
   const workers=users.filter(u=>['lavoratore','reperibile','operatore','pianificatore','responsabile'].includes(u.role));
-  drawer('Aggiungi assenza',`<div class="col" style="gap:var(--s-10)">
-    <label class="small mut">Lavoratore<select id="abU">${workers.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select></label>
-    <label class="small mut">Tipo<select id="abK"><option value="ferie">ferie</option><option value="malattia">malattia</option><option value="permesso">permesso</option><option value="assenza">assenza</option></select></label>
-    <label class="small mut">Dal<input id="abA" type="datetime-local"></label>
-    <label class="small mut">Al<input id="abZ" type="datetime-local"></label>
-    <label class="small mut">Nota<input id="abN"></label>
-    <button class="btn" onclick="absSave()">Salva</button><div class="cfg-msg small"></div></div>`);
+  const kinds=['ferie','malattia','permesso','assenza'];
+  drawer(a.id?'Assenza':'Aggiungi assenza',`<div class="col" style="gap:var(--s-10)">
+    <label class="small mut">Lavoratore<select id="abU">${workers.map(u=>`<option value="${u.id}" ${u.id===a.user_id?'selected':''}>${esc(u.email)}</option>`).join('')}</select></label>
+    <label class="small mut">Tipo<select id="abK">${kinds.map(k=>`<option value="${k}" ${k===a.kind?'selected':''}>${k}</option>`).join('')}</select></label>
+    <label class="small mut">Dal<input id="abA" type="datetime-local" value="${dtInput(a.starts_at)}"></label>
+    <label class="small mut">Al<input id="abZ" type="datetime-local" value="${dtInput(a.ends_at)}"></label>
+    <label class="small mut">Nota<input id="abN" value="${esc(a.note||'')}"></label>
+    <button class="btn" onclick="absSave('${a.id||''}')">Salva</button><div class="cfg-msg small"></div></div>`);
 }
-async function absSave(){
+async function absSave(id){
   const m=$('.cfg-msg');
   const b={user_id:$('#abU').value,kind:$('#abK').value,starts_at:toISO($('#abA').value),ends_at:toISO($('#abZ').value),note:$('#abN').value||null};
   if(!b.user_id||!b.starts_at||!b.ends_at){m.textContent='compila lavoratore, dal e al';m.style.color='var(--bad)';return;}
-  try{await api('/absences',{method:'POST',body:JSON.stringify(b)}); toast('Assenza salvata','ok'); closeDrawer(); route();}
+  try{await api(id?('/absences/'+id):'/absences',{method:'POST',body:JSON.stringify(b)}); toast('Assenza salvata','ok'); closeDrawer(); route();}
   catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
 }
 async function absDel(id){ if(!await askConfirm('Eliminare l\'assenza?'))return; try{await api('/absences/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }
@@ -5523,20 +5543,21 @@ async function spApplySub(p,uid,email){
   }catch(e){ toast(e.message,'bad'); }
 }
 async function spDel(id){ if(!await askConfirm('Eliminare il turno?'))return; try{await api('/shift-plans/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
-function ocNew(){
+function ocNew(){ ocForm(); }
+function ocForm(o){ o=o||{};
   const v=$('#view'); const users=v._users||[];
-  drawer('Aggiungi reperibilità',`<div class="col" style="gap:var(--s-10)">
-    <label class="small mut">Utente<select id="ocU">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select></label>
-    <label class="small mut">Dalle<input id="ocA" type="datetime-local"></label>
-    <label class="small mut">Alle<input id="ocZ" type="datetime-local"></label>
-    <label class="small mut">Nota<input id="ocN"></label>
-    <button class="btn" onclick="ocSave()">Salva</button><div class="cfg-msg small"></div></div>`);
+  drawer(o.id?'Reperibilità':'Aggiungi reperibilità',`<div class="col" style="gap:var(--s-10)">
+    <label class="small mut">Utente<select id="ocU">${users.map(u=>`<option value="${u.id}" ${u.id===o.user_id?'selected':''}>${esc(u.email)}</option>`).join('')}</select></label>
+    <label class="small mut">Dalle<input id="ocA" type="datetime-local" value="${dtInput(o.starts_at)}"></label>
+    <label class="small mut">Alle<input id="ocZ" type="datetime-local" value="${dtInput(o.ends_at)}"></label>
+    <label class="small mut">Nota<input id="ocN" value="${esc(o.note||'')}"></label>
+    <button class="btn" onclick="ocSave('${o.id||''}')">Salva</button><div class="cfg-msg small"></div></div>`);
 }
-async function ocSave(){
+async function ocSave(id){
   const m=$('.cfg-msg');
   const b={user_id:$('#ocU').value,starts_at:toISO($('#ocA').value),ends_at:toISO($('#ocZ').value),note:$('#ocN').value||null};
   if(!b.user_id||!b.starts_at||!b.ends_at){m.textContent='compila utente, dalle e alle';m.style.color='var(--bad)';return;}
-  try{await api('/oncall',{method:'POST',body:JSON.stringify(b)}); toast('Reperibilità salvata','ok'); closeDrawer(); route();}
+  try{await api(id?('/oncall/'+id):'/oncall',{method:'POST',body:JSON.stringify(b)}); toast('Reperibilità salvata','ok'); closeDrawer(); route();}
   catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
 }
 async function ocDel(id){ if(!await askConfirm('Eliminare?'))return; try{await api('/oncall/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e.message,'bad');} }

@@ -46,5 +46,10 @@ say "4 requisito min 3 -> di nuovo scoperto (2<3)"
 CID3=$(P -X POST $BASE/api/coverage -d '{"site_id":null,"days_mask":"1111111","cov_start":"08:00","cov_end":"16:00","min_people":3}' | jq1 "print(json.load(sys.stdin).get('id',''))")
 [ "$(gaps_on $CID3)" -ge 1 ] && ok || no "min3 non scoperto"
 
+say "5 modifica requisito (min 2 -> 3) -> giorno di nuovo scoperto"
+P -X POST $BASE/api/coverage/$CID -d '{"site_id":null,"days_mask":"1111111","cov_start":"08:00","cov_end":"16:00","min_people":3}' -o /dev/null
+MP=$(P $BASE/api/coverage | jq1 "import json,sys;print(next((c['min_people'] for c in json.load(sys.stdin) if c['id']=='$CID'),0))")
+{ [ "$MP" = "3" ] && [ "$(gaps_on $CID)" -ge 1 ]; } && ok || no "update min_people=$MP gap?"
+
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" = 0 ]

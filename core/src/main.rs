@@ -280,7 +280,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/groups/:gid/members/:uid", axum::routing::delete(api::remove_group_member))
         .route("/api/routing", post(api::set_routing))
         .route("/api/sensor-rules", get(api::list_sensor_rules).post(api::create_sensor_rule))
-        .route("/api/sensor-rules/:id", axum::routing::delete(api::delete_sensor_rule))
+        .route("/api/sensor-rules/:id", post(api::update_sensor_rule).delete(api::delete_sensor_rule))
         .route("/api/checkins/list", get(api::list_checkins))
         .route("/api/teams", get(api::list_teams).post(api::create_team))
         .route("/api/teams/:id", axum::routing::delete(api::delete_team))
@@ -289,7 +289,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/shift-plans", get(api::list_shift_plans).post(api::create_shift_plan))
         .route("/api/shift-plans/validate", post(api::shift_plan_validate))
         .route("/api/absences", get(api::list_absences).post(api::create_absence))
-        .route("/api/absences/:id", delete(api::delete_absence))
+        .route("/api/absences/:id", post(api::update_absence).delete(api::delete_absence))
         .route("/api/qualifications", get(api::list_qualifications).post(api::create_qualification))
         .route("/api/qualifications/:id", delete(api::delete_qualification))
         .route("/api/users/:id/qualifications", get(api::list_user_qualifications).post(api::user_qualification_add))
@@ -297,7 +297,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/coverage", get(api::list_coverage).post(api::create_coverage))
         .route("/api/coverage/check", get(api::coverage_check))
         .route("/api/fairness", get(api::fairness_report))
-        .route("/api/coverage/:id", delete(api::delete_coverage))
+        .route("/api/coverage/:id", post(api::update_coverage).delete(api::delete_coverage))
         .route("/api/shift-plans/:id", post(api::shift_plan_action).delete(api::delete_shift_plan))
         .route("/api/shift-plans/:id/substitutes", get(api::shift_substitutes))
         .route("/api/shift-plans/:id/move", post(api::shift_plan_move))
@@ -347,7 +347,7 @@ async fn run() -> anyhow::Result<()> {
     // fa esplodere lo stack di rustc in codegen (STATUS_STACK_BUFFER_OVERRUN su Windows).
     let app = app
         .route("/api/oncall", get(api::list_oncall).post(api::create_oncall))
-        .route("/api/oncall/:id", axum::routing::delete(api::delete_oncall))
+        .route("/api/oncall/:id", post(api::update_oncall).delete(api::delete_oncall))
         // YWAlert parity: impostazioni, recapiti+verifica, assenze, manutenzione, calendario
         .route("/api/oncall-settings", get(api::oncall_settings_get).post(api::oncall_settings_set))
         .route("/api/oncall-contacts", get(api::oncall_contacts))

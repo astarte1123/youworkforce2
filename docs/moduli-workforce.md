@@ -22,7 +22,9 @@ Non possiede ordini, non possiede la valorizzazione ore, non possiede la reperib
 | Pianificazione turni | `shift_plans` | `/api/shift-plans` | `workforce` + cap `plan` |
 | Presenza (timbratura) | `shifts` | `/api/shift/start`·`/end`·`/current` | `workforce` |
 | Squadre | `teams`,`team_members` | `/api/teams` | `workforce` |
-| Disponibilità/reperibilità semplice | `oncall` | `/api/oncall` | `workforce` + `plan` |
+| Disponibilità/reperibilità semplice | `oncall` | `/api/oncall` (CRUD: create/**update**/delete) | `workforce` + `plan` |
+| Assenze/indisponibilità | `worker_absences` | `/api/absences` (CRUD: create/**update**/delete) | `workforce` + `plan` |
+| Copertura minima | `coverage_requirements` | `/api/coverage` (CRUD: create/**update**/delete) | `workforce` + `plan` |
 | Config turno | `module_config workforce.shift` | — | `workforce` |
 | Widget dashboard | — | widget `shifts` | `workforce` |
 

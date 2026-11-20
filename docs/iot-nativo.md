@@ -49,7 +49,7 @@ esterno** (coerente con la direzione self-contained; unica integrazione esterna 
 | Mappa normalizzazione | `GET/PUT /api/iot/devices/:id/map` (`{rows:[{raw_key,metric,scale?,offset?}]}`) |
 | Attributi | `GET/POST /api/iot/devices/:id/attributes` (`{scope, values}`) |
 | Comando/RPC | `POST /api/iot/devices/:id/command` (`{method, params?}`) · `GET …/commands` |
-| Soglie | `GET/POST /api/sensor-rules` (regole metric/op/threshold/etype) |
+| Soglie | `GET/POST /api/sensor-rules` · `POST /api/sensor-rules/:id` (modifica) · `DELETE …/:id` — regole metric/op/threshold/etype, riga cliccabile = modifica |
 | Blueprint (lavori) | `GET /api/iot/blueprints` (ogni blueprint include i `models` reali consigliati) |
 | Catalogo modelli | `GET /api/catalog/devices?scope=iot` (o `safety`) — include `blueprint` + `capabilities`; `scope=iot` ritorna solo sensori |
 | Attivazione zero-touch | `POST /api/iot/activate` (`{blueprint? | model_code?, external_id, label?}`) → device+token+mappa+soglie+istruzioni |
