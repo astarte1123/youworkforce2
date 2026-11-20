@@ -2489,7 +2489,7 @@ async function vListino(v){
     <span>${canEdit?`<button class="btn" onclick="priceForm()">+ Nuova voce</button>`:''}</span></div>
   <div class="small mut" style="margin:-4px 0 var(--s-12)">🧾 Il listino è il catalogo delle voci fatturabili (manodopera, materiali, trasferta). Si usa per valorizzare ogni intervento.</div>
   <div class="card"><table class="table" data-export="listino"><thead><tr><th>Voce</th><th>Categoria</th><th>Unità</th><th style="text-align:right">Prezzo</th><th>Stato</th><th></th></tr></thead>
-    <tbody>${P.map(row).join('')||`<tr><td colspan="6" class="empty">${ICON.receipt}<div>Nessuna voce di listino</div></td></tr>`}</tbody></table></div>`;
+    <tbody>${P.map(row).join('')||emptyRow(6, ICON.receipt, 'Nessuna voce di listino', 'Il listino definisce i prezzi di prestazioni e materiali, usati nei consuntivi e nelle offerte.', {fn:'priceForm()',label:'+ Nuova voce'})}</tbody></table></div>`;
 }
 function priceForm(p){ p=p||{};
   drawer(p.id?'Voce · '+esc(p.name):'Nuova voce di listino',`<div class="col" style="gap:var(--s-10)">
@@ -2634,11 +2634,11 @@ async function vContratti(v){
     ${canEdit?`<span><button class="btn" onclick="contrForm()">+ Contratto</button> <button class="btn ghost" onclick="planForm()">+ Piano manutenzione</button></span>`:''}</div>
   <div class="card"><div class="card-h"><h2>Contratti / SLA</h2></div>
     <table class="table" data-export="contratti"><thead><tr><th>Contratto</th><th>Cliente</th><th>SLA</th><th>Monte ore</th><th>Stato</th><th></th></tr></thead>
-    <tbody>${C.map(crow).join('')||`<tr><td colspan="6" class="empty">Nessun contratto</td></tr>`}</tbody></table></div>
+    <tbody>${C.map(crow).join('')||emptyRow(6, ICON.receipt, 'Nessun contratto', 'Registra i contratti con i clienti (durata, importo, SLA): da qui tieni traccia di scadenze e rinnovi.', {fn:'contrForm()',label:'+ Nuovo contratto'})}</tbody></table></div>
   <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Piani di manutenzione ricorrente</h2></div>
     <div class="card-note">«Genera ora» crea l'intervento alla data prevista e sposta avanti la prossima scadenza.</div>
     <table class="table" data-export="piani-manutenzione"><thead><tr><th>Piano</th><th>Cliente / sede</th><th>Cadenza</th><th>Prossimo</th><th></th></tr></thead>
-    <tbody>${P.map(prow).join('')||`<tr><td colspan="5" class="empty">Nessun piano</td></tr>`}</tbody></table></div>`;
+    <tbody>${P.map(prow).join('')||emptyRow(5, ICON.clipboard, 'Nessun piano di manutenzione', 'Pianifica interventi ricorrenti (controlli, tagliandi): il sistema genererà le scadenze da svolgere.', {fn:'planForm()',label:'+ Nuovo piano'})}</tbody></table></div>`;
 }
 function contrForm(c){ c=c||{}; const v=$('#view'); const clients=v._clients||[];
   drawer(c.id?'Contratto · '+esc(c.name):'Nuovo contratto',`<div class="col" style="gap:var(--s-10)">
@@ -2830,7 +2830,7 @@ async function vConsuntivi(v){
   <div class="card"><table class="table" data-export="consuntivi"><thead><tr><th>Addetto</th><th>Ordine</th><th>Stato</th></tr></thead>
   <tbody>${T.map(t=>`<tr class="clk" data-ts="${t.id}"><td><b>${esc(t.owner.split('@')[0])}</b></td>
     <td>${esc(t.order_title||'—')}</td><td>${chip(t.state)}</td></tr>`).join('')
-    ||`<tr><td colspan="3" class="empty">${ICON.receipt}<div>Nessun consuntivo</div></td></tr>`}</tbody></table></div>`;
+    ||emptyRow(3, ICON.receipt, 'Nessun consuntivo', 'I consuntivi riepilogano ore e spese di interventi e turni. Compaiono qui una volta registrati dal campo.', null)}</tbody></table></div>`;
   bindRows(v);
 }
 async function newTS(){
@@ -3602,7 +3602,7 @@ async function renderSensorRules(){
       <td><span class="chip ${r.etype==='telemetria'?'':'s-critico'}">${esc(RULE_ET_LAB[r.etype]||r.etype)}</span></td>
       <td class="small mut">${esc(r.label||'')}</td>
       <td style="text-align:right"><button class="btn-ico btn ghost" onclick="ruleDel('${r.id}')">${ICON.x}</button></td></tr>`).join('')
-      ||'<tr><td colspan="5" class="empty">Nessuna regola. Senza regole, ThingsBoard usa la soglia temperatura legacy.</td></tr>'}</tbody></table>
+      ||emptyRow(5, null, 'Nessuna regola sensore', 'Le regole decidono quando un dato di un sensore diventa un incidente (es. temperatura oltre soglia). Senza regole si applica solo la soglia temperatura di base.', null)}</tbody></table>
     <div class="card pad" style="margin-top:var(--s-8);background:var(--bg2)"><b class="small">Nuova regola</b>
       <div class="row" style="gap:var(--s-6);margin-top:var(--s-8);flex-wrap:wrap;align-items:flex-end">
         <label class="small mut">Metrica<input id="srMetric" placeholder="es. gas, co, smoke, temperature, water" style="width:200px"></label>
@@ -4779,7 +4779,7 @@ async function vAnagrafiche(v){
       <tbody>${sites.map(s=>`<tr><td>${esc(s.name)}</td><td class="small mut">${esc(s.address||'—')}${(s.lat!=null&&s.lon!=null)?' · 📍':''}${s.access_notes?' · 🔑':''}</td>
         <td style="text-align:right"><button class="btn ghost small" onclick='siteForm(${JSON.stringify(s).replace(/'/g,"&#39;")})'>gestisci</button>
         <button class="btn-ico btn ghost" onclick="siteDel('${s.id}')">${ICON.x}</button></td></tr>`).join('')
-        ||'<tr><td colspan="3" class="empty">nessuna sede</td></tr>'}</tbody></table></div>
+        ||emptyRow(3, ICON.building, 'Nessuna sede', 'Le sedi sono i luoghi di lavoro: a loro colleghi dispositivi, turni e allarmi. Aggiungine una.', {fn:'siteForm()',label:'+ Aggiungi sede'})}</tbody></table></div>
   </div>
   ${wfOn?`<div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><h2>Squadre (${teams.length})</h2><a onclick="teamNew()">+ nuova squadra</a></div>
     <div class="grid g2" style="margin-top:var(--s-10)">${teams.map(t=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10)">
