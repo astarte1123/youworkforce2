@@ -2515,11 +2515,11 @@ async function interventiCSV(){ const O=await api('/orders').catch(()=>[]);
 async function vListino(v){
   const P=await api('/price-items').catch(()=>[]);
   const canEdit=can(['pianificatore','tenant_admin']);
-  const row=p=>`<tr><td><b>${esc(p.name)}</b>${p.code?`<div class="small mut">${esc(p.code)}</div>`:''}</td>
+  const row=p=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick='priceForm(${JSON.stringify(p).replace(/'/g,"&#39;")})'`:''}><td><b>${esc(p.name)}</b>${p.code?`<div class="small mut">${esc(p.code)}</div>`:''}</td>
     <td class="small">${esc(PRICE_CAT[p.category]||p.category)}</td><td class="small">${esc(p.unit)}</td>
     <td style="text-align:right">${eur(p.unit_price)}</td>
     <td>${p.active?'<span class="chip s-attivo">attiva</span>':'<span class="chip">sospesa</span>'}</td>
-    <td style="text-align:right">${canEdit?`<button class="btn ghost small" onclick='priceForm(${JSON.stringify(p).replace(/'/g,"&#39;")})'>modifica</button> <button class="btn-ico btn ghost" onclick="priceDel('${p.id}')">${ICON.x}</button>`:''}</td></tr>`;
+    <td style="text-align:right">${canEdit?`<button class="btn-ico btn ghost" onclick="event.stopPropagation();priceDel('${p.id}')">${ICON.x}</button>`:''}</td></tr>`;
   v.innerHTML=`<div class="page-h"><div><h1>Listino</h1><div class="mut">${P.length} voci · prezzi per valorizzare gli interventi</div></div>
     <span>${canEdit?`<button class="btn" onclick="priceForm()">+ Nuova voce</button>`:''}</span></div>
   <div class="small mut" style="margin:-4px 0 var(--s-12)">🧾 Il listino è il catalogo delle voci fatturabili (manodopera, materiali, trasferta). Si usa per valorizzare ogni intervento.</div>
@@ -2688,10 +2688,10 @@ async function reqDel(id){ if(!await askConfirm('Eliminare la richiesta?'))retur
 async function vContratti(v){
   const [C,P,clients,sites]=await Promise.all([api('/contracts').catch(()=>[]),api('/maintenance-plans').catch(()=>[]),api('/clients').catch(()=>[]),api('/sites').catch(()=>[])]);
   v._clients=clients; v._sites=sites; const canEdit=can(['pianificatore','tenant_admin']);
-  const crow=c=>`<tr><td><b class="small">${esc(c.name)}</b></td><td class="small">${esc(c.client_name||'—')}</td>
+  const crow=c=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick='contrForm(${JSON.stringify(c).replace(/'/g,"&#39;")})'`:''}><td><b class="small">${esc(c.name)}</b></td><td class="small">${esc(c.client_name||'—')}</td>
     <td class="small">${c.sla_hours!=null?c.sla_hours+'h':'—'}</td><td class="small">${c.hours_bundle!=null?c.hours_bundle+'h':'—'}</td>
     <td>${c.active?'<span class="chip s-attivo">attivo</span>':'<span class="chip">chiuso</span>'}</td>
-    <td style="text-align:right">${canEdit?`<button class="btn ghost small" onclick='contrForm(${JSON.stringify(c).replace(/'/g,"&#39;")})'>modifica</button> <button class="btn-ico btn ghost" onclick="contrDel('${c.id}')">${ICON.x}</button>`:''}</td></tr>`;
+    <td style="text-align:right">${canEdit?`<button class="btn-ico btn ghost" onclick="event.stopPropagation();contrDel('${c.id}')">${ICON.x}</button>`:''}</td></tr>`;
   const prow=p=>`<tr><td><b class="small">${esc(p.title)}</b></td><td class="small">${esc(p.client_name||'—')}${p.site?' · '+esc(p.site):''}</td>
     <td class="small">ogni ${p.every_days} gg</td><td class="small">prossimo: ${esc(p.next_date)}</td>
     <td style="text-align:right">${canEdit?`<button class="btn ghost small" onclick="planGen('${p.id}')">genera ora</button> <button class="btn-ico btn ghost" onclick="planDel('${p.id}')">${ICON.x}</button>`:''}</td></tr>`;
@@ -4837,13 +4837,12 @@ async function vAnagrafiche(v){
   <div class="grid g2">
     <div class="card"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
       <table class="table" data-export="utenti"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
-      <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
-        <td style="text-align:right"><button class="btn ghost small" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'>gestisci</button></td></tr>`).join('')}</tbody></table></div>
+      <tbody>${users.map(u=>`<tr class="clk" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
+        <td></td></tr>`).join('')}</tbody></table></div>
     <div class="card"><div class="card-h"><h2>Sedi (${sites.length})</h2><a onclick="siteForm()">+ aggiungi</a></div>
       <table class="table" data-export="sedi"><thead><tr><th>Nome</th><th>Indirizzo</th><th></th></tr></thead>
-      <tbody>${sites.map(s=>`<tr><td>${esc(s.name)}</td><td class="small mut">${esc(s.address||'—')}${(s.lat!=null&&s.lon!=null)?' · 📍':''}${s.access_notes?' · 🔑':''}</td>
-        <td style="text-align:right"><button class="btn ghost small" onclick='siteForm(${JSON.stringify(s).replace(/'/g,"&#39;")})'>gestisci</button>
-        <button class="btn-ico btn ghost" onclick="siteDel('${s.id}')">${ICON.x}</button></td></tr>`).join('')
+      <tbody>${sites.map(s=>`<tr class="clk" onclick='siteForm(${JSON.stringify(s).replace(/'/g,"&#39;")})'><td>${esc(s.name)}</td><td class="small mut">${esc(s.address||'—')}${(s.lat!=null&&s.lon!=null)?' · 📍':''}${s.access_notes?' · 🔑':''}</td>
+        <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();siteDel('${s.id}')">${ICON.x}</button></td></tr>`).join('')
         ||emptyRow(3, ICON.building, 'Nessuna sede', 'Le sedi sono i luoghi di lavoro: a loro colleghi dispositivi, turni e allarmi. Aggiungine una.', {fn:'siteForm()',label:'+ Aggiungi sede'})}</tbody></table></div>
   </div>
   ${wfOn?`<div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><h2>Squadre (${teams.length})</h2><a onclick="teamNew()">+ nuova squadra</a></div>
@@ -4894,8 +4893,8 @@ async function vUtentiRuoli(v){
       </div>`).join('')||'<div class="small mut">Nessun ruolo personalizzato.</div>'}</div></div>`:''}
   <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
     <table class="table" data-export="utenti"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
-    <tbody>${users.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
-      <td style="text-align:right"><button class="btn ghost small" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'>gestisci</button></td></tr>`).join('')||emptyRow(3, null, 'Nessun utente', 'Invita le persone del team e assegna i ruoli: potranno accedere secondo i permessi.', {fn:'userNew()',label:'+ Invita utente'})}</tbody></table></div>
+    <tbody>${users.map(u=>`<tr class="clk" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
+      <td></td></tr>`).join('')||emptyRow(3, null, 'Nessun utente', 'Invita le persone del team e assegna i ruoli: potranno accedere secondo i permessi.', {fn:'userNew()',label:'+ Invita utente'})}</tbody></table></div>
   <div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><div><h2>Gruppi di persone (${ugroups.length})</h2><div class="small mut">insiemi di persone condivisi, riusabili da qualunque modulo (es. importabili nei gruppi di allarme)</div></div><a onclick="ugNew()">+ nuovo gruppo</a></div>
     <div class="grid g2" style="margin-top:var(--s-10)">${ugroups.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10)">
       <div class="spread"><b>${esc(g.name)} <span class="chip" title="${esc(g.kind)}">${esc(groupKindLabel(g.kind))}</span></b>
