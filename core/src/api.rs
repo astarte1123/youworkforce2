@@ -7702,6 +7702,42 @@ pub async fn setup_status(State(st): State<AppState>, h: HeaderMap) -> R {
     let done = items.iter().filter(|i| i["done"].as_bool().unwrap_or(false)).count() as i64;
     Ok(Json(json!({"ready": done==total, "done":done, "total":total, "items":items})))
 }
+
+/// "Cosa fare adesso": azioni operative in sospeso, tagliate sul RUOLO dell'utente, calcolate dai
+/// dati reali. Serve a far atterrare ognuno sul proprio lavoro senza cercarlo. Ogni ruolo tenant.
+pub async fn home_tasks(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let role = s.role.as_str();
+    let uid = s.user_id;
+    let pool = st.owner_pool.clone();
+    let c1 = |sql: &'static str| { let p = pool.clone(); async move {
+        sqlx::query_scalar::<_, i64>(sql).bind(tid).fetch_one(&p).await.unwrap_or(0) } };
+    let mut items: Vec<Value> = vec![];
+
+    // Allarmi da prendere in carico — ruoli di centrale/sicurezza
+    if matches!(role, "operatore"|"responsabile"|"tenant_admin"|"reperibile") {
+        let n = c1("SELECT count(*) FROM app.incidents WHERE tenant_id=$1 AND state='aperto'").await;
+        if n > 0 {
+            let link = if role == "reperibile" { "miei-allarmi" } else { "centrale" };
+            items.push(json!({"title":"Allarmi da prendere in carico","detail":format!("{n} aperti"),"link":link,"tone":"bad"}));
+        }
+    }
+    // Pianificazione — interventi attivi + turni da confermare
+    if matches!(role, "pianificatore"|"tenant_admin") {
+        let o = c1("SELECT count(*) FROM app.work_orders WHERE tenant_id=$1 AND state IN ('bozza','assegnato','in_corso')").await;
+        if o > 0 { items.push(json!({"title":"Interventi attivi","detail":format!("{o} da gestire"),"link":"ordini","tone":"info"})); }
+        let tt = c1("SELECT count(*) FROM app.shift_plans WHERE tenant_id=$1 AND state='pianificato'").await;
+        if tt > 0 { items.push(json!({"title":"Turni da confermare","detail":format!("{tt} pianificati"),"link":"turni","tone":"info"})); }
+    }
+    // Lavoratore — i propri interventi assegnati
+    if role == "lavoratore" {
+        let mine = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM app.work_orders WHERE tenant_id=$1 AND assigned_user=$2 AND state IN ('assegnato','in_corso')")
+            .bind(tid).bind(uid).fetch_one(&pool).await.unwrap_or(0);
+        if mine > 0 { items.push(json!({"title":"I tuoi interventi","detail":format!("{mine} assegnati"),"link":"ordini","tone":"info"})); }
+    }
+    Ok(Json(json!({"items":items})))
+}
 /// Modulo spento dal superadmin -> la gestione sparisce anche via API.
 async fn require_module(st: &AppState, tid: Uuid, code: &str) -> Result<(), (StatusCode, String)> {
     if module_active(st, tid, code).await { Ok(()) }

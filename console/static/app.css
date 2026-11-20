@@ -311,6 +311,17 @@ tr.inc-live b{color:var(--bad)}
 .setup-ck svg{width:16px;height:16px}
 .setup-bar{height:10px;border-radius:999px;background:var(--surface2);overflow:hidden}
 .setup-bar>div{height:100%;background:var(--brand);transition:width .3s}
+
+/* ---- "Cosa fare adesso": azioni per ruolo in cima alla dashboard ---- */
+.task-list{display:flex;flex-direction:column;gap:var(--s-8)}
+.task-item{display:flex;align-items:center;justify-content:space-between;gap:var(--s-12);
+  padding:var(--s-10) var(--s-12);border:1px solid var(--line);border-left:3px solid var(--line);
+  border-radius:var(--r-sm);cursor:pointer;color:inherit;transition:background .12s,border-color .12s}
+.task-item:hover{background:var(--surface2);text-decoration:none}
+.task-item .task-go{color:var(--faint);font-size:18px;font-weight:700}
+.task-item.tone-bad{border-left-color:var(--bad)} .task-item.tone-bad:hover{background:var(--bad-soft)}
+.task-item.tone-info{border-left-color:var(--info)} .task-item.tone-info:hover{background:var(--info-soft)}
+.task-item.tone-ok{border-left-color:var(--ok)}
 .timeline{list-style:none;margin:0;padding:0}
 .timeline li{position:relative;padding:0 0 var(--s-16) var(--s-24);border-left:2px solid var(--line)}
 .timeline li:last-child{border-left-color:transparent}

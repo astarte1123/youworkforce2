@@ -666,6 +666,19 @@ function dTbl(inner){return `<table class="table"><tbody>${inner}</tbody></table
 function dKpi(ico,label,n,cls=''){return `<div class="row" style="align-items:center;gap:var(--s-10);padding:var(--s-2) var(--s-2) var(--s-10)"><div class="ico">${ICON[ico]}</div><div class="n ${cls}" style="font-size:22px">${esc(n)}</div><div class="l mut">${label}</div></div>`;}
 
 let DASH_EDIT=false, DASH_LAYOUT=[], DASH_CANEDIT=false, DASH_DRAG=null;
+// "Cosa fare adesso": azioni in sospeso tagliate sul ruolo (fonte: GET /api/home-tasks).
+function tasksHtml(items){
+  const nome = ME ? esc(ME.email.split('@')[0]) : '';
+  if(!items.length){
+    return `<div class="card pad" style="margin-bottom:var(--s-12)"><div class="row" style="gap:var(--s-10);align-items:center">
+      <span style="font-size:22px">✅</span><div><b>Tutto sotto controllo${nome?', '+nome:''}</b>
+      <div class="small mut">Nessuna azione urgente per il tuo ruolo in questo momento.</div></div></div></div>`;
+  }
+  const row=i=>`<a class="task-item tone-${i.tone}" onclick="location.hash='#/'+${JSON.stringify(i.link)}">
+    <div><b>${esc(i.title)}</b><div class="small mut">${esc(i.detail)}</div></div><span class="task-go">→</span></a>`;
+  return `<div class="card" style="margin-bottom:var(--s-12)"><div class="card-h"><h2>Cosa fare adesso</h2></div>
+    <div class="card-b"><div class="task-list">${items.map(row).join('')}</div></div></div>`;
+}
 async function vDashboard(v){
   let lay; try{ lay=await api('/dashboard/layout'); }catch(e){ lay={widgets:[],can_edit:false}; }
   DASH_LAYOUT=(lay.widgets||[]).map(w=>({...w})); DASH_CANEDIT=!!lay.can_edit; DASH_EDIT=false;
@@ -682,11 +695,11 @@ async function renderDash(v){
     bindDashDnD(v); return;
   }
   const vis=DASH_LAYOUT.filter(w=>w.enabled!==false && DASH_WIDGETS[w.key]);
-  const data=await Promise.all(vis.map(w=>DASH_WIDGETS[w.key].load().catch(()=>null)));
+  const [tasks,...data]=await Promise.all([api('/home-tasks').catch(()=>({items:[]})), ...vis.map(w=>DASH_WIDGETS[w.key].load().catch(()=>null))]);
   const cards=vis.map((w,i)=>{ const def=DASH_WIDGETS[w.key]; const span=w.size==='full'?'grid-column:1/-1':'';
     return `<div class="card" style="${span}"><div class="card-h"><h2>${esc(def.title)}</h2>${def.goto?`<a onclick="location.hash='#/${def.goto}'">apri →</a>`:''}</div><div class="card-b">${def.body(data[i])}</div></div>`;
   }).join('');
-  v.innerHTML=hdr+`<div class="grid g2">${cards||'<div class="card pad"><div class="small mut">Nessun widget per i moduli attualmente attivi.</div></div>'}</div>`;
+  v.innerHTML=hdr+tasksHtml((tasks&&tasks.items)||[])+`<div class="grid g2">${cards||'<div class="card pad"><div class="small mut">Nessun widget per i moduli attualmente attivi.</div></div>'}</div>`;
   bindRows(v);
 }
 function dashEditTile(w,i){ const def=DASH_WIDGETS[w.key]; if(!def)return '';

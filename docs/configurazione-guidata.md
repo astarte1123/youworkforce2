@@ -26,7 +26,17 @@ Aiuta l'amministratore del tenant a rendere la piattaforma operativa senza perde
 | `devices` | loneworker/iot/traccar attivo | ≥1 dispositivo |
 | `clients` | cantieri/interventi attivo | ≥1 cliente |
 
+## "Cosa fare adesso" (guida per-ruolo)
+Oltre al setup, la **dashboard** mostra in cima una striscia **"Cosa fare adesso"**: azioni operative
+in sospeso tagliate sul **ruolo** dell'utente, calcolate dai dati reali — così ognuno atterra sul
+proprio lavoro senza cercarlo.
+- Fonte: `GET /api/home-tasks` (ogni ruolo tenant). Ritorna `items[]` con `title/detail/link/tone`.
+- Mappatura: operatore/responsabile → *allarmi da prendere in carico* (Centrale); reperibile → i
+  propri allarmi; pianificatore → *interventi attivi* (Ordini) e *turni da confermare* (Turni);
+  lavoratore → *i propri interventi assegnati*. Se non c'è nulla di urgente: "Tutto sotto controllo".
+- e2e: `qa/home-tasks-e2e.sh` (struttura, azione allarmi per operatore, contenuto per-ruolo).
+
 ## Note
-- Endpoint gated: un ruolo non-admin riceve `403`.
+- Endpoint gated: `setup-status` per non-admin riceve `403`; `home-tasks` è per ogni ruolo tenant.
 - e2e: `qa/setup-status-e2e.sh` (gating, struttura passi, coerenza `ready`, condizione moduli).
 - I passi sono dati, non testo fisso: per aggiungerne uno si estende `setup_status` in `core/src/api.rs`.
