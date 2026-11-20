@@ -1990,7 +1990,7 @@ async function vVigilanza(v){
   },60); }
   v.innerHTML+=`
     <div class="card pad" style="margin-top:var(--s-14)"><h2 style="margin:0 0 var(--s-6)">Ronde dovute oggi</h2>${slotsHtml}</div>
-    ${planner?`<div class="card pad" style="margin-top:var(--s-14)"><div class="spread"><h2 style="margin:0">Pianificazione ronde</h2><a onclick="schNew()">+ piano</a></div>
+    ${planner?`<div class="card pad" style="margin-top:var(--s-14)"><div class="spread"><h2 style="margin:0">Pianificazione ronde</h2><button class="btn ghost small" onclick="schNew()">+ piano</button></div>
       <div style="margin-top:var(--s-8)">${schRows}</div></div>`:''}`;
 }
 function schNew(){ const routes=$('#view')._vroutes||[];
@@ -2271,7 +2271,7 @@ async function openCommessa(id){
   // C3 — costi vs budget
   const cs=c.cost||{}; const costiRows=(c.costi||[]).map(k=>`<tr><td class="small">${esc(k.description)}<div class="small mut">${esc(COSTO_CAT[k.category]||k.category)} · ${esc(k.cost_date)}</div></td><td style="text-align:right">${eur(k.amount)}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="costoDel('${id}','${k.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')||`<tr><td colspan="3" class="empty">Nessun costo</td></tr>`;
   const vClass=cs.variance==null?'':(cs.variance>=0?'color:var(--ok,#16a34a)':'color:var(--bad)');
-  const costiSection=`<div><div class="spread"><h3 style="margin:0">Costi e budget</h3>${planner?`<a onclick="costoNew('${id}')">+ costo</a>`:''}</div>
+  const costiSection=`<div><div class="spread"><h3 style="margin:0">Costi e budget</h3>${planner?`<button class="btn ghost small" onclick="costoNew('${id}')">+ costo</button>`:''}</div>
     <div class="row" style="gap:var(--s-8);align-items:center;margin:var(--s-8) 0">${planner?`<label class="small mut">Costo orario manodopera (€)<input id="cmRate" type="number" step="0.01" value="${c.labor_rate||0}" style="width:110px"> <button class="btn ghost small" onclick="comRate('${id}')">salva</button></label>`:`<span class="small mut">Costo orario: ${eur(c.labor_rate)}</span>`}</div>
     <table class="table"><tbody>
       <tr><td class="small">Manodopera (${cs.labor_hours||0} h × ${eur(c.labor_rate)})</td><td style="text-align:right">${eur(cs.labor_cost)}</td><td></td></tr>
@@ -2287,7 +2287,7 @@ async function openCommessa(id){
     <div class="spread"><b class="small">${esc(g.diary_date)}</b><span class="small mut">${g.weather?esc(g.weather)+' · ':''}${g.present_count!=null?g.present_count+' presenti':''}${planner?` <button class="btn-ico btn ghost" onclick="diarioDel('${id}','${g.id}')">${ICON.x}</button>`:''}</span></div>
     <div class="small" style="white-space:pre-wrap;margin-top:var(--s-4)">${esc(g.body)}</div>${g.author?`<div class="small mut" style="margin-top:var(--s-2)">— ${esc(g.author)}</div>`:''}</div>`).join('')
     ||'<div class="small mut">Nessuna annotazione.</div>';
-  const giornaleSection=`<div><div class="spread"><h3 style="margin:0">Giornale di cantiere</h3>${planner?`<a onclick="diarioNew('${id}')">+ annotazione</a>`:''}</div>
+  const giornaleSection=`<div><div class="spread"><h3 style="margin:0">Giornale di cantiere</h3>${planner?`<button class="btn ghost small" onclick="diarioNew('${id}')">+ annotazione</button>`:''}</div>
     <div style="margin-top:var(--s-8)">${diarioRows}</div></div>`;
   // C5 — fatture da SAL
   const fattRows=(c.fatture||[]).map(f=>`<tr><td class="small"><b>${esc(f.number)}</b><div class="small mut">${esc(f.issue_date)}</div></td>
@@ -2320,10 +2320,10 @@ async function openCommessa(id){
       <button class="seg-btn" data-ct="economia" onclick="comTab('economia')">Economia</button>
       <button class="seg-btn" data-ct="diario" onclick="comTab('diario')">Diario &amp; Documenti</button></div>
     <div class="comtab" data-ct="avanzamento"><div class="col" style="gap:var(--s-12)">
-      <div><div class="spread"><h3 style="margin:0">Lavorazioni (WBS)</h3>${planner?`<a onclick="lavNew('${id}')">+ aggiungi</a>`:''}</div>
+      <div><div class="spread"><h3 style="margin:0">Lavorazioni (WBS)</h3>${planner?`<button class="btn ghost small" onclick="lavNew('${id}')">+ aggiungi</button>`:''}</div>
         <div style="margin-top:var(--s-8)">${lav}</div></div>
       ${gantt}
-      <div><div class="spread"><h3 style="margin:0">SAL — stato avanzamento</h3>${planner?`<a onclick="salNew('${id}')">+ registra SAL</a>`:''}</div>
+      <div><div class="spread"><h3 style="margin:0">SAL — stato avanzamento</h3>${planner?`<button class="btn ghost small" onclick="salNew('${id}')">+ registra SAL</button>`:''}</div>
         <table class="table" style="margin-top:var(--s-6)"><thead><tr><th>Data</th><th>%</th><th>Importo</th><th>Note</th><th></th></tr></thead><tbody>${sal}</tbody></table></div>
     </div></div>
     <div class="comtab" data-ct="persone" style="display:none"><div class="col" style="gap:var(--s-12)">
@@ -2546,7 +2546,7 @@ async function openClient(id){
   drawer('Cliente · '+esc(c.name),`<div class="col" style="gap:var(--s-12)">
     ${canEdit?`<a onclick="cliEdit('${id}')" class="small">✎ modifica anagrafica</a>`:''}
     <div class="small mut">${esc(c.vat||'')}${c.address?' · '+esc(c.address):''}<br>${esc(c.phone||'')} ${esc(c.email||'')}${(c.pec||c.sdi)?`<br>PEC: ${esc(c.pec||'—')} · SDI: ${esc(c.sdi||'—')}`:''}${c.payment_terms?'<br>Pagamento: '+esc(c.payment_terms):''}${c.notes?'<br>'+esc(c.notes):''}</div>
-    <div><div class="spread"><h3 style="margin:0">Referenti</h3>${canEdit?`<a onclick="contNew('${id}')">+ aggiungi</a>`:''}</div>
+    <div><div class="spread"><h3 style="margin:0">Referenti</h3>${canEdit?`<button class="btn ghost small" onclick="contNew('${id}')">+ aggiungi</button>`:''}</div>
       <div class="col" style="gap:var(--s-6);margin-top:var(--s-8)">${contacts}</div></div>
     <div><h3 style="margin:0">Interventi del cliente</h3>
       <table class="table" style="margin-top:var(--s-6)"><thead><tr><th>Titolo</th><th>Stato</th><th>Quando</th></tr></thead><tbody>${orders}</tbody></table></div>
@@ -4922,24 +4922,24 @@ async function vAnagrafiche(v){
   v._users=users;
   v.innerHTML=`<div class="page-h"><div><h1>${t('anag_title','Utenti e sedi')}</h1><div class="mut">anagrafiche del tenant · <a onclick="location.hash='#/utenti-ruoli'">gruppi e ruoli →</a></div></div></div>
   <div class="grid g2">
-    <div class="card"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
+    <div class="card"><div class="card-h"><h2>Utenti (${users.length})</h2><button class="btn ghost small" onclick="userNew()">+ invita</button></div>
       <table class="table" data-export="utenti"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
       <tbody>${users.map(u=>`<tr class="clk" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
         <td></td></tr>`).join('')}</tbody></table></div>
-    <div class="card"><div class="card-h"><h2>Sedi (${sites.length})</h2><a onclick="siteForm()">+ aggiungi</a></div>
+    <div class="card"><div class="card-h"><h2>Sedi (${sites.length})</h2><button class="btn ghost small" onclick="siteForm()">+ aggiungi</button></div>
       <table class="table" data-export="sedi"><thead><tr><th>Nome</th><th>Indirizzo</th><th></th></tr></thead>
       <tbody>${sites.map(s=>`<tr class="clk" onclick='siteForm(${JSON.stringify(s).replace(/'/g,"&#39;")})'><td>${esc(s.name)}</td><td class="small mut">${esc(s.address||'—')}${(s.lat!=null&&s.lon!=null)?' · 📍':''}${s.access_notes?' · 🔑':''}</td>
         <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();siteDel('${s.id}')">${ICON.x}</button></td></tr>`).join('')
         ||emptyRow(3, ICON.building, 'Nessuna sede', 'Le sedi sono i luoghi di lavoro: a loro colleghi dispositivi, turni e allarmi. Aggiungine una.', {fn:'siteForm()',label:'+ Aggiungi sede'})}</tbody></table></div>
   </div>
-  ${wfOn?`<div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><h2>Squadre (${teams.length})</h2><a onclick="teamNew()">+ nuova squadra</a></div>
+  ${wfOn?`<div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><h2>Squadre (${teams.length})</h2><button class="btn ghost small" onclick="teamNew()">+ nuova squadra</button></div>
     <div class="grid g2" style="margin-top:var(--s-10)">${teams.map(t=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10)">
       <div class="spread"><b>${esc(t.name)}</b><button class="btn-ico btn ghost" onclick="teamDel('${t.id}')">${ICON.x}</button></div>
       <div class="small mut" style="margin:var(--s-6) 0">${t.members.map(m=>`<span class="tag">${esc(m.email)} <a onclick="teamRm('${t.id}','${m.user_id}')">✕</a></span>`).join(' ')||'nessun membro'}</div>
       <div class="row" style="gap:var(--s-6)"><select id="tm_${t.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
         <button class="btn ghost small" onclick="teamAdd('${t.id}')">+ membro</button></div></div>`).join('')
       ||'<div class="small mut">Nessuna squadra.</div>'}</div></div>`:''}
-  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Asset / mezzi (${assets.length})</h2><a onclick="assetNew()">+ nuovo asset</a></div>
+  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Asset / mezzi (${assets.length})</h2><button class="btn ghost small" onclick="assetNew()">+ nuovo asset</button></div>
     <table class="table" data-export="asset-mezzi"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th>Sede</th><th></th></tr></thead>
     <tbody>${assets.map(a=>`<tr class="clk" data-asset='${JSON.stringify(a).replace(/'/g,"&#39;")}'><td><b>${esc(a.name)}</b></td><td><span class="chip">${esc(a.kind)}</span></td><td class="small mut">${esc(a.identifier||'—')}</td><td class="small mut">${esc(a.site||'—')}</td>
       <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();assetDel('${a.id}')">${ICON.x}</button></td></tr>`).join('')
@@ -4968,7 +4968,7 @@ async function vUtentiRuoli(v){
   const err = (!caps&&!croles) ? '<div class="card pad" style="margin-top:var(--s-12);border-color:var(--bad)"><b>Permessi/Ruoli non disponibili.</b> <span class="small mut">Richiede ruolo tenant_admin e i moduli core aggiornati.</span></div>' : '';
   v.innerHTML=`<div class="page-h"><div><h1>Utenti e ruoli</h1><div class="mut">identità, gruppi condivisi, permessi e ruoli del tenant</div></div></div>
   ${err}
-  ${croles?`<div class="card pad" style="margin-top:0"><div class="spread"><div><h2>Ruoli personalizzati (${croles.roles.length})</h2><div class="small mut">bundle di capability definiti dal tenant, assegnabili a utenti e/o gruppi condivisi. <b>Additivi</b>: aggiungono capability sopra il ruolo base.</div></div><a onclick="crNew()">+ nuovo ruolo</a></div>
+  ${croles?`<div class="card pad" style="margin-top:0"><div class="spread"><div><h2>Ruoli personalizzati (${croles.roles.length})</h2><div class="small mut">bundle di capability definiti dal tenant, assegnabili a utenti e/o gruppi condivisi. <b>Additivi</b>: aggiungono capability sopra il ruolo base.</div></div><button class="btn ghost small" onclick="crNew()">+ nuovo ruolo</button></div>
     <div class="grid g2" style="margin-top:var(--s-10)">${croles.roles.map(r=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10)">
       <div class="spread"><b>${esc(r.name)}</b><span><button class="btn ghost small" onclick='crEdit(${JSON.stringify(r).replace(/'/g,"&#39;")})'>modifica</button><button class="btn-ico btn ghost" onclick="crDel('${r.id}')">${ICON.x}</button></span></div>
       <div class="small mut" style="margin:var(--s-4) 0">${esc(r.description||'')}</div>
@@ -4978,11 +4978,11 @@ async function vUtentiRuoli(v){
       <div class="small" style="margin-top:var(--s-6)"><b>Gruppi:</b> ${r.groups.map(g=>`<span class="tag">${esc(g.name)} <a onclick="crRmGroup('${r.id}','${g.group_id}')">✕</a></span>`).join(' ')||'<span class="mut">—</span>'}</div>
       ${ugroups.length?`<div class="row" style="gap:var(--s-6);margin-top:var(--s-4)"><select id="crg_${r.id}" class="grow small">${ugroups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select><button class="btn ghost small" onclick="crAddGroup('${r.id}')">+ gruppo</button></div>`:''}
       </div>`).join('')||'<div class="small mut">Nessun ruolo personalizzato.</div>'}</div></div>`:''}
-  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Utenti (${users.length})</h2><a onclick="userNew()">+ invita</a></div>
+  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Utenti (${users.length})</h2><button class="btn ghost small" onclick="userNew()">+ invita</button></div>
     <table class="table" data-export="utenti"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
     <tbody>${users.map(u=>`<tr class="clk" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
       <td></td></tr>`).join('')||emptyRow(3, null, 'Nessun utente', 'Invita le persone del team e assegna i ruoli: potranno accedere secondo i permessi.', {fn:'userNew()',label:'+ Invita utente'})}</tbody></table></div>
-  <div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><div><h2>Gruppi di persone (${ugroups.length})</h2><div class="small mut">insiemi di persone condivisi, riusabili da qualunque modulo (es. importabili nei gruppi di allarme)</div></div><a onclick="ugNew()">+ nuovo gruppo</a></div>
+  <div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><div><h2>Gruppi di persone (${ugroups.length})</h2><div class="small mut">insiemi di persone condivisi, riusabili da qualunque modulo (es. importabili nei gruppi di allarme)</div></div><button class="btn ghost small" onclick="ugNew()">+ nuovo gruppo</button></div>
     <div class="grid g2" style="margin-top:var(--s-10)">${ugroups.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10)">
       <div class="spread"><b>${esc(g.name)} <span class="chip" title="${esc(g.kind)}">${esc(groupKindLabel(g.kind))}</span></b>
         <span><button class="btn ghost small" onclick='ugRename(${JSON.stringify(g).replace(/'/g,"&#39;")})'>gestisci</button>
@@ -5440,7 +5440,7 @@ function renderTurni(v){
       <td class="small mut">${esc(a.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="event.stopPropagation();absDel('${a.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
       ||emptyRow(6, ICON.clipboard, 'Nessuna assenza', 'Registra ferie, malattie o indisponibilità: il pianificatore non assegnerà turni in quei periodi.', planner?{fn:'absNew()',label:'+ Aggiungi assenza'}:null)}</tbody></table></div>`;
   const qualCard=hasQual?`<div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Qualifiche e competenze</h2>
-    <span><a onclick="qualNew()">+ nuova</a> · <a onclick="qualAssign()">assegna a persona</a></span></div>
+    <span><button class="btn ghost small" onclick="qualNew()">+ nuova</button> · <a onclick="qualAssign()">assegna a persona</a></span></div>
     <div class="card-note">Un turno può richiedere una qualifica: solo chi la possiede (non scaduta) può coprirlo.</div>
     <div class="grid g2 card-inset">${(Q||[]).map(q=>`<div style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8)" class="spread"><b class="small">${esc(q.name)}</b><button class="btn-ico btn ghost" onclick="qualDel('${q.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessuna qualifica. Creane una e assegnala alle persone.</div>'}</div></div>`:'';
   const DOW=['lun','mar','mer','gio','ven','sab','dom'];
