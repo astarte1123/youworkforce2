@@ -8699,6 +8699,19 @@ pub async fn create_plan(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":id})))
 }
+pub async fn update_plan(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<PlanReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    if b.title.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "titolo richiesto")); }
+    let ev = b.every_days.unwrap_or(30).max(1);
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.maintenance_plans SET title=$2,client_id=$3,site_id=$4,contract_id=$5,every_days=$6,next_date=COALESCE($7,next_date),active=COALESCE($8,active) WHERE id=$1")
+        .bind(id).bind(b.title.trim()).bind(b.client_id).bind(b.site_id).bind(b.contract_id).bind(ev).bind(parse_date_opt(&b.next_date)).bind(b.active)
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "piano non trovato")); }
+    Ok(Json(json!({"ok":true})))
+}
 pub async fn delete_plan(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;

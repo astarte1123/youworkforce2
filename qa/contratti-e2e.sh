@@ -29,9 +29,14 @@ say "3 crea piano manutenzione (ogni 30 gg, dal 2040-01-01)"
 PL=$(curl -s $H -X POST $BASE/api/maintenance-plans -d '{"title":"Caldaia","every_days":30,"next_date":"2040-01-01"}' | jq1 "print(json.load(sys.stdin).get('id',''))")
 [ -n "$PL" ] && ok || no "no plan"
 
-say "4 genera intervento -> prossima data 2040-01-31"
+say "3b modifica piano (titolo + ogni 45 gg + prossima data)"
+curl -s $H -X POST $BASE/api/maintenance-plans/$PL -d '{"title":"Caldaia rev","every_days":45,"next_date":"2040-01-01"}' -o /dev/null
+R=$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/maintenance-plans | jq1 "p=next(p for p in json.load(sys.stdin) if p['id']=='$PL');print(p['title'],p['every_days'])")
+[ "$R" = "Caldaia rev 45" ] && ok || no "$R"
+
+say "4 genera intervento -> prossima data 2040-02-15 (dopo rev a 45gg)"
 ND=$(curl -s $H -X POST $BASE/api/maintenance-plans/$PL/generate -d '{}' | jq1 "print(json.load(sys.stdin).get('next_date'))")
-[ "$ND" = "2040-01-31" ] && ok || no "next=$ND"
+[ "$ND" = "2040-02-15" ] && ok || no "next=$ND"
 
 say "5 l'intervento generato esiste (schedulato 2040-01-01)"
 GOT=$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/orders | jq1 "print(any((o.get('scheduled_start') or '').startswith('2040-01-01') and 'manutenzione' in o['title'] for o in json.load(sys.stdin)))")

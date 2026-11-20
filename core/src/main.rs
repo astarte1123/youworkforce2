@@ -318,7 +318,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/contracts", get(api::list_contracts).post(api::create_contract))
         .route("/api/contracts/:id", post(api::update_contract).delete(api::delete_contract))
         .route("/api/maintenance-plans", get(api::list_plans).post(api::create_plan))
-        .route("/api/maintenance-plans/:id", delete(api::delete_plan))
+        .route("/api/maintenance-plans/:id", post(api::update_plan).delete(api::delete_plan))
         .route("/api/maintenance-plans/:id/generate", post(api::generate_plan_order))
         // Interventi A5: richieste/ticket
         .route("/api/requests", get(api::list_requests).post(api::create_request))

@@ -155,8 +155,10 @@ nello stesso commit. Nessun passo distrugge i dati o umilia il prodotto.
   ordina per carico; youworker.ai opzionale per il riassunto). Assegnazione diretta dal suggerimento.
   e2e `qa/dispatch-e2e.sh` 6/6.
 - ✅ **A4 Contratti/SLA + ricorrenze** — `service_contracts` (SLA ore, monte ore) +
-  `maintenance_plans` (cadenza + generazione appuntamento che avanza la prossima data) +
-  `work_orders.contract_id` (mig 0097); menu "Contratti". e2e `qa/contratti-e2e.sh` 6/6.
+  `maintenance_plans` (cadenza + generazione appuntamento che avanza la prossima data; piano
+  **modificabile** via `POST /api/maintenance-plans/:id` — titolo/cliente/sede/cadenza/prossima
+  data/attivo) + `work_orders.contract_id` (mig 0097); menu "Contratti". Righe cliccabili (clic =
+  modifica) sia su contratti sia su piani. e2e `qa/contratti-e2e.sh` 7/7.
 - ✅ **A5 Richieste/ticket** — `service_requests` (mig 0098); inbox "Richieste" (riga cliccabile →
   drawer dettaglio): modifica campi (titolo/cliente/priorità/segnalato-da/descrizione via
   `POST /api/requests/:id`) e gestione stato **nuova → presa in carico → chiusa/riapri** oltre alla
