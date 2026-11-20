@@ -196,6 +196,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/superadmin/tenants/:id/traccar/config", get(api::traccar_get_config).post(api::traccar_set_config))
         .route("/api/superadmin/tenants/:id/ai", get(api::super_get_ai).post(api::super_set_ai))
         .route("/api/superadmin/tenants/:id/ai/verify", post(api::ai_verify))
+        .route("/api/superadmin/plans", get(api::super_plans_list))
         .route("/api/superadmin/scenarios", get(api::super_scenarios_list))
         .route("/api/superadmin/tenants/:id/scenarios", get(api::super_tenant_scenarios).post(api::super_apply_scenario))
         .route("/api/superadmin/tenants/:id/scenarios/bulk", post(api::super_bulk_scenarios))

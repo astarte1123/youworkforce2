@@ -48,6 +48,18 @@ async function shell(){
         <div class="field" id="c_pwwrap" style="display:none"><label>Password (min 8)</label><input id="c_pw" type="text" placeholder="min 8 caratteri"></div>
       </div>
       <div class="row" style="margin-top:10px;align-items:flex-end;flex-wrap:wrap;gap:16px">
+        <div class="field grow"><label>Pacchetto (moduli attivati subito)</label>
+          <select id="c_plan" onchange="planPrev()"><option value="">— nessuno (attiva dopo) —</option></select>
+          <div id="c_planprev" class="small mut" style="margin-top:4px"></div></div>
+        <div class="field"><label>Licenze app mobile</label><input id="c_lic_m" type="number" min="0" placeholder="illimitato"></div>
+        <div class="field"><label>Licenze IoT</label><input id="c_lic_i" type="number" min="0" placeholder="illimitato"></div>
+      </div>
+      <div class="row" style="margin-top:10px;align-items:flex-end;flex-wrap:wrap;gap:16px">
+        <div class="field grow"><label>Scenario / caso d'uso (opzionale)</label>
+          <select id="c_scn"><option value="">— nessuno —</option></select></div>
+        <label class="row" style="gap:6px;flex:0;align-items:center"><input type="checkbox" id="c_scn_demo"> con dati demo</label>
+      </div>
+      <div class="row" style="margin-top:10px;align-items:flex-end;flex-wrap:wrap;gap:16px">
         <div class="field"><label>Logo <span class="small mut">(PNG/SVG trasparente, consigliato 256×256px, max ~1&nbsp;MB)</span></label>
           <input id="c_logo" type="file" accept="image/png,image/svg+xml,image/jpeg,image/webp"></div>
         ${cColor('c_cp','Primario')}${cColor('c_ca','Accento')}${cColor('c_ck','Hover')}${cColor('c_cs','Soft')}
@@ -59,8 +71,18 @@ async function shell(){
     <h2 style="margin-bottom:12px">Tenant</h2>
     <div id="list" class="col"></div>
   </div>`;
-  $('#c_go').onclick=create; ['c_cp','c_ca','c_ck','c_cs'].forEach(syncPair); slugPrev(); load();
+  $('#c_go').onclick=create; ['c_cp','c_ca','c_ck','c_cs'].forEach(syncPair); slugPrev(); loadPlans(); load();
 }
+let PLANS=[];
+async function loadPlans(){
+  try{ PLANS=await api('/superadmin/plans'); }catch(e){ PLANS=[]; }
+  const ps=$('#c_plan'); if(ps) ps.innerHTML='<option value="">— nessuno (attiva dopo) —</option>'+PLANS.map(p=>`<option value="${esc(p.code)}">${esc(p.name)}</option>`).join('');
+  try{ const sc=await api('/superadmin/scenarios'); const ss=$('#c_scn');
+    if(ss) ss.innerHTML='<option value="">— nessuno —</option>'+(sc||[]).map(s=>`<option value="${esc(s.code)}">${esc(s.name)}</option>`).join('');
+  }catch(e){}
+}
+function planPrev(){ const p=PLANS.find(x=>x.code===$('#c_plan').value); const el=$('#c_planprev');
+  if(!el)return; el.textContent = p ? ('attiva: '+(p.modules||[]).join(', ')) : ''; }
 async function out(){ try{ await api('/logout',{method:'POST'}); }catch(e){} location.reload(); }
 // Normalizza lo slug come il backend (a-z0-9-, spazi/_ -> -, niente trattini ai bordi).
 function slugNorm(raw){ return (raw||'').trim().toLowerCase().replace(/[\s_]+/g,'-').replace(/[^a-z0-9-]/g,'').replace(/^-+|-+$/g,''); }
@@ -76,7 +98,10 @@ async function doCreate(){
   if(!name){ toast('nome richiesto','bad'); return; }
   if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ toast('email admin non valida','bad'); return; }
   const mode=$('#c_mode').value;
+  const numv=id=>{ const v=$('#'+id).value.trim(); return v===''?null:Math.max(0,parseInt(v,10)||0); };
   const payload={ slug, name, admin_email:email,
+    plan:$('#c_plan').value||null, scenario:$('#c_scn').value||null, with_demo:$('#c_scn_demo').checked,
+    mobile_app_licenses:numv('c_lic_m'), iot_device_licenses:numv('c_lic_i'),
     brand_primary:hx('c_cp'),brand_accent:hx('c_ca'),brand_ink:hx('c_ck'),brand_soft:hx('c_cs') };
   if(mode==='password'){ const pw=$('#c_pw').value; if(pw.length<8){ toast('la password deve avere almeno 8 caratteri','bad'); return; } payload.admin_password=pw; }
   try{
@@ -87,7 +112,8 @@ async function doCreate(){
       if(!res.ok) toast('Tenant creato, ma logo non caricato ('+res.status+')','bad'); }
     toast('Tenant creato','ok');
     showCreated(r);
-    ['c_slug','c_name','c_email'].forEach(id=>$('#'+id).value=''); if($('#c_pw'))$('#c_pw').value=''; if($('#c_logo'))$('#c_logo').value=''; slugPrev();
+    ['c_slug','c_name','c_email','c_lic_m','c_lic_i'].forEach(id=>$('#'+id).value=''); if($('#c_pw'))$('#c_pw').value='';
+    $('#c_plan').value=''; $('#c_scn').value=''; $('#c_scn_demo').checked=false; planPrev(); if($('#c_logo'))$('#c_logo').value=''; slugPrev();
     load();
   }catch(e){ toast(e.message,'bad'); } }
 function copyText(t,btn){ navigator.clipboard&&navigator.clipboard.writeText(t).then(()=>{ if(btn){const o=btn.textContent;btn.textContent='✓ copiato';setTimeout(()=>btn.textContent=o,1500);} }); }

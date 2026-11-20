@@ -301,7 +301,27 @@ pub async fn superadmin_login(State(st): State<AppState>, h: HeaderMap, Json(b):
 #[derive(Deserialize)]
 pub struct CreateTenant { pub slug: String, pub name: String, pub admin_email: String,
     #[serde(default)] pub admin_password: Option<String>,
+    #[serde(default)] pub plan: Option<String>,
+    #[serde(default)] pub modules: Option<Vec<String>>,
+    #[serde(default)] pub scenario: Option<String>,
+    #[serde(default)] pub with_demo: Option<bool>,
+    #[serde(default)] pub mobile_app_licenses: Option<i32>,
+    #[serde(default)] pub iot_device_licenses: Option<i32>,
     pub brand_primary: Option<String>, pub brand_ink: Option<String>, pub brand_soft: Option<String>, pub brand_accent: Option<String> }
+/// Pacchetti/piano: preset di moduli da attivare in un colpo alla creazione del tenant.
+/// Catalogo definito nel codice (come gli scenari), esposto via API; l'UI lo consuma.
+pub struct Plan { pub code: &'static str, pub name: &'static str, pub desc: &'static str, pub modules: &'static [&'static str] }
+pub fn plan_catalog() -> Vec<Plan> { vec![
+    Plan{ code:"sicurezza", name:"Sicurezza lavoratore", desc:"SOS / uomo a terra / reperibilità (Lone Worker).", modules:&["loneworker"] },
+    Plan{ code:"campo", name:"Lavoro sul campo", desc:"Interventi, cantieri, ronde, consuntivi, turni.", modules:&["interventi","cantieri","giri","consuntivi","workforce"] },
+    Plan{ code:"iot", name:"IoT", desc:"Sensori, telemetria, soglie→incidenti, cruscotti.", modules:&["iot"] },
+    Plan{ code:"full", name:"Completo", desc:"Tutti i moduli + assistente AI.", modules:&["loneworker","interventi","cantieri","giri","consuntivi","workforce","iot","assistant"] },
+]}
+pub async fn super_plans_list(State(st): State<AppState>, h: HeaderMap) -> R {
+    require_super(&st, &h).await?;
+    Ok(Json(json!(plan_catalog().iter().map(|p| json!({
+        "code":p.code,"name":p.name,"desc":p.desc,"modules":p.modules })).collect::<Vec<_>>())))
+}
 /// Normalizza+valida uno slug tenant (finisce nel sottodominio): minuscole, a-z0-9-, 2..40, niente trattini ai bordi.
 fn clean_slug(raw: &str) -> Result<String, (StatusCode,String)> {
     let s: String = raw.trim().to_lowercase().chars()
@@ -339,10 +359,27 @@ pub async fn create_tenant(State(st): State<AppState>, h: HeaderMap, Json(b): Js
     let uid: Uuid = sqlx::query_scalar("INSERT INTO app.users(tenant_id,email,pass_hash,role) VALUES($1,$2,$3,'tenant_admin') RETURNING id")
         .bind(tid).bind(b.admin_email.trim()).bind(&pass_hash)
         .fetch_one(&mut *tx).await.map_err(ise)?;
+    // licenze iniziali (null = illimitato)
+    let lic = |v: Option<i32>| v.filter(|n| *n >= 0);
+    sqlx::query("UPDATE app.tenants SET mobile_app_licenses=$2, iot_device_licenses=$3 WHERE id=$1")
+        .bind(tid).bind(lic(b.mobile_app_licenses)).bind(lic(b.iot_device_licenses)).execute(&mut *tx).await.map_err(ise)?;
     // seed module rows (all non_abilitato; core identity always on)
     sqlx::query("INSERT INTO app.tenant_modules(tenant_id,module_code,state)
         SELECT $1, code, 'non_abilitato' FROM app.modules_catalog")
         .bind(tid).execute(&mut *tx).await.map_err(ise)?;
+    // Pacchetto/piano: espande in moduli; unione con eventuali moduli espliciti. Attiva solo i
+    // moduli disponibili nel prodotto (available=true). Nessun errore se un codice non esiste.
+    let mut mods: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if let Some(pc) = b.plan.as_deref() { if let Some(p) = plan_catalog().into_iter().find(|p| p.code==pc) {
+        for m in p.modules { mods.insert(m.to_string()); } } }
+    if let Some(ms) = &b.modules { for m in ms { mods.insert(m.clone()); } }
+    if !mods.is_empty() {
+        let codes: Vec<String> = mods.into_iter().collect();
+        sqlx::query("UPDATE app.tenant_modules SET state='attivo'
+            WHERE tenant_id=$1 AND module_code = ANY($2)
+              AND module_code IN (SELECT code FROM app.modules_catalog WHERE available=true)")
+            .bind(tid).bind(&codes).execute(&mut *tx).await.map_err(ise)?;
+    }
     // Invito monouso (se non è stata data una password diretta): token in chiaro una volta sola.
     let mut invite_token: Option<String> = None;
     if direct_pw.is_none() {
@@ -354,9 +391,18 @@ pub async fn create_tenant(State(st): State<AppState>, h: HeaderMap, Json(b): Js
         invite_token = Some(tok);
     }
     sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES(NULL,'superadmin','create_tenant',$1)")
-        .bind(json!({"slug":slug,"onboarding": if invite_token.is_some() {"invite"} else {"password"}})).execute(&mut *tx).await.map_err(ise)?;
+        .bind(json!({"slug":slug,"onboarding": if invite_token.is_some() {"invite"} else {"password"},
+            "plan":b.plan,"scenario":b.scenario})).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    Ok(Json(json!({"id":tid,"slug":slug,"invite_token":invite_token})))
+    // Scenario opzionale (attiva i suoi moduli + eventuale demo): riusa il motore scenari, post-commit.
+    let mut scenario_applied: Option<String> = None;
+    if let Some(sc) = b.scenario.as_deref().filter(|s| !s.is_empty()) {
+        match scenario_apply_inner(&st, tid, sc, b.with_demo.unwrap_or(false)).await {
+            Ok((code,_,_,_)) => scenario_applied = Some(code),
+            Err(e) => tracing::warn!("create_tenant scenario {sc}: {}", e.1),
+        }
+    }
+    Ok(Json(json!({"id":tid,"slug":slug,"invite_token":invite_token,"scenario_applied":scenario_applied})))
 }
 #[derive(Deserialize)]
 pub struct InviteAccept { pub slug: String, pub token: String, pub password: String }

@@ -150,7 +150,16 @@ dell'amministratore ci sono due modalità:
 - **Password diretta (demo/dev)**: si imposta subito una password (min 8) e l'admin accede senza invito.
 
 Dopo la creazione, un riepilogo mostra l'URL del tenant e (in modalità invito) il link copiabile.
-e2e: `qa/tenant-invite-e2e.sh` (12/12).
+
+**Provisioning rapido alla creazione (Ondata 2).** Sempre nel form di creazione:
+- **Pacchetto**: preset che **attiva i moduli** in un colpo (`sicurezza`, `campo`, `iot`, `full`).
+  Catalogo lato server `GET /api/superadmin/plans` (definito nel codice, consumato dall'UI);
+  `create_tenant` espande il pacchetto e attiva i soli moduli disponibili.
+- **Licenze** (app mobile / IoT) impostabili subito (vuoto = illimitato).
+- **Scenario / caso d'uso** opzionale con «dati demo»: applica alla creazione uno degli ambienti IoT
+  (riusa il motore scenari — attiva i moduli dello scenario + regole sensori + eventuale demo).
+
+e2e: `qa/tenant-invite-e2e.sh` (15/15: invito, validazioni, pacchetto, licenze, scenario+demo).
 
 ## 13-bis. Privacy e audit (GDPR + registro attività)
 

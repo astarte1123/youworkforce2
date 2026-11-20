@@ -68,10 +68,28 @@ S -X POST $BASE/api/superadmin/tenants -d "{\"slug\":\"$S2\",\"name\":\"Pwd $R\"
 c=$(code -X POST $BASE/api/login -H 'content-type: application/json' -H "x-tenant-slug: $S2" -d "{\"email\":\"$E2\",\"password\":\"DirectPass9\"}")
 [ "$c" = "200" ] && ok || no "got $c"
 
+say "13 pacchetto 'campo' -> moduli attivati alla creazione"
+S3="plan$R"
+RID=$(S -X POST $BASE/api/superadmin/tenants -d "{\"slug\":\"$S3\",\"name\":\"Plan $R\",\"admin_email\":\"admin@$S3.test\",\"plan\":\"campo\"}" | jq1 "print(json.load(sys.stdin).get('id',''))")
+ACT=$(S $BASE/api/superadmin/tenants/$RID/modules | jq1 "import sys,json;d=json.load(sys.stdin);print(sorted(m['code'] for m in d if m.get('state')=='attivo'))")
+echo "$ACT" | grep -q "interventi" && echo "$ACT" | grep -q "cantieri" && echo "$ACT" | grep -q "workforce" && ok || no "$ACT"
+
+say "14 licenze impostate alla creazione (mobile=5, iot=10)"
+S4="lic$R"
+LID=$(S -X POST $BASE/api/superadmin/tenants -d "{\"slug\":\"$S4\",\"name\":\"Lic $R\",\"admin_email\":\"admin@$S4.test\",\"mobile_app_licenses\":5,\"iot_device_licenses\":10}" | jq1 "print(json.load(sys.stdin).get('id',''))")
+L=$(S $BASE/api/superadmin/tenants | jq1 "t=next(t for t in json.load(sys.stdin) if t['id']=='$LID');print(t.get('mobile_app_licenses'),t.get('iot_device_licenses'))")
+[ "$L" = "5 10" ] && ok || no "$L"
+
+say "15 scenario + demo alla creazione -> applicato (iot attivo)"
+S5="scn$R"
+NID=$(S -X POST $BASE/api/superadmin/tenants -d "{\"slug\":\"$S5\",\"name\":\"Scn $R\",\"admin_email\":\"admin@$S5.test\",\"plan\":\"iot\",\"scenario\":\"smart_energy\",\"with_demo\":true}" | jq1 "print(json.load(sys.stdin).get('id',''))")
+SA=$(S $BASE/api/superadmin/tenants/$NID/scenarios | jq1 "import sys,json;d=json.load(sys.stdin);print(any(s.get('code')=='smart_energy' for s in d))")
+[ "$SA" = "True" ] && ok || no "scenario non applicato: $SA"
+
 # teardown: rimuove i tenant di test (nessun endpoint delete fino a Ondata 3)
 if command -v docker >/dev/null 2>&1; then
   docker exec ywdb psql -U postgres -d youworkforce -tAc \
-    "DELETE FROM app.tenants WHERE slug IN ('$SLUG','$S2','e2e$R');" >/dev/null 2>&1 || true
+    "DELETE FROM app.tenants WHERE slug LIKE '%$R';" >/dev/null 2>&1 || true
 fi
 
 echo "== $PASS passed, $FAIL failed =="
