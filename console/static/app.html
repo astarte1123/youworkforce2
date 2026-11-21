@@ -1398,6 +1398,9 @@ async function loadAlarmsOnMap(){
     ? L.markerClusterGroup({maxClusterRadius:50, spiderfyOnMaxZoom:true, showCoverageOnHover:false, spiderfyDistanceMultiplier:1.6})
     : L.layerGroup();
   ALARMLAYER.addTo(MAP); AMARK={};
+  // Click sul PIN -> seleziona/scorre alla riga corrispondente a destra. Il markerCluster NON
+  // propaga sempre il click dei singoli marker: lo ascoltiamo a livello di gruppo (pattern ufficiale).
+  try{ ALARMLAYER.off('click'); ALARMLAYER.on('click', ev=>{ const aid=ev.layer&&ev.layer._aid; if(aid) _selAlarmRow(aid); }); }catch(_){}
   const f=$('#mFrom').value+'T00:00:00Z', t=$('#mTo').value+'T23:59:59Z', e=encodeURIComponent($('#mEtype')?.value||'');
   const side=$('#mapSide'); side.innerHTML='<div class="small mut">Carico…</div>';
   try{
@@ -1407,7 +1410,8 @@ async function loadAlarmsOnMap(){
       if(a.lat==null||a.lon==null){ noGeo.push(a); return; }
       const m=L.marker([a.lat,a.lon],{icon:alarmIcon(a)}).bindPopup(alarmPopup(a))
         .bindTooltip(alarmTip(a),{direction:'top',offset:[0,-12],opacity:1,className:'alarm-tip'});
-      // click/popup sul PIN -> seleziona e scorre al messaggio corrispondente nella lista di destra
+      m._aid=a.id;
+      // click diretto (layerGroup non-cluster) + popupopen come fallback; il cluster è gestito sul gruppo
       m.on('click',()=>_selAlarmRow(a.id)); m.on('popupopen',()=>_selAlarmRow(a.id));
       AMARK[a.id]=m; m.addTo(ALARMLAYER); pts.push([a.lat,a.lon]);
     });
@@ -1426,7 +1430,7 @@ let _alarmHi=null, _alarmHiT=null, _alarmTipM=null;
 function _selAlarmRow(id){
   try{ $$('#mapSide .alarm-row').forEach(r=>{ r.classList.remove('sel'); r.style.borderColor=''; r.style.boxShadow=''; });
     const el=document.querySelector('#mapSide .alarm-row[data-aid="'+id+'"]');
-    if(el){ el.classList.add('sel'); el.style.borderColor='var(--brand)'; el.style.boxShadow='0 0 0 2px var(--brand-soft)'; el.scrollIntoView({block:'nearest'}); }
+    if(el){ el.classList.add('sel'); el.style.borderColor='var(--brand)'; el.style.boxShadow='0 0 0 2px var(--brand-soft)'; el.scrollIntoView({block:'center',behavior:'smooth'}); }
   }catch(e){}
 }
 // Click su una riga dell'elenco allarmi: centra la mappa, evidenzia il pin con un anello pulsante
