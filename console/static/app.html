@@ -4024,17 +4024,22 @@ function dashKpis(k){ if(!k)return'';
   return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:var(--s-12);margin-bottom:var(--s-14)">
     ${tile('📟','Device',k.device_count)}${tile('📊','Metriche',k.metrics_tracked)}${tile('⚠️','Allarmi ora',k.alarms_now,k.alarms_now>0)}${tile('🚨','Incidenti aperti',k.open_incidents,k.open_incidents>0)}${tile('📈','Eventi 24h',k.events_24h)}</div>`;
 }
+// Colore di una SERIE categorica: ordine FISSO dalla palette validata (mai ciclato).
+// Il chiamante deve limitare a 8 serie (oltre -> "+N altre" / small multiples).
+function seriesColor(i){ return 'var(--series-'+(Math.min(Math.max(0,i),7)+1)+')'; }
+function statusColor(k){ return ({good:'var(--st-good)',warning:'var(--st-warning)',serious:'var(--st-serious)',critical:'var(--st-critical)'})[k]||'var(--series-1)'; }
 function dashMulti(widgets){
   const num=(widgets||[]).filter(w=>w.kind==='gauge'&&(w.series||[]).length>1);
   if(num.length<2)return'';
-  const cols=['#e2001a','#ff6fa3','#2f7bd6','#19a974','#f39c12','#8e44ad'];
-  const W=600,H=120; let paths=''; let leg='';
-  num.forEach((w,idx)=>{ const vs=w.series.map(p=>typeof p.v==='number'?p.v:parseFloat(p.v)).filter(x=>!isNaN(x)); if(vs.length<2)return;
+  const shown=num.slice(0,8), extra=num.length-shown.length;   // cap 8: palette validata su 8 slot (linee)
+  const W=600,H=120; let paths='', leg='';
+  shown.forEach((w,idx)=>{ const vs=w.series.map(p=>typeof p.v==='number'?p.v:parseFloat(p.v)).filter(x=>!isNaN(x)); if(vs.length<2)return;
     const mn=Math.min(...vs),mx=Math.max(...vs),rg=(mx-mn)||1;
     const pts=vs.map((y,i)=>`${((i/(vs.length-1))*W).toFixed(1)},${(H-((y-mn)/rg)*H).toFixed(1)}`).join(' ');
-    const c=cols[idx%cols.length]; paths+=`<polyline points="${pts}" fill="none" stroke="${c}" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
-    leg+=`<span class="small" style="margin-right:var(--s-12)"><span style="display:inline-block;width:10px;height:10px;background:${c};border-radius:2px;margin-right:var(--s-4)"></span>${esc(w.label)}</span>`;
+    const c=seriesColor(idx); paths+=`<polyline points="${pts}" fill="none" stroke="${c}" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`;
+    leg+=`<span class="small" style="margin-right:var(--s-12)"><span style="display:inline-block;width:10px;height:10px;background:${c};border-radius:2px;margin-right:var(--s-4);vertical-align:middle"></span>${esc(w.label)}</span>`;
   });
+  if(extra>0) leg+=`<span class="small mut">+${extra} altre</span>`;
   return `<div class="card pad" style="margin-top:var(--s-14)"><div class="card-h" style="padding:0 0 var(--s-8)"><h2>Andamento multi-metrica</h2></div>
     <div>${leg}</div><svg viewBox="0 0 ${W} ${H}" width="100%" height="140" preserveAspectRatio="none" style="margin-top:var(--s-6)">${paths}</svg>
     <div class="small mut">Serie normalizzate (ogni metrica sul proprio minimo/massimo).</div></div>`;
