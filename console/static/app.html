@@ -3950,6 +3950,34 @@ function wHead(w,tr){ return `<div class="spread" style="margin-bottom:var(--s-4
   <span class="row" style="gap:var(--s-6);align-items:center">${tr?trendChip(tr):''}${w.unit?`<span class="small mut">${esc(w.unit)}</span>`:''}</span></div>`; }
 function wNum(num,col){ return `<div style="font-size:32px;font-weight:800;color:${col};margin:var(--s-2) 0;line-height:1.02">${num==null?'<span class="mut">—</span>':fmtNum(num)}</div>`; }
 function wCap(txt){ return `<div class="small mut" style="margin-top:var(--s-6)">${txt}</div>`; }
+// Barra di livello (0..max): batteria/umidità/riempimento. Fill + tacca soglia.
+function levelBar(w,num,col){
+  const f=num==null?0:Math.max(0,Math.min(1,(num-w.min)/((w.max-w.min)||1)));
+  const tf=w.threshold!=null?Math.max(0,Math.min(1,(w.threshold-w.min)/((w.max-w.min)||1))):null;
+  return `<div style="margin:var(--s-10) 0 var(--s-2)"><div style="height:16px;border-radius:999px;background:var(--line);position:relative;overflow:hidden">
+    <div style="height:100%;width:${(f*100).toFixed(1)}%;background:${col};border-radius:999px;transition:width .3s"></div>
+    ${tf!=null?`<div title="soglia" style="position:absolute;top:-3px;bottom:-3px;left:${(tf*100).toFixed(1)}%;width:2px;background:var(--mut)"></div>`:''}</div></div>`;
+}
+// Donut/percentuale: anello con valore al centro.
+function donut(w,num,col){
+  const f=num==null?0:Math.max(0,Math.min(1,(num-w.min)/((w.max-w.min)||1)));
+  const R=52, C=2*Math.PI*R, off=C*(1-f);
+  return `<svg viewBox="0 0 140 150" width="100%" height="140" style="display:block;max-width:160px;margin:var(--s-4) auto 0">
+    <circle cx="70" cy="70" r="${R}" fill="none" stroke="var(--line)" stroke-width="12"/>
+    ${num!=null?`<circle cx="70" cy="70" r="${R}" fill="none" stroke="${col}" stroke-width="12" stroke-linecap="round" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 70 70)"/>`:''}
+    <text x="70" y="68" text-anchor="middle" dominant-baseline="central" font-size="26" font-weight="800" fill="${col}">${num==null?'—':fmtNum(num)}</text>
+    <text x="70" y="90" text-anchor="middle" font-size="11" fill="var(--mut)">${esc(w.unit||'')}</text></svg>`;
+}
+// Bussola: direzione in gradi (0=N in alto). Lancetta verso il valore.
+function compass(w,num,col){
+  const has=(typeof num==='number'); const deg=has?num:0;
+  const lab=(l,i)=>{const a=(i*90-90)*Math.PI/180;const x=70+66*Math.cos(a),y=70+66*Math.sin(a);return `<text x="${x.toFixed(0)}" y="${y.toFixed(0)}" text-anchor="middle" dominant-baseline="central" font-size="11" fill="var(--mut)">${l}</text>`;};
+  return `<svg viewBox="0 0 140 150" width="100%" height="140" style="display:block;max-width:160px;margin:var(--s-4) auto 0">
+    <circle cx="70" cy="70" r="56" fill="none" stroke="var(--line)" stroke-width="2"/>
+    ${['N','E','S','O'].map(lab).join('')}
+    ${has?`<g transform="rotate(${deg} 70 70)"><path d="M70,20 L78,70 L70,63 L62,70 Z" fill="${col||'var(--brand)'}"/><path d="M70,120 L62,70 L70,77 L78,70 Z" fill="var(--mut)"/></g>`:''}
+    <circle cx="70" cy="70" r="4" fill="var(--ink,#555)"/></svg>`;
+}
 function dashWidget(w){
   const v=w.value;
   if(w.kind==='status'){ const on=(v===true||v==='true');
@@ -3964,12 +3992,24 @@ function dashWidget(w){
   const tr=trendOf(w.series);
   const chip=`<span class="chip ${tripped?'s-critico':(w.critical?'s-attivo':'')}" style="margin-top:var(--s-8)">${num==null?'nessun dato':(tripped?'allarme':(w.critical?'ok':'live'))}</span>`;
   const cap=wCap(widgetCaption(w,num,tripped,tr));
-  if(w.kind==='stat'){ return wCard(wHead(w,tr)+wNum(num,'var(--brand)')+spark(w.series,'var(--brand)')+cap); }
-  if(w.kind==='line'){ return wCard(wHead(w,tr)+wNum(num,col)+spark(w.series,col)+cap+chip); }
-  // gauge radiale + soglia + trend + caption
-  return wCard(wHead(w,tr)+arcGauge(w,num,col)
-    +`<div class="spread small mut" style="margin-top:var(--s-2)"><span>${fmtNum(w.min)}</span>${thr!=null?`<span>soglia ${fmtNum(thr)}</span>`:'<span></span>'}<span>${fmtNum(w.max)}</span></div>`
-    +spark(w.series,col)+cap+chip);
+  const scale=`<div class="spread small mut" style="margin-top:var(--s-2)"><span>${fmtNum(w.min)}</span>${thr!=null?`<span>soglia ${fmtNum(thr)}</span>`:'<span></span>'}<span>${fmtNum(w.max)}</span></div>`;
+  // viz: esplicita dal spec (level/donut/compass) oppure inferita (% -> livello, direzione -> bussola)
+  const u=(w.unit||''); const metaTxt=((w.metric||'')+' '+(w.label||'')).toLowerCase();
+  const isDir = /°|grad/i.test(u) && /dire|vento|wind|head|course|bussol|bearing|rotta/.test(metaTxt);
+  const isPct = u==='%' || (w.min===0 && w.max===100);
+  let vk = w.kind;
+  if(vk!=='status'){
+    if(['level','donut','compass'].includes(w.kind)) vk=w.kind;
+    else if(isDir) vk='compass';
+    else if(w.kind==='gauge' && isPct) vk='level';
+  }
+  if(vk==='stat')  return wCard(wHead(w,tr)+wNum(num,'var(--brand)')+spark(w.series,'var(--brand)')+cap);
+  if(vk==='line')  return wCard(wHead(w,tr)+wNum(num,col)+spark(w.series,col)+cap+chip);
+  if(vk==='level') return wCard(wHead(w,tr)+wNum(num,col)+levelBar(w,num,col)+scale+cap+chip);
+  if(vk==='donut') return wCard(wHead(w,tr)+donut(w,num,col)+cap+chip);
+  if(vk==='compass') return wCard(wHead(w,tr)+compass(w,num,col)+wCap('Direzione '+(num==null?'—':fmtNum(num)+'°'))+chip);
+  // default: gauge radiale + soglia + trend + caption
+  return wCard(wHead(w,tr)+arcGauge(w,num,col)+scale+spark(w.series,col)+cap+chip);
 }
 let DASHMAP=null;
 function dashKpis(k){ if(!k)return'';
