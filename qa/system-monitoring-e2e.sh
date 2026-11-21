@@ -32,10 +32,23 @@ echo "$D" | jq1 "w=json.load(sys.stdin)['worker'];a=w.get('heartbeat_age_secs',-
 say "5 /system/alerts: ritorna un array"
 echo "$(curl -s $S $BASE/api/superadmin/system/alerts)" | jq1 "print(isinstance(json.load(sys.stdin),list))" | grep -q True && ok || no "alerts non-array"
 
-say "6 gating: tenant admin NON vede /system -> 403"
+say "6 settings: POST soglia mem=88 -> effetto su /system/thresholds"
+SC=$(csrfh "$J/sa")
+curl -s $S -H "x-csrf-token: $SC" -H 'content-type: application/json' -X POST $BASE/api/superadmin/system/settings -d '{"mem_max_pct":88,"alert_email":"ops@test.eu"}' -o /dev/null
+echo "$(curl -s $S $BASE/api/superadmin/system)" | jq1 "print(json.load(sys.stdin)['thresholds']['mem_max_pct'])" | grep -q "88" && ok || no "soglia non applicata"
+
+say "7 settings: soglia fuori range -> 400"
+c=$(code $S -H "x-csrf-token: $SC" -H 'content-type: application/json' -X POST $BASE/api/superadmin/system/settings -d '{"disk_max_pct":150}')
+[ "$c" = "400" ] && ok || no "got $c"
+
+say "8 settings: reset (null) -> torna al default"
+curl -s $S -H "x-csrf-token: $SC" -H 'content-type: application/json' -X POST $BASE/api/superadmin/system/settings -d '{}' -o /dev/null
+echo "$(curl -s $S $BASE/api/superadmin/system)" | jq1 "print(json.load(sys.stdin)['thresholds']['mem_max_pct'])" | grep -q "90" && ok || no "reset non riuscito"
+
+say "9 gating: tenant admin NON vede /system -> 403"
 curl -s -c "$J/t" -X POST $BASE/api/login -H 'content-type: application/json' -H 'x-tenant-slug: acme' -d '{"email":"admin@acme.loneworker.eu","password":"demo"}' -o /dev/null
 c=$(code -b "$J/t" -H 'x-tenant-slug: acme' $BASE/api/superadmin/system)
-[ "$c" = "403" ] || [ "$c" = "401" ] && ok || no "got $c"
+{ [ "$c" = "403" ] || [ "$c" = "401" ]; } && ok || no "got $c"
 
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" = 0 ]

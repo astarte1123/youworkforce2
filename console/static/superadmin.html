@@ -160,6 +160,21 @@ async function shell(){
       <div class="card" style="margin-bottom:16px"><div class="card-h"><h2 id="sysOverall2">Stato sistema</h2>
         <button class="btn ghost small" onclick="loadSystem()">↻ aggiorna</button></div>
         <div class="card-b" id="sysDetail"><div class="small mut">Carico…</div></div></div>
+      <div class="card" style="margin-bottom:16px"><div class="card-h"><h2>Configurazione monitoring</h2></div>
+        <div class="card-b">
+          <div class="small mut" style="margin-bottom:10px">Soglie di allerta e destinatari delle notifiche. Campo vuoto = usa il default.</div>
+          <div class="ct-grid">
+            <div class="field"><label>Soglia disco %</label><input id="ss_disk" type="number" min="1" max="100"></div>
+            <div class="field"><label>Soglia memoria %</label><input id="ss_mem" type="number" min="1" max="100"></div>
+            <div class="field"><label>Soglia CPU %</label><input id="ss_cpu" type="number" min="1" max="100"></div>
+            <div class="field"><label>Worker fermo oltre (secondi)</label><input id="ss_worker" type="number" min="10" max="86400"></div>
+            <div class="field span2"><label>Email destinatari alert <span class="small mut">(una o più, separate da virgola)</span></label><input id="ss_email" placeholder="ops@azienda.it, noc@azienda.it"></div>
+            <div class="field"><label>Telefono SMS <span class="small mut">(E.164)</span></label><input id="ss_phone" placeholder="+39..."></div>
+          </div>
+          <div class="ct-foot"><div class="small mut">Le notifiche partono su email/SMS/webhook configurati. I canali esterni richiedono le relative credenziali lato prodotto.</div>
+            <button class="btn" onclick="sysSettingsSave()">Salva configurazione</button></div>
+          <div id="ss_msg" class="small" style="margin-top:6px"></div>
+        </div></div>
       <div class="card"><div class="card-h"><h2>Storico alert</h2></div>
         <div class="card-b" id="sysAlerts"><div class="small mut">—</div></div></div>
     </div>
@@ -184,6 +199,24 @@ async function loadSystem(){
   renderSysSummary(); renderSysDetail();
   let al=[]; try{ al=await api('/superadmin/system/alerts'); }catch(e){}
   renderSysAlerts(al);
+  loadSysSettings();
+}
+async function loadSysSettings(){
+  let d; try{ d=await api('/superadmin/system/settings'); }catch(e){ return; }
+  const st=d.stored||{}, df=d.defaults||{};
+  const set=(id,v,ph)=>{ const el=$('#'+id); if(!el)return; el.value=(v==null?'':v); if(ph!=null) el.placeholder='default: '+ph; };
+  set('ss_disk',st.disk_max_pct,df.disk_max_pct); set('ss_mem',st.mem_max_pct,df.mem_max_pct);
+  set('ss_cpu',st.cpu_max_pct,df.cpu_max_pct); set('ss_worker',st.worker_stale_secs,df.worker_stale_secs);
+  set('ss_email',st.alert_email); set('ss_phone',st.alert_phone);
+}
+async function sysSettingsSave(){
+  const m=$('#ss_msg'); m.textContent=''; m.style.color='';
+  const num=id=>{ const v=$('#'+id).value.trim(); return v===''?null:parseInt(v,10); };
+  const body={ disk_max_pct:num('ss_disk'), mem_max_pct:num('ss_mem'), cpu_max_pct:num('ss_cpu'),
+    worker_stale_secs:num('ss_worker'), alert_email:$('#ss_email').value.trim()||null, alert_phone:$('#ss_phone').value.trim()||null };
+  try{ await api('/superadmin/system/settings',{method:'POST',body:JSON.stringify(body)});
+    toast('Configurazione salvata','ok'); m.style.color='var(--ok,green)'; m.textContent='✓ salvato'; loadSystem();
+  }catch(e){ m.style.color='var(--bad)'; m.textContent=e.message; }
 }
 function sysGridHtml(){
   const s=SYS, sv=s.server||{}, th=s.thresholds||{}, db=s.db||{}, q=s.queues||{}, w=s.worker||{}, app=s.app||{};

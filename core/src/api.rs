@@ -485,6 +485,24 @@ pub fn sys_thresholds() -> (f64,f64,f64,i64) {
     (sys_env_i64("YW_SYS_DISK_MAX_PCT",90) as f64, sys_env_i64("YW_SYS_MEM_MAX_PCT",90) as f64,
      sys_env_i64("YW_SYS_CPU_MAX_PCT",95) as f64, sys_env_i64("YW_SYS_WORKER_STALE_SECS",120))
 }
+/// Soglie + destinatari EFFETTIVI: valore dal pannello (DB) se impostato, altrimenti default env/prodotto.
+pub struct SysEff { pub disk: f64, pub mem: f64, pub cpu: f64, pub worker_stale: i64, pub email: Option<String>, pub phone: Option<String> }
+pub async fn sys_settings(st: &AppState) -> SysEff {
+    let (d,m,c,w) = sys_thresholds();
+    let row = sqlx::query("SELECT disk_max_pct,mem_max_pct,cpu_max_pct,worker_stale_secs,alert_email,alert_phone FROM app.system_settings WHERE id=true")
+        .fetch_optional(&st.owner_pool).await.ok().flatten();
+    let nz = |s: Option<String>| s.filter(|v| !v.trim().is_empty());
+    match row {
+        Some(r) => SysEff{
+            disk: r.try_get::<i32,_>("disk_max_pct").ok().map(|x| x as f64).unwrap_or(d),
+            mem:  r.try_get::<i32,_>("mem_max_pct").ok().map(|x| x as f64).unwrap_or(m),
+            cpu:  r.try_get::<i32,_>("cpu_max_pct").ok().map(|x| x as f64).unwrap_or(c),
+            worker_stale: r.try_get::<i32,_>("worker_stale_secs").ok().map(|x| x as i64).unwrap_or(w),
+            email: nz(r.try_get::<String,_>("alert_email").ok()), phone: nz(r.try_get::<String,_>("alert_phone").ok()),
+        },
+        None => SysEff{ disk:d, mem:m, cpu:c, worker_stale:w, email:None, phone:None },
+    }
+}
 fn lvl_pct(pct: f64, max: f64) -> &'static str { if pct>=max {"bad"} else if pct>=max-10.0 {"warn"} else {"ok"} }
 /// Snapshot completo dello stato di sistema: hardware (CPU/RAM/disco/host via sysinfo), DB,
 /// runtime app, code e worker. Include una lista `checks` (kind/severity/detail) riusata dal watchdog.
@@ -527,7 +545,8 @@ pub async fn system_snapshot(st: &AppState) -> Value {
     // --- worker heartbeat ---
     let hb = st.worker_heartbeat.load(std::sync::atomic::Ordering::Relaxed);
     let hb_age = if hb>0 { (chrono::Utc::now().timestamp() - hb).max(0) } else { -1 };
-    let (disk_max, mem_max, cpu_max, worker_stale) = sys_thresholds();
+    let eff = sys_settings(st).await;
+    let (disk_max, mem_max, cpu_max, worker_stale) = (eff.disk, eff.mem, eff.cpu, eff.worker_stale);
     let disk_pct = hw.get("disk_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let mem_pct = hw.get("mem_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let cpu_pct = hw.get("cpu_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -571,6 +590,40 @@ pub async fn super_system_alerts(State(st): State<AppState>, h: HeaderMap) -> R 
     })).collect();
     Ok(Json(json!(out)))
 }
+#[derive(Deserialize)] pub struct SysSettingsReq {
+    #[serde(default)] pub disk_max_pct: Option<i32>, #[serde(default)] pub mem_max_pct: Option<i32>,
+    #[serde(default)] pub cpu_max_pct: Option<i32>, #[serde(default)] pub worker_stale_secs: Option<i32>,
+    #[serde(default)] pub alert_email: Option<String>, #[serde(default)] pub alert_phone: Option<String> }
+/// Legge la configurazione monitoring (valori salvati dal pannello + effettivi + default env).
+pub async fn super_system_settings_get(State(st): State<AppState>, h: HeaderMap) -> R {
+    require_super(&st, &h).await?;
+    let r = sqlx::query("SELECT disk_max_pct,mem_max_pct,cpu_max_pct,worker_stale_secs,alert_email,alert_phone FROM app.system_settings WHERE id=true")
+        .fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let (dd,dm,dc,dw) = sys_thresholds();
+    let stored = match &r { Some(r) => json!({
+        "disk_max_pct": r.try_get::<i32,_>("disk_max_pct").ok(), "mem_max_pct": r.try_get::<i32,_>("mem_max_pct").ok(),
+        "cpu_max_pct": r.try_get::<i32,_>("cpu_max_pct").ok(), "worker_stale_secs": r.try_get::<i32,_>("worker_stale_secs").ok(),
+        "alert_email": r.try_get::<String,_>("alert_email").ok(), "alert_phone": r.try_get::<String,_>("alert_phone").ok() }),
+        None => json!({}) };
+    Ok(Json(json!({"stored": stored, "defaults": {"disk_max_pct":dd as i64,"mem_max_pct":dm as i64,"cpu_max_pct":dc as i64,"worker_stale_secs":dw}})))
+}
+/// Salva la configurazione monitoring (soglie + destinatari). Vuoto/None = usa il default.
+pub async fn super_system_settings_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SysSettingsReq>) -> R {
+    let s = require_super(&st, &h).await?;
+    let pct = |v: Option<i32>, name: &str| -> Result<Option<i32>,(StatusCode,String)> {
+        match v { Some(x) if !(1..=100).contains(&x) => Err(err(StatusCode::BAD_REQUEST, &format!("{name}: usa 1-100"))), x => Ok(x) } };
+    let disk=pct(b.disk_max_pct,"disco")?; let mem=pct(b.mem_max_pct,"memoria")?; let cpu=pct(b.cpu_max_pct,"cpu")?;
+    let worker = match b.worker_stale_secs { Some(x) if !(10..=86400).contains(&x) => return Err(err(StatusCode::BAD_REQUEST,"worker: 10-86400 secondi")), x => x };
+    let nz = |s: Option<String>| s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let (email, phone) = (nz(b.alert_email), nz(b.alert_phone));
+    let (has_email, has_phone) = (email.is_some(), phone.is_some());
+    sqlx::query("UPDATE app.system_settings SET disk_max_pct=$1,mem_max_pct=$2,cpu_max_pct=$3,worker_stale_secs=$4,alert_email=$5,alert_phone=$6,updated_at=now() WHERE id=true")
+        .bind(disk).bind(mem).bind(cpu).bind(worker).bind(&email).bind(&phone)
+        .execute(&st.owner_pool).await.map_err(ise)?;
+    let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES(NULL,$1,'system_settings',$2)")
+        .bind(&s.email).bind(json!({"disk":disk,"mem":mem,"cpu":cpu,"worker":worker,"email":has_email,"phone":has_phone})).execute(&st.owner_pool).await;
+    Ok(Json(json!({"ok":true})))
+}
 /// Watchdog infrastrutturale: valuta i check di sistema, apre un alert per ogni problema NUOVO
 /// (dedup: un alert aperto per kind entro 60 min), notifica il superadmin (sink/email/SMS) e
 /// risolve gli alert quando il check torna ok. Chiamato dal worker.
@@ -605,25 +658,26 @@ pub async fn system_watchdog(st: &AppState) {
 /// email relay, SMS Twilio). Ritorna true se almeno un canale ha consegnato.
 async fn system_alert_notify(st: &AppState, sev: &str, kind: &str, detail: &str) -> bool {
     let subj = format!("[YW {}] {} — {}", sev.to_uppercase(), kind, detail);
-    let emails: Vec<String> = sqlx::query_scalar("SELECT email FROM app.superadmins").fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let eff = sys_settings(st).await;
+    let mut emails: Vec<String> = sqlx::query_scalar("SELECT email FROM app.superadmins").fetch_all(&st.owner_pool).await.unwrap_or_default();
+    // destinatari extra dal pannello (o env legacy), separati da virgola
+    let extra = eff.email.clone().or_else(|| std::env::var("YW_SYS_ALERT_EMAIL").ok());
+    if let Some(x) = extra { for e in x.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) { emails.push(e); } }
+    let alert_phone = eff.phone.clone().or_else(|| std::env::var("YW_SYS_ALERT_PHONE").ok()).filter(|s| !s.trim().is_empty());
     let mut any = false;
     // 1) sink webhook (e2e + integrazione generica)
     if let Ok(sink) = std::env::var("YW_ESC_SINK_URL") { if !sink.trim().is_empty() {
         let body = json!({"kind":"system_alert","severity":sev,"check":kind,"text":subj});
         if crate::delivery::deliver_to_sink(&st.http, &sink, &body).await.state == "sent" { any = true; }
     }}
-    // 2) email relay a tutti i superadmin (+ eventuale indirizzo extra)
+    // 2) email relay ai superadmin + destinatari extra dal pannello
     if let Ok(relay) = std::env::var("YW_ESC_SMTP_RELAY_URL") { if !relay.trim().is_empty() {
-        let mut to: Vec<String> = emails.clone();
-        if let Ok(x) = std::env::var("YW_SYS_ALERT_EMAIL") { if !x.trim().is_empty() { to.push(x); } }
-        for e in to { let body = json!({"to":e,"subject":subj,"text":detail});
+        for e in &emails { let body = json!({"to":e,"subject":subj,"text":detail});
             if crate::delivery::deliver_email_relay(&st.http, &relay, &body).await.state == "live" { any = true; } }
     }}
-    // 3) SMS Twilio (gated live) al numero del superadmin
-    if crate::delivery::TwilioCfg::live_enabled() { if let (Some(cfg), Ok(ph)) = (crate::delivery::TwilioCfg::from_env(), std::env::var("YW_SYS_ALERT_PHONE")) {
-        if !ph.trim().is_empty() {
-            if crate::delivery::deliver_twilio_live(&st.http, &cfg, crate::delivery::Channel::Sms, &ph, &subj, "system").await.state == "live" { any = true; }
-        }
+    // 3) SMS Twilio (gated live) al numero configurato dal pannello (o env)
+    if crate::delivery::TwilioCfg::live_enabled() { if let (Some(cfg), Some(ph)) = (crate::delivery::TwilioCfg::from_env(), alert_phone.clone()) {
+        if crate::delivery::deliver_twilio_live(&st.http, &cfg, crate::delivery::Channel::Sms, &ph, &subj, "system").await.state == "live" { any = true; }
     }}
     any
 }

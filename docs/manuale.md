@@ -187,7 +187,9 @@ sessioni) e aggregati (tenant/utenti/dispositivi/incidenti). Ogni metrica ha una
 **watchdog** nel worker (~60s) apre un alert per ogni problema nuovo (dedup 60 min per tipo), lo
 **notifica al superadmin** (sink webhook / email relay / SMS Twilio, riuso motore nativo), lo risolve
 quando rientra, e lo storicizza in `app.system_alerts` (mig 0121, `GET /api/superadmin/system/alerts`).
-e2e: `qa/system-monitoring-e2e.sh` (6/6).
+Le **soglie e i destinatari** (email/SMS) sono configurabili **dal pannello** (scheda Sistema →
+«Configurazione monitoring»): `GET/POST /api/superadmin/system/settings` (tabella `app.system_settings`,
+mig 0122); un campo vuoto usa il default env/prodotto. e2e: `qa/system-monitoring-e2e.sh` (9/9).
 
 **Cruscotto superadmin (usabilità con molti tenant).** La home mostra in cima un **riepilogo** a tile
 (tenant totali, operativi, da configurare, sospesi, utenti, dispositivi, incidenti aperti, inviti in
