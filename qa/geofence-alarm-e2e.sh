@@ -27,10 +27,10 @@ cleanup(){
 }
 trap cleanup EXIT
 
-# --- AREA SICURA (alert su USCITA) ---
-GID=$(A -X POST "$BASE/api/geofences" -d "{\"name\":\"E2E-GF-$RUN-safe\",\"kind\":\"circle\",\"geom\":{\"lat\":45.50,\"lon\":9.20,\"radius\":300}}" | jget 'd["id"]')
-[ -n "$GID" ] && ok "geofence creata" || no "no geofence" "-"
-A -X PUT "$BASE/api/geofences/$GID/alert" -d '{"alert_on":"exit"}' | grep -q '"ok":true' && ok "alert_on=exit impostato" || no "set alert fallito" "-"
+# --- AREA SICURA (alert su USCITA), tipo scelto GIA' ALLA CREAZIONE ---
+GID=$(A -X POST "$BASE/api/geofences" -d "{\"name\":\"E2E-GF-$RUN-safe\",\"kind\":\"circle\",\"geom\":{\"lat\":45.50,\"lon\":9.20,\"radius\":300},\"alert_on\":\"exit\"}" | jget 'd["id"]')
+[ -n "$GID" ] && ok "geofence creata con tipo area alla creazione" || no "no geofence" "-"
+A "$BASE/api/geofences" | python -c "import sys,json;g=next(x for x in json.load(sys.stdin) if x['id']=='$GID');print(g.get('alert_on'))" | grep -q "exit" && ok "alert_on=exit salvato in creazione" || no "alert_on non salvato in creazione" "-"
 
 B=$(cnt_uscita)
 # dentro l'area (primo fix): nessun allarme di uscita

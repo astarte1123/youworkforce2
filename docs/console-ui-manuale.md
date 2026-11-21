@@ -243,8 +243,9 @@ Ogni allarme porta con sé **dove si trova il lavoratore**, così l'operatore in
 
 ## Geofence → allarmi
 Oltre a presenza e storico (chi entra/esce da un'area), una geofence può **generare un allarme**
-sull'attraversamento: dal pannello «Aree (geofence) → Associa» si imposta **Allarme su
-attraversamento**: *nessuno*, *all'ingresso* (zona vietata) o *all'uscita* (area sicura). Quando il
+sull'attraversamento. Il **tipo area** si sceglie **già mentre la si disegna** (mappa o piantina):
+un drawer chiede nome + **tipo**: *nessun allarme*, *zona vietata* (allarme all'**ingresso**) o
+*area sicura* (allarme all'**uscita**) + colore. Modificabile anche dopo da «Associa». Quando il
 device attraversa in quella direzione, il core apre un **incidente + escalation** (`geofence_crossing_alarm`)
 con gli eventi selezionati (o un allarme geofence generico), e il nome dell'area finisce nella posizione
 dell'allarme. Campo `geofences.alert_on` (mig 0123), `PUT /api/geofences/:id/alert`.

@@ -1501,11 +1501,8 @@ function setupGeofenceTools(map, opts){
     map.on('pm:create', async (e)=>{
       const geom=geomFromLayer(e.layer, e.shape, opts); map.removeLayer(e.layer);
       if(!geom){ toast('Forma non valida','bad'); return; }
-      const name=await askPrompt('Nome della geofence?'); if(!name){ return; }
-      const kind = geom.radius!=null ? 'circle':'polygon';
-      if(opts.onSave){ opts.onSave(name, kind, geom); return; }
-      try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind,geom,color:window._gfColor||'#16a34a'})}); toast('Geofence creata','ok'); route(); }
-      catch(err){ toast(err.message,'bad'); }
+      const kind = (geom.radius!=null) ? 'circle':'polygon';
+      gfNewForm(geom, kind, {indoor: !!opts.xy, floorplan_id: opts.fid||null});
     });
   }
 }
@@ -1527,8 +1524,7 @@ function toggleFreehand(btn){
     line=L.polyline(pts,{color:'#2563eb',weight:2}).addTo(MAP); };
   const onMove=(e)=>{ if(!drawing)return; if(last&&!far(last,e.latlng))return; pts.push(e.latlng); last=e.latlng; line.setLatLngs(pts); };
   const onUp=async()=>{ if(!drawing)return; drawing=false; if(line)MAP.removeLayer(line);
-    if(pts.length>=3){ const geom={points:pts.map(p=>[p.lat,p.lng])}; const name=await askPrompt('Nome della geofence (mano libera)?');
-      if(name){ try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind:'polygon',geom,color:window._gfColor||'#16a34a'})}); toast('Geofence creata','ok'); route(); }catch(e){toast(e.message,'bad');} } }
+    if(pts.length>=3){ const geom={points:pts.map(p=>[p.lat,p.lng])}; gfNewForm(geom,'polygon',{indoor:false}); }
     endFreehand();
   };
   FH={onDown,onMove,onUp}; MAP.on('mousedown',onDown); MAP.on('mousemove',onMove); MAP.on('mouseup',onUp);
@@ -1649,7 +1645,7 @@ async function fpOpen(){
       ${window._fpAdmin?`<div class="small mut" style="margin-top:var(--s-10)">• <b>📍 Posiziona beacon / dispositivo</b>: scegli un'entità registrata, poi clicca sulla piantina.${window._fpGfOn?'<br>• Disegna geofence con gli strumenti ⬡ in alto a sinistra (cerchio, rettangolo, poligono).':''}</div>`:''}
       ${window._fpGfOn?geofencePanel(gfs, window._fpAdmin):''}`;
     if(window._fpAdmin){
-      if(window._fpGfOn) setupGeofenceTools(FPMAP,{xy:true, onSave:(name,kind,geom)=> saveIndoorGeofence(name,kind,geom,id)});
+      if(window._fpGfOn) setupGeofenceTools(FPMAP,{xy:true, fid:id});
       FPMAP.on('click',e=>{ if(window._bkPlace) fpPlaceAt(e.latlng, id); });
     }
   }catch(e){ host.innerHTML='<div class="pad" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
@@ -1833,6 +1829,36 @@ function gfFocus(id){
     gfFlash(layer);
   }catch(e){}
 }
+// Drawer di CREAZIONE area: scelta del TIPO (nessun allarme / zona vietata=ingresso /
+// area sicura=uscita) direttamente quando si disegna, su mappa o piantina.
+function gfNewForm(geom, kind, opts){ opts=opts||{};
+  const o={geom,kind,indoor:!!opts.indoor,floorplan_id:opts.floorplan_id||null};
+  drawer('Nuova area (geofence)',`<div class="col" style="gap:var(--s-10)">
+    <div class="small mut">${o.indoor?'Area sulla piantina (indoor).':'Area sulla mappa (outdoor).'} ${kind==='circle'?'Cerchio':'Poligono'} disegnato.</div>
+    <label class="small mut">Nome<input id="gfnName" placeholder="es. Area carico, Zona reattori, Perimetro cantiere"></label>
+    <label class="small mut">Tipo area / allarme
+      <select id="gfnAlert">
+        <option value="">Nessun allarme — solo presenza / registro</option>
+        <option value="enter">🚫 Zona vietata — allarme all'INGRESSO</option>
+        <option value="exit">🛡️ Area sicura — allarme all'USCITA</option>
+      </select></label>
+    <div class="small mut">Con l'allarme attivo, l'attraversamento in quella direzione apre un incidente + escalation. Potrai cambiare tipo ed eventi anche dopo, da «Associa».</div>
+    <label class="row small" style="gap:var(--s-8);align-items:center">Colore
+      <input type="color" id="gfnColor" value="${window._gfColor||'#16a34a'}" style="width:40px;height:30px;padding:2px"></label>
+    <button class="btn" onclick='gfNewSave(${JSON.stringify(o).replace(/'/g,"&#39;")})'>Crea area</button>
+    <div class="cfg-msg small"></div></div>`);
+  setTimeout(()=>{ const n=$('#gfnName'); if(n)n.focus(); },60);
+}
+async function gfNewSave(o){
+  const m=$('.cfg-msg'); const name=($('#gfnName').value||'').trim();
+  if(!name){ m.textContent='nome richiesto'; m.style.color='var(--bad)'; return; }
+  window._gfColor=$('#gfnColor').value;
+  const body={ name, kind:o.kind, geom:o.geom, color:$('#gfnColor').value, alert_on:$('#gfnAlert').value||null };
+  if(o.floorplan_id) body.floorplan_id=o.floorplan_id;
+  try{ await api('/geofences',{method:'POST',body:JSON.stringify(body)}); toast('Area creata','ok'); closeDrawer();
+    if(o.indoor){ if(typeof fpOpen==='function') fpOpen(); else route(); } else route();
+  }catch(e){ m.textContent=e.message; m.style.color='var(--bad)'; }
+}
 function gfRefresh(id){ if(gfIsIndoor(id)){ if(typeof fpOpen==='function') fpOpen(); else route(); } else route(); }
 // Blocco azioni (identico su mappa e piantine), come link per il popup Leaflet.
 function gfPopupActions(g,admin){ if(!admin)return'';
@@ -1910,10 +1936,8 @@ async function gfColor(id,color){ try{ await api('/geofences/'+id,{method:'PUT',
 async function gfDel(id){ if(!await askConfirm('Eliminare la geofence? (rimuove area e associazioni)'))return;
   try{ await api('/geofences/'+id,{method:'DELETE'}); toast('Eliminata','ok'); gfRefresh(id); }catch(e){ toast(e.message,'bad'); } }
 async function addCircle(lat,lon){
-  const name=await askPrompt('Nome geofence?'); if(!name)return;
   const r=parseInt(await askPrompt('Raggio in metri?','300')||'0',10); if(!r||r<10)return toast('raggio non valido','bad');
-  try{ await api('/geofences',{method:'POST',body:JSON.stringify({name,kind:'circle',geom:{lat,lon,radius:r},color:window._gfColor||'#16a34a'})});
-    toast('Geofence creata','ok'); route(); }catch(e){ toast(e.message,'bad'); }
+  gfNewForm({lat,lon,radius:r},'circle',{indoor:false});
 }
 function popupHtml(d){
   return `<b>${esc(d.label||d.external_id)}</b><br>

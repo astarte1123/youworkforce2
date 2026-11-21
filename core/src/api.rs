@@ -5523,7 +5523,8 @@ fn clean_hex_color(c: Option<&str>) -> String {
     if ok { c.to_string() } else { "#16a34a".to_string() }
 }
 #[derive(Deserialize)]
-pub struct GeofenceReq { pub name: String, pub kind: String, pub geom: Value, pub site_id: Option<Uuid>, pub floorplan_id: Option<Uuid>, pub color: Option<String> }
+pub struct GeofenceReq { pub name: String, pub kind: String, pub geom: Value, pub site_id: Option<Uuid>, pub floorplan_id: Option<Uuid>, pub color: Option<String>,
+    #[serde(default)] pub alert_on: Option<String> }
 pub async fn create_geofence(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GeofenceReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
@@ -5540,9 +5541,11 @@ pub async fn create_geofence(State(st): State<AppState>, h: HeaderMap, Json(b): 
         _ => return Err(err(StatusCode::BAD_REQUEST, "kind non valido (circle|polygon)")),
     }
     let color = clean_hex_color(b.color.as_deref());
+    let alert_on = b.alert_on.as_deref().map(|x| x.trim()).filter(|x| !x.is_empty());
+    if let Some(x)=alert_on { if !["enter","exit"].contains(&x) { return Err(err(StatusCode::BAD_REQUEST, "alert_on: enter|exit|null")); } }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let row = sqlx::query("INSERT INTO app.geofences(tenant_id,name,kind,geom,site_id,floorplan_id,color) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
-        .bind(tid).bind(b.name.trim()).bind(&b.kind).bind(&b.geom).bind(b.site_id).bind(b.floorplan_id).bind(&color)
+    let row = sqlx::query("INSERT INTO app.geofences(tenant_id,name,kind,geom,site_id,floorplan_id,color,alert_on) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(&b.kind).bind(&b.geom).bind(b.site_id).bind(b.floorplan_id).bind(&color).bind(alert_on)
         .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "nome gia' presente"))?;
     tx.commit().await.map_err(ise)?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id");
