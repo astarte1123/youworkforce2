@@ -660,7 +660,10 @@ const DASH_WIDGETS={
 };
 function dMut(){return '<div class="small mut" style="padding:var(--s-12)">non disponibile</div>';}
 function dTbl(inner){return `<table class="table"><tbody>${inner}</tbody></table>`;}
-function dKpi(ico,label,n,cls=''){return `<div class="row" style="align-items:center;gap:var(--s-10);padding:var(--s-2) var(--s-2) var(--s-10)"><div class="ico">${ICON[ico]}</div><div class="n ${cls}" style="font-size:22px">${esc(n)}</div><div class="l mut">${label}</div></div>`;}
+function dKpi(ico,label,n,cls=''){return `<div class="row" style="align-items:center;gap:var(--s-12);padding:var(--s-2) var(--s-2) var(--s-10)">
+  <div class="ico">${ICON[ico]}</div>
+  <div><div class="n ${cls}" style="font-size:26px;font-weight:800;line-height:1">${esc(n)}</div>
+    <div class="small mut" style="text-transform:uppercase;letter-spacing:.4px;margin-top:var(--s-2)">${label}</div></div></div>`;}
 
 let DASH_EDIT=false, DASH_LAYOUT=[], DASH_CANEDIT=false, DASH_DRAG=null;
 // "Cosa fare adesso": azioni in sospeso tagliate sul ruolo (fonte: GET /api/home-tasks).
@@ -3940,6 +3943,8 @@ function widgetCaption(w,num,tripped,tr){
   if(num==null) return 'In attesa di dati dal sensore.';
   const u=w.unit?(' '+esc(w.unit)):''; const parts=[];
   if(tr) parts.push(tr.dir==='up'?'In aumento':tr.dir==='down'?'In calo':'Stabile');
+  const vs=(w.series||[]).map(p=>typeof p.v==='number'?p.v:parseFloat(p.v)).filter(x=>!isNaN(x));
+  if(vs.length>=3){ const mn=Math.min(...vs),mx=Math.max(...vs); if(mx-mn>1e-6) parts.push('min '+fmtNum(mn)+' · max '+fmtNum(mx)); }
   if(w.threshold!=null) parts.push(tripped?('oltre la soglia '+fmtNum(w.threshold)+u):('soglia '+fmtNum(w.threshold)+u+' non superata'));
   return parts.join(' · ')||'Valore corrente stabile.';
 }
