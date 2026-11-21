@@ -249,6 +249,9 @@ device attraversa in quella direzione, il core apre un **incidente + escalation*
 con gli eventi selezionati (o un allarme geofence generico), e il nome dell'area finisce nella posizione
 dell'allarme. Campo `geofences.alert_on` (mig 0123), `PUT /api/geofences/:id/alert`.
 e2e: `qa/geofence-alarm-e2e.sh`.
+Le aree sono anche **selezionabili dall'elenco**: clic sul nome evidenzia la riga e **zooma l'area**
+sulla mappa (o sulla piantina, per le indoor), con un breve lampeggio — utile quando l'area non è
+in vista.
 
 ## Note tecniche
 - File coinvolti: `console/static/app.html`, `console/static/app.js`, `console/static/app.css`.

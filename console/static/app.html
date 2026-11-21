@@ -1805,6 +1805,34 @@ function geomFromEditLayer(layer, indoor){
 // ====== Geofence: azioni uniformi (mappa allarmi+dispositivi e piantine) ======
 function gfFromCache(id){ return (window._GF_CACHE||[]).find(x=>x.id===id)||null; }
 function gfIsIndoor(id){ const g=gfFromCache(id); return !!(g && g.floorplan_id); }
+// Selezione/zoom di una geofence dall'elenco: evidenzia la riga e zooma l'area su mappa/piantina.
+function _selGfRow(id){
+  try{ $$('#mapSide [data-gf]').forEach(r=>{ r.style.borderColor=''; r.style.boxShadow=''; r.style.background=''; });
+    const el=document.querySelector('#mapSide [data-gf="'+id+'"]');
+    if(el){ el.style.borderColor='var(--brand)'; el.style.boxShadow='0 0 0 2px var(--brand-soft)'; el.style.background='var(--brand-soft)'; el.scrollIntoView({block:'nearest',behavior:'smooth'}); }
+  }catch(e){}
+}
+let _gfHi=null, _gfHiOrig=null, _gfHiT=null;
+function gfFlash(layer){
+  try{ if(_gfHiT){ clearInterval(_gfHiT); if(_gfHi){ try{_gfHi.setStyle(_gfHiOrig||{});}catch(e){} } }
+    if(!layer.setStyle){ return; }
+    _gfHi=layer; _gfHiOrig={color:layer.options.color, weight:layer.options.weight, fillOpacity:layer.options.fillOpacity};
+    let on=true, ticks=0;
+    _gfHiT=setInterval(()=>{ try{ layer.setStyle(on?{weight:6,color:'#2563eb',fillOpacity:Math.min(0.5,(_gfHiOrig.fillOpacity||0.2)+0.2)}:_gfHiOrig); }catch(e){}
+      on=!on; if(++ticks>6){ clearInterval(_gfHiT); _gfHiT=null; try{layer.setStyle(_gfHiOrig);}catch(e){} } },180);
+  }catch(e){}
+}
+function gfFocus(id){
+  _selGfRow(id);
+  const indoor=gfIsIndoor(id); const map=indoor?FPMAP:MAP; const layer=GF_LAYERS[id];
+  if(!map){ toast(indoor?'Apri la piantina dell\'area':'Mappa non pronta','mut'); return; }
+  if(!layer){ toast('Area non disegnata su questa vista','mut'); return; }
+  try{
+    if(layer.getBounds){ const b=layer.getBounds(); if(b&&(!b.isValid||b.isValid())) map.fitBounds(b,{padding:[50,50],maxZoom:indoor?2:18}); }
+    else if(layer.getLatLng){ map.setView(layer.getLatLng(), Math.max(map.getZoom()||0, indoor?1:17)); }
+    gfFlash(layer);
+  }catch(e){}
+}
 function gfRefresh(id){ if(gfIsIndoor(id)){ if(typeof fpOpen==='function') fpOpen(); else route(); } else route(); }
 // Blocco azioni (identico su mappa e piantine), come link per il popup Leaflet.
 function gfPopupActions(g,admin){ if(!admin)return'';
@@ -1819,8 +1847,8 @@ function gfPopupActions(g,admin){ if(!admin)return'';
 function geofencePanel(GF,admin){ if(!admin)return'';
   return `<h2 style="margin:var(--s-14) 0 var(--s-4)">Aree (geofence)</h2>
     <div class="small mut" style="margin-bottom:var(--s-8)">Rinomina, colore, modifica forma, associa dispositivi/eventi o elimina. Disegna nuove aree con gli strumenti ⬡.</div>
-    ${GF.length?GF.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-8);margin-bottom:var(--s-6)">
-      <div class="spread"><b class="small">${esc(g.name)}</b><span class="chip" style="background:${g.color||'#16a34a'};color:#fff;border:none">${esc(g.kind)}</span></div>
+    ${GF.length?GF.map(g=>`<div data-gf="${g.id}" style="border:1px solid var(--line);border-radius:10px;padding:var(--s-8);margin-bottom:var(--s-6);transition:background .12s,border-color .12s">
+      <div class="spread"><b class="small" style="cursor:pointer" title="Mostra e zooma l'area sulla mappa" onclick="gfFocus('${g.id}')">📍 ${esc(g.name)}</b><span class="chip" style="background:${g.color||'#16a34a'};color:#fff;border:none">${esc(g.kind)}</span></div>
       <div class="small mut" style="margin:var(--s-4) 0">${(g.device_ids||[]).length} device · ${(g.etypes||[]).length} eventi${g.alert_on?` · <span style="color:var(--bad)">🚨 allarme in ${g.alert_on==='enter'?'ingresso':'uscita'}</span>`:''}</div>
       <div class="row" style="gap:var(--s-6);flex-wrap:wrap;align-items:center">
         <button class="btn ghost small" onclick="gfEditShape('${g.id}')">✥ Forma</button>
