@@ -34,6 +34,23 @@
   .tstat b{color:var(--ink,#1a1a1a);font-size:13.5px}
   .tchev{transition:transform .15s;color:#9ca3af} .trow.open .tchev{transform:rotate(90deg)}
   .tdetail{padding:0 14px 14px;border-top:1px solid var(--line)}
+  /* schede */
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:18px}
+  .tab{padding:10px 16px;cursor:pointer;font-weight:600;color:#6b7280;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tab.on{color:var(--brand);border-bottom-color:var(--brand)}
+  .pane{display:none} .pane.on{display:block}
+  /* stato sistema */
+  .sys-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+  .sys-card{border:1px solid var(--line);border-radius:12px;padding:14px;background:var(--surface,#fff)}
+  .sys-card h3{margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.4px;color:#6b7280}
+  .meter{height:8px;border-radius:999px;background:#eceef1;overflow:hidden;margin:6px 0}
+  .meter>i{display:block;height:100%;background:#16a34a}
+  .meter.warn>i{background:#d97706} .meter.bad>i{background:#dc2626}
+  .srow{display:flex;justify-content:space-between;gap:10px;font-size:13.5px;padding:3px 0}
+  .srow .k{color:#6b7280} .srow .v{font-weight:600}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
+  .dot.ok{background:#16a34a} .dot.warn{background:#d97706} .dot.bad{background:#dc2626}
+  .alert-item{display:flex;gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:10px;margin-bottom:6px;font-size:13.5px}
 </style>
 <script src="/app.js"></script>
 <script>
@@ -65,7 +82,34 @@ async function shell(){
     <button id="themeBtn" class="btn-ico btn ghost" title="Tema" onclick="toggleTheme()">${themeIconHtml()}</button>
     <button class="btn-ico btn ghost" onclick="out()">${ICON.logout}</button></div>
   <div class="content">
-    <div class="card" style="margin-bottom:18px"><div class="card-h"><h2>Crea tenant</h2></div><div class="card-b">
+    <div class="tabs">
+      <div class="tab on" data-t="panoramica" onclick="saTab('panoramica')">Panoramica</div>
+      <div class="tab" data-t="tenant" onclick="saTab('tenant')">Tenant</div>
+      <div class="tab" data-t="sistema" onclick="saTab('sistema')">Sistema</div>
+    </div>
+
+    <div class="pane on" id="pane-panoramica">
+      <div id="kpis" class="kpis"></div>
+      <div class="card" style="margin-bottom:16px"><div class="card-h"><h2 id="sysOverall">Stato sistema</h2>
+        <button class="btn ghost small" onclick="loadSystem()">↻ aggiorna</button></div>
+        <div class="card-b" id="sysSummary"><div class="small mut">Carico…</div></div></div>
+      <div class="card"><div class="card-h"><h2>Alert recenti</h2>
+        <button class="btn ghost small" onclick="saTab('sistema')">vedi tutti</button></div>
+        <div class="card-b" id="sysAlertsMini"><div class="small mut">—</div></div></div>
+    </div>
+
+    <div class="pane" id="pane-tenant">
+      <div class="sa-toolbar">
+        <h2 style="margin:0;margin-right:auto">Tenant</h2>
+        <div class="fchip on" data-f="all" onclick="setFilter('all',this)">Tutti</div>
+        <div class="fchip" data-f="operativo" onclick="setFilter('operativo',this)">Operativi</div>
+        <div class="fchip" data-f="daconfig" onclick="setFilter('daconfig',this)">Da configurare</div>
+        <div class="fchip" data-f="sospeso" onclick="setFilter('sospeso',this)">Sospesi</div>
+        <input id="t_search" placeholder="🔎 cerca per nome o slug" oninput="tenantFilter()" style="min-width:200px">
+        <button class="btn" onclick="toggleCreate()" id="c_toggle">+ Nuovo tenant</button>
+      </div>
+      <div id="createCard" style="display:none">
+      <div class="card" style="margin-bottom:18px"><div class="card-h"><h2>Crea tenant</h2></div><div class="card-b">
       <div class="ct-grid">
         <div class="field"><label>Slug</label><input id="c_slug" placeholder="acme2" oninput="slugPrev()">
           <div id="c_slugprev" class="small mut">indirizzo: —</div></div>
@@ -108,18 +152,83 @@ async function shell(){
       </div>
       <div id="c_created"></div>
     </div></div>
-    <div id="kpis" class="kpis"></div>
-    <div class="sa-toolbar">
-      <h2 style="margin:0;margin-right:auto">Tenant</h2>
-      <div class="fchip on" data-f="all" onclick="setFilter('all',this)">Tutti</div>
-      <div class="fchip" data-f="operativo" onclick="setFilter('operativo',this)">Operativi</div>
-      <div class="fchip" data-f="daconfig" onclick="setFilter('daconfig',this)">Da configurare</div>
-      <div class="fchip" data-f="sospeso" onclick="setFilter('sospeso',this)">Sospesi</div>
-      <input id="t_search" placeholder="🔎 cerca per nome o slug" oninput="tenantFilter()" style="min-width:220px">
+      </div>
+      <div id="list" class="col"></div>
     </div>
-    <div id="list" class="col"></div>
+
+    <div class="pane" id="pane-sistema">
+      <div class="card" style="margin-bottom:16px"><div class="card-h"><h2 id="sysOverall2">Stato sistema</h2>
+        <button class="btn ghost small" onclick="loadSystem()">↻ aggiorna</button></div>
+        <div class="card-b" id="sysDetail"><div class="small mut">Carico…</div></div></div>
+      <div class="card"><div class="card-h"><h2>Storico alert</h2></div>
+        <div class="card-b" id="sysAlerts"><div class="small mut">—</div></div></div>
+    </div>
   </div>`;
-  $('#c_go').onclick=create; ['c_cp','c_ca','c_ck','c_cs'].forEach(syncPair); slugPrev(); loadPlans(); load();
+  $('#c_go').onclick=create; ['c_cp','c_ca','c_ck','c_cs'].forEach(syncPair); slugPrev(); loadPlans(); load(); loadSystem();
+}
+function saTab(k){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.dataset.t===k));
+  document.querySelectorAll('.pane').forEach(p=>p.classList.toggle('on',p.id==='pane-'+k));
+  if(k==='sistema') loadSystem();
+}
+function toggleCreate(){ const c=$('#createCard'); const open=c.style.display==='none'; c.style.display=open?'':'none';
+  $('#c_toggle').textContent=open?'× Chiudi':'+ Nuovo tenant'; if(open) $('#c_slug').focus(); }
+// ===== Stato sistema (monitoring) =====
+let SYS=null;
+function fmtBytes(n){ if(n==null)return '—'; const u=['B','KB','MB','GB','TB']; let i=0,v=Number(n); while(v>=1024&&i<u.length-1){v/=1024;i++;} return v.toFixed(v<10&&i>0?1:0)+' '+u[i]; }
+function fmtDur(s){ if(s==null||s<0)return '—'; s=Number(s); const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60); return (d?d+'g ':'')+(h?h+'h ':'')+m+'m'; }
+function meter(pct,max){ pct=Number(pct)||0; max=Number(max)||100; const sev=pct>=max?'bad':(pct>=max-10?'warn':''); return `<div class="meter ${sev}"><i style="width:${Math.min(100,pct)}%"></i></div>`; }
+function sevLabel(s){ return s==='bad'?'critico':(s==='warn'?'attenzione':'ok'); }
+async function loadSystem(){
+  try{ SYS=await api('/superadmin/system'); }catch(e){ SYS=null; }
+  renderSysSummary(); renderSysDetail();
+  let al=[]; try{ al=await api('/superadmin/system/alerts'); }catch(e){}
+  renderSysAlerts(al);
+}
+function sysGridHtml(){
+  const s=SYS, sv=s.server||{}, th=s.thresholds||{}, db=s.db||{}, q=s.queues||{}, w=s.worker||{}, app=s.app||{};
+  return `<div class="sys-grid">
+    <div class="sys-card"><h3>Server</h3>
+      <div class="srow"><span class="k">Host</span><span class="v">${esc(sv.host||'—')}</span></div>
+      <div class="srow"><span class="k">OS</span><span class="v">${esc((sv.os||'—')+' '+(sv.arch||''))}</span></div>
+      <div class="srow"><span class="k">CPU (${sv.cpus||'?'} core)</span><span class="v">${sv.cpu_pct??'—'}%</span></div>${meter(sv.cpu_pct,th.cpu_max_pct)}
+      <div class="srow"><span class="k">Memoria</span><span class="v">${fmtBytes(sv.mem_used)} / ${fmtBytes(sv.mem_total)} (${sv.mem_pct??'—'}%)</span></div>${meter(sv.mem_pct,th.mem_max_pct)}
+      <div class="srow"><span class="k">Disco</span><span class="v">${fmtBytes(sv.disk_used)} / ${fmtBytes(sv.disk_total)} (${sv.disk_pct??'—'}%)</span></div>${meter(sv.disk_pct,th.disk_max_pct)}</div>
+    <div class="sys-card"><h3>Applicazione &amp; DB</h3>
+      <div class="srow"><span class="k">Versione core</span><span class="v">${esc(app.version||'—')}</span></div>
+      <div class="srow"><span class="k">Uptime</span><span class="v">${fmtDur(app.uptime_secs)}</span></div>
+      <div class="srow"><span class="k">Test clock</span><span class="v">${app.test_clock?'attivo':'no'}</span></div>
+      <div class="srow"><span class="k">Database</span><span class="v">${db.reachable?'<span class="dot ok"></span>online':'<span class="dot bad"></span>offline'}</span></div>
+      <div class="srow"><span class="k">Dimensione DB</span><span class="v">${fmtBytes(db.size_bytes)}</span></div>
+      <div class="srow"><span class="k">Connessioni DB</span><span class="v">${db.connections??'—'}/${db.max_connections||'?'}</span></div>
+      <div class="srow"><span class="k">Worker</span><span class="v">${(w.heartbeat_age_secs>=0)?(w.heartbeat_age_secs+'s fa'):'<span class="dot bad"></span>fermo'}</span></div></div>
+    <div class="sys-card"><h3>Code &amp; carico</h3>
+      <div class="srow"><span class="k">Tenant</span><span class="v">${q.tenants??'—'}</span></div>
+      <div class="srow"><span class="k">Utenti</span><span class="v">${q.users??'—'}</span></div>
+      <div class="srow"><span class="k">Dispositivi</span><span class="v">${q.devices??'—'}</span></div>
+      <div class="srow"><span class="k">Incidenti aperti</span><span class="v">${q.incidents_open??'—'}</span></div>
+      <div class="srow"><span class="k">Outbox in coda</span><span class="v">${q.outbox_pending??'—'}</span></div>
+      <div class="srow"><span class="k">Outbox in errore</span><span class="v" style="${(q.outbox_error>0)?'color:var(--bad)':''}">${q.outbox_error??'—'}</span></div>
+      <div class="srow"><span class="k">Sessioni</span><span class="v">${q.sessions??'—'}</span></div></div></div>`;
+}
+function renderSysSummary(){ const el=$('#sysSummary'); if(!el)return;
+  if(!SYS){ el.innerHTML='<div class="small" style="color:var(--bad)">sistema non raggiungibile</div>'; const o=$('#sysOverall'); if(o)o.textContent='Stato sistema'; return; }
+  const o=$('#sysOverall'); if(o) o.innerHTML=`<span class="dot ${SYS.status}"></span>Stato sistema — ${sevLabel(SYS.status)}`;
+  const chk=(SYS.checks||[]).map(c=>`<span class="tstat"><span class="dot ${c.severity}"></span>${esc(c.detail)}</span>`).join(' · ');
+  el.innerHTML=`<div class="small" style="margin-bottom:10px">${chk}</div>${sysGridHtml()}`;
+}
+function renderSysDetail(){ const el=$('#sysDetail'); if(!el)return;
+  if(!SYS){ el.innerHTML='<div class="small" style="color:var(--bad)">sistema non raggiungibile</div>'; return; }
+  const o=$('#sysOverall2'); if(o) o.innerHTML=`<span class="dot ${SYS.status}"></span>Stato sistema — ${sevLabel(SYS.status)}`;
+  const th=SYS.thresholds||{};
+  el.innerHTML=sysGridHtml()+`<div class="small mut" style="margin-top:10px">Soglie di allerta: disco ≥ ${th.disk_max_pct}% · memoria ≥ ${th.mem_max_pct}% · CPU ≥ ${th.cpu_max_pct}% · worker fermo > ${th.worker_stale_secs}s. Al superamento parte un alert (email/SMS) al superadmin.</div>`;
+}
+function renderSysAlerts(al){
+  const row=a=>`<div class="alert-item"><span class="dot ${a.severity}"></span>
+      <div style="flex:1"><b>${esc(a.kind)}</b> — ${esc(a.detail)}<div class="small mut">${new Date(a.created_at).toLocaleString('it-IT')}${a.resolved_at?' · risolto':''}${a.notified?' · notificato':''}</div></div>
+      ${a.resolved_at?'<span class="chip s-attivo">risolto</span>':'<span class="chip" style="background:#fee2e2;color:#b91c1c">aperto</span>'}</div>`;
+  const full=$('#sysAlerts'); if(full) full.innerHTML=(al&&al.length)?al.map(row).join(''):'<div class="small mut">Nessun alert registrato.</div>';
+  const mini=$('#sysAlertsMini'); if(mini) mini.innerHTML=(al&&al.length)?al.slice(0,3).map(row).join(''):'<div class="small mut">Nessun alert recente. Tutto nominale.</div>';
 }
 let PLANS=[];
 async function loadPlans(){

@@ -15,6 +15,9 @@ pub struct AppState {
     pub control_host: String,
     pub base_domain: String,
     pub secrets: Arc<crate::crypto::Secrets>,
+    // monitoring: istante di avvio (uptime processo) + ultimo heartbeat del worker (unix secs).
+    pub started: std::time::Instant,
+    pub worker_heartbeat: Arc<std::sync::atomic::AtomicI64>,
 }
 
 #[derive(Clone)]

@@ -175,6 +175,20 @@ e2e: `qa/tenant-invite-e2e.sh` (15/15: invito, validazioni, pacchetto, licenze, 
 e2e: `qa/tenant-lifecycle-e2e.sh` (10/10: sospendi/riattiva/login, stato in lista, readiness,
 elimina con conferma slug + cascade, audit).
 
+**Console superadmin a schede.** **Panoramica** (KPI tenant + stato sistema sintetico + alert recenti),
+**Tenant** (lista + filtri; il form "Crea tenant" è dietro il bottone **+ Nuovo tenant**), **Sistema**
+(monitoring infrastrutturale completo).
+
+**Monitoring sistema + watchdog (scheda Sistema).** `GET /api/superadmin/system` espone in tempo reale:
+server (host/OS, CPU%, memoria usata/totale, disco — via `sysinfo`), applicazione (versione, uptime),
+database (online, dimensione, connessioni/max), worker (heartbeat), code (outbox in coda/errore,
+sessioni) e aggregati (tenant/utenti/dispositivi/incidenti). Ogni metrica ha una **soglia** (env
+`YW_SYS_*`, default: disco/mem 90%, CPU 95%, worker >120s) con semaforo verde/giallo/rosso. Un
+**watchdog** nel worker (~60s) apre un alert per ogni problema nuovo (dedup 60 min per tipo), lo
+**notifica al superadmin** (sink webhook / email relay / SMS Twilio, riuso motore nativo), lo risolve
+quando rientra, e lo storicizza in `app.system_alerts` (mig 0121, `GET /api/superadmin/system/alerts`).
+e2e: `qa/system-monitoring-e2e.sh` (6/6).
+
 **Cruscotto superadmin (usabilità con molti tenant).** La home mostra in cima un **riepilogo** a tile
 (tenant totali, operativi, da configurare, sospesi, utenti, dispositivi, incidenti aperti, inviti in
 sospeso) calcolato da `list_tenants` (che ora espone anche `incidents_open`). Sotto, i tenant sono

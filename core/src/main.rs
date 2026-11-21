@@ -141,6 +141,8 @@ async fn run() -> anyhow::Result<()> {
         control_host: env("YW_CONTROL_HOST", "tenants.loneworker.eu"),
         base_domain: env("YW_BASE_DOMAIN", "loneworker.eu"),
         secrets: Arc::new(crypto::Secrets::from_env()),
+        started: std::time::Instant::now(),
+        worker_heartbeat: Arc::new(std::sync::atomic::AtomicI64::new(0)),
     };
     // P3: se la chiave e' presente, cifra a riposo i segreti ancora in chiaro.
     if st.secrets.enabled() {
@@ -199,6 +201,8 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/superadmin/tenants/:id/ai", get(api::super_get_ai).post(api::super_set_ai))
         .route("/api/superadmin/tenants/:id/ai/verify", post(api::ai_verify))
         .route("/api/superadmin/plans", get(api::super_plans_list))
+        .route("/api/superadmin/system", get(api::super_system))
+        .route("/api/superadmin/system/alerts", get(api::super_system_alerts))
         .route("/api/superadmin/scenarios", get(api::super_scenarios_list))
         .route("/api/superadmin/tenants/:id/scenarios", get(api::super_tenant_scenarios).post(api::super_apply_scenario))
         .route("/api/superadmin/tenants/:id/scenarios/bulk", post(api::super_bulk_scenarios))

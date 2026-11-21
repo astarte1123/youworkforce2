@@ -16,6 +16,8 @@ pub async fn run(st: AppState) {
 }
 
 async fn tick(st: &AppState) -> anyhow::Result<()> {
+    // heartbeat monitoring: timestamp dell'ultimo giro del worker (per il cruscotto superadmin).
+    st.worker_heartbeat.store(chrono::Utc::now().timestamp(), std::sync::atomic::Ordering::Relaxed);
     // STACK: ogni sub-worker è una `async fn` con future profondo (debug: frame grandi). Se awaitati
     // direttamente, il future di `tick` conterrebbe TUTTI i loro stati come campi annidati (somma dei
     // sotto-alberi) -> il frame di poll cresce fino allo stack-overflow sotto carico. `Box::pin` sposta
@@ -38,6 +40,8 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     if n % 15 == 3 { Box::pin(api::heartbeat_watchdog(st)).await; }
     // IoT Fase 3: watchdog offline dei device IoT (alert in vista separata) ~ogni 6s
     if n % 3 == 1 { if let Err(e) = Box::pin(api::iot_offline_watchdog(st)).await { tracing::warn!("iot watchdog: {e}"); } }
+    // watchdog infrastrutturale (server/DB/worker): ~ogni 60s, apre alert + notifica superadmin
+    if n % 30 == 13 { Box::pin(api::system_watchdog(st)).await; }
     Ok(())
 }
 

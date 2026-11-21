@@ -478,6 +478,155 @@ pub async fn list_tenants(State(st): State<AppState>, h: HeaderMap) -> R {
     })).collect();
     Ok(Json(json!(out)))
 }
+// ===================== Monitoring sistema (superadmin) =====================
+fn sys_env_i64(k: &str, d: i64) -> i64 { std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d) }
+/// Soglie infrastrutturali (override via env YW_SYS_*): disco/mem/cpu % e staleness worker (s).
+pub fn sys_thresholds() -> (f64,f64,f64,i64) {
+    (sys_env_i64("YW_SYS_DISK_MAX_PCT",90) as f64, sys_env_i64("YW_SYS_MEM_MAX_PCT",90) as f64,
+     sys_env_i64("YW_SYS_CPU_MAX_PCT",95) as f64, sys_env_i64("YW_SYS_WORKER_STALE_SECS",120))
+}
+fn lvl_pct(pct: f64, max: f64) -> &'static str { if pct>=max {"bad"} else if pct>=max-10.0 {"warn"} else {"ok"} }
+/// Snapshot completo dello stato di sistema: hardware (CPU/RAM/disco/host via sysinfo), DB,
+/// runtime app, code e worker. Include una lista `checks` (kind/severity/detail) riusata dal watchdog.
+pub async fn system_snapshot(st: &AppState) -> Value {
+    // --- hardware (bloccante: eseguito su thread dedicato) ---
+    let hw: Value = tokio::task::spawn_blocking(|| {
+        use sysinfo::{System, Disks};
+        let mut sys = System::new();
+        sys.refresh_cpu_all();
+        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+        sys.refresh_cpu_all();
+        sys.refresh_memory();
+        let (mut dt, mut dfree) = (0u64, 0u64);
+        for d in Disks::new_with_refreshed_list().list() { if d.total_space() > dt { dt = d.total_space(); dfree = d.available_space(); } }
+        let (mt, mu) = (sys.total_memory(), sys.used_memory());
+        let r1 = |x: f64| (x*10.0).round()/10.0;
+        json!({
+            "host": System::host_name(), "os": System::name(), "os_version": System::os_version(),
+            "kernel": System::kernel_version(), "arch": System::cpu_arch(), "cpus": sys.cpus().len(),
+            "cpu_pct": r1(sys.global_cpu_usage() as f64),
+            "mem_total": mt, "mem_used": mu, "mem_pct": if mt>0 { r1(mu as f64/mt as f64*100.0) } else {0.0},
+            "disk_total": dt, "disk_used": dt.saturating_sub(dfree),
+            "disk_pct": if dt>0 { r1((dt-dfree) as f64/dt as f64*100.0) } else {0.0},
+        })
+    }).await.unwrap_or_else(|_| json!({}));
+    // --- DB ---
+    let db_size: Option<i64> = sqlx::query_scalar("SELECT pg_database_size(current_database())").fetch_one(&st.owner_pool).await.ok();
+    let db_ok = db_size.is_some();
+    let db_conns: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database()").fetch_one(&st.owner_pool).await.unwrap_or(0);
+    let db_max: i64 = sqlx::query_scalar("SELECT setting::bigint FROM pg_settings WHERE name='max_connections'").fetch_one(&st.owner_pool).await.unwrap_or(0);
+    // --- code / runtime ---
+    let c = |sql: &'static str| async move { sqlx::query_scalar::<_,i64>(sql).fetch_one(&st.owner_pool).await.unwrap_or(0) };
+    let tenants = c("SELECT count(*) FROM app.tenants").await;
+    let users = c("SELECT count(*) FROM app.users").await;
+    let devices = c("SELECT count(*) FROM app.devices").await;
+    let incidents_open = c("SELECT count(*) FROM app.incidents WHERE state<>'chiuso'").await;
+    let outbox_pending = c("SELECT count(*) FROM app.outbox WHERE state='pending'").await;
+    let outbox_error = c("SELECT count(*) FROM app.outbox WHERE state='error'").await;
+    let sessions = c("SELECT count(*) FROM app.sessions").await;
+    // --- worker heartbeat ---
+    let hb = st.worker_heartbeat.load(std::sync::atomic::Ordering::Relaxed);
+    let hb_age = if hb>0 { (chrono::Utc::now().timestamp() - hb).max(0) } else { -1 };
+    let (disk_max, mem_max, cpu_max, worker_stale) = sys_thresholds();
+    let disk_pct = hw.get("disk_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let mem_pct = hw.get("mem_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let cpu_pct = hw.get("cpu_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    // --- checks (kind, severity, detail) ---
+    let mut checks: Vec<Value> = Vec::new();
+    let mut add = |k:&str,sev:&str,detail:String| checks.push(json!({"kind":k,"severity":sev,"detail":detail}));
+    add("db", if db_ok {"ok"} else {"bad"}, if db_ok {"database raggiungibile".into()} else {"database IRRAGGIUNGIBILE".into()});
+    if db_max>0 { let cp=db_conns as f64/db_max as f64*100.0; add("db_conns", lvl_pct(cp,90.0), format!("connessioni DB {}/{}", db_conns, db_max)); }
+    add("disk", lvl_pct(disk_pct,disk_max), format!("disco al {:.0}%", disk_pct));
+    add("mem", lvl_pct(mem_pct,mem_max), format!("memoria al {:.0}%", mem_pct));
+    add("cpu", lvl_pct(cpu_pct,cpu_max), format!("CPU al {:.0}%", cpu_pct));
+    let wsev = if hb_age<0 || hb_age>worker_stale {"bad"} else if hb_age>worker_stale/2 {"warn"} else {"ok"};
+    add("worker", wsev, if hb_age<0 {"worker mai visto".into()} else {format!("ultimo giro worker {}s fa", hb_age)});
+    if outbox_error>0 { add("outbox", if outbox_error>20 {"bad"} else {"warn"}, format!("{} messaggi outbox in errore", outbox_error)); }
+    let overall = if checks.iter().any(|c| c["severity"]=="bad") {"bad"} else if checks.iter().any(|c| c["severity"]=="warn") {"warn"} else {"ok"};
+    json!({
+        "status": overall,
+        "app": {"version": env!("CARGO_PKG_VERSION"), "uptime_secs": st.started.elapsed().as_secs(), "test_clock": st.clock.test_mode},
+        "server": hw,
+        "db": {"reachable": db_ok, "size_bytes": db_size, "connections": db_conns, "max_connections": db_max},
+        "queues": {"outbox_pending": outbox_pending, "outbox_error": outbox_error, "sessions": sessions,
+                   "incidents_open": incidents_open, "tenants": tenants, "users": users, "devices": devices},
+        "worker": {"heartbeat_age_secs": hb_age},
+        "thresholds": {"disk_max_pct": disk_max, "mem_max_pct": mem_max, "cpu_max_pct": cpu_max, "worker_stale_secs": worker_stale},
+        "checks": checks,
+    })
+}
+pub async fn super_system(State(st): State<AppState>, h: HeaderMap) -> R {
+    require_super(&st, &h).await?;
+    Ok(Json(system_snapshot(&st).await))
+}
+pub async fn super_system_alerts(State(st): State<AppState>, h: HeaderMap) -> R {
+    require_super(&st, &h).await?;
+    let rows = sqlx::query("SELECT id,kind,severity,detail,created_at,notified,resolved_at FROM app.system_alerts ORDER BY created_at DESC LIMIT 100")
+        .fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "id": r.get::<Uuid,_>("id"), "kind": r.get::<String,_>("kind"), "severity": r.get::<String,_>("severity"),
+        "detail": r.get::<String,_>("detail"), "created_at": r.get::<chrono::DateTime<chrono::Utc>,_>("created_at").to_rfc3339(),
+        "notified": r.get::<bool,_>("notified"),
+        "resolved_at": r.try_get::<chrono::DateTime<chrono::Utc>,_>("resolved_at").ok().map(|d| d.to_rfc3339()),
+    })).collect();
+    Ok(Json(json!(out)))
+}
+/// Watchdog infrastrutturale: valuta i check di sistema, apre un alert per ogni problema NUOVO
+/// (dedup: un alert aperto per kind entro 60 min), notifica il superadmin (sink/email/SMS) e
+/// risolve gli alert quando il check torna ok. Chiamato dal worker.
+pub async fn system_watchdog(st: &AppState) {
+    let snap = system_snapshot(st).await;
+    let checks = snap.get("checks").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    for c in &checks {
+        let kind = c.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let sev = c.get("severity").and_then(|v| v.as_str()).unwrap_or("ok");
+        let detail = c.get("detail").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if kind.is_empty() { continue; }
+        if sev == "ok" {
+            let _ = sqlx::query("UPDATE app.system_alerts SET resolved_at=now() WHERE kind=$1 AND resolved_at IS NULL")
+                .bind(kind).execute(&st.owner_pool).await;
+            continue;
+        }
+        // dedup: già un alert aperto per questo kind nell'ultima ora?
+        let recent: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM app.system_alerts WHERE kind=$1 AND resolved_at IS NULL AND created_at > now() - interval '60 minutes' LIMIT 1")
+            .bind(kind).fetch_optional(&st.owner_pool).await.ok().flatten();
+        if recent.is_some() { continue; }
+        let id: Option<Uuid> = sqlx::query_scalar("INSERT INTO app.system_alerts(kind,severity,detail) VALUES($1,$2,$3) RETURNING id")
+            .bind(kind).bind(sev).bind(&detail).fetch_one(&st.owner_pool).await.ok();
+        let sent = system_alert_notify(st, sev, kind, &detail).await;
+        if sent { if let Some(i)=id { let _=sqlx::query("UPDATE app.system_alerts SET notified=true WHERE id=$1").bind(i).execute(&st.owner_pool).await; } }
+        let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES(NULL,'system','system_alert',$1)")
+            .bind(json!({"kind":kind,"severity":sev,"detail":detail,"notified":sent})).execute(&st.owner_pool).await;
+        tracing::warn!("system alert [{sev}] {kind}: {detail} (notified={sent})");
+    }
+}
+/// Notifica un alert di sistema al superadmin su tutti i canali configurati (sink webhook per e2e,
+/// email relay, SMS Twilio). Ritorna true se almeno un canale ha consegnato.
+async fn system_alert_notify(st: &AppState, sev: &str, kind: &str, detail: &str) -> bool {
+    let subj = format!("[YW {}] {} — {}", sev.to_uppercase(), kind, detail);
+    let emails: Vec<String> = sqlx::query_scalar("SELECT email FROM app.superadmins").fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let mut any = false;
+    // 1) sink webhook (e2e + integrazione generica)
+    if let Ok(sink) = std::env::var("YW_ESC_SINK_URL") { if !sink.trim().is_empty() {
+        let body = json!({"kind":"system_alert","severity":sev,"check":kind,"text":subj});
+        if crate::delivery::deliver_to_sink(&st.http, &sink, &body).await.state == "sent" { any = true; }
+    }}
+    // 2) email relay a tutti i superadmin (+ eventuale indirizzo extra)
+    if let Ok(relay) = std::env::var("YW_ESC_SMTP_RELAY_URL") { if !relay.trim().is_empty() {
+        let mut to: Vec<String> = emails.clone();
+        if let Ok(x) = std::env::var("YW_SYS_ALERT_EMAIL") { if !x.trim().is_empty() { to.push(x); } }
+        for e in to { let body = json!({"to":e,"subject":subj,"text":detail});
+            if crate::delivery::deliver_email_relay(&st.http, &relay, &body).await.state == "live" { any = true; } }
+    }}
+    // 3) SMS Twilio (gated live) al numero del superadmin
+    if crate::delivery::TwilioCfg::live_enabled() { if let (Some(cfg), Ok(ph)) = (crate::delivery::TwilioCfg::from_env(), std::env::var("YW_SYS_ALERT_PHONE")) {
+        if !ph.trim().is_empty() {
+            if crate::delivery::deliver_twilio_live(&st.http, &cfg, crate::delivery::Channel::Sms, &ph, &subj, "system").await.state == "live" { any = true; }
+        }
+    }}
+    any
+}
 #[derive(Deserialize)] pub struct TenantStatusReq { pub status: String }
 /// Sospende/riattiva un tenant (sospeso = login utenti bloccato). Superadmin.
 pub async fn set_tenant_status(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<TenantStatusReq>) -> R {
