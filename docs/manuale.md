@@ -175,6 +175,13 @@ e2e: `qa/tenant-invite-e2e.sh` (15/15: invito, validazioni, pacchetto, licenze, 
 e2e: `qa/tenant-lifecycle-e2e.sh` (10/10: sospendi/riattiva/login, stato in lista, readiness,
 elimina con conferma slug + cascade, audit).
 
+**Cruscotto superadmin (usabilità con molti tenant).** La home mostra in cima un **riepilogo** a tile
+(tenant totali, operativi, da configurare, sospesi, utenti, dispositivi, incidenti aperti, inviti in
+sospeso) calcolato da `list_tenants` (che ora espone anche `incidents_open`). Sotto, i tenant sono
+**righe compatte** (stato + prontezza + moduli attivi/utenti/dispositivi/licenze) che si **espandono
+al click** per mostrare toggle moduli e gestione — così non si scorre una lista infinita di
+attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + ricerca per nome/slug.
+
 ## 13-bis. Privacy e audit (GDPR + registro attività)
 
 Voce menu **«Privacy e audit»** (Configurazione, solo `tenant_admin`): export dei dati personali

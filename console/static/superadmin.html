@@ -16,6 +16,24 @@
   .colorset{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;align-content:flex-end}
   .chkline{display:inline-flex;gap:8px;align-items:center;white-space:nowrap;height:36px}
   .ct-foot{display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap;margin-top:14px}
+  /* cruscotto superadmin */
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:16px}
+  .kpi{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--surface,#fff)}
+  .kpi .v{font-size:24px;font-weight:800;line-height:1.1}
+  .kpi .k{font-size:11.5px;color:#6b7280;text-transform:uppercase;letter-spacing:.4px;margin-top:2px}
+  .kpi.bad .v{color:var(--bad,#dc2626)} .kpi.warn .v{color:#b45309} .kpi.ok .v{color:#16a34a}
+  .sa-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .fchip{border:1px solid var(--line);background:var(--surface,#fff);border-radius:999px;padding:5px 12px;font-size:13px;cursor:pointer}
+  .fchip.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+  /* riga tenant compatta */
+  .trow{border:1px solid var(--line);border-radius:12px;margin-bottom:8px;background:var(--surface,#fff);overflow:hidden}
+  .trow-h{display:flex;align-items:center;gap:12px;padding:12px 14px;cursor:pointer}
+  .trow-h:hover{background:var(--bg2,#f7f7f8)}
+  .trow-meta{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-left:auto}
+  .tstat{font-size:12.5px;color:#6b7280;white-space:nowrap}
+  .tstat b{color:var(--ink,#1a1a1a);font-size:13.5px}
+  .tchev{transition:transform .15s;color:#9ca3af} .trow.open .tchev{transform:rotate(90deg)}
+  .tdetail{padding:0 14px 14px;border-top:1px solid var(--line)}
 </style>
 <script src="/app.js"></script>
 <script>
@@ -90,9 +108,15 @@ async function shell(){
       </div>
       <div id="c_created"></div>
     </div></div>
-    <div class="row" style="align-items:center;gap:12px;margin-bottom:12px">
-      <h2 style="margin:0">Tenant</h2><div class="grow"></div>
-      <input id="t_search" placeholder="🔎 cerca per nome o slug" oninput="tenantFilter()" style="max-width:280px"></div>
+    <div id="kpis" class="kpis"></div>
+    <div class="sa-toolbar">
+      <h2 style="margin:0;margin-right:auto">Tenant</h2>
+      <div class="fchip on" data-f="all" onclick="setFilter('all',this)">Tutti</div>
+      <div class="fchip" data-f="operativo" onclick="setFilter('operativo',this)">Operativi</div>
+      <div class="fchip" data-f="daconfig" onclick="setFilter('daconfig',this)">Da configurare</div>
+      <div class="fchip" data-f="sospeso" onclick="setFilter('sospeso',this)">Sospesi</div>
+      <input id="t_search" placeholder="🔎 cerca per nome o slug" oninput="tenantFilter()" style="min-width:220px">
+    </div>
     <div id="list" class="col"></div>
   </div>`;
   $('#c_go').onclick=create; ['c_cp','c_ca','c_ck','c_cs'].forEach(syncPair); slugPrev(); loadPlans(); load();
@@ -157,12 +181,67 @@ function showCreated(r){
   box.innerHTML=`<div class="card" style="margin-top:12px;padding:12px;border:1px solid var(--line);background:var(--bg2,#f7f7f8)">${inner}</div>`;
 }
 
+let FILTER='all';
 async function load(){
   TENANTS=await api('/superadmin/tenants').catch(()=>[]);
-  const mods=await Promise.all(TENANTS.map(t=>api('/superadmin/tenants/'+t.id+'/modules').catch(()=>[])));
-  $('#list').innerHTML=TENANTS.map((t,i)=>tenantCard(t,mods[i])).join('')||'<div class="empty">nessun tenant</div>';
-  if($('#t_search')&&$('#t_search').value) tenantFilter();
+  renderKpis(TENANTS);
+  $('#list').innerHTML=TENANTS.map(tenantRow).join('')||'<div class="empty">nessun tenant</div>';
+  applyFilters();
 }
+function renderKpis(ts){
+  const n=ts.length, susp=ts.filter(t=>t.status==='sospeso').length;
+  const ready=ts.filter(t=>catOf(t)==='operativo').length, tocfg=ts.filter(t=>catOf(t)==='daconfig').length;
+  const users=ts.reduce((a,t)=>a+(t.users_tot||0),0), dev=ts.reduce((a,t)=>a+(t.iot_used||0),0);
+  const inc=ts.reduce((a,t)=>a+(t.incidents_open||0),0), pend=ts.filter(t=>t.invite_pending).length;
+  const tile=(v,k,cls='')=>`<div class="kpi ${cls}"><div class="v">${v}</div><div class="k">${k}</div></div>`;
+  const box=$('#kpis'); if(box) box.innerHTML=
+    tile(n,'Tenant')+tile(ready,'Operativi','ok')+tile(tocfg,'Da configurare',tocfg?'warn':'')+tile(susp,'Sospesi',susp?'bad':'')
+    +tile(users,'Utenti')+tile(dev,'Dispositivi')+tile(inc,'Incidenti aperti',inc?'bad':'')+tile(pend,'Inviti in sospeso',pend?'warn':'');
+}
+function catOf(t){ if(t.status==='sospeso')return 'sospeso'; return (t.mods_active>0&&t.users_tot>0&&t.sites_tot>0)?'operativo':'daconfig'; }
+function setFilter(f){ FILTER=f; document.querySelectorAll('.fchip').forEach(c=>c.classList.toggle('on',c.dataset.f===f)); applyFilters(); }
+function tenantFilter(){ applyFilters(); }
+function applyFilters(){
+  const q=(($('#t_search')||{}).value||'').toLowerCase().trim();
+  document.querySelectorAll('#list [data-tfind]').forEach(el=>{
+    const okq=el.dataset.tfind.includes(q), okf=FILTER==='all'||el.dataset.cat===FILTER;
+    el.style.display=(okq&&okf)?'':'none';
+  });
+}
+function rowHeadInner(t){
+  return `<div class="ava" ${t.has_logo?`style="background:#fff;padding:3px"`:''}>${t.has_logo?`<img src="/api/superadmin/tenants/${t.id}/logo" style="width:100%;height:100%;object-fit:contain">`:initials(t.name)}</div>
+    <div style="min-width:0"><b>${esc(t.name)}</b> ${statusChip(t)} ${readyChip(t)}
+      <div class="small mut mono">${esc(t.slug)}.loneworker.eu</div></div>
+    <div class="trow-meta">
+      <span class="tstat"><b>${t.mods_active}</b> moduli</span>
+      <span class="tstat"><b>${t.users_tot}</b> utenti</span>
+      <span class="tstat"><b>${t.iot_used}</b> device</span>
+      ${t.incidents_open?`<span class="tstat" style="color:var(--bad)"><b>${t.incidents_open}</b> incidenti</span>`:''}
+      ${licChip('App',t.mobile_used,t.mobile_app_licenses)} ${licChip('IoT',t.iot_used,t.iot_device_licenses)}
+      <span class="tchev">▸</span>
+    </div>`;
+}
+function tenantRow(t){
+  return `<div class="trow" id="trow_${t.id}" data-tfind="${esc((t.name+' '+t.slug).toLowerCase())}" data-cat="${catOf(t)}">
+    <div class="trow-h" id="th_${t.id}" onclick="tdetToggle('${t.id}')">${rowHeadInner(t)}</div>
+    <div class="tdetail" id="det_${t.id}" style="display:none"></div>
+  </div>`;
+}
+async function tdetToggle(tid){
+  const row=document.getElementById('trow_'+tid), det=document.getElementById('det_'+tid);
+  const open=row.classList.toggle('open');
+  if(!open){ det.style.display='none'; return; }
+  det.style.display='';
+  if(!det.dataset.filled){
+    det.innerHTML='<div class="small mut" style="padding:10px 0">Carico…</div>';
+    const t=TENANTS.find(x=>x.id===tid)||{};
+    const mods=await api('/superadmin/tenants/'+tid+'/modules').catch(()=>[]);
+    det.innerHTML=tenantDetailHtml(t,mods); det.dataset.filled='1';
+    if(typeof armDropzones==='function') armDropzones(det);
+  }
+}
+function refreshRowHead(tid){ const t=TENANTS.find(x=>x.id===tid); const h=document.getElementById('th_'+tid);
+  if(t&&h){ h.innerHTML=rowHeadInner(t); } const r=document.getElementById('trow_'+tid); if(r&&t) r.dataset.cat=catOf(t); }
 // Moduli raggruppati per PERIMETRO di prodotto (distingue nettamente le aree funzionali).
 const PERIMETRI=[
   ['Sicurezza lavoratore',['loneworker']],
@@ -207,12 +286,8 @@ async function delTenant(tid,slug){
 }
 function tenantFilter(){ const q=($('#t_search').value||'').toLowerCase().trim();
   document.querySelectorAll('#list [data-tfind]').forEach(el=>{ el.style.display = el.dataset.tfind.includes(q)?'':'none'; }); }
-function tenantCard(t,mods){
-  return `<div class="card" data-tfind="${esc((t.name+' '+t.slug).toLowerCase())}"><div class="card-h">
-    <div class="row" style="gap:10px"><div class="ava" ${t.has_logo?`style="background:#fff;padding:3px"`:''}>${t.has_logo?`<img src="/api/superadmin/tenants/${t.id}/logo" style="width:100%;height:100%;object-fit:contain">`:initials(t.name)}</div>
-      <div><b>${esc(t.name)}</b> ${statusChip(t)} ${readyChip(t)}<div class="small mut mono">${esc(t.slug)}.loneworker.eu</div></div></div>
-    <div class="row" style="gap:6px">${licChip('App mobile',t.mobile_used,t.mobile_app_licenses)} ${licChip('IoT',t.iot_used,t.iot_device_licenses)}</div>
-    </div><div class="card-b">
+function tenantDetailHtml(t,mods){
+  return `
     ${modGroupsHtml(t.id,mods)}
     <div style="margin-top:12px">
       <div class="small mut" style="margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px">Gestione</div>
@@ -231,8 +306,7 @@ function tenantCard(t,mods){
     </div>
     <div id="admin_${t.id}" style="margin-top:8px"></div>
     <div id="tools_${t.id}" style="margin-top:8px"></div>
-    <div id="cfg_${t.id}" style="margin-top:8px"></div>
-    </div></div>`;
+    <div id="cfg_${t.id}" style="margin-top:8px"></div>`;
 }
 // campo colore compatto per il form Crea tenant (hex vuoto = default YouCo)
 function cColor(id,label){ return `<div class="field" style="flex:0"><label>${label}</label>
@@ -319,7 +393,9 @@ async function impersonate(tid){
 async function toggle(tid,code,cb){
   const state=cb.checked?'attivo':'non_abilitato';
   try{ await api('/superadmin/tenants/'+tid+'/modules',{method:'POST',body:JSON.stringify({module_code:code,state})});
-    toast(code+' → '+state,'ok'); load();
+    toast(code+' → '+state,'ok');
+    // aggiorna conteggi locali senza ricaricare (la riga resta aperta)
+    const t=TENANTS.find(x=>x.id===tid); if(t){ t.mods_active=Math.max(0,(t.mods_active||0)+(cb.checked?1:-1)); renderKpis(TENANTS); refreshRowHead(tid); }
   }catch(e){ cb.checked=!cb.checked; toast('Bloccato: '+e.message,'bad'); }
 }
 // Superadmin scope: decide WHICH tools each tenant may configure.

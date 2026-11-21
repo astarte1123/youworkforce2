@@ -453,6 +453,7 @@ pub async fn list_tenants(State(st): State<AppState>, h: HeaderMap) -> R {
             (SELECT count(*) FROM app.tenant_modules m WHERE m.tenant_id=t.id AND m.state='attivo') AS mods_active,
             (SELECT count(*) FROM app.users u WHERE u.tenant_id=t.id) AS users_tot,
             (SELECT count(*) FROM app.sites s WHERE s.tenant_id=t.id) AS sites_tot,
+            (SELECT count(*) FROM app.incidents i WHERE i.tenant_id=t.id AND i.state<>'chiuso') AS incidents_open,
             EXISTS(SELECT 1 FROM app.user_invites i WHERE i.tenant_id=t.id AND i.used_at IS NULL AND i.expires_at>now()) AS invite_pending
          FROM app.tenants t ORDER BY t.created_at")
         .fetch_all(&st.owner_pool).await.map_err(ise)?;
@@ -466,6 +467,8 @@ pub async fn list_tenants(State(st): State<AppState>, h: HeaderMap) -> R {
         "mods_active": r.get::<i64,_>("mods_active"),
         "users_tot": r.get::<i64,_>("users_tot"),
         "sites_tot": r.get::<i64,_>("sites_tot"),
+        "incidents_open": r.get::<i64,_>("incidents_open"),
+        "created_at": r.get::<chrono::DateTime<chrono::Utc>,_>("created_at").to_rfc3339(),
         "invite_pending": r.get::<bool,_>("invite_pending"),
         "brand_primary": r.try_get::<Option<String>,_>("brand_primary").ok().flatten(),
         "brand_ink": r.try_get::<Option<String>,_>("brand_ink").ok().flatten(),
