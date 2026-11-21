@@ -1428,9 +1428,10 @@ async function loadAlarmsOnMap(){
 }
 let _alarmHi=null, _alarmHiT=null, _alarmTipM=null;
 function _selAlarmRow(id){
-  try{ $$('#mapSide .alarm-row').forEach(r=>{ r.classList.remove('sel'); r.style.borderColor=''; r.style.boxShadow=''; });
+  try{ $$('#mapSide .alarm-row').forEach(r=>{ r.classList.remove('sel'); r.style.borderColor=''; r.style.boxShadow=''; r.style.background=''; });
     const el=document.querySelector('#mapSide .alarm-row[data-aid="'+id+'"]');
-    if(el){ el.classList.add('sel'); el.style.borderColor='var(--brand)'; el.style.boxShadow='0 0 0 2px var(--brand-soft)'; el.scrollIntoView({block:'center',behavior:'smooth'}); }
+    if(el){ el.classList.add('sel'); el.style.borderColor='var(--brand)'; el.style.boxShadow='0 0 0 2px var(--brand-soft)';
+      el.style.background='var(--brand-soft)'; el.scrollIntoView({block:'center',behavior:'smooth'}); }
   }catch(e){}
 }
 // Click su una riga dell'elenco allarmi: centra la mappa, evidenzia il pin con un anello pulsante
