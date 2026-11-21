@@ -418,6 +418,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/geofences/:id", axum::routing::delete(api::delete_geofence).put(api::update_geofence))
         .route("/api/geofences/:id/devices", axum::routing::put(api::set_geofence_devices))
         .route("/api/geofences/:id/events", axum::routing::put(api::set_geofence_events))
+        .route("/api/geofences/:id/alert", axum::routing::put(api::set_geofence_alert))
         .route("/api/presence", get(api::list_presence))
         .route("/api/reports/route", get(api::report_route))
         .route("/api/reports/route.csv", get(api::report_route_csv))

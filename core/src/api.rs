@@ -13,7 +13,7 @@ pub(crate) fn err(c: StatusCode, m: &str) -> (StatusCode, String) { (c, m.to_str
 
 const CRITICAL: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin", "sensore_critico",
     "manomissione_badge", "perdita_alimentazione", "jamming", "perdita_contatto", "traccar_conn_down",
-    "batteria_critica", "heartbeat_down", "email_alarm"];
+    "batteria_critica", "heartbeat_down", "email_alarm", "geofence_ingresso", "geofence_uscita"];
 
 /// Traccar alarm -> normalized etype. Safety-first defaults for lone workers.
 /// `sos_as` lets a tenant route the SOS alarm to `sos` or `man_down`.
@@ -5488,7 +5488,7 @@ pub async fn list_geofences(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     require_any_module(&st, s.tenant_id.unwrap(), DEVICE_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT g.id,g.name,g.kind,g.geom,g.site_id,g.floorplan_id,g.color,si.name AS site
+    let rows = sqlx::query("SELECT g.id,g.name,g.kind,g.geom,g.site_id,g.floorplan_id,g.color,g.alert_on,si.name AS site
         FROM app.geofences g LEFT JOIN app.sites si ON si.id=g.site_id ORDER BY g.name").fetch_all(&mut *tx).await.map_err(ise)?;
     let gd = sqlx::query("SELECT geofence_id,device_id FROM app.geofence_devices").fetch_all(&mut *tx).await.map_err(ise)?;
     let ge = sqlx::query("SELECT geofence_id,etype FROM app.geofence_events").fetch_all(&mut *tx).await.map_err(ise)?;
@@ -5500,8 +5500,22 @@ pub async fn list_geofences(State(st): State<AppState>, h: HeaderMap) -> R {
         "id":gid,"name":r.get::<String,_>("name"),"kind":r.get::<String,_>("kind"),
         "geom":r.get::<Value,_>("geom"),"site_id":r.try_get::<Uuid,_>("site_id").ok(),"site":r.try_get::<String,_>("site").ok(),
         "color":r.try_get::<String,_>("color").ok(),
-        "floorplan_id":r.try_get::<Uuid,_>("floorplan_id").ok(),"device_ids":devs,"etypes":evs }) }).collect();
+        "floorplan_id":r.try_get::<Uuid,_>("floorplan_id").ok(),"alert_on":r.try_get::<String,_>("alert_on").ok(),"device_ids":devs,"etypes":evs }) }).collect();
     Ok(Json(json!(out)))
+}
+#[derive(Deserialize)] pub struct GeofenceAlertReq { pub alert_on: Option<String> }
+/// Imposta la direzione di allarme della geofence: null (nessuno), 'enter' (zona vietata), 'exit' (area sicura).
+pub async fn set_geofence_alert(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GeofenceAlertReq>) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
+    let tid = s.tenant_id.unwrap();
+    let v = b.alert_on.as_deref().map(|x| x.trim()).filter(|x| !x.is_empty());
+    if let Some(x)=v { if !["enter","exit"].contains(&x) { return Err(err(StatusCode::BAD_REQUEST,"alert_on: enter|exit|null")); } }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.geofences SET alert_on=$2 WHERE id=$1").bind(id).bind(v).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n==0 { return Err(err(StatusCode::NOT_FOUND,"geofence inesistente")); }
+    audit(&st, tid, &s.email, "set_geofence_alert", json!({"id":id,"alert_on":v})).await;
+    Ok(Json(json!({"ok":true})))
 }
 fn clean_hex_color(c: Option<&str>) -> String {
     let c = c.unwrap_or("").trim();
@@ -5757,6 +5771,8 @@ pub fn etype_label(e: &str) -> &'static str {
         "traccar_conn_down" => "Sistema di tracciamento irraggiungibile",
         "batteria_critica" => "Batteria in esaurimento (critico)",
         "batteria_bassa" => "Batteria bassa",
+        "geofence_ingresso" => "Ingresso in zona vietata (geofence)",
+        "geofence_uscita" => "Uscita da area sicura (geofence)",
         _ => "Altro evento",
     }
 }
@@ -7194,8 +7210,36 @@ pub async fn process_traccar_position(st: &AppState, tid: Uuid, pos: &Value, ext
     publish_event(st, TenantEvent{tenant_id:tid,payload:json!({"type":"device_position","device_id":dev_id,"lat":lat,"lon":lon})}).await;
     for (gid, inside) in &presence_changes {
         publish_event(st, TenantEvent{tenant_id:tid,payload:json!({"type":"presence","device_id":dev_id,"geofence_id":gid,"inside":inside})}).await;
+        // allarme su attraversamento, se la geofence ha alert_on nella direzione del cambio
+        geofence_crossing_alarm(st, tid, *gid, dev_id, *inside, Some(lat), Some(lon)).await;
     }
     Ok(json!({"ok":true,"device_id":dev_id,"deduplicated":dedup.is_none(),"presence_changes":presence_changes.len()}))
+}
+/// Se la geofence ha `alert_on` = direzione del cambio (enter=ingresso, exit=uscita), apre un
+/// allarme (incidente + escalation) con gli etype configurati in geofence_events, oppure con
+/// l'etype di default (geofence_ingresso/uscita). Idempotente per attraversamento.
+pub async fn geofence_crossing_alarm(st: &AppState, tid: Uuid, gid: Uuid, dev_id: Uuid, inside: bool, lat: Option<f64>, lon: Option<f64>) {
+    let g = match sqlx::query("SELECT name,alert_on FROM app.geofences WHERE id=$1 AND tenant_id=$2")
+        .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten() { Some(r)=>r, None=>return };
+    let alert_on: Option<String> = g.try_get("alert_on").ok();
+    let dir = if inside { "enter" } else { "exit" };
+    if alert_on.as_deref() != Some(dir) { return; }
+    let name: String = g.try_get("name").unwrap_or_default();
+    let ext: String = match sqlx::query_scalar::<_,String>("SELECT external_id FROM app.devices WHERE id=$1").bind(dev_id)
+        .fetch_optional(&st.owner_pool).await.ok().flatten() { Some(e)=>e, None=>return };
+    let mut etypes: Vec<String> = sqlx::query_scalar("SELECT etype FROM app.geofence_events WHERE geofence_id=$1")
+        .bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    if etypes.is_empty() { etypes.push(if inside { "geofence_ingresso".into() } else { "geofence_uscita".into() }); }
+    for et in etypes {
+        let corr = format!("gf-{}-{}-{}", gid, dir, Uuid::new_v4());
+        let _ = persist_ingest(st, tid, Normalized{
+            source: "geofence".into(), source_event: corr.clone(), idem: corr.clone(), etype: et,
+            device_external_id: Some(ext.clone()), site_name: None,
+            lat, lon, accuracy_m: None, correlation: corr,
+            payload: json!({"geofence": name, "direction": dir}),
+            indoor: false, beacon_uid: None, zone: Some(name.clone()),
+        }).await;
+    }
 }
 
 /// Storico posizioni di un device (trail/mappa). operatore/admin/auditor.
@@ -7496,6 +7540,7 @@ pub async fn worker_position(State(st): State<AppState>, h: HeaderMap, Json(b): 
     publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"device_position","device_id":dev_id,"lat":lat,"lon":lon})}).await;
     for (gid, inside) in &changes {
         publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"presence","device_id":dev_id,"geofence_id":gid,"inside":inside})}).await;
+        geofence_crossing_alarm(&st, tid, *gid, dev_id, *inside, Some(lat), Some(lon)).await;
     }
     Ok(Json(json!({"ok":true,"device_id":dev_id,"presence_changes":changes.len()})))
 }

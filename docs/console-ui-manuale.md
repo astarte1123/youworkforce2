@@ -241,6 +241,15 @@ Ogni allarme porta con sé **dove si trova il lavoratore**, così l'operatore in
   corrispondente nell'elenco a destra (e viceversa, la riga centra/apre il pin). La piantina ora
   elenca a destra gli allarmi indoor con beacon/zona.
 
+## Geofence → allarmi
+Oltre a presenza e storico (chi entra/esce da un'area), una geofence può **generare un allarme**
+sull'attraversamento: dal pannello «Aree (geofence) → Associa» si imposta **Allarme su
+attraversamento**: *nessuno*, *all'ingresso* (zona vietata) o *all'uscita* (area sicura). Quando il
+device attraversa in quella direzione, il core apre un **incidente + escalation** (`geofence_crossing_alarm`)
+con gli eventi selezionati (o un allarme geofence generico), e il nome dell'area finisce nella posizione
+dell'allarme. Campo `geofences.alert_on` (mig 0123), `PUT /api/geofences/:id/alert`.
+e2e: `qa/geofence-alarm-e2e.sh`.
+
 ## Note tecniche
 - File coinvolti: `console/static/app.html`, `console/static/app.js`, `console/static/app.css`.
 - Avvio console: dalla cartella `console/`, `./console.exe` (o `go run .`) → `:8081`,

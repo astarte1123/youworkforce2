@@ -1028,6 +1028,7 @@ const ETYPE_LAB={sos:'SOS / richiesta soccorso',man_down:'Uomo a terra (man down
   perdita_alimentazione:'Perdita alimentazione',jamming:'Jamming / disturbo segnale',perdita_contatto:'Perdita contatto (badge silente)',
   traccar_conn_down:'Sistema di tracciamento irraggiungibile',batteria_critica:'Batteria in esaurimento (critico)',batteria_bassa:'Batteria bassa',
   ingresso_sito:'Ingresso in sito',uscita_sito:'Uscita dal sito',
+  geofence_ingresso:'Ingresso in zona vietata (geofence)',geofence_uscita:'Uscita da area sicura (geofence)',
   movimento_non_accompagnato:'Movimento non accompagnato',movimento_non_accompagnato_critico:'Movimento non accompagnato (critico)',
   dispositivo_inattivo:'Dispositivo inattivo',dispositivo_inattivo_critico:'Dispositivo inattivo (critico)',
   prossimita_ingresso:'Prossimità: ingresso',prossimita_uscita:'Prossimità: uscita',
@@ -1820,7 +1821,7 @@ function geofencePanel(GF,admin){ if(!admin)return'';
     <div class="small mut" style="margin-bottom:var(--s-8)">Rinomina, colore, modifica forma, associa dispositivi/eventi o elimina. Disegna nuove aree con gli strumenti ⬡.</div>
     ${GF.length?GF.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-8);margin-bottom:var(--s-6)">
       <div class="spread"><b class="small">${esc(g.name)}</b><span class="chip" style="background:${g.color||'#16a34a'};color:#fff;border:none">${esc(g.kind)}</span></div>
-      <div class="small mut" style="margin:var(--s-4) 0">${(g.device_ids||[]).length} device · ${(g.etypes||[]).length} eventi</div>
+      <div class="small mut" style="margin:var(--s-4) 0">${(g.device_ids||[]).length} device · ${(g.etypes||[]).length} eventi${g.alert_on?` · <span style="color:var(--bad)">🚨 allarme in ${g.alert_on==='enter'?'ingresso':'uscita'}</span>`:''}</div>
       <div class="row" style="gap:var(--s-6);flex-wrap:wrap;align-items:center">
         <button class="btn ghost small" onclick="gfEditShape('${g.id}')">✥ Forma</button>
         <button class="btn ghost small" onclick="gfRename('${g.id}')">✎ Rinomina</button>
@@ -1856,15 +1857,25 @@ async function gfAssoc(id,name){
   const evHtml=GF_ETYPES.map(([k,l])=>`<label class="row small" style="gap:var(--s-8);padding:var(--s-3) 0"><input type="checkbox" class="gfe" value="${k}" ${selE.has(k)?'checked':''}> ${esc(l)}</label>`).join('');
   drawer('Associazioni · '+esc(name),`
     <div class="small mut" style="margin-bottom:var(--s-10)">Collega a questa area i dispositivi IoT che vi appartengono e i tipi di evento rilevanti/monitorati nella zona.</div>
-    <h3 style="margin:var(--s-8) 0">Dispositivi IoT</h3><div style="max-height:34vh;overflow:auto">${devHtml}</div>
-    <h3 style="margin:var(--s-14) 0 var(--s-8)">Eventi monitorati</h3><div style="max-height:30vh;overflow:auto">${evHtml}</div>
+    <h3 style="margin:var(--s-8) 0">🚨 Allarme su attraversamento</h3>
+    <label class="small mut">Quando genera un allarme (incidente + escalation)
+      <select id="gfAlertOn">
+        <option value="" ${!g.alert_on?'selected':''}>— nessuno (solo presenza/log) —</option>
+        <option value="enter" ${g.alert_on==='enter'?'selected':''}>All'INGRESSO (zona vietata)</option>
+        <option value="exit" ${g.alert_on==='exit'?'selected':''}>All'USCITA (area sicura)</option>
+      </select></label>
+    <div class="small mut" style="margin-top:var(--s-4)">Se attivo, l'attraversamento in quella direzione apre un allarme con gli <b>eventi selezionati</b> sotto; se non ne selezioni nessuno, usa un allarme geofence generico.</div>
+    <h3 style="margin:var(--s-14) 0 var(--s-8)">Dispositivi IoT</h3><div style="max-height:30vh;overflow:auto">${devHtml}</div>
+    <h3 style="margin:var(--s-14) 0 var(--s-8)">Eventi monitorati / da elevare</h3><div style="max-height:26vh;overflow:auto">${evHtml}</div>
     <button class="btn block" style="margin-top:var(--s-14)" onclick="gfSaveAssoc('${id}')">Salva associazioni</button>`);
 }
 async function gfSaveAssoc(id){
   const devs=[...document.querySelectorAll('.gfd:checked')].map(x=>x.value);
   const evs=[...document.querySelectorAll('.gfe:checked')].map(x=>x.value);
+  const alertOn=($('#gfAlertOn')&&$('#gfAlertOn').value)||null;
   try{ await api('/geofences/'+id+'/devices',{method:'PUT',body:JSON.stringify({device_ids:devs})});
     await api('/geofences/'+id+'/events',{method:'PUT',body:JSON.stringify({etypes:evs})});
+    await api('/geofences/'+id+'/alert',{method:'PUT',body:JSON.stringify({alert_on:alertOn})});
     toast('Associazioni salvate ('+devs.length+' device, '+evs.length+' eventi)','ok'); closeDrawer(); gfRefresh(id);
   }catch(e){ toast(e.message,'bad'); } }
 async function gfColor(id,color){ try{ await api('/geofences/'+id,{method:'PUT',body:JSON.stringify({color})}); toast('Colore aggiornato','ok'); gfRefresh(id); }catch(e){ toast(e.message,'bad'); } }
