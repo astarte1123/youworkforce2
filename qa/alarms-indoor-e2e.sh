@@ -56,5 +56,18 @@ MAP=$(api "$BASE/api/alarms/map?from=2020-01-01T00:00:00Z&to=2030-01-01T00:00:00
 echo "$MAP" | python -c 'import sys,json;a=json.load(sys.stdin)["alarms"];print("ok" if any(x["indoor"] for x in a) and any(not x["indoor"] for x in a) else "no")' | grep -q ok \
   && ok "mappa allarmi espone sia indoor sia outdoor" || no "mappa non differenzia" "-"
 
+# --- /incidents espone la POSIZIONE (Centrale/popup): indoor zona+beacon, outdoor lat/lon ---
+INC_IND=$(sql "SELECT id FROM app.incidents WHERE event_id='$ii'")
+INC_OUT=$(sql "SELECT id FROM app.incidents WHERE event_id='$io'")
+api "$BASE/api/incidents" | python -c "
+import sys,json
+d=json.load(sys.stdin)
+ind=next((x for x in d if x['id']=='$INC_IND'),None)
+out=next((x for x in d if x['id']=='$INC_OUT'),None)
+ok_ind = bool(ind) and ind.get('indoor')==True and bool(ind.get('zone')) and ind.get('beacon_uid')=='$UIDM'
+ok_out = bool(out) and out.get('indoor')==False and out.get('lat') is not None and out.get('lon') is not None
+print('IND' if ok_ind else 'xIND', 'OUT' if ok_out else 'xOUT')
+" | grep -q "IND OUT" && ok "/incidents espone posizione (indoor zona+beacon, outdoor lat/lon)" || no "posizione mancante in /incidents" "-"
+
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

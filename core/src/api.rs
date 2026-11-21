@@ -7316,10 +7316,13 @@ pub async fn list_incidents(State(st): State<AppState>, h: HeaderMap) -> R {
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = sqlx::query(
         "SELECT i.id,i.etype,i.state,i.priority,i.correlation,i.opened_at,i.outcome,i.assigned_user,i.site_id,
-                s.name AS site, u.email AS assignee,
+                s.name AS site, s.address AS site_address, u.email AS assignee,
                 i.attribution_uncertain, i.attribution_note,
                 COALESCE(w.email, du.email) AS worker,
-                COALESCE(d.label, d.external_id) AS device
+                COALESCE(d.label, d.external_id) AS device,
+                e.indoor, e.beacon_uid, e.zone AS ev_zone, e.accuracy_m,
+                COALESCE(e.lat, b.lat) AS lat, COALESCE(e.lon, b.lon) AS lon,
+                b.zone_name, b.floor, b.floorplan_id, b.x AS fp_x, b.y AS fp_y, fp.name AS floorplan_name
          FROM app.incidents i
            LEFT JOIN app.sites s ON s.id=i.site_id
            LEFT JOIN app.users u ON u.id=i.assigned_user
@@ -7327,6 +7330,8 @@ pub async fn list_incidents(State(st): State<AppState>, h: HeaderMap) -> R {
            LEFT JOIN app.events e ON e.id=i.event_id
            LEFT JOIN app.devices d ON d.id=e.device_id
            LEFT JOIN app.users du ON du.id=d.assigned_user
+           LEFT JOIN app.beacons b ON b.beacon_uid=e.beacon_uid AND b.tenant_id=i.tenant_id
+           LEFT JOIN app.floorplans fp ON fp.id=b.floorplan_id
          ORDER BY i.state<>'chiuso' DESC, i.priority DESC, i.opened_at DESC")
         .fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
@@ -7337,10 +7342,21 @@ pub async fn list_incidents(State(st): State<AppState>, h: HeaderMap) -> R {
         "state": r.get::<String,_>("state"), "priority": r.get::<i32,_>("priority"),
         "correlation": r.get::<String,_>("correlation"),
         "site": r.try_get::<String,_>("site").ok(),
+        "site_address": r.try_get::<String,_>("site_address").ok(),
         "assigned_user": r.try_get::<Uuid,_>("assigned_user").ok(),
         "assignee": r.try_get::<String,_>("assignee").ok(),
         "worker": r.try_get::<String,_>("worker").ok(),
         "device": r.try_get::<String,_>("device").ok(),
+        // posizione: indoor (piantina/zona/beacon + x,y sul piano) e/o outdoor (lat/lon)
+        "indoor": r.try_get::<bool,_>("indoor").unwrap_or(false),
+        "zone": r.try_get::<String,_>("zone_name").ok().or_else(|| r.try_get::<String,_>("ev_zone").ok()),
+        "beacon_uid": r.try_get::<String,_>("beacon_uid").ok(),
+        "floor": r.try_get::<String,_>("floor").ok(),
+        "floorplan_id": r.try_get::<Uuid,_>("floorplan_id").ok(),
+        "floorplan_name": r.try_get::<String,_>("floorplan_name").ok(),
+        "fp_x": r.try_get::<f64,_>("fp_x").ok(), "fp_y": r.try_get::<f64,_>("fp_y").ok(),
+        "lat": r.try_get::<f64,_>("lat").ok(), "lon": r.try_get::<f64,_>("lon").ok(),
+        "accuracy_m": r.try_get::<f64,_>("accuracy_m").ok(),
         "attribution_uncertain": r.try_get::<bool,_>("attribution_uncertain").unwrap_or(false),
         "attribution_note": r.try_get::<String,_>("attribution_note").ok(),
         "outcome": r.try_get::<String,_>("outcome").ok() })).collect();

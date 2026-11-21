@@ -869,7 +869,9 @@ function cenRender(){
   const start=(CEN.page-1)*CEN.size, pageItems=list.slice(start,start+CEN.size);
   const body=$('#incBody'), empty=$('#incEmpty'), pager=$('#incPager');
   body.innerHTML=pageItems.map(i=>`<tr class="clk${i.state==='aperto'?' inc-live':''}" data-inc="${i.id}">
-    <td><b>${esc(i.etype)}</b>${i.attribution_uncertain?' <span title="attribuzione lavoratore da verificare" style="color:var(--warn)">⚠</span>':''}</td><td>${esc(i.site||'—')}</td><td class="small">${esc(i.assignee||'—')}</td><td>${chip(i.state)}</td>
+    <td><b>${esc(etLab(i.etype))}</b>${i.attribution_uncertain?' <span title="attribuzione lavoratore da verificare" style="color:var(--warn)">⚠</span>':''}
+      <div class="small mut">${i.worker?('👤 '+esc(i.worker)+' · '):''}${incLoc(i)}</div></td>
+    <td class="small">${esc(i.site||'—')}</td><td class="small">${esc(i.assignee||'—')}</td><td>${chip(i.state)}</td>
     <td class="sev pri${i.priority}">${'●'.repeat(i.priority||0)}</td>
     <td class="mono small mut">${esc((i.correlation||'').slice(0,8))}</td></tr>`).join('');
   empty.hidden = total>0;
@@ -883,12 +885,26 @@ function cenRender(){
       <button class="btn ghost small" ${CEN.page>=pages?'disabled':''} onclick="cenPage(1)">${t('pager_next','Succ ›')}</button>
     </div>`;
 }
+// Sintesi POSIZIONE di un allarme: indoor (piantina/zona/beacon) o outdoor (sede/coordinate).
+function incLoc(i){
+  if(i.indoor || i.floorplan_name || i.zone || i.beacon_uid){
+    const b=[]; if(i.floorplan_name)b.push('🏢 '+esc(i.floorplan_name)); if(i.floor)b.push('piano '+esc(i.floor));
+    if(i.zone)b.push('zona '+esc(i.zone)); else if(i.beacon_uid)b.push('beacon '+esc(i.beacon_uid));
+    return '📍 Interno' + (b.length?(' — '+b.join(' · ')):'');
+  }
+  if(i.lat!=null&&i.lon!=null){ const a=i.accuracy_m?' ±'+Math.round(i.accuracy_m)+'m':'';
+    return '🛰 '+(i.site?esc(i.site)+' · ':'')+Number(i.lat).toFixed(5)+', '+Number(i.lon).toFixed(5)+a; }
+  if(i.site) return '🏢 '+esc(i.site)+(i.site_address?(' · '+esc(i.site_address)):'');
+  return '<span class="mut">posizione non disponibile</span>';
+}
+function incMapsUrl(i){ return (i.lat!=null&&i.lon!=null)?('https://www.openstreetmap.org/?mlat='+i.lat+'&mlon='+i.lon+'#map=18/'+i.lat+'/'+i.lon):null; }
 // Testo ricercabile (full-text) di un incidente: tipo (+etichetta), sede, assegnato, stato
 // (+sinonimi), priorità (numero + livello) e correlazione (completa e breve).
 function incHay(i){
   const pri={1:'bassa',2:'media',3:'alta',4:'critica',5:'critica'};
   const st={aperto:'aperto nuovo',preso_in_carico:'preso in carico ack',chiuso:'chiuso risolto'};
-  const parts=[i.etype, (typeof etLab==='function'?etLab(i.etype):''), i.site, i.assignee,
+  const parts=[i.etype, (typeof etLab==='function'?etLab(i.etype):''), i.site, i.assignee, i.worker,
+    i.zone, i.floorplan_name, i.beacon_uid, (i.indoor?'indoor interno':'outdoor esterno'),
     i.state, (st[i.state]||''), ('priorità '+i.priority), (pri[i.priority]||''),
     i.correlation, (i.correlation||'').slice(0,8)];
   return parts.filter(Boolean).join(' ').toLowerCase();
@@ -910,7 +926,8 @@ async function vMieiAllarmi(v){
   <div class="col" style="gap:var(--s-10)">${aperti.map(i=>`
     <div class="card clk-card" data-inc="${i.id}" style="padding:var(--s-14);border-left:4px solid ${i.priority>=3?'var(--bad)':i.priority>=2?'#ea580c':'var(--line)'}">
       <div class="spread"><b>${esc(etLab(i.etype))}</b>${chip(i.state)}</div>
-      <div class="small mut" style="margin-top:var(--s-4)">${esc(i.site||'sede n/d')}${i.assignee?' · 👤 '+esc(i.assignee):''}</div>
+      <div class="small mut" style="margin-top:var(--s-4)">${i.worker?('👤 '+esc(i.worker)+' · '):''}${incLoc(i)}</div>
+      <div class="small mut" style="margin-top:var(--s-2)">${esc(i.site||'sede n/d')}${i.assignee?' · 🧑‍💼 '+esc(i.assignee):''}</div>
       <div class="small" style="margin-top:var(--s-6);color:var(--brand)">Tocca per gestire →</div>
     </div>`).join('')||`<div class="card pad empty">${ICON.check}<div>Nessun allarme aperto. Tutto tranquillo.</div></div>`}</div>`;
   bindRows(v);
@@ -936,6 +953,13 @@ async function openIncident(id){
   drawer(`Incidente · ${esc(i.etype)}`, `
     <div class="row" style="margin-bottom:var(--s-10)">${chip(i.state)}<span class="chip">prio ${i.priority}</span><span class="chip">${esc(i.site||'—')}</span>${i.assignee?`<span class="chip" title="operatore assegnato">🧑‍💼 ${esc(i.assignee)}</span>`:''}</div>
     ${(i.worker||i.device)?`<div class="row" style="gap:var(--s-6);margin-bottom:var(--s-10)">${i.worker?`<span class="chip" title="lavoratore (all'orario dell'evento)">👤 ${esc(i.worker)}</span>`:''}${i.device?`<span class="chip" title="dispositivo">📟 ${esc(i.device)}</span>`:''}</div>`:''}
+    <div class="card pad" style="margin-bottom:var(--s-12);border-left:4px solid ${i.priority>=3?'var(--bad)':'#ea580c'};background:var(--brand-soft)">
+      <b>📍 Dove si trova${i.worker?' '+esc(i.worker):' il lavoratore'}</b>
+      <div style="margin-top:var(--s-4)">${incLoc(i)}</div>
+      ${(i.floorplan_id||incMapsUrl(i))?`<div class="row" style="gap:var(--s-6);margin-top:var(--s-8);flex-wrap:wrap">
+        ${i.floorplan_id?`<button class="btn ghost small" onclick="closeDrawer();location.hash='#/piantine'">🗺 Apri piantina</button>`:''}
+        ${incMapsUrl(i)?`<a class="btn ghost small" href="${incMapsUrl(i)}" target="_blank" rel="noopener">🗺 Apri in mappa</a>`:''}</div>`:''}
+    </div>
     ${i.attribution_uncertain?`<div class="card pad" style="margin-bottom:var(--s-12);border-left:4px solid var(--warn);background:var(--warn-soft)"><b>⚠ Attribuzione da verificare</b><div class="small" style="margin-top:var(--s-2)">${esc(i.attribution_note||'Il lavoratore attribuito potrebbe non corrispondere a chi indossava il dispositivo al momento dell\'evento.')}</div></div>`:''}
     <div class="small mut">Correlazione</div><div class="mono" style="margin-bottom:var(--s-16)">${esc(i.correlation)}</div>
     <div style="margin-bottom:var(--s-6)">${acts}</div>${assignBox}${noteBox}
@@ -1383,6 +1407,8 @@ async function loadAlarmsOnMap(){
       if(a.lat==null||a.lon==null){ noGeo.push(a); return; }
       const m=L.marker([a.lat,a.lon],{icon:alarmIcon(a)}).bindPopup(alarmPopup(a))
         .bindTooltip(alarmTip(a),{direction:'top',offset:[0,-12],opacity:1,className:'alarm-tip'});
+      // click/popup sul PIN -> seleziona e scorre al messaggio corrispondente nella lista di destra
+      m.on('click',()=>_selAlarmRow(a.id)); m.on('popupopen',()=>_selAlarmRow(a.id));
       AMARK[a.id]=m; m.addTo(ALARMLAYER); pts.push([a.lat,a.lon]);
     });
     if(pts.length) MAP.fitBounds(pts,{padding:[40,40],maxZoom:16});
@@ -1426,6 +1452,9 @@ function focusAlarm(id,lat,lon){
     try{_alarmHi.setRadius(r);}catch(e){}
     if(++ticks>42){ clearInterval(_alarmHiT); _alarmHiT=null; if(_alarmHi){ try{MAP.removeLayer(_alarmHi);}catch(e){} _alarmHi=null; } } },55);
 }
+// Riga lista allarmi (piantina) -> centra e apre il pin corrispondente sulla planimetria.
+function focusIndoorAlarm(id){ _selAlarmRow(id); const m=AMARK[id];
+  if(m&&typeof FPMAP!=='undefined'&&FPMAP){ try{ FPMAP.setView(m.getLatLng(), FPMAP.getZoom()); m.openPopup(); }catch(e){} } }
 // ---- Modalità DISPOSITIVI (live + geofence) ----
 async function renderDevices(admin){
   $('#mapSub').textContent='dispositivi live · geofence · presenza';
@@ -1588,7 +1617,11 @@ async function fpOpen(){
       alarmsHere=(am.alarms||[]).filter(a=>a.indoor && a.beacon_uid && placedByUid[a.beacon_uid]);
       const al=L.layerGroup().addTo(FPMAP);
       alarmsHere.forEach(a=>{ const p=placedByUid[a.beacon_uid];
-        L.marker([p.y,p.x],{icon:alarmIcon(a),zIndexOffset:1000}).bindPopup(alarmPopup(a)).addTo(al); });
+        const m=L.marker([p.y,p.x],{icon:alarmIcon(a),zIndexOffset:1000}).bindPopup(alarmPopup(a)).addTo(al);
+        AMARK[a.id]=m; a._fp=p;
+        // click/popup sul PIN -> seleziona e scorre al messaggio nella lista di destra
+        m.on('click',()=>_selAlarmRow(a.id)); m.on('popupopen',()=>_selAlarmRow(a.id));
+      });
     }catch(e){}
     // dispositivi la cui ultima posizione indoor (24h) e' su questa piantina
     let devHere=[];
@@ -1601,7 +1634,12 @@ async function fpOpen(){
     }catch(e){}
     $('#mapSide').innerHTML=`<h2 style="margin-bottom:var(--s-8)">${esc(f.name)}</h2>
       <div class="small mut">${beacons.length} beacon · ${placedDevs.length} dispositivi fissi${window._fpGfOn?` · ${gfs.length} geofence`:''} · ${(devHere||[]).length} indoor (live) · ${w}×${h}px</div>
-      ${alarmsHere.length?`<div class="small" style="color:var(--bad);margin-top:var(--s-8)">🚨 ${alarmsHere.length} allarme/i su questa piantina (ultimi 7gg)</div>`:'<div class="small mut" style="margin-top:var(--s-8)">Nessun allarme indoor su questa piantina negli ultimi 7gg.</div>'}
+      ${alarmsHere.length?`<div class="small" style="color:var(--bad);margin:var(--s-10) 0 var(--s-6)">🚨 ${alarmsHere.length} allarme/i su questa piantina (ultimi 7gg) — clicca un pin o una riga</div>
+        ${alarmsHere.map(a=>`<div class="clk-card alarm-row" data-aid="${a.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)" onclick="focusIndoorAlarm('${a.id}')">
+          <div class="spread"><b class="small">${esc(a.label||etLab(a.etype)||a.etype)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString('it-IT')}</span></div>
+          <div class="small">🏭 ${esc(a.zone||'zona')}${a.beacon_uid?` · beacon <span class="mono">${esc(a.beacon_uid)}</span>`:''} · ${a.state==='chiuso'?'🟢 chiuso':'🔴 aperto'}</div>
+          <div class="small mut">${a.person?('👤 '+esc(a.person)):''}${a.device?(' · 📟 '+esc(a.device)):''}</div></div>`).join('')}`
+        :'<div class="small mut" style="margin-top:var(--s-8)">Nessun allarme indoor su questa piantina negli ultimi 7gg.</div>'}
       ${window._fpAdmin?`<div class="small mut" style="margin-top:var(--s-10)">• <b>📍 Posiziona beacon / dispositivo</b>: scegli un'entità registrata, poi clicca sulla piantina.${window._fpGfOn?'<br>• Disegna geofence con gli strumenti ⬡ in alto a sinistra (cerchio, rettangolo, poligono).':''}</div>`:''}
       ${window._fpGfOn?geofencePanel(gfs, window._fpAdmin):''}`;
     if(window._fpAdmin){

@@ -229,6 +229,18 @@ Il logo **YouWorkforce** resta sempre nel suo slot e non viene mai sostituito. I
 se caricato dal superadmin, prende il posto del **nome** del tenant (senza logo si mostra il nome
 testuale). I colori brand del tenant sono applicati come variabili CSS.
 
+## Geolocalizzazione allarmi
+Ogni allarme porta con sé **dove si trova il lavoratore**, così l'operatore interviene subito.
+`GET /api/incidents` espone la posizione (join con l'evento e, per l'indoor, con il beacon/piantina):
+`indoor`, `zone`, `beacon_uid`, `floor`, `floorplan_name` (+ `fp_x/fp_y`), `lat/lon`, `accuracy_m`,
+`site`/`site_address`.
+- **Centrale allarmi**: ogni riga mostra lavoratore + posizione (📍 Interno — piantina/zona, oppure
+  🛰 coordinate/sede). Il **popup dettagli** ha un blocco «📍 Dove si trova» con i pulsanti *Apri
+  piantina* (indoor) / *Apri in mappa* (outdoor). La ricerca full-text include zona/piantina/beacon.
+- **Mappa allarmi** e **Piantine**: cliccando un **pin** si **seleziona e scorre** al messaggio
+  corrispondente nell'elenco a destra (e viceversa, la riga centra/apre il pin). La piantina ora
+  elenca a destra gli allarmi indoor con beacon/zona.
+
 ## Note tecniche
 - File coinvolti: `console/static/app.html`, `console/static/app.js`, `console/static/app.css`.
 - Avvio console: dalla cartella `console/`, `./console.exe` (o `go run .`) → `:8081`,
