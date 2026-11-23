@@ -65,17 +65,21 @@ Nel wizard *Aggiungi dispositivo · 2/2* il campo IMEI ha **📷 Scansiona**: ap
 **QR** o il **barcode** (IMEI) dall'etichetta — niente digitazione a mano. Estrae l'IMEI (15/16 cifre)
 e lo inserisce; se il codice non è un IMEI lo propone comunque con avviso (nessuno scarto silenzioso).
 
-**Scanner v2** (pensato per webcam PC a fuoco fisso e codici piccoli su superfici lucide):
+**Scanner v3** (pensato per webcam PC a fuoco fisso e codici piccoli su superfici lucide):
 
-- pipeline propria *video→canvas ROI→decode*: lo **zoom** ingrandisce la regione inquadrata e si
-  decodifica il canvas, quindi funziona anche dove la camera non ha zoom ottico;
+- motori: **jsQR** per i QR (decoder dedicato, robusto, lavora sull'`ImageData`) + **ZXing core**
+  (`MultiFormatReader`+`HybridBinarizer`, `TRY_HARDER`) per i **barcode 1D**;
+- **video visibile** nel DOM (i frame devono scorrere: un `<video>` staccato viene throttolato e si
+  decodificava sul nero → "non riconosceva nemmeno"); pipeline *video→ROI→canvas→decode*;
+- **pre-elaborazione immagine**: grayscale + **contrast-stretch** (min-max) + `inversionAttempts:
+  'attemptBoth'` → recupera codici a basso contrasto / superfici lucide;
 - **zoom hardware** quando il track lo espone (telefoni/alcune webcam), altrimenti **zoom software**
-  sulla ROI; slider manuale 1–5× + **auto-zoom progressivo** mentre cerca (cicla 1→4×);
-- **tap/clic per mirare** (sposta il centro della ROI: codice decentrato / evita riflessi), **torcia**
-  (se supportata), **focus continuo**, cattura a **1920×1080** (più pixel sul codice);
-- motore: `BarcodeDetector` nativo **solo se** supporta `qr_code`, altrimenti **ZXing core**
-  (`MultiFormatReader` + `HybridBinarizer` su canvas, hint `TRY_HARDER`). Diagnostica in console
-  (`[scan] engine=…`). Richiede contesto sicuro (https/localhost) e un browser esterno, non la webview.
+  sulla ROI; slider 1–5× + **auto-zoom progressivo** (cicla 1→4×); **tap/clic per mirare** (sposta il
+  centro ROI: codice decentrato / evita riflessi); **torcia** e **focus continuo** se supportati;
+  cattura **1920×1080**;
+- **contatore tentativi a schermo** ("motori · tentativi N · zoom X×") + log `[scan] engine=…`: si
+  vede sempre che sta provando. Nessuno scarto silenzioso. Serve contesto sicuro (https/localhost) e
+  un browser esterno, non la webview.
 
 **PWA**: la console è installabile (`manifest.webmanifest` + `sw.js` **network-first** — nessuna cache
 stantia, le `/api` non sono mai in cache). Dal telefono/tablet si installa sulla home e usa la camera
