@@ -11997,12 +11997,103 @@ async fn esc_persist_delivery(st: &AppState, tid: Uuid, iid: Uuid, log_id: i64, 
     }
 }
 
+/// Massimo incidenti processati per tenant in UN tick di consegna. Oltre questo si rimanda al tick
+/// successivo (il worker gira di continuo): bound esplicito del lavoro/future per giro, così un
+/// accumulo di incidenti aperti non fa crescere il carico di un singolo task fino all'overflow.
+/// Gli incidenti NON processati in questo giro restano aperti e vengono ripresi al prossimo (ordine
+/// per opened_at: i più vecchi prima, nessuna starvation sugli allarmi di sicurezza).
+const ESC_MAX_INCIDENTS_PER_TICK: i64 = 200;
+
+/// Processa UN incidente: policy di gruppo, macchina a stati (tick), consegna rung/Slack, avanzamento
+/// stato. Estratta dal runner e chiamata `Box::pin` così il frame del runner resta piccolo e ogni
+/// incidente è pollato da uno stack shallow (anti stack-overflow sotto accumulo). Ritorna il numero
+/// di consegne effettuate.
+#[allow(clippy::too_many_arguments)]
+async fn esc_process_incident(
+    st: &AppState, tid: Uuid, inc: &sqlx::postgres::PgRow,
+    voice_on: bool, voice_min: i64, repeat: i64, engine: &str, live_on: bool,
+    ga_opt: Option<(&str, &str)>, now: chrono::DateTime<chrono::Utc>, tr: &EscTransport<'_>,
+) -> i64 {
+    use crate::delivery::Channel;
+    use crate::escalation::{self, AlertState, EscAction};
+    let iid: Uuid = inc.get("id");
+    let gid: Uuid = inc.get("group_id");
+    let etype: String = inc.get("etype");
+    let istate: String = inc.get("state");
+    let mut delivered = 0i64;
+
+    // policy di consegna del GRUPPO instradato (step personalizzati o ladder derivata)
+    let (policy, specs) = esc_group_policy(st, tid, gid, voice_on, voice_min, repeat).await;
+    let last_step = policy.steps.len().saturating_sub(1) as i32;
+
+    // stato macchina (seed step=-1 = usize::MAX lato Rust)
+    let strow = sqlx::query("SELECT step,step_fired_at,repeat_count FROM app.esc_alert_state WHERE tenant_id=$1 AND incident_id=$2")
+        .bind(tid).bind(iid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let (cur_step, fired_at, rc) = match &strow {
+        Some(r) => (r.get::<i32,_>("step"), r.get::<chrono::DateTime<chrono::Utc>,_>("step_fired_at"), r.get::<i32,_>("repeat_count")),
+        None => (-1, now, 0),
+    };
+    let rust_step = if cur_step < 0 { usize::MAX } else { cur_step as usize };
+    let state = AlertState{ step: rust_step, step_fired_at: fired_at, repeat_count: rc as u32, status: esc_status_from_incident(&istate) };
+    let action = escalation::tick(&policy, &state, now);
+
+    match action {
+        EscAction::Stop | EscAction::Exhausted => {
+            let new_status = if matches!(action, EscAction::Stop) { if istate=="chiuso" {"closed"} else {"ack"} } else { "exhausted" };
+            let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,repeat_count,status) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (tenant_id,incident_id) DO UPDATE SET status=$6,updated_at=now()")
+                .bind(tid).bind(iid).bind(cur_step).bind(fired_at).bind(rc).bind(new_status).execute(&st.owner_pool).await;
+        }
+        EscAction::Wait => {
+            // delay dello step non scaduto: NON si avanza, ma si consegnano le rung DOVUTE dello
+            // step corrente (fa scattare i ritardi delle regole di notifica per-utente).
+            if cur_step >= 0 && !matches!(state.status, crate::escalation::EscStatus::Acked | crate::escalation::EscStatus::Closed) {
+                let spec = specs.get(cur_step as usize).cloned().unwrap_or(EscStepTarget{ channel:Channel::Sms, kind:"oncall".into(), group:None, user:None, slack:None });
+                let (oncall, slack_ch) = esc_step_recipients(st, tid, gid, &spec, ga_opt, now).await;
+                let sstr = iid.to_string(); let short = &sstr[..8];
+                let text = format!("Allarme {etype} (incidente {short})");
+                delivered += esc_deliver_step_rungs(st, tid, iid, cur_step, fired_at, rc, spec.channel, &oncall, now, &text, tr).await;
+                if let Some(sc) = slack_ch { delivered += esc_deliver_slack_rung(st, tid, iid, cur_step, rc, &sc, &text, tr).await; }
+            }
+        }
+        EscAction::FireStep(idx, _) => {
+            // repeat: tick ritorna FireStep(0) ripartendo dall'ultimo step -> nuovo giro.
+            let is_repeat_restart = idx == 0 && cur_step == last_step && cur_step >= 0;
+            let new_rc = if is_repeat_restart { rc + 1 } else { rc };
+            let attempt = new_rc; // il giro di repeat fa parte della chiave di idempotenza
+            let spec = specs.get(idx).cloned().unwrap_or(EscStepTarget{ channel:Channel::Sms, kind:"oncall".into(), group:None, user:None, slack:None });
+            let (oncall, slack_ch) = esc_step_recipients(st, tid, gid, &spec, ga_opt, now).await;
+            let sstr = iid.to_string(); let short = &sstr[..8];
+            let text = format!("Allarme {etype} (incidente {short})");
+            // rung per-utente (regole di notifica o fallback al canale dello step), ritardi inclusi.
+            delivered += esc_deliver_step_rungs(st, tid, iid, idx as i32, now, attempt, spec.channel, &oncall, now, &text, tr).await;
+            // step con target Slack: posta sul canale dello step.
+            if let Some(sc) = slack_ch { delivered += esc_deliver_slack_rung(st, tid, iid, idx as i32, attempt, &sc, &text, tr).await; }
+            // Slack per-gruppo (canale del gruppo) sul PRIMO step 'oncall' se configurato.
+            if idx == 0 && spec.kind == "oncall" {
+                if let Some(sr) = sqlx::query("SELECT slack_channel_id,slack_notify FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
+                    .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten() {
+                    let ch: Option<String> = sr.try_get("slack_channel_id").ok().flatten();
+                    let notify: String = sr.try_get("slack_notify").unwrap_or_else(|_| "off".into());
+                    if notify != "off" { if let Some(ch) = ch.filter(|s| !s.trim().is_empty()) {
+                        delivered += esc_deliver_slack_rung(st, tid, iid, idx as i32, attempt, &ch, &text, tr).await;
+                    } }
+                }
+            }
+            // avanza/semina lo stato alla rung appena sparata (repeat_count aggiornato)
+            let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,repeat_count,status) VALUES($1,$2,$3,$4,$5,'unack') ON CONFLICT (tenant_id,incident_id) DO UPDATE SET step=$3,step_fired_at=$4,repeat_count=$5,updated_at=now()")
+                .bind(tid).bind(iid).bind(idx as i32).bind(now).bind(new_rc).execute(&st.owner_pool).await;
+            let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_delivery',$3)")
+                .bind(tid).bind(iid).bind(json!({"step":idx,"channel":spec.channel.as_str(),"target":spec.kind,"attempt":attempt,"live":live_on,"engine":engine})).execute(&st.owner_pool).await;
+        }
+    }
+    delivered
+}
+
 /// Runner di consegna YWAlert (nativo) per un tenant. Motore SEMPRE autoritativo: usa gli adapter
 /// live (Twilio/Slack/relay se configurati), altrimenti il sink webhook, altrimenti DRY in dev;
 /// l'ack applica la transizione sull'incidente. Idempotenza su `esc_delivery_log`; i fallimenti si
 /// ritentano a oltranza sugli invii di sicurezza.
 pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i64) {
-    use crate::escalation::{self, AlertState, EscAction};
     // MAINTENANCE nativo: finestra attiva -> sospendi le consegne (gli incidenti continuano a
     // essere creati; la ladder riparte a fine finestra). Indipendente da YWAlert.
     if maintenance_active(st, tid).await {
@@ -12075,83 +12166,20 @@ pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i
            LEFT JOIN app.protection_profiles pp ON pp.id=m.profile_id AND pp.enabled=true
            LEFT JOIN app.tenant_oncall_cfg oc ON oc.tenant_id=i.tenant_id
           WHERE i.tenant_id=$1 AND i.state <> 'chiuso'
-            AND COALESCE(i.forced_group_id, pp.escalation_group_id, r.group_id, oc.default_group_id) IS NOT NULL")
-        .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+            AND COALESCE(i.forced_group_id, pp.escalation_group_id, r.group_id, oc.default_group_id) IS NOT NULL
+          ORDER BY i.opened_at ASC
+          LIMIT $2")
+        .bind(tid).bind(ESC_MAX_INCIDENTS_PER_TICK).fetch_all(&st.owner_pool).await.unwrap_or_default();
     let tr = EscTransport{ from:&from, sink:&sink, relay:&relay, slack_token:&slack_token, public_base:&public_base, live_on, live_cfg: live_cfg.as_ref() };
     let (mut seen, mut delivered) = (0i64, 0i64);
+    // Un incidente per volta, pollato da uno stack shallow: `Box::pin` sposta il future (grande) del
+    // processing su heap, così il frame di QUESTO runner resta minimo e la profondità è costante
+    // qualunque sia il numero di incidenti (anti stack-overflow sotto accumulo).
     for inc in &incs {
-        let iid: Uuid = inc.get("id");
-        let gid: Uuid = inc.get("group_id");
-        let etype: String = inc.get("etype");
-        let istate: String = inc.get("state");
         seen += 1;
-
-        // policy di consegna del GRUPPO instradato (step personalizzati o ladder derivata)
-        let (policy, specs) = Box::pin(esc_group_policy(st, tid, gid, voice_on, voice_min, repeat)).await;
-        let last_step = policy.steps.len().saturating_sub(1) as i32;
-
-        // stato macchina (seed step=-1 = usize::MAX lato Rust)
-        let strow = sqlx::query("SELECT step,step_fired_at,repeat_count FROM app.esc_alert_state WHERE tenant_id=$1 AND incident_id=$2")
-            .bind(tid).bind(iid).fetch_optional(&st.owner_pool).await.ok().flatten();
-        let (cur_step, fired_at, rc) = match &strow {
-            Some(r) => (r.get::<i32,_>("step"), r.get::<chrono::DateTime<chrono::Utc>,_>("step_fired_at"), r.get::<i32,_>("repeat_count")),
-            None => (-1, now, 0),
-        };
-        let rust_step = if cur_step < 0 { usize::MAX } else { cur_step as usize };
-        let state = AlertState{ step: rust_step, step_fired_at: fired_at, repeat_count: rc as u32, status: esc_status_from_incident(&istate) };
-        let action = escalation::tick(&policy, &state, now);
-
-        match action {
-            EscAction::Stop | EscAction::Exhausted => {
-                let new_status = if matches!(action, EscAction::Stop) { if istate=="chiuso" {"closed"} else {"ack"} } else { "exhausted" };
-                let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,repeat_count,status) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (tenant_id,incident_id) DO UPDATE SET status=$6,updated_at=now()")
-                    .bind(tid).bind(iid).bind(cur_step).bind(fired_at).bind(rc).bind(new_status).execute(&st.owner_pool).await;
-            }
-            EscAction::Wait => {
-                // delay dello step non scaduto: NON si avanza, ma si consegnano le rung DOVUTE dello
-                // step corrente (fa scattare i ritardi delle regole di notifica per-utente).
-                use crate::delivery::Channel;
-                if cur_step >= 0 && !matches!(state.status, crate::escalation::EscStatus::Acked | crate::escalation::EscStatus::Closed) {
-                    let spec = specs.get(cur_step as usize).cloned().unwrap_or(EscStepTarget{ channel:Channel::Sms, kind:"oncall".into(), group:None, user:None, slack:None });
-                    let (oncall, slack_ch) = Box::pin(esc_step_recipients(st, tid, gid, &spec, ga_opt, now)).await;
-                    let sstr = iid.to_string(); let short = &sstr[..8];
-                    let text = format!("Allarme {etype} (incidente {short})");
-                    delivered += Box::pin(esc_deliver_step_rungs(st, tid, iid, cur_step, fired_at, rc, spec.channel, &oncall, now, &text, &tr)).await;
-                    if let Some(sc) = slack_ch { delivered += esc_deliver_slack_rung(st, tid, iid, cur_step, rc, &sc, &text, &tr).await; }
-                }
-            }
-            EscAction::FireStep(idx, _) => {
-                use crate::delivery::Channel;
-                // repeat: tick ritorna FireStep(0) ripartendo dall'ultimo step -> nuovo giro.
-                let is_repeat_restart = idx == 0 && cur_step == last_step && cur_step >= 0;
-                let new_rc = if is_repeat_restart { rc + 1 } else { rc };
-                let attempt = new_rc; // il giro di repeat fa parte della chiave di idempotenza
-                let spec = specs.get(idx).cloned().unwrap_or(EscStepTarget{ channel:Channel::Sms, kind:"oncall".into(), group:None, user:None, slack:None });
-                let (oncall, slack_ch) = Box::pin(esc_step_recipients(st, tid, gid, &spec, ga_opt, now)).await;
-                let sstr = iid.to_string(); let short = &sstr[..8];
-                let text = format!("Allarme {etype} (incidente {short})");
-                // rung per-utente (regole di notifica o fallback al canale dello step), ritardi inclusi.
-                delivered += Box::pin(esc_deliver_step_rungs(st, tid, iid, idx as i32, now, attempt, spec.channel, &oncall, now, &text, &tr)).await;
-                // step con target Slack: posta sul canale dello step.
-                if let Some(sc) = slack_ch { delivered += esc_deliver_slack_rung(st, tid, iid, idx as i32, attempt, &sc, &text, &tr).await; }
-                // Slack per-gruppo (canale del gruppo) sul PRIMO step 'oncall' se configurato.
-                if idx == 0 && spec.kind == "oncall" {
-                    if let Some(sr) = sqlx::query("SELECT slack_channel_id,slack_notify FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2")
-                        .bind(gid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten() {
-                        let ch: Option<String> = sr.try_get("slack_channel_id").ok().flatten();
-                        let notify: String = sr.try_get("slack_notify").unwrap_or_else(|_| "off".into());
-                        if notify != "off" { if let Some(ch) = ch.filter(|s| !s.trim().is_empty()) {
-                            delivered += esc_deliver_slack_rung(st, tid, iid, idx as i32, attempt, &ch, &text, &tr).await;
-                        } }
-                    }
-                }
-                // avanza/semina lo stato alla rung appena sparata (repeat_count aggiornato)
-                let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,repeat_count,status) VALUES($1,$2,$3,$4,$5,'unack') ON CONFLICT (tenant_id,incident_id) DO UPDATE SET step=$3,step_fired_at=$4,repeat_count=$5,updated_at=now()")
-                    .bind(tid).bind(iid).bind(idx as i32).bind(now).bind(new_rc).execute(&st.owner_pool).await;
-                let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_delivery',$3)")
-                    .bind(tid).bind(iid).bind(json!({"step":idx,"channel":spec.channel.as_str(),"target":spec.kind,"attempt":attempt,"live":live_on,"engine":engine})).execute(&st.owner_pool).await;
-            }
-        }
+        delivered += Box::pin(esc_process_incident(
+            st, tid, inc, voice_on, voice_min, repeat, &engine, live_on, ga_opt, now, &tr,
+        )).await;
     }
     (seen, delivered)
 }

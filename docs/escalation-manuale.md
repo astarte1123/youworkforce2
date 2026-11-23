@@ -224,7 +224,20 @@ concorrente:
 - **Frame ridotti**: i leaf caldi (`esc_dispatch` → client HTTP) sono su heap via `Box::pin`.
 - **Isolamento per-tenant**: la scansione di consegna esegue **un tenant alla volta su task
   dedicato**, così la profondità non si accumula tra tenant.
+- **Processing per-incidente su stack shallow**: il corpo del loop per-incidente del runner è
+  estratto in `esc_process_incident` e invocato **`Box::pin`** a ogni iterazione. Così il frame del
+  runner (`escalation_delivery_run_tenant`) resta minimo e **ogni incidente è pollato da uno stack
+  basso**: la profondità è **costante** qualunque sia il numero di incidenti aperti del tenant
+  (prima l'intera state-machine del runner, con il loop inline, viveva in un unico frame enorme).
+- **Batch limitato per tick**: ogni giro processa al massimo `ESC_MAX_INCIDENTS_PER_TICK` (**200**)
+  incidenti per tenant, ordinati per `opened_at ASC` (i più vecchi prima → nessuna starvation). Gli
+  altri vengono ripresi al tick successivo (il worker gira di continuo): tetto esplicito al
+  lavoro/future per giro, così un **accumulo** di incidenti aperti non fa crescere il carico di un
+  singolo task.
 
 Sintomo del problema (prima del fix): il core terminava con
 `thread 'tokio-rt-worker' has overflowed its stack` / `STATUS_ACCESS_VIOLATION` sotto picco di
-carico. Non è una ricorsione infinita: è profondità cumulativa al picco di concorrenza.
+carico — innescato in pratica dall'**accumulo di incidenti aperti**. Non è una ricorsione infinita:
+è profondità cumulativa del frame del runner. Con l'estrazione `Box::pin` per-incidente il core
+regge **200 incidenti aperti a stack default 32MB** senza crash (verificato); `YW_WORKER_STACK_MB`
+resta come margine aggiuntivo, non più come dipendenza per non crashare.
