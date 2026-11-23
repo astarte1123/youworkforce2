@@ -561,6 +561,21 @@ pub async fn system_snapshot(st: &AppState) -> Value {
     let wsev = if hb_age<0 || hb_age>worker_stale {"bad"} else if hb_age>worker_stale/2 {"warn"} else {"ok"};
     add("worker", wsev, if hb_age<0 {"worker mai visto".into()} else {format!("ultimo giro worker {}s fa", hb_age)});
     if outbox_error>0 { add("outbox", if outbox_error>20 {"bad"} else {"warn"}, format!("{} messaggi outbox in errore", outbox_error)); }
+    // Backlog di ESCALATION ATTIVA del tenant più carico (stesso working-set dello scan consegna):
+    // sorveglia la coda che il motore deve drenare. In salute è piccolo; se cresce (emergenza di
+    // massa o on-call che non prende in carico) l'alert avvisa il superadmin → mai coda silenziosa.
+    let esc_active_max: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(max(cnt),0) FROM (
+           SELECT count(*) AS cnt FROM app.incidents i
+           LEFT JOIN app.esc_alert_state eas ON eas.tenant_id=i.tenant_id AND eas.incident_id=i.id
+          WHERE i.state<>'chiuso' AND COALESCE(eas.status,'new') NOT IN ('exhausted','ack','closed')
+          GROUP BY i.tenant_id) q")
+        .fetch_one(&st.owner_pool).await.unwrap_or(0);
+    let (esc_warn, esc_bad) = (sys_env_i64("YW_SYS_ESC_BACKLOG_WARN",500), sys_env_i64("YW_SYS_ESC_BACKLOG_BAD",2000));
+    if esc_active_max >= esc_warn {
+        add("esc_backlog", if esc_active_max>=esc_bad {"bad"} else {"warn"},
+            format!("{} incidenti in escalation attiva su un tenant (coda consegna)", esc_active_max));
+    }
     let overall = if checks.iter().any(|c| c["severity"]=="bad") {"bad"} else if checks.iter().any(|c| c["severity"]=="warn") {"warn"} else {"ok"};
     json!({
         "status": overall,
@@ -568,7 +583,8 @@ pub async fn system_snapshot(st: &AppState) -> Value {
         "server": hw,
         "db": {"reachable": db_ok, "size_bytes": db_size, "connections": db_conns, "max_connections": db_max},
         "queues": {"outbox_pending": outbox_pending, "outbox_error": outbox_error, "sessions": sessions,
-                   "incidents_open": incidents_open, "tenants": tenants, "users": users, "devices": devices},
+                   "incidents_open": incidents_open, "esc_active_max": esc_active_max,
+                   "tenants": tenants, "users": users, "devices": devices},
         "worker": {"heartbeat_age_secs": hb_age},
         "thresholds": {"disk_max_pct": disk_max, "mem_max_pct": mem_max, "cpu_max_pct": cpu_max, "worker_stale_secs": worker_stale},
         "checks": checks,
@@ -11997,12 +12013,13 @@ async fn esc_persist_delivery(st: &AppState, tid: Uuid, iid: Uuid, log_id: i64, 
     }
 }
 
-/// Massimo incidenti processati per tenant in UN tick di consegna. Oltre questo si rimanda al tick
-/// successivo (il worker gira di continuo): bound esplicito del lavoro/future per giro, così un
-/// accumulo di incidenti aperti non fa crescere il carico di un singolo task fino all'overflow.
-/// Gli incidenti NON processati in questo giro restano aperti e vengono ripresi al prossimo (ordine
-/// per opened_at: i più vecchi prima, nessuna starvation sugli allarmi di sicurezza).
-const ESC_MAX_INCIDENTS_PER_TICK: i64 = 200;
+/// Pagina di incidenti processati per tenant in UN tick di consegna (bound di MEMORIA/lavoro per
+/// giro, non un tetto a quanti incidenti possono esistere). Il working-set è già ristretto alla
+/// fonte alle sole escalation ATTIVE (status non terminale, vedi query), quindi in esercizio è
+/// piccolo di natura. Se eccezionalmente l'attivo supera la pagina (emergenza di massa reale), il
+/// resto è ripreso al tick successivo (il worker gira di continuo) con priorità ai più urgenti, e
+/// un alert di sistema `esc_backlog` avvisa il superadmin: mai una coda che cresce in silenzio.
+const ESC_INCIDENTS_PER_TICK: i64 = 1000;
 
 /// Processa UN incidente: policy di gruppo, macchina a stati (tick), consegna rung/Slack, avanzamento
 /// stato. Estratta dal runner e chiamata `Box::pin` così il frame del runner resta piccolo e ogni
@@ -12154,6 +12171,13 @@ pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i
     // Precedenza del gruppo: profilo di protezione del lavoratore > routing per-etype >
     // gruppo di DEFAULT del tenant (catch-all, mig 0060). Il default garantisce che nessun incidente
     // critico resti senza destinatari sulla strada nuova (nativo), anche senza regola di routing.
+    // WORKING-SET = solo escalation ATTIVE: si ESCLUDONO gli incidenti la cui macchina a stati è in
+    // uno stato TERMINALE (`exhausted` ladder finita / `ack` preso in carico / `closed`). Questi non
+    // producono più lavoro: lasciarli nel set li farebbe rileggere+ticcare a ogni giro per sempre
+    // (crescita O(incidenti-aperti-totali) → la vera causa di esplosione sotto accumulo). Restano
+    // inclusi i nuovi (nessuno stato = 'new') e quelli ancora in corso (`unack`). Ordine per PRIORITÀ
+    // (priority ASC = più urgente prima) poi opened_at: un SOS fresco non attende mai dietro allarmi
+    // meno urgenti. La pagina (LIMIT) bounda memoria/lavoro per tick; l'eccedenza va al giro dopo.
     let incs = sqlx::query(
         "SELECT i.id, i.etype, i.state, i.opened_at,
                 COALESCE(i.forced_group_id, pp.escalation_group_id, r.group_id, oc.default_group_id) AS group_id
@@ -12165,11 +12189,13 @@ pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i
                   ON m.tenant_id=i.tenant_id AND m.user_id=COALESCE(i.assigned_user, d.assigned_user)
            LEFT JOIN app.protection_profiles pp ON pp.id=m.profile_id AND pp.enabled=true
            LEFT JOIN app.tenant_oncall_cfg oc ON oc.tenant_id=i.tenant_id
+           LEFT JOIN app.esc_alert_state eas ON eas.tenant_id=i.tenant_id AND eas.incident_id=i.id
           WHERE i.tenant_id=$1 AND i.state <> 'chiuso'
+            AND COALESCE(eas.status,'new') NOT IN ('exhausted','ack','closed')
             AND COALESCE(i.forced_group_id, pp.escalation_group_id, r.group_id, oc.default_group_id) IS NOT NULL
-          ORDER BY i.opened_at ASC
+          ORDER BY i.priority ASC, i.opened_at ASC
           LIMIT $2")
-        .bind(tid).bind(ESC_MAX_INCIDENTS_PER_TICK).fetch_all(&st.owner_pool).await.unwrap_or_default();
+        .bind(tid).bind(ESC_INCIDENTS_PER_TICK).fetch_all(&st.owner_pool).await.unwrap_or_default();
     let tr = EscTransport{ from:&from, sink:&sink, relay:&relay, slack_token:&slack_token, public_base:&public_base, live_on, live_cfg: live_cfg.as_ref() };
     let (mut seen, mut delivered) = (0i64, 0i64);
     // Un incidente per volta, pollato da uno stack shallow: `Box::pin` sposta il future (grande) del

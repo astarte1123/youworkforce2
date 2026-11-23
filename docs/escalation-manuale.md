@@ -229,15 +229,31 @@ concorrente:
   runner (`escalation_delivery_run_tenant`) resta minimo e **ogni incidente è pollato da uno stack
   basso**: la profondità è **costante** qualunque sia il numero di incidenti aperti del tenant
   (prima l'intera state-machine del runner, con il loop inline, viveva in un unico frame enorme).
-- **Batch limitato per tick**: ogni giro processa al massimo `ESC_MAX_INCIDENTS_PER_TICK` (**200**)
-  incidenti per tenant, ordinati per `opened_at ASC` (i più vecchi prima → nessuna starvation). Gli
-  altri vengono ripresi al tick successivo (il worker gira di continuo): tetto esplicito al
-  lavoro/future per giro, così un **accumulo** di incidenti aperti non fa crescere il carico di un
-  singolo task.
+- **Working-set = solo escalation ATTIVE (il fix anti-esplosione)**: lo scan NON rilegge tutti gli
+  incidenti aperti, ma **esclude alla fonte** quelli in stato terminale della macchina a stati —
+  `exhausted` (ladder finita), `ack` (preso in carico), `closed`. Questi non producono più lavoro:
+  tenerli nel set li farebbe ticcare a ogni giro **per sempre**, con costo O(incidenti-aperti-totali)
+  → era la vera causa di crescita incontrollata sotto accumulo. Il set resta quindi piccolo di natura
+  (solo le emergenze realmente in corso). Un incidente esce dal set da solo quando la ladder si
+  esaurisce, quando qualcuno lo prende in carico o quando viene chiuso.
+- **Ordine per priorità**: la pagina è ordinata `priority ASC, opened_at ASC` → un **SOS fresco**
+  (priority alta) è servito **prima** di allarmi meno urgenti o più vecchi; nessuna starvation.
+- **Pagina per tick (bound di memoria, non tetto all'esistenza)**: ogni giro carica fino a
+  `ESC_INCIDENTS_PER_TICK` (**1000**, override `env`) incidenti ATTIVI per tenant. Siccome il set
+  attivo è già piccolo, in esercizio non si tocca mai. Se eccezionalmente lo si supera (emergenza di
+  massa reale), l'eccedenza è ripresa al tick successivo (il worker gira di continuo) con priorità ai
+  più urgenti — **nessun incidente perso**, solo differito di un giro.
+- **Allarme backlog (niente code silenziose)**: `system_snapshot` espone `queues.esc_active_max`
+  (max escalation attive su un singolo tenant) e il watchdog solleva l'alert di sistema `esc_backlog`
+  a `warn ≥ YW_SYS_ESC_BACKLOG_WARN` (**500**) / `bad ≥ YW_SYS_ESC_BACKLOG_BAD` (**2000**),
+  notificando il superadmin (email/SMS/sink). Così una coda anomala (on-call che non prende in carico,
+  burst reale) è **sempre visibile**, mai un accumulo che esplode senza controllo.
 
 Sintomo del problema (prima del fix): il core terminava con
 `thread 'tokio-rt-worker' has overflowed its stack` / `STATUS_ACCESS_VIOLATION` sotto picco di
 carico — innescato in pratica dall'**accumulo di incidenti aperti**. Non è una ricorsione infinita:
-è profondità cumulativa del frame del runner. Con l'estrazione `Box::pin` per-incidente il core
-regge **200 incidenti aperti a stack default 32MB** senza crash (verificato); `YW_WORKER_STACK_MB`
-resta come margine aggiuntivo, non più come dipendenza per non crashare.
+è profondità cumulativa del frame del runner + rilettura di un set non limitato. Fix verificati a
+**stack default 32MB** (dove prima crashava): 200+ incidenti processati senza crash; **800 incidenti
+terminali ignorati** dallo scan (processati solo gli attivi, `seen=3` su 803 aperti); consegna reale
+intatta (ywalert-delivery 10/10, policy 8/8, targets 6/6). `YW_WORKER_STACK_MB` resta solo come
+margine, non più come dipendenza per non crashare.
