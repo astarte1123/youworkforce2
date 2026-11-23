@@ -17,9 +17,9 @@ CA=$(csrfh "$JA"); CO=$(csrfh "$JO")
 A(){ curl -s -b "$JA" -H 'x-tenant-slug: acme' -H "x-csrf-token: $CA" -H 'content-type: application/json' "$@"; }
 O(){ curl -s -b "$JO" -H 'x-tenant-slug: acme' -H "x-csrf-token: $CO" -H 'content-type: application/json' "$@"; }
 
-# 1) riepilogo connettori
-A "$BASE/api/connectors" | python -c "import sys,json;d=json.load(sys.stdin);t=next(c for c in d if c['code']=='iot');assert t['state']=='attivo',t;print('ok')" >/dev/null 2>&1 \
-  && ok "connettori: IoT nativo attivo" || no "connectors" "$(A "$BASE/api/connectors"|head -c 160)"
+# 1) modulo IoT nativo attivo sul tenant (elenco moduli visto dall admin)
+A "$BASE/api/modules" | python -c "import sys,json;d=json.load(sys.stdin);t=next(c for c in d if c.get('code')=='iot');assert t['state']=='attivo',t;print('ok')" >/dev/null 2>&1 \
+  && ok "modulo IoT nativo attivo" || no "modulo iot" "$(A "$BASE/api/modules"|head -c 160)"
 
 # 2) crea ingest-token IoT nativo (secret mostrato una volta; handle non segreto in lista)
 CREATED=$(A -X POST "$BASE/api/ingest-tokens" -d '{"source":"iot"}')

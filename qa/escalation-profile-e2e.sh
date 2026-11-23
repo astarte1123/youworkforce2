@@ -21,7 +21,7 @@ TID="(SELECT id FROM app.tenants WHERE slug='$SLUG')"
 GID=$(api "$BASE/api/groups" | python -c "import sys,json;g=[x for x in json.load(sys.stdin)['groups'] if '$SLUG' in str(x['members'])];print(g[0]['id'] if g else '')")
 UID1=$(sql "SELECT user_id FROM app.alarm_group_members m JOIN app.tenants t ON t.id=m.tenant_id WHERE t.slug='$SLUG' AND m.group_id='$GID' LIMIT 1")
 PHONE="+390000777001"
-sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id,escalation_engine) SELECT $TID,'$GID','native' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$GID',escalation_engine='native'" >/dev/null
+sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id) SELECT $TID,'$GID' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$GID'" >/dev/null
 sql "UPDATE app.users SET phone='$PHONE' WHERE id='$UID1'" >/dev/null
 sql "DELETE FROM app.contact_optout WHERE value='$PHONE'" >/dev/null
 api -H 'content-type: application/json' -X POST "$BASE/api/groups/$GID/policy" -d '{"steps":[],"repeat":0}' >/dev/null

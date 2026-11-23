@@ -19,11 +19,11 @@ Aiuta l'amministratore del tenant a rendere la piattaforma operativa senza perde
 |-----|-------------|-----------------|
 | `sites` | sempre | ≥1 sede |
 | `users` | sempre | >1 utente |
-| `groups` | loneworker/iot/traccar attivo | ≥1 gruppo **e** gruppo on-call predefinito impostato |
-| `contacts` | loneworker/iot/traccar attivo | ≥1 recapito telefonico verificato |
+| `groups` | loneworker/iot/gps attivo | ≥1 gruppo **e** gruppo on-call predefinito impostato |
+| `contacts` | loneworker/iot/gps attivo | ≥1 recapito telefonico verificato |
 | `routing` | loneworker attivo | ≥1 regola di instradamento allarmi |
 | `rules` | iot attivo | ≥1 regola sensore |
-| `devices` | loneworker/iot/traccar attivo | ≥1 dispositivo |
+| `devices` | loneworker/iot/gps attivo | ≥1 dispositivo |
 | `clients` | cantieri/interventi attivo | ≥1 cliente |
 
 ## "Cosa fare adesso" (guida per-ruolo)

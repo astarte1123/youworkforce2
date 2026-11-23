@@ -1,18 +1,12 @@
 #!/usr/bin/env bash
 # Runner di TUTTE le suite e2e contro lo stack in esecuzione, raggruppate per
 # dipendenza. Usato in locale e in CI (dopo l'avvio dei servizi).
-#   MODE=core    -> solo le suite che richiedono core+Postgres (gating affidabile)
-#   MODE=engines -> solo le suite dei motori (YWAlert/Traccar), auto-skip se giù
-#   MODE=all     -> tutto (default)
-# RUN_SETUP=1    -> include anche le suite che richiedono setup esterno/stato acme fresco
-#                   (goalert-e2e: KEY; goalert-delivery: receiver; goalert-p4/traccar-p1/
-#                    traccar-conndown: dipendono da acme appena seedato + run-*.sh). Escluse di default.
+#   MODE=core|all -> tutte le suite: richiedono solo core + Postgres (YouWorkforce è self-contained,
+#                    nessun motore esterno da avviare). MODE resta per compatibilità con la CI.
 # Uscita != 0 se almeno una suite eseguita fallisce. Ogni suite gira su globex/throwaway, MAI acme.
 set -u
 BASE=${BASE:-http://localhost:8080}
-TR=${TR:-http://localhost:8083}
-TB=${TB:-http://localhost:8084}
-MODE=${MODE:-all}; RUN_SETUP=${RUN_SETUP:-0}
+MODE=${MODE:-all}
 PASS=0; FAIL=0; SKIP=0; FAILED_LIST=""
 
 up(){ curl -s -o /dev/null -m 3 -w "%{http_code}" "$1" 2>/dev/null; }
@@ -32,7 +26,7 @@ CORE="smoke.sh loneworker-e2e.sh acl-e2e.sh \
  ai-e2e.sh ai-agent-e2e.sh reports-e2e.sh workforce-e2e.sh interventi-e2e.sh \
  iot-mgmt-e2e.sh mgmt-e2e.sh prompt8-e2e.sh sse-scale.sh \
  field-intervention-e2e.sh field-intervention-slice1-e2e.sh patrols-e2e.sh \
- user-groups-e2e.sh capabilities-e2e.sh custom-roles-e2e.sh capabilities-granular-e2e.sh capabilities-admin-split-e2e.sh gdpr-audit-e2e.sh field-group-e2e.sh module-autonomy-e2e.sh dashboard-layout-e2e.sh teltonika-e2e.sh teltonika-gprs-e2e.sh gh5200-lifesafety-e2e.sh setup-status-e2e.sh home-tasks-e2e.sh \
+ user-groups-e2e.sh capabilities-e2e.sh custom-roles-e2e.sh capabilities-granular-e2e.sh capabilities-admin-split-e2e.sh gdpr-audit-e2e.sh field-group-e2e.sh module-autonomy-e2e.sh dashboard-layout-e2e.sh teltonika-e2e.sh teltonika-gprs-e2e.sh gh5200-lifesafety-e2e.sh gps-native-e2e.sh gps-battery-policy-e2e.sh osmand-ingest-e2e.sh crypto-e2e.sh setup-status-e2e.sh home-tasks-e2e.sh \
  cantieri-e2e.sh cantieri-squadre-e2e.sh cantieri-cronoprogramma-e2e.sh cantieri-costi-e2e.sh cantieri-giornale-fatture-e2e.sh cronoprogramma-deps-e2e.sh \
  clients-e2e.sh listino-e2e.sh dispatch-e2e.sh richieste-e2e.sh contratti-e2e.sh anagrafiche-e2e.sh commessa-allegati-e2e.sh tenant-invite-e2e.sh tenant-lifecycle-e2e.sh system-monitoring-e2e.sh \
  vigilanza-e2e.sh vigilanza-piani-e2e.sh vigilanza-autopunch-e2e.sh \
@@ -41,11 +35,6 @@ CORE="smoke.sh loneworker-e2e.sh acl-e2e.sh \
  iot-telemetry-e2e.sh iot-attr-cmd-e2e.sh iot-threshold-e2e.sh iot-normalize-e2e.sh iot-blueprint-e2e.sh iot-mqtt-e2e.sh iot-alerts-e2e.sh iot-monitor-e2e.sh iot-catalog-e2e.sh"
 # NB: motore di escalation YWAlert = NATIVO (nessun connettore esterno). Le suite 'escalation-*' +
 # 'ywalert-delivery' coprono la parità; le vecchie suite 'goalert-*' (prodotto esterno) sono rimosse.
-TRACCAR_OK="traccar-e2e.sh traccar-config-e2e.sh traccar-p2-e2e.sh traccar-poll-e2e.sh \
- traccar-sync-e2e.sh traccar-cmd-e2e.sh traccar-battery-policy-e2e.sh traccar-degraded-e2e.sh traccar-parity-e2e.sh \
- crypto-e2e.sh"
-TRACCAR_SETUP="traccar-p1-e2e.sh traccar-conndown-e2e.sh"
-
 [ "$(up "$BASE/health")" = "200" ] || { echo "core down ($BASE) — abort"; exit 2; }
 
 # Sink webhook condiviso per la prova di recapito reale YWAlert (ywalert-delivery-e2e). Se core è
@@ -74,14 +63,6 @@ trap '[ -n "$RECV_PID" ] && kill "$RECV_PID" 2>/dev/null || true' EXIT
 
 if [ "$MODE" = "core" ] || [ "$MODE" = "all" ]; then
   echo "== CORE =="; for s in $CORE; do run "$s"; done
-fi
-
-if [ "$MODE" = "engines" ] || [ "$MODE" = "all" ]; then
-  echo "== TRACCAR =="
-  if [ "$(up "$TR/api/server")" != "000" ]; then
-    for s in $TRACCAR_OK; do run "$s"; done
-    [ "$RUN_SETUP" = "1" ] && for s in $TRACCAR_SETUP; do run "$s"; done
-  else for s in $TRACCAR_OK; do skip "$s" "Traccar $TR giù"; done; fi
 fi
 
 echo "=============================================="

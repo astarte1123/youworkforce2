@@ -34,7 +34,7 @@ esistenti, che restano intatti e con la loro semantica:
 L'import dimostra il riuso **senza accoppiare i modelli**: legge `user_group_members` e inserisce
 in `alarm_group_members` con `position` progressiva dopo gli attuali membri,
 `ON CONFLICT (group_id,user_id) DO NOTHING` → **idempotente**. Richiede un modulo escalation
-attivo (`loneworker|traccar|iot|thingsboard`), altrimenti **403**. È **unidirezionale e
+attivo (`loneworker|gps|iot`), altrimenti **403**. È **unidirezionale e
 disaccoppiato**: eliminare il gruppo condiviso non tocca il gruppo di allarme già popolato.
 
 ## Isolamento e permessi

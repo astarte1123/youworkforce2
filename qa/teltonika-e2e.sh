@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Edge nativo Teltonika — server TCP Codec8/8E. Prova: IMEI sconosciuto rifiutato; IMEI censito
 # accettato; pacchetto Codec8 con posizione -> ultima posizione aggiornata; Codec8 Extended ->
-# idem; event IO mappato -> allarme/incidente. Decode-edge senza Traccar.
+# idem; event IO mappato -> allarme/incidente. Decode-edge nativo.
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"; TPORT="${TPORT:-5027}"; SLUG="globex"; ADMIN="admin@globex.loneworker.eu"
 PASS=0; FAIL=0
@@ -11,14 +11,14 @@ sql(){ docker exec -i ywdb psql -U postgres -d youworkforce -tAc "$1"; }
 one(){ sql "$1" | head -1 | tr -d '[:space:]'; }
 
 TID=$(one "SELECT id FROM app.tenants WHERE slug='$SLUG'")
-# stato moduli PRIMA (per ripristino: evita di inquinare altre suite, es. modularity assume traccar OFF)
-TR_PREV=$(one "SELECT COALESCE((SELECT state FROM app.tenant_modules WHERE tenant_id='$TID' AND module_code='traccar'),'non_abilitato')")
+# stato moduli PRIMA (per ripristino: evita di inquinare altre suite, es. modularity assume moduli spenti)
+TR_PREV=$(one "SELECT COALESCE((SELECT state FROM app.tenant_modules WHERE tenant_id='$TID' AND module_code='gps'),'non_abilitato')")
 LW_PREV=$(one "SELECT COALESCE((SELECT state FROM app.tenant_modules WHERE tenant_id='$TID' AND module_code='loneworker'),'non_abilitato')")
-sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','traccar','attivo') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
+sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','gps','attivo') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
 sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','loneworker','attivo') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
 R=$RANDOM; IMEI=$(python -c "import random;print('356'+str(random.randint(10**11,10**12-1)))")  # 15 cifre uniche: niente collisioni su acme ri-usato
-# device con source=traccar (decode-edge) e external_id=IMEI
-DID=$(one "INSERT INTO app.devices(tenant_id,external_id,label,source) VALUES('$TID','$IMEI','GH5200 $R','traccar') RETURNING id")
+# device con source=gps (decode-edge) e external_id=IMEI
+DID=$(one "INSERT INTO app.devices(tenant_id,external_id,label,source) VALUES('$TID','$IMEI','GH5200 $R','gps') RETURNING id")
 # event IO 1 => sos via mappa di DEFAULT built-in (nessuna config necessaria)
 export TPORT IMEI
 
@@ -116,7 +116,7 @@ sql "DELETE FROM app.incidents WHERE tenant_id='$TID' AND correlation LIKE 'telt
 DELRC=$(sql "DELETE FROM app.devices WHERE id='$DID'; SELECT count(*) FROM app.devices WHERE id='$DID'")
 [ "$(echo "$DELRC" | tr -d '\r' | tail -1)" = "0" ] && ok "device eliminabile del tutto (no fantasma)" || no "device non eliminato" "$DELRC"
 # ripristino stato moduli
-sql "UPDATE app.tenant_modules SET state='$TR_PREV' WHERE tenant_id='$TID' AND module_code='traccar'" >/dev/null
+sql "UPDATE app.tenant_modules SET state='$TR_PREV' WHERE tenant_id='$TID' AND module_code='gps'" >/dev/null
 sql "UPDATE app.tenant_modules SET state='$LW_PREV' WHERE tenant_id='$TID' AND module_code='loneworker'" >/dev/null
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" = 0 ]

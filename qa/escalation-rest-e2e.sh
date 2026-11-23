@@ -21,7 +21,7 @@ GID=$(api -H 'content-type: application/json' -X POST "$BASE/api/groups" -d "{\"
 UID1=$(sql "WITH t AS (SELECT id FROM app.tenants WHERE slug='$SLUG') INSERT INTO app.users(tenant_id,email,pass_hash,role,phone) SELECT id,'rest1-$R@globex.loneworker.eu','x','operatore','+393966000001' FROM t RETURNING id" | head -1)
 U2=$(sql "WITH t AS (SELECT id FROM app.tenants WHERE slug='$SLUG') INSERT INTO app.users(tenant_id,email,pass_hash,role,phone) SELECT id,'rest2-$R@globex.loneworker.eu','x','operatore','+393966000002' FROM t RETURNING id" | head -1)
 api -H 'content-type: application/json' -X POST "$BASE/api/groups/$GID/members" -d "{\"user_id\":\"$UID1\",\"position\":1}" >/dev/null
-sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id,escalation_engine) SELECT $TID,'$GID','native' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$GID',escalation_engine='native'" >/dev/null
+sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id) SELECT $TID,'$GID' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$GID'" >/dev/null
 # policy vuota + stato pulito
 api -H 'content-type: application/json' -X POST "$BASE/api/groups/$GID/policy" -d '{"steps":[],"repeat":0}' >/dev/null
 clean(){ sql "DELETE FROM app.esc_alert_state s USING app.tenants t WHERE t.id=s.tenant_id AND t.slug='$SLUG'" >/dev/null; sql "DELETE FROM app.esc_delivery_log el USING app.tenants t WHERE t.id=el.tenant_id AND t.slug='$SLUG'" >/dev/null; }
@@ -72,8 +72,8 @@ api -H 'content-type: application/json' -X POST "$BASE/api/oncall-temp-schedules
 CORR="dedup-$R"
 TOK="e2e-rest-tok-$R"
 DEV="E2E-REST-$R"
-sql "INSERT INTO app.devices(tenant_id,external_id,source,label) SELECT $TID,'$DEV','traccar','e2e rest dedup'" >/dev/null
-sql "INSERT INTO app.ingest_tokens(tenant_id,source,token,token_hash) SELECT $TID,'traccar','$TOK',NULL" >/dev/null
+sql "INSERT INTO app.devices(tenant_id,external_id,source,label) SELECT $TID,'$DEV','gps','e2e rest dedup'" >/dev/null
+sql "INSERT INTO app.ingest_tokens(tenant_id,source,token,token_hash) SELECT $TID,'gps','$TOK',NULL" >/dev/null
 curl -s -o /dev/null -X POST "$BASE/api/events" -H "x-ingest-token: $TOK" -H 'content-type: application/json' -d "{\"etype\":\"sos\",\"source_event\":\"$CORR-e1\",\"device_external_id\":\"$DEV\",\"correlation\":\"$CORR\"}"
 R2=$(curl -s -X POST "$BASE/api/events" -H "x-ingest-token: $TOK" -H 'content-type: application/json' -d "{\"etype\":\"sos\",\"source_event\":\"$CORR-e2\",\"device_external_id\":\"$DEV\",\"correlation\":\"$CORR\"}")
 DEDUP=$(echo "$R2" | python -c "import sys,json;print(json.load(sys.stdin).get('deduplicated',False))")

@@ -23,7 +23,7 @@ EM2=$(sql "SELECT email FROM app.users WHERE id='$M2'")
 api -H 'content-type: application/json' -X POST "$BASE/api/groups/$G/members" -d "{\"user_id\":\"$M1\",\"position\":1}" >/dev/null
 # tz=UTC così la finestra giorni combacia con ISODOW (altrimenti il default Europe/Rome sposta il giorno)
 api -H 'content-type: application/json' -X POST "$BASE/api/groups/$G/oncall" -d '{"mode":"tutti","coverage_mode":"24_7","tz":"UTC"}' >/dev/null
-sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id,escalation_engine) SELECT $TID,'$G','native' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$G',escalation_engine='native'" >/dev/null
+sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id) SELECT $TID,'$G' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$G'" >/dev/null
 
 # --- G-A: assegnazione 24h con M2 -> on-call UNISCE M2 ---
 AID=$(api -H 'content-type: application/json' -X POST "$BASE/api/groups/$G/assignments" -d '{"label":"Extra","cov_days":"1111111"}' | python -c "import sys,json;print(json.load(sys.stdin)['id'])")

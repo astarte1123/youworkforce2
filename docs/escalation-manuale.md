@@ -10,7 +10,7 @@ insistere finché qualcuno prende in carico. **YWAlert resta come rete di sicure
 (si può riattivare dal superadmin), ma non è più necessario.
 
 > L'escalation **non appartiene solo a "Sicurezza lavoratore"**: serve qualunque modulo che
-> produce allarmi (IoT, ThingsBoard, Traccar). Anche con "Sicurezza lavoratore" spento, la Centrale
+> produce allarmi (IoT, dispositivi GPS). Anche con "Sicurezza lavoratore" spento, la Centrale
 > allarmi e la configurazione dell'escalation restano disponibili per instradare gli allarmi degli
 > altri moduli.
 
@@ -38,7 +38,7 @@ Nel pannello superadmin, per ogni tenant, **Motore escalation**:
 ## Parte 2 — Uso quotidiano (admin del tenant)
 
 Tutto è in **Escalation e reperibilità** (gruppo menu *Sicurezza Lavoratore*; la voce resta visibile
-anche se è attivo solo un modulo IoT/ThingsBoard/Traccar). Le modifiche native hanno effetto
+anche se è attivo solo un modulo IoT/dispositivi GPS). Le modifiche native hanno effetto
 **subito**, senza passaggi di sincronizzazione.
 
 ### 2.1 Gruppi, membri, routing
@@ -193,7 +193,7 @@ utile per iscriversi al calendario di un team specifico.
 | Niente chiamata di fallback | fallback vocale off, o Twilio non attivo | attiva fallback vocale + Twilio |
 | Allarme critico senza destinatari | nessun routing né gruppo di default | imposta il **gruppo di default** o un routing |
 | Allarmi durante manutenzione | manutenzione attiva | **Termina** la manutenzione |
-| La sezione escalation non compare | nessun modulo che produce allarmi è attivo | attiva almeno uno fra Sicurezza lavoratore / IoT / ThingsBoard / Traccar |
+| La sezione escalation non compare | nessun modulo che produce allarmi è attivo | attiva almeno uno fra Sicurezza lavoratore / IoT / Localizzazione GPS |
 
 ---
 

@@ -1,5 +1,5 @@
 // Edge nativo Teltonika — server TCP Codec8 / Codec8 Extended (0x08 / 0x8E).
-// Decode-edge SENZA server Traccar: il device parla il protocollo binario diretto.
+// Decode-edge nativo: il device parla il protocollo binario diretto con YouWorkforce.
 // Handshake IMEI -> accept (0x01) solo se l'IMEI = external_id di un device noto con un modulo
 // dispositivi attivo; poi decodifica i pacchetti AVL e li immette nella pipeline nativa
 // (api::teltonika_ingest_one). Identità = IMEI (il protocollo non porta token): accettiamo solo
@@ -104,6 +104,7 @@ async fn handle(st: AppState, mut sock: TcpStream) -> std::io::Result<()> {
     // mappa IO->allarme del modello+tenant risolta UNA volta per connessione (salva-vita configurabile)
     let io_alarm_map = crate::api::teltonika_io_alarm_map(&st, tid, did).await;
     sock.write_all(&[0x01]).await?; // accept
+    crate::api::touch_device_seen(&st, tid, &source, &imei).await;
     tracing::info!("teltonika: IMEI {imei} accettato (tenant {tid})");
 
     // registra la connessione per i comandi GPRS (codec12) e separa read/write
@@ -148,6 +149,8 @@ async fn read_loop(st: &AppState, tid: uuid::Uuid, imei: &str, source: &str,
         match decode_avl(data) {
             Ok(records) => {
                 let n = records.len() as u32;
+                // ultimo contatto: anche un pacchetto senza fix GPS prova che il device è vivo
+                crate::api::touch_device_seen(st, tid, source, imei).await;
                 for r in &records {
                     let ts_rfc = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(r.ts_ms)
                         .unwrap_or_else(chrono::Utc::now).to_rfc3339();

@@ -38,29 +38,27 @@ Endpoint core NON chiamano `require_module`; usano solo `require_tenant` + `requ
 | Assistente YouWorker.ai | `assistant` | Trasversale (AI attore) | — |
 | Qualifiche / Prevenzione | `qualifiche`,`prevenzione` | (non ancora disponibili) | — |
 
-### 3. Connector — RITIRATI (suite self-contained)
+### 3. Nessun connettore esterno (suite self-contained)
 
-YouWorkforce **non si connette mai a servizi esterni**. I connettori-ponte verso server esterni
-(`goalert`, `traccar`, `thingsboard`) sono **ritirati dal prodotto** (mig 0078: `available=false`,
-disattivati). Ogni loro funzione ha un equivalente **nativo**:
+YouWorkforce **non si connette mai a servizi esterni**. Le vecchie integrazioni con server esterni
+(escalation, tracciamento GPS, piattaforma IoT) sono state rimosse dal prodotto (mig `0078`, codice e
+dati residui eliminati con mig `0125`). Ogni funzione è nativa:
 
-| Ex connettore | Sostituito da (nativo) |
-|---------------|------------------------|
-| YWAlert (on-call/escalation) | **escalation nativa** (default, mig 0057) |
-| Traccar (badge/GPS, server esterno) | **edge nativo** Teltonika Codec8/8E + ingest OsmAnd/HTTP |
-| ThingsBoard (pull telemetria esterna) | **IoT nativo**: `iot` (sensor rules) + scenari "IoT Use Cases" |
+| Funzione | Motore nativo |
+|----------|---------------|
+| Reperibilità ed escalation | **escalation nativa** (`escalation.rs`, `delivery.rs`) |
+| Dispositivi GPS e badge | modulo **`gps`**: edge Teltonika Codec8/8E (TCP), ingest OsmAnd, ingest JSON HTTP, watchdog del silenzio, report percorsi/soste (`track.rs`) |
+| Telemetria e sensori | modulo **`iot`**: regole e soglie, monitoraggio, scenari attivabili (IoT Dashboard) |
 
-**Ingest INBOUND resta nativo**: gli endpoint `/api/ingress/osmand|traccar|thingsboard` RICEVONO
-telemetria (device che spingono verso YW, non YW che chiama fuori) e sono gated dal modulo **`iot`**
-(native) via `DEVICE_MODS = [loneworker, iot]`. Il formato del payload (OsmAnd/Traccar/ThingsBoard)
-è solo un'etichetta di sorgente; il motore è YW.
+**Ingest INBOUND**: gli endpoint `/api/ingress/osmand` e `/api/ingress/gps` (+ `/position`) RICEVONO
+dati dai dispositivi (sono i device a spingere verso YW, mai YW a chiamare fuori). Il tenant deriva
+dalla chiave di collegamento, mai dal contenuto.
 
-L'unica integrazione esterna rimasta, **opzionale**, sono i **provider AI** (richiedono la chiave del
-cliente): vedi modulo `assistant`.
+L'unica integrazione esterna, **opzionale**, è il **provider AI** scelto dal cliente (modulo `assistant`).
 
 ## Chi attiva cosa (separazione dei poteri)
 
-- **Moduli** (product+connector) on/off → **solo superadmin** (`require_super`, tabella
+- **Moduli** on/off → **solo superadmin** (`require_super`, tabella
   `tenant_modules`). Il tenant_admin NON può attivarli.
 - **Capability/ruoli, layout dashboard, config** → **tenant_admin** (capability dedicate).
 - **Core** → non si attiva: esiste sempre.
@@ -69,7 +67,7 @@ cliente): vedi modulo `assistant`.
 
 Due perimetri di prodotto, entrambi autonomi e coesistenti (vedi `moduli-autonomia.md`):
 
-- **Sicurezza lavoratore** = loneworker + traccar/iot/thingsboard (escalation = YWAlert nativo, nessun connettore).
+- **Sicurezza lavoratore** = loneworker + gps/iot (escalation nativa).
 - **Lavoro sul campo** = interventi/giri/consuntivi/workforce.
 
 Regole d'oro:
@@ -77,16 +75,14 @@ Regole d'oro:
 2. I servizi **core** sono gli UNICI punti di condivisione legittimi tra moduli (utenti, gruppi,
    sedi, permessi, dispositivi-inventario).
 3. L'escalation/centrale è condivisa da tutti i moduli che **producono allarmi**
-   (`ESCALATION_MODS = loneworker,traccar,iot,thingsboard`).
+   (`ESCALATION_MODS = loneworker,gps,iot`).
 
 ## Dispositivi: inventario (core) vs pipeline allarmi (safety)
-
-Punto delicato e rilevante per ThingsBoard:
 
 - **Inventario/config dispositivi** = `core.devices`: censimento, attributi, onboarding, geofence.
   Infrastruttura condivisa.
 - **Pipeline allarmi** (evento → incidente → escalation) = appartiene ai moduli safety
-  (loneworker/traccar/iot/thingsboard). Un device senza un modulo safety attivo resta inventario,
+  (loneworker/gps/iot). Un device senza un modulo safety attivo resta inventario,
   non genera allarmi gestibili (Centrale gated `ESCALATION_MODS`).
 
 ## Il registry come contratto (SSOT)
@@ -120,8 +116,8 @@ moduli-feature.
 | Permessi e ruoli (IAM) | `core/src/iam.rs` | estratto (fondamenta login/sessione restano in api.rs) |
 | Identità/utenti | `core/src/users.rs` | estratto (CRUD anagrafica + ACL sedi; login/sessione/impersonazione restano in api.rs) |
 
-I moduli product/connector e il resto dei servizi vivono ancora in `api.rs` e migreranno con lo
-stesso pattern quando utile. ThingsBoard è il prossimo candidato (vedi sotto).
+I moduli di prodotto e il resto dei servizi vivono ancora in `api.rs` e migrano con lo stesso
+pattern (piano: `analisi-miglioramento-yw.md`, Fase 1). Già estratto: report di tracciamento (`track.rs`).
 
 ## Riferimento temporale: orologio unico controllabile
 
@@ -135,12 +131,6 @@ i percorsi basati sul tempo **senza attese reali**. Regola:
   escalation nativo** — `step_fired_at` è scritto e confrontato con lo stesso `now`, quindi
   auto-coerente) usa `st.clock.now()`.
 - **Confronti contro timestamp scritti da `now()` SQL** (throttle login, elapsed ronda/turno vs
-  `started_at`, watchdog heartbeat vs `last_ping_at`) e **interazioni con sistemi esterni** (shadow
-  YWAlert, annunci Slack, suffissi-ID univoci) restano su `chrono::Utc::now()` (wall-clock), con
+  `started_at`, watchdog heartbeat vs `last_ping_at`) e **interazioni con sistemi esterni** (annunci
+  Slack, suffissi-ID univoci) restano su `chrono::Utc::now()` (wall-clock), con
   commento esplicito nel codice: mescolare clock di test e `now()` SQL falserebbe gli elapsed.
-
-## Nota per ThingsBoard (prossimo lavoro)
-
-Il codice TB vive oggi in `api.rs` (~102 funzioni, cluster ~1162–1413 e ~9513–9680). Fase B3 lo
-estrae in `core/src/thingsboard.rs` mantenendo il seam: inventario device via `core.devices`,
-pipeline allarmi via il modulo `thingsboard`. Vedi `moduli-autonomia.md` e `thingsboard-manuale.md`.

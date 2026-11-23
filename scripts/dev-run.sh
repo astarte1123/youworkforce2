@@ -15,7 +15,7 @@ export YW_DB_RT="postgres://app_rt:app_rt_pw@localhost:${DBPORT}/youworkforce"
 export TEST_CLOCK="${TEST_CLOCK:-1}"
 export YW_SEED_DEMO="${YW_SEED_DEMO:-1}"
 export YW_WORKER_STACK_MB="${YW_WORKER_STACK_MB:-32}"
-# chiave di cifratura segreti a riposo (dev); abilita enc:v1: su ai_connections/traccar/goalert
+# chiave di cifratura segreti a riposo (dev); abilita enc:v1: su ai_connections (chiave del provider AI)
 export YW_SECRET_KEY="${YW_SECRET_KEY:-dev-secret-key-youworkforce}"
 
 say(){ printf '\033[36m[dev-run]\033[0m %s\n' "$1"; }

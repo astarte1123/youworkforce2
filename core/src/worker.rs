@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::json;
 use sqlx::Row;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
@@ -24,12 +24,11 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     // ciascun future sullo heap: `tick` tiene solo puntatori e la profondità di stack resta limitata.
     Box::pin(drain_outbox(st)).await?;
     Box::pin(sweep_checkins(st)).await?;
-    Box::pin(traccar_poll(st)).await?;
-    // auto-integrazioni: configura da sola i moduli integrati attivi (idempotente), ~ogni 60s
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
-    if n % 30 == 0 { Box::pin(api::reconcile_integrations(st)).await; }
+    // watchdog silenzio dispositivi personali (salva-vita): ~ogni 10s
+    if n % 5 == 2 { if let Err(e) = Box::pin(gps_silence_watchdog(st)).await { tracing::warn!("gps silence watchdog: {e}"); } }
     // #7 ritenzione GDPR (opt-in YW_RETENTION_DAYS): ~ogni ora (1800 tick * 2s)
     if n % 1800 == 0 { Box::pin(privacy::purge_retention(st)).await; }
     // #4 escalation nativo FASE 2 (consegna in ombra): ~ogni 30s, verso sink di prova, idempotente
@@ -46,325 +45,60 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
 }
 
 // ============================================================================
-// Traccar P1 — polling via API (spina dorsale pull) + watchdog del silenzio.
-// Per ogni tenant con connessione Traccar + modulo attivo + poll abilitato, alla
-// cadenza configurata: login, recupero eventi dal cursore (backfill), sync delle
-// posizioni correnti, watchdog offline indipendente, aggiornamento stato salute.
-// Converge col push forwarding: stesso idem_key evento / stesso source_id posizione.
+// Watchdog NATIVO del silenzio dei dispositivi personali (modulo `gps`).
+// Sicurezza: un badge/tracker che smette di trasmettere (spento, scarico, fuori copertura,
+// manomesso) non può più segnalare SOS o caduta. Oltre la soglia `silence_after_s` dello
+// strumento gps/alarm_map (default 600 s, 0 = disattivo) si apre un incidente `perdita_contatto`.
+// Vale per i dispositivi ASSEGNATI a un lavoratore: un device a magazzino non protegge nessuno e
+// non deve generare allarmi.
+// Un episodio di silenzio = un incidente: l'idem è legato all'ultimo contatto, quindi lo stesso
+// silenzio non si duplica e un nuovo silenzio dopo una ripresa ne apre uno nuovo.
 // ============================================================================
-async fn traccar_poll(st: &AppState) -> anyhow::Result<()> {
+pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
     let now = st.clock.now();
-    let conns = sqlx::query(
-        "SELECT c.tenant_id, c.base_url, c.username, c.password, c.poll_interval_s, c.silence_after_s, c.conn_down_after_s
-         FROM app.traccar_connections c
-         JOIN app.tenant_modules m ON m.tenant_id=c.tenant_id AND m.module_code='traccar' AND m.state='attivo'
-         WHERE c.poll_enabled=true")
+    let rows = sqlx::query(
+        "SELECT d.tenant_id, d.external_id, d.last_lat, d.last_lon, d.last_seen_at
+         FROM app.devices d
+         JOIN app.tenant_modules m ON m.tenant_id=d.tenant_id AND m.module_code='gps' AND m.state='attivo'
+         WHERE d.source='gps' AND COALESCE(d.enabled,true) AND d.last_seen_at IS NOT NULL
+           AND d.assigned_user IS NOT NULL")
         .fetch_all(&st.owner_pool).await?;
-    for c in conns {
-        let tid: Uuid = c.get("tenant_id");
-        let interval: i32 = c.get("poll_interval_s");
-        let state = sqlx::query("SELECT last_poll_at,last_ok_at,last_event_id FROM app.traccar_poll_state WHERE tenant_id=$1")
-            .bind(tid).fetch_optional(&st.owner_pool).await?;
-        // gate: rispetta la cadenza per-tenant
-        if let Some(lp) = state.as_ref().and_then(|s| s.try_get::<DateTime<Utc>,_>("last_poll_at").ok()) {
-            if (now - lp).num_seconds() < interval as i64 { continue; }
-        }
-        let last_ok: Option<DateTime<Utc>> = state.as_ref().and_then(|s| s.try_get::<DateTime<Utc>,_>("last_ok_at").ok());
-        let last_event_id: i64 = state.as_ref().map(|s| s.get::<i64,_>("last_event_id")).unwrap_or(0);
-        let base: String = c.get("base_url");
-        let user: String = c.get("username");
-        let pass: String = st.secrets.decrypt(&c.get::<String,_>("password"));   // P3
-        let silence_after: i32 = c.get("silence_after_s");
-        let conn_down_after: i32 = c.get("conn_down_after_s");
-        if let Err(e) = poll_tenant(st, tid, &base, &user, &pass, last_ok, last_event_id, silence_after, now).await {
-            // marca non raggiungibile ma non interrompe gli altri tenant
-            let _ = mark_poll(st, tid, false, last_event_id, None, None, Some(&e.to_string()), now).await;
-        }
-        // watchdog della CONNESSIONE: se Traccar e' down oltre la soglia -> incidente + escalation.
-        let _ = conn_watchdog(st, tid, conn_down_after, now).await;
-    }
-    Ok(())
-}
-
-/// Watchdog della connessione Traccar (sicurezza): se il server e' irraggiungibile
-/// oltre `conn_down_after` secondi alza un incidente critico `traccar_conn_down`
-/// (escalation YWAlert); al ripristino lo chiude. Un episodio = un incidente.
-async fn conn_watchdog(st: &AppState, tid: Uuid, conn_down_after: i32, now: DateTime<Utc>) -> anyhow::Result<()> {
-    let Some(r) = sqlx::query("SELECT reachable,down_since,conn_incident_open,conn_incident_corr FROM app.traccar_poll_state WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await? else { return Ok(()); };
-    let reachable: bool = r.get("reachable");
-    let down_since: Option<DateTime<Utc>> = r.try_get("down_since").ok();
-    let open: bool = r.get("conn_incident_open");
-    let corr: Option<String> = r.try_get("conn_incident_corr").ok();
-
-    if !reachable {
-        let ds = match down_since {
-            Some(d) => d,
+    let mut threshold: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
+    for r in rows {
+        let tid: Uuid = r.get("tenant_id");
+        let after = match threshold.get(&tid) {
+            Some(v) => *v,
             None => {
-                sqlx::query("UPDATE app.traccar_poll_state SET down_since=$2 WHERE tenant_id=$1")
-                    .bind(tid).bind(now).execute(&st.owner_pool).await?;
-                now
+                let cfg = api::tool_config(st, tid, "gps", "alarm_map").await;
+                let v = cfg.get("silence_after_s").and_then(|v| v.as_i64()).unwrap_or(600);
+                threshold.insert(tid, v);
+                v
             }
         };
-        if (now - ds).num_seconds() >= conn_down_after as i64 {
-            // C'e' davvero un incidente APERTO per questo episodio? (non fidarsi del
-            // solo flag: persist puo' fallire, oppure un operatore puo' aver chiuso
-            // l'incidente mentre l'outage continua -> in sicurezza si ri-escalation.)
-            let has_open = match &corr {
-                Some(c) => sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.incidents WHERE tenant_id=$1 AND correlation=$2 AND state<>'chiuso'")
-                    .bind(tid).bind(c).fetch_optional(&st.owner_pool).await?.is_some(),
-                None => false,
-            };
-            if !has_open {
-                // correlazione fresca: evita che l'ON CONFLICT deduplichi contro un
-                // evento di un incidente gia' chiuso (altrimenti non si riaprirebbe).
-                let correlation = format!("traccar-conndown-{}-{}-{}", tid, ds.timestamp_millis(), now.timestamp_millis());
-                let res = crate::api::persist_ingest(st, tid, crate::api::Normalized{
-                    source: "traccar".into(),
-                    source_event: correlation.clone(),
-                    idem: correlation.clone(),
-                    etype: "traccar_conn_down".into(),
-                    device_external_id: None,
-                    site_name: None,
-                    lat: None, lon: None, accuracy_m: None,
-                    correlation: correlation.clone(),
-                    payload: json!({"watchdog":"connessione","down_since":ds,"conn_down_after_s":conn_down_after}),
-                    indoor: false, beacon_uid: None, zone: None,
-                }).await;
-                // segna aperto SOLO se l'incidente e' stato davvero creato (+ outbox).
-                let opened = matches!(&res, Ok(j) if j.0.get("incident_id").and_then(|v| v.as_str()).is_some());
-                if opened {
-                    sqlx::query("UPDATE app.traccar_poll_state SET conn_incident_open=true, conn_incident_corr=$2 WHERE tenant_id=$1")
-                        .bind(tid).bind(&correlation).execute(&st.owner_pool).await?;
-                    tracing::warn!("Traccar connessione down per tenant {tid}: incidente alzato");
-                } else {
-                    // persist fallito: non marcare aperto -> ritenta al prossimo poll.
-                    sqlx::query("UPDATE app.traccar_poll_state SET conn_incident_open=false WHERE tenant_id=$1")
-                        .bind(tid).execute(&st.owner_pool).await?;
-                    tracing::error!("Traccar conn_down: persist incidente fallito tenant {tid}, ritento");
-                }
-            }
-        }
-    } else if open {
-        // ripristino: chiudi l'incidente e chiedi a YWAlert di chiudere l'alert
-        if let Some(corr) = &corr {
-            if let Some(row) = sqlx::query("UPDATE app.incidents SET state='chiuso',outcome='connessione Traccar ripristinata',closed_at=now(),version=version+1
-                 WHERE tenant_id=$1 AND correlation=$2 AND state<>'chiuso' RETURNING id,etype")
-                .bind(tid).bind(corr).fetch_optional(&st.owner_pool).await? {
-                let iid: Uuid = row.get("id"); let etype: String = row.get("etype");
-                sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'transition',$3)")
-                    .bind(tid).bind(iid).bind(json!({"to":"chiuso","outcome":"connessione ripristinata","by":"watchdog"})).execute(&st.owner_pool).await?;
-                sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'close',$2)")
-                    .bind(tid).bind(json!({"incident_id":iid,"summary":format!("close {}",corr),"dedup":corr,"etype":etype}))
-                    .execute(&st.owner_pool).await?;
-            }
-        }
-        sqlx::query("UPDATE app.traccar_poll_state SET conn_incident_open=false, down_since=NULL, conn_incident_corr=NULL WHERE tenant_id=$1")
-            .bind(tid).execute(&st.owner_pool).await?;
-        tracing::info!("Traccar connessione ripristinata per tenant {tid}");
-    } else if down_since.is_some() {
-        // blip rientrato prima della soglia
-        sqlx::query("UPDATE app.traccar_poll_state SET down_since=NULL WHERE tenant_id=$1")
-            .bind(tid).execute(&st.owner_pool).await?;
+        if after <= 0 { continue; }
+        let last: DateTime<Utc> = r.get("last_seen_at");
+        let silent_for = (now - last).num_seconds();
+        if silent_for <= after { continue; }
+        let ext: String = r.get("external_id");
+        let srcev = format!("gps-silence-{}-{}", ext, last.timestamp_millis());
+        // già segnalato questo episodio? (evita una scrittura per tick per ogni device silente)
+        let seen: Option<i32> = sqlx::query_scalar("SELECT 1 FROM app.events WHERE tenant_id=$1 AND idem_key=$2")
+            .bind(tid).bind(&srcev).fetch_optional(&st.owner_pool).await?;
+        if seen.is_some() { continue; }
+        let res = api::persist_ingest(st, tid, api::Normalized{
+            source: "gps".into(),
+            source_event: srcev.clone(),
+            idem: srcev.clone(),
+            etype: "perdita_contatto".into(),
+            device_external_id: Some(ext.clone()),
+            site_name: None,
+            lat: r.try_get("last_lat").ok(), lon: r.try_get("last_lon").ok(), accuracy_m: None,
+            correlation: srcev,
+            payload: json!({"watchdog":"silenzio","last_seen_at":last,"silence_after_s":after,"silent_for_s":silent_for}),
+            indoor: false, beacon_uid: None, zone: None,
+        }).await;
+        if let Err(e) = res { tracing::error!("watchdog silenzio {ext} tenant {tid}: incidente non creato: {:?}", e); }
     }
-    Ok(())
-}
-
-/// Forza un ciclo di poll per un tenant, ignorando la cadenza (usato dall'azione
-/// "Verifica collegamento" del pannello). Ritorna errore solo se la connessione
-/// manca; i problemi di raggiungibilita' finiscono in traccar_poll_state.
-pub async fn poll_now(st: &AppState, tid: Uuid) -> anyhow::Result<()> {
-    let now = st.clock.now();
-    let c = sqlx::query("SELECT base_url,username,password,silence_after_s FROM app.traccar_connections WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await?
-        .ok_or_else(|| anyhow::anyhow!("connessione Traccar non configurata"))?;
-    let state = sqlx::query("SELECT last_ok_at,last_event_id FROM app.traccar_poll_state WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await?;
-    let last_ok: Option<DateTime<Utc>> = state.as_ref().and_then(|s| s.try_get::<DateTime<Utc>,_>("last_ok_at").ok());
-    let last_event_id: i64 = state.as_ref().map(|s| s.get::<i64,_>("last_event_id")).unwrap_or(0);
-    let base: String = c.get("base_url");
-    let user: String = c.get("username");
-    let pass: String = st.secrets.decrypt(&c.get::<String,_>("password"));   // P3
-    let silence_after: i32 = c.get("silence_after_s");
-    poll_tenant(st, tid, &base, &user, &pass, last_ok, last_event_id, silence_after, now).await
-}
-
-async fn mark_poll(st: &AppState, tid: Uuid, reachable: bool, last_event_id: i64,
-    dc: Option<i32>, oc: Option<i32>, last_error: Option<&str>, now: DateTime<Utc>) -> anyhow::Result<()> {
-    sqlx::query(
-        "INSERT INTO app.traccar_poll_state(tenant_id,last_event_id,last_poll_at,last_ok_at,reachable,last_error,device_count,online_count,updated_at)
-         VALUES($1,$2,$3,$4,$5,$6,COALESCE($7,0),COALESCE($8,0),now())
-         ON CONFLICT (tenant_id) DO UPDATE SET
-           last_event_id=EXCLUDED.last_event_id,
-           last_poll_at=EXCLUDED.last_poll_at,
-           last_ok_at=CASE WHEN $5 THEN EXCLUDED.last_poll_at ELSE app.traccar_poll_state.last_ok_at END,
-           reachable=EXCLUDED.reachable,
-           last_error=EXCLUDED.last_error,
-           device_count=COALESCE($7, app.traccar_poll_state.device_count),
-           online_count=COALESCE($8, app.traccar_poll_state.online_count),
-           updated_at=now()")
-        .bind(tid).bind(last_event_id).bind(now).bind(now).bind(reachable).bind(last_error).bind(dc).bind(oc)
-        .execute(&st.owner_pool).await?;
-    Ok(())
-}
-
-async fn poll_tenant(st: &AppState, tid: Uuid, base: &str, user: &str, pass: &str,
-    last_ok: Option<DateTime<Utc>>, last_event_id: i64, silence_after: i32, now: DateTime<Utc>) -> anyhow::Result<()> {
-    let base = base.trim_end_matches('/');
-    let cookie = match api::traccar_login(&st.http, base, user, pass).await {
-        Some(c) => c,
-        None => { mark_poll(st, tid, false, last_event_id, None, None, Some("login Traccar fallito"), now).await?; return Ok(()); }
-    };
-    let get = |path: String| st.http.get(format!("{base}{path}")).header("Cookie", &cookie).header("Accept","application/json").send();
-
-    // 1) device: id numerico -> (uniqueId, lastUpdate, status).
-    // Un Traccar che AUTENTICA ma degrada (es. 5xx o body invalido su /api/devices)
-    // NON e' raggiungibile ai fini sicurezza: segnalo reachable=false cosi' il
-    // watchdog connessione scatta (altrimenti entrambi i watchdog resterebbero ciechi).
-    let dresp = get("/api/devices".into()).await?;
-    if !dresp.status().is_success() {
-        mark_poll(st, tid, false, last_event_id, None, None, Some(&format!("Traccar /api/devices {}", dresp.status())), now).await?;
-        return Ok(());
-    }
-    let devs: Value = match dresp.json().await {
-        Ok(v) => v,
-        Err(_) => { mark_poll(st, tid, false, last_event_id, None, None, Some("Traccar /api/devices: json non valido"), now).await?; return Ok(()); }
-    };
-    if !devs.is_array() {
-        mark_poll(st, tid, false, last_event_id, None, None, Some("Traccar /api/devices: risposta inattesa"), now).await?;
-        return Ok(());
-    }
-    let mut id2uid: std::collections::HashMap<i64,String> = std::collections::HashMap::new();
-    let mut device_count = 0i32; let mut online_count = 0i32;
-    if let Some(arr) = devs.as_array() {
-        for d in arr {
-            device_count += 1;
-            let did = d.get("id").and_then(|v| v.as_i64());
-            let uid = d.get("uniqueId").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let tstatus = d.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
-            if tstatus == "online" { online_count += 1; }
-            // P4 sync: importa/aggiorna il device nel nostro inventario (stato, id Traccar).
-            if let Some(uid) = &uid {
-                let name = d.get("name").and_then(|v| v.as_str()).unwrap_or(uid.as_str());
-                let _ = sqlx::query(
-                    "INSERT INTO app.devices(tenant_id,external_id,source,label,traccar_device_id,traccar_status,updated_at)
-                     VALUES($1,$2,'traccar',$3,$4,$5,now())
-                     ON CONFLICT (tenant_id,source,external_id) DO UPDATE SET
-                       traccar_status=EXCLUDED.traccar_status,
-                       traccar_device_id=EXCLUDED.traccar_device_id,
-                       label=COALESCE(app.devices.label, EXCLUDED.label),
-                       updated_at=now()")
-                    .bind(tid).bind(uid).bind(name).bind(did).bind(tstatus)
-                    .execute(&st.owner_pool).await;
-            }
-            if let (Some(did), Some(uid)) = (did, uid) { id2uid.insert(did, uid); }
-        }
-    }
-
-    // 2) posizioni correnti: sync ultima posizione/presenza/storico via pipeline condivisa
-    let positions: Value = get("/api/positions".into()).await?.json().await.unwrap_or(json!([]));
-    let mut pos_by_dev: std::collections::HashMap<i64,Value> = std::collections::HashMap::new();
-    if let Some(arr) = positions.as_array() {
-        for p in arr {
-            if let Some(did) = p.get("deviceId").and_then(|v| v.as_i64()) { pos_by_dev.insert(did, p.clone()); }
-            if let Some(uid) = p.get("deviceId").and_then(|v| v.as_i64()).and_then(|d| id2uid.get(&d)) {
-                let _ = api::process_traccar_position(st, tid, p, uid).await;
-            }
-        }
-    }
-
-    // 3) eventi dal cursore (backfill): recupera cio' che il push potrebbe aver perso
-    let amap = api::tool_config(st, tid, "traccar", "alarm_map").await;
-    let from = last_ok.map(|t| t - chrono::Duration::seconds(120)).unwrap_or_else(|| now - chrono::Duration::hours(1));
-    let mut max_evt = last_event_id;
-    if !id2uid.is_empty() {
-        let mut params: Vec<(String,String)> = vec![
-            ("from".into(), from.to_rfc3339()),
-            ("to".into(), now.to_rfc3339()),
-        ];
-        for did in id2uid.keys() { params.push(("deviceId".into(), did.to_string())); }
-        let evresp = st.http.get(format!("{base}/api/reports/events"))
-            .header("Cookie", &cookie).header("Accept","application/json")
-            .query(&params).send().await?;
-        if evresp.status().is_success() {
-            let events: Value = evresp.json().await.unwrap_or(json!([]));
-            if let Some(arr) = events.as_array() {
-                // ordina per id per avanzare il cursore in modo monotono
-                let mut evs: Vec<&Value> = arr.iter().collect();
-                evs.sort_by_key(|e| e.get("id").and_then(|v| v.as_i64()).unwrap_or(0));
-                for e in evs {
-                    let eid = e.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                    if eid <= last_event_id { continue; }           // gia' visto
-                    let did = e.get("deviceId").and_then(|v| v.as_i64());
-                    let uid = did.and_then(|d| id2uid.get(&d)).cloned();
-                    let etype_t = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                    let alarm = e.get("attributes").and_then(|a| a.get("alarm")).and_then(|v| v.as_str());
-                    let pos = did.and_then(|d| pos_by_dev.get(&d));
-                    let battery = pos.and_then(|p| p.get("attributes")).and_then(|a| a.get("batteryLevel")).and_then(|v| v.as_f64());
-                    let etype = api::map_traccar_etype(&amap, etype_t, alarm, battery);
-                    let lat = pos.and_then(|p| p.get("latitude")).and_then(|v| v.as_f64());
-                    let lon = pos.and_then(|p| p.get("longitude")).and_then(|v| v.as_f64());
-                    // indoor/beacon come nel push path: il beacon della posizione localizza per zona
-                    let attrs = pos.and_then(|p| p.get("attributes")).or_else(|| e.get("attributes"));
-                    let (indoor, beacon_uid, zone, anchor) = api::resolve_indoor(st, tid, attrs).await;
-                    let (lat, lon) = if indoor { if let Some((a,o))=anchor {(Some(a),Some(o))} else {(lat,lon)} } else {(lat,lon)};
-                    let srcev = format!("traccar-evt-{}", eid);
-                    let _ = api::persist_ingest(st, tid, api::Normalized{
-                        source: "traccar".into(),
-                        source_event: srcev.clone(),
-                        idem: srcev.clone(),
-                        etype,
-                        device_external_id: uid,
-                        site_name: None,
-                        lat, lon, accuracy_m: None,
-                        correlation: srcev,
-                        payload: e.clone(),
-                        indoor, beacon_uid, zone,
-                    }).await;
-                    if eid > max_evt { max_evt = eid; }
-                }
-            }
-        }
-    }
-
-    // 4) watchdog silenzio: offline calcolato da NOI, indipendente da deviceOffline di Traccar.
-    //    Un episodio di silenzio = un incidente (idem legato a lastUpdate: nuovo silenzio -> nuovo id).
-    if silence_after > 0 {
-        if let Some(arr) = devs.as_array() {
-            // solo i device che tracciamo (source traccar) nel tenant
-            let ours: std::collections::HashSet<String> = sqlx::query_scalar::<_,String>(
-                "SELECT external_id FROM app.devices WHERE tenant_id=$1 AND source='traccar'")
-                .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default().into_iter().collect();
-            for d in arr {
-                let Some(uid) = d.get("uniqueId").and_then(|v| v.as_str()) else { continue; };
-                if !ours.contains(uid) { continue; }
-                let last_update = d.get("lastUpdate").and_then(|v| v.as_str())
-                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok()).map(|t| t.with_timezone(&Utc));
-                let Some(lu) = last_update else { continue; };
-                if (now - lu).num_seconds() > silence_after as i64 {
-                    let did = d.get("id").and_then(|v| v.as_i64());
-                    let pos = did.and_then(|dd| pos_by_dev.get(&dd));
-                    let lat = pos.and_then(|p| p.get("latitude")).and_then(|v| v.as_f64());
-                    let lon = pos.and_then(|p| p.get("longitude")).and_then(|v| v.as_f64());
-                    let srcev = format!("traccar-silence-{}-{}", uid, lu.timestamp_millis());
-                    let _ = api::persist_ingest(st, tid, api::Normalized{
-                        source: "traccar".into(),
-                        source_event: srcev.clone(),
-                        idem: srcev.clone(),
-                        etype: "perdita_contatto".into(),
-                        device_external_id: Some(uid.to_string()),
-                        site_name: None,
-                        lat, lon, accuracy_m: None,
-                        correlation: srcev,
-                        payload: json!({"watchdog":"silenzio","last_update":lu,"silence_after_s":silence_after}),
-                        indoor: false, beacon_uid: None, zone: None,
-                    }).await;
-                }
-            }
-        }
-    }
-
-    mark_poll(st, tid, true, max_evt, Some(device_count), Some(online_count), None, now).await?;
     Ok(())
 }
 

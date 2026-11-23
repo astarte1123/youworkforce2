@@ -56,7 +56,7 @@ TID="(SELECT id FROM app.tenants WHERE slug='$SLUG')"
 R=$RANDOM
 GID=$(api -H 'content-type: application/json' -X POST "$BASE/api/groups" -d "{\"name\":\"Delivery-$R\"}" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
 [ -n "$GID" ] && ok "gruppo creato" || { no "gruppo non creato"; echo "== $PASS passed, $((FAIL+1)) failed =="; exit 1; }
-sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id,escalation_engine) SELECT $TID,'$GID','native' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$GID',escalation_engine='native'" >/dev/null
+sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id) SELECT $TID,'$GID' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$GID'" >/dev/null
 UID1=$(sql "WITH t AS (SELECT id FROM app.tenants WHERE slug='$SLUG') INSERT INTO app.users(tenant_id,email,pass_hash,role,phone,phone_verified_at) SELECT id,'dlv1-$R@globex.loneworker.eu','x','operatore','+393988000001',now() FROM t RETURNING id" | head -1)
 api -H 'content-type: application/json' -X POST "$BASE/api/groups/$GID/members" -d "{\"user_id\":\"$UID1\",\"position\":1}" >/dev/null
 ok "on-call con telefono verificato in gruppo"

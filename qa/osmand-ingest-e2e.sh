@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ingest NATIVO OsmAnd/HTTP (senza server Traccar): posizione + allarme -> incidente, con
+# Ingest NATIVO OsmAnd/HTTP : posizione + allarme -> incidente, con
 # token device-bound (anti-spoof) e attribuzione temporale (timestamp del device).
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"; SLUG="globex"; EMAIL="admin@globex.loneworker.eu"
@@ -15,12 +15,15 @@ jq(){ python -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 GID=$(api "$BASE/api/groups" | jq "d['groups'][0]['id']")
 WUID=$(api "$BASE/api/users" | jq "[u['id'] for u in d if u['role'] in ('operatore','tenant_admin')][0]")
 R=$RANDOM
+# orario del core (con TEST_CLOCK l'orologio può essere avanzato da altre suite): l'evento deve
+# cadere dopo l'assegnazione registrata dal core, altrimenti l'attribuzione è (giustamente) incerta.
+now_core(){ curl -s -X POST "$BASE/api/_test/advance" -H 'content-type: application/json' -d '{"seconds":0}'   | python -c "import sys,json,datetime;d=json.load(sys.stdin);print(int(datetime.datetime.fromisoformat(d['now'].replace('Z','+00:00')).timestamp()))" 2>/dev/null   || python -c 'import time;print(int(time.time()))'; }
 KIT=$(api -H 'content-type: application/json' -X POST "$BASE/api/devices/onboarding-kit" -d "{\"model_code\":\"teltonika-tmt250\",\"external_id\":\"OSME-$R\",\"user_id\":\"$WUID\",\"group_id\":\"$GID\"}")
 TOK=$(echo "$KIT" | jq "d['token']"); DEV=$(echo "$KIT" | jq "d['device_id']")
 [ -n "$TOK" ] && ok "kit creato (device + token)" || no "kit ko" "-"
 
 # 1) posizione: aggiorna ultima posizione del device
-P=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/api/ingress/osmand?token=$TOK&lat=45.4600&lon=9.1900&batt=88&timestamp=$(python -c 'import time;print(int(time.time()))')")
+P=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/api/ingress/osmand?token=$TOK&lat=45.4600&lon=9.1900&batt=88&timestamp=$(( $(now_core) + 1 ))")
 [ "$P" = 200 ] && ok "posizione OsmAnd accettata (200)" || no "pos ko" "$P"
 sleep 1
 LP=$(sql "SELECT last_lat||','||last_battery FROM app.devices WHERE id='$DEV'")
@@ -31,7 +34,7 @@ U=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/api/ingress/osmand?token=tok-f
 [ "$U" = 401 ] && ok "token non valido rifiutato (401)" || no "auth ko" "$U"
 
 # 3) allarme SOS -> incidente sos attribuito al lavoratore (certo, orario affidabile)
-TS=$(python -c 'import time;print(int(time.time()))')
+TS=$(( $(now_core) + 2 ))
 A=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/api/ingress/osmand?token=$TOK&lat=45.47&lon=9.20&alarm=sos&batt=80&timestamp=$TS")
 [ "$A" = 200 ] && ok "allarme SOS OsmAnd accettato (200)" || no "sos ko" "$A"
 sleep 1

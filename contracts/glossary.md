@@ -13,5 +13,5 @@
 - **Profilo evidenza**: `SIMULATO | UPSTREAM REALE | HARDWARE REALE | SITO PILOTA`.
 
 ## Autorità singola per regola
-- ThingsBoard rileva soglie sensori → Rust **crea e governa** incidenti → YWAlert esegue la reperibilità.
+- Le regole sensori IoT rilevano le soglie → Rust **crea e governa** gli incidenti → il motore di escalation nativo esegue la reperibilità.
 - Perdita motore/canale ⇒ **degrado** visibile, mai un secondo motore di escalation.

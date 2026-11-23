@@ -1,6 +1,5 @@
-# YouWorkforce — local reproducible pilot profile (Docker Compose).
-# Base profile = Workforce + Sicurezza (SOS chain). Escalation = YWAlert NATIVO (nessun connettore).
-# IoT industriale = NATIVO (sensor rules + telemetria/attributi/comandi + scenari): nessun ThingsBoard.
+# YouWorkforce — profilo locale riproducibile (Docker Compose).
+# Self-contained: escalation, dispositivi GPS/badge e IoT sono motori nativi, nessun servizio esterno.
 services:
   db:
     image: postgres:18
@@ -22,11 +21,15 @@ services:
       YW_DB_OWNER: postgres://postgres:postgres@db:5432/youworkforce
       YW_DB_RT: postgres://app_rt:app_rt_pw@db:5432/youworkforce
       YW_BIND: 0.0.0.0:8080
-      TEST_CLOCK: "1"               # enables /api/_test/advance (pilot: set 0)
+      TEST_CLOCK: "0"               # 1 solo per i test e2e: abilita gli hook /api/_test/*
+      YW_SEED_DEMO: "1"             # tenant demo acme/globex
       RUST_LOG: info,sqlx=warn
     depends_on:
       db: { condition: service_healthy }
-    ports: ["8080:8080"]
+    ports:
+      - "8080:8080"     # API e console
+      - "5027:5027"     # Teltonika TCP (dispositivi GPS/badge)
+      - "1883:1883"     # MQTT (sensori IoT)
 
   console:
     build: ./console
@@ -35,21 +38,6 @@ services:
       YW_CONSOLE_BIND: 0.0.0.0:8081
     depends_on: [core]
     ports: ["8081:8081"]
-
-  # ---- Optional: real Traccar badge source (profile "traccar") ----
-  # device (OsmAnd) -> Traccar -> event forwarding -> core /api/ingress/traccar.
-  # See qa/run-traccar.sh (registers device BADGE-001) and qa/traccar-e2e.sh (8/8).
-  traccar:
-    image: traccar/traccar:6.17.0   # verified in this repo (UPSTREAM REALE)
-    profiles: ["traccar"]
-    environment:
-      CONFIG_USE_ENVIRONMENT_VARIABLES: "true"
-      EVENT_FORWARD_URL: "http://core:8080/api/ingress/traccar?token=acme-ingest-token"
-    ports:
-      - "8083:8082"     # Traccar web UI / API
-      - "5055:5055"     # OsmAnd protocol (device feed)
-      - "5055:5055/udp"
-    depends_on: [core]
 
 volumes:
   db_data:

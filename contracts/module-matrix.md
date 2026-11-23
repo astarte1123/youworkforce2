@@ -2,11 +2,9 @@
 
 | Codice | Nome | Tipo | Stato build | Dipendenze capacità |
 |---|---|---|---|---|
-| `loneworker` | Lone Worker e centrale allarmi | prodotto | **implementato** | sorgente evento (badge/PWA) + `goalert` |
-| `goalert` | YWAlert escalation | connettore | **UPSTREAM REALE** (v0.35.0, EP 2 livelli, **consegna webhook verificata** via `qa/goalert-delivery.sh`); SIMULATO se `GOALERT_BASE` off | — (prerequisito dei percorsi di escalation) |
-| `traccar` | Traccar badge | connettore | **UPSTREAM REALE** (v6.17.0, event forwarding → `/api/ingress/traccar`; alarm sos→sos, fallDown→man_down) | ingest token |
-| `iot` | Dispositivi e IoT | prodotto | ingest HTTP + **ThingsBoard reale** | — (può lavorare senza loneworker) |
-| `thingsboard` | ThingsBoard industriale | connettore | **UPSTREAM REALE** (v3.8.1, Rule Engine → `/api/ingress/thingsboard`; soglia → `sensore_critico`); BUSL, istanza esterna | iot |
+| `loneworker` | Lone Worker e centrale allarmi | prodotto | **implementato** | sorgente evento (dispositivo/PWA) + escalation nativa |
+| `gps` | Localizzazione GPS e badge | prodotto | **implementato**: Teltonika TCP nativo, OsmAnd, JSON HTTP, watchdog del silenzio, report percorsi/soste | loneworker |
+| `iot` | Dispositivi e IoT | prodotto | **implementato**: telemetria, regole/soglie, monitoraggio, scenari attivabili | — (può lavorare senza loneworker) |
 | `workforce` | Forza lavoro e turni | prodotto | parziale (assegnazione manuale) | — |
 | `interventi` | Interventi e cantieri | prodotto | **implementato** (ordini) | assegnazione manuale |
 | `consuntivi` | Ore, spese, consuntivi | prodotto | **implementato** (righe+spese+CSV) | fonte dati dichiarata; **no AI** |
@@ -19,11 +17,11 @@
 - Sempre obbligatori: identità, isolamento, permessi, configurazione tenant, audit.
 - Stati UI: `non_abilitato · da_configurare · attivo · degradato · in_disattivazione`.
 - Disattivare `loneworker` con incidenti aperti → **bloccato** (piano di disattivazione, vedi `set_module`).
-- Motore di escalation: **nativo di default** (`escalation_engine='native'`, mig 0057). YWAlert resta provisionato come **rete di sicurezza / rollback** per-tenant (`escalation_engine='goalert'`). Vedi `native-escalation-engine-project.md` e `worker-safety-rationalization.md`.
+- Motore di escalation: **solo nativo** (mig 0126). Nessuna integrazione esterna.
 - Spegnere AI/dettatura non toglie inserimento manuale, check-in, SOS.
 
 ## Profili collaudabili sullo stesso build
 - **Workforce**: workforce+interventi+consuntivi, no IoT/AI.
-- **Sicurezza**: loneworker+goalert+(traccar), no pianificazione. ← dimostrato in questa build
-- **IoT tecnico**: iot(+thingsboard), goalert se richiesto.
+- **Sicurezza**: loneworker+gps, no pianificazione.
+- **IoT tecnico**: iot (+loneworker se servono allarmi alle persone).
 - **Integrato**: tutti.

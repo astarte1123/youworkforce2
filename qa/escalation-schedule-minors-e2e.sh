@@ -15,7 +15,7 @@ TID="(SELECT id FROM app.tenants WHERE slug='$SLUG')"
 GNAME="SchedMin-$RANDOM"
 G=$(api -H 'content-type: application/json' -X POST "$BASE/api/groups" -d "{\"name\":\"$GNAME\"}" | python -c "import sys,json;print(json.load(sys.stdin)['id'])")
 api -H 'content-type: application/json' -X POST "$BASE/api/groups/$G/oncall" -d '{"mode":"tutti","coverage_mode":"24_7","tz":"UTC"}' >/dev/null
-sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id,escalation_engine) SELECT $TID,'$G','native' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$G',escalation_engine='native'" >/dev/null
+sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id) SELECT $TID,'$G' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$G'" >/dev/null
 UA=$(sql "WITH t AS (SELECT id FROM app.tenants WHERE slug='$SLUG') INSERT INTO app.users(tenant_id,email,pass_hash,role,phone) SELECT id,'rotA-$RANDOM@globex.loneworker.eu','x','operatore','+390666000001' FROM t RETURNING id" | head -1)
 UB=$(sql "WITH t AS (SELECT id FROM app.tenants WHERE slug='$SLUG') INSERT INTO app.users(tenant_id,email,pass_hash,role,phone) SELECT id,'rotB-$RANDOM@globex.loneworker.eu','x','operatore','+390666000002' FROM t RETURNING id" | head -1)
 

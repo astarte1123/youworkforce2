@@ -211,7 +211,7 @@ invariati.
 - **→ Importa in gruppo allarme**: copia i membri del gruppo in un **gruppo di allarme**
   (alimenta instradamento/escalation). È **idempotente** (non duplica) e **disaccoppiato**:
   eliminare il gruppo condiviso **non** svuota il gruppo di allarme già popolato. L'import
-  richiede un modulo escalation attivo (loneworker/traccar/iot/thingsboard); senza, risponde 403.
+  richiede un modulo escalation attivo (loneworker/gps/iot); senza, risponde 403.
 
 Solo **tenant_admin** gestisce i gruppi (controllo lato backend). Isolati per tenant (RLS):
 un tenant non vede né modifica i gruppi di un altro. Backend: tabelle `app.user_groups` /

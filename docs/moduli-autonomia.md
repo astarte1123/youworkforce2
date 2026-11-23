@@ -4,7 +4,7 @@ Ogni tenant riceve dal superadmin un sottoinsieme di moduli (`tenant_modules.sta
 perimetri di prodotto devono funzionare **da soli** e **insieme**:
 
 - **Sicurezza lavoratore** — `loneworker` (centrale, check-in, SOS, escalation YWAlert nativa) +
-  sorgenti `traccar`/`thingsboard`/`iot`.
+  sorgenti `gps`/`iot`.
 - **Lavoro sul campo** — `interventi` (ordini), `giri` (ronde), `consuntivi`, `workforce` (turni).
 
 ## Principio di gating
@@ -21,7 +21,7 @@ perimetri di prodotto devono funzionare **da soli** e **insieme**:
 ## Perché check-in/SOS sono legati a loneworker
 
 Check-in e SOS creano `incidents` + `outbox`. La loro visibilità/gestione (Centrale, `list_incidents`)
-è gated dai moduli che producono allarmi (`ESCALATION_MODS = loneworker,traccar,iot,thingsboard`). Se
+è gated dai moduli che producono allarmi (`ESCALATION_MODS = loneworker,gps,iot`). Se
 si mostrasse il check-in/SOS senza loneworker attivo, l'allarme generato non sarebbe visibile a
 nessuno (black-hole = falso senso di sicurezza). Perciò:
 
@@ -44,7 +44,7 @@ interrogato e non mostra né KPI né card (prima un 403 veniva mascherato in lis
 
 ## FK dormiente (nota)
 
-`patrol_checkpoints.geofence_id → app.geofences` (mig 0075): `geofences` è una tabella traccar, ma la
+`patrol_checkpoints.geofence_id → app.geofences` (mig 0075): `geofences` è una tabella del perimetro dispositivi, ma la
 colonna è nullable, `ON DELETE SET NULL` e **mai letta/scritta** dagli handler `giri`. Nessun impatto
 sull'autonomia di `giri`; lasciata com'è (rimuoverla richiederebbe una migrazione non necessaria).
 
@@ -52,8 +52,8 @@ sull'autonomia di `giri`; lasciata com'è (rimuoverla richiederebbe una migrazio
 
 Il worker di background `tick()` (worker.rs) awaita in sequenza molti sub-worker, ognuno una
 `async fn` con future profondo. In build **debug** i future non ottimizzati vengono annidati come
-campi del padre: il future di `tick` diventa la **somma** di tutti i sotto-alberi (poller Traccar/
-ThingsBoard, drain outbox, motore escalation con le sue consegne per-step/per-utente). Sotto carico
+campi del padre: il future di `tick` diventa la **somma** di tutti i sotto-alberi (watchdog dei
+dispositivi, drain outbox, motore escalation con le sue consegne per-step/per-utente). Sotto carico
 concorrente il frame di poll cresceva fino allo **stack-overflow** del worker tokio (`thread
 'tokio-rt-worker' has overflowed its stack`), anche col worker-stack a 16 MB.
 

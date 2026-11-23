@@ -15,14 +15,14 @@ sql(){ docker exec -i ywdb psql -U postgres -d youworkforce -tAc "$1"; }
 one(){ sql "$1" | head -1 | tr -d '[:space:]'; }
 
 TID=$(one "SELECT id FROM app.tenants WHERE slug='$SLUG'")
-TR_PREV=$(one "SELECT COALESCE((SELECT state FROM app.tenant_modules WHERE tenant_id='$TID' AND module_code='traccar'),'non_abilitato')")
+TR_PREV=$(one "SELECT COALESCE((SELECT state FROM app.tenant_modules WHERE tenant_id='$TID' AND module_code='gps'),'non_abilitato')")
 LW_PREV=$(one "SELECT COALESCE((SELECT state FROM app.tenant_modules WHERE tenant_id='$TID' AND module_code='loneworker'),'non_abilitato')")
-sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','traccar','attivo') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
+sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','gps','attivo') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
 sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','loneworker','attivo') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
 
 # device GH-5200 con model_code (così si applica io_alarm_map del modello: 236->sos, 242->man_down)
 IMEI=$(python -c "import random;print('356'+str(random.randint(10**11,10**12-1)))")
-DID=$(one "INSERT INTO app.devices(tenant_id,external_id,label,source,model_code) VALUES('$TID','$IMEI','GH5200 test','traccar','teltonika-gh-5200') RETURNING id")
+DID=$(one "INSERT INTO app.devices(tenant_id,external_id,label,source,model_code) VALUES('$TID','$IMEI','GH5200 test','gps','teltonika-gh-5200') RETURNING id")
 [ -n "$DID" ] && ok "GH-5200 onboarded (model_code=teltonika-gh-5200)" || { no "device non creato"; echo "== $PASS passed, $((FAIL+1)) failed =="; exit 1; }
 export TPORT IMEI
 
@@ -74,7 +74,7 @@ sql "DELETE FROM app.incidents i USING app.events e WHERE i.event_id=e.id AND e.
 sql "DELETE FROM app.incidents WHERE tenant_id='$TID' AND correlation LIKE 'telt-$IMEI-%'" >/dev/null 2>&1 || true
 DELRC=$(sql "DELETE FROM app.devices WHERE id='$DID'; SELECT count(*) FROM app.devices WHERE id='$DID'")
 [ "$(echo "$DELRC" | tr -d '\r' | tail -1)" = "0" ] && ok "device eliminabile del tutto (no fantasma)" || no "device non eliminato" "$DELRC"
-sql "UPDATE app.tenant_modules SET state='$TR_PREV' WHERE tenant_id='$TID' AND module_code='traccar'" >/dev/null
+sql "UPDATE app.tenant_modules SET state='$TR_PREV' WHERE tenant_id='$TID' AND module_code='gps'" >/dev/null
 sql "UPDATE app.tenant_modules SET state='$LW_PREV' WHERE tenant_id='$TID' AND module_code='loneworker'" >/dev/null
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" = 0 ]

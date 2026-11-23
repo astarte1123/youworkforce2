@@ -11,9 +11,9 @@ sql(){ docker exec -i ywdb psql -U postgres -d youworkforce -tAc "$1"; }
 one(){ sql "$1" | head -1 | tr -d '[:space:]'; }
 
 TID=$(one "SELECT id FROM app.tenants WHERE slug='$SLUG'")
-sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','traccar','attivo') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
+sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','gps','attivo') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
 R=$RANDOM; IMEI="35612399000$R"; IMEI=${IMEI:0:15}
-DID=$(one "INSERT INTO app.devices(tenant_id,external_id,label,source) VALUES('$TID','$IMEI','FMB $R','traccar') RETURNING id")
+DID=$(one "INSERT INTO app.devices(tenant_id,external_id,label,source) VALUES('$TID','$IMEI','FMB $R','gps') RETURNING id")
 
 AJ=$(mktemp); curl -s -o /dev/null -c "$AJ" -X POST "$BASE/api/login" -H 'content-type: application/json' -H "x-tenant-slug: $SLUG" -d "{\"email\":\"$ADMIN\",\"password\":\"demo\"}"
 ACS=$(awk '$6=="yw_csrf"{print $7}' "$AJ"|tail -1)
@@ -68,6 +68,6 @@ wait $DEVPID 2>/dev/null || true
 # teardown
 sql "DELETE FROM app.device_positions WHERE device_id='$DID'" >/dev/null 2>&1 || true
 sql "DELETE FROM app.devices WHERE id='$DID'" >/dev/null
-sql "UPDATE app.tenant_modules SET state='non_abilitato' WHERE tenant_id='$TID' AND module_code='traccar'" >/dev/null
+sql "UPDATE app.tenant_modules SET state='non_abilitato' WHERE tenant_id='$TID' AND module_code='gps'" >/dev/null
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" = 0 ]

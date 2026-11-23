@@ -6,7 +6,7 @@
 > La guida aggiornata è in **[escalation-manuale.md](escalation-manuale.md)**: copre motore nativo,
 > policy multi-step, rotazioni (incl. mensile) e pianificazioni temporanee, recapiti e regole di
 > notifica per-utente, dedup, manutenzione con riepilogo, label/ricerca, calendario iCal dai turni
-> calcolati, e il disaccoppiamento dal modulo (l'escalation serve anche IoT/ThingsBoard/Traccar).
+> calcolati, e il disaccoppiamento dal modulo (l'escalation serve anche IoT/dispositivi GPS).
 
 ## YWAlert come rollback (riferimento rapido)
 

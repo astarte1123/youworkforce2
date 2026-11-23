@@ -76,15 +76,15 @@ async function setupWizard(skip){
     <div class="small faint">Puoi riaprire questa guida quando vuoi da «Configurazione».</div></div>`);
 }
 // mod = modulo/i richiesti: la voce appare solo se ALMENO UNO è attivo sul tenant.
-const DEVICE_MODS=['loneworker','traccar','iot']; // thingsboard ritirato: IoT industriale è nativo in 'iot'
+const DEVICE_MODS=['loneworker','gps','iot']; // moduli con dispositivi (tutti nativi)
 // Moduli dell'area "Lavoro sul campo": la Mappa dispositivi appartiene a questi, non a Lone Worker.
 const FIELD_MODS=['interventi','cantieri','giri','workforce','consuntivi'];
 // grp: sezione nav (op=Operatività, work=Lavoro sul campo, cfg=Configurazione)
 const NAV = [
   {k:'dashboard', t:'Dashboard', ico:'home', roles:null, grp:'op'},
   // --- Sicurezza Lavoratore (perimetro man-down/SOS): operatività allarmi + config del perimetro ---
-  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker','traccar','iot'], grp:'safety'},
-  {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker','traccar','iot'], grp:'safety'},
+  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker','gps','iot'], grp:'safety'},
+  {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker','gps','iot'], grp:'safety'},
   {k:'mappa',     t:'Mappa allarmi', ico:'map', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'safety'},
   // Piantine (indoor): due voci separate, ciascuna legata al PROPRIO perimetro, così non si
   // duplica. In Sicurezza solo se c'è un modulo dispositivi/allarmi; in Lavoro sul campo solo se
@@ -93,11 +93,11 @@ const NAV = [
   {k:'piantine',  t:'Piantine Indoor', ico:'floorplan', roles:['operatore','tenant_admin','auditor'], mod:FIELD_MODS, feat:'map_indoor', grp:'work'},
   // Mappa dispositivi: i device (es. Teltonika GH-5200) generano allarmi E sono asset di campo.
   {k:'mappa-dispositivi', t:'Mappa dispositivi', ico:'map', roles:['operatore','tenant_admin','auditor'], mod:FIELD_MODS, feat:'map_outdoor', grp:'work'},
-  {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','traccar'], grp:'safety'},
+  {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','gps'], grp:'safety'},
   {k:'dispositivi',t:'Dispositivi & App', ico:'shield', roles:['tenant_admin'], mod:DEVICE_MODS, grp:'safety'},
   {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
   {k:'profili',   t:'Profili di protezione', ico:'shield', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
-  {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker','traccar','iot'], grp:'safety'},
+  {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker','gps','iot'], grp:'safety'},
   // --- IoT: monitoraggio flotta + alert di processo (soglia/offline/ripristino), VISTA SEPARATA ---
   {k:'iot-monitor',t:'Monitoraggio IoT', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:['iot'], grp:'iot'},
   {k:'iot-alerts',t:'Alert IoT', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['iot'], grp:'iot'},
@@ -118,7 +118,7 @@ const NAV = [
   {k:'setup',     t:'Configurazione', ico:'check', roles:['tenant_admin'], grp:'cfg'},
   {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'cfg'},
   // --- Configurazione generale (non specifica del perimetro sicurezza) ---
-  {k:'connettori',t:'Connettori', ico:'sliders', roles:['tenant_admin'], mod:['traccar','iot'], grp:'cfg'},
+  {k:'connettori',t:'Collegamento dispositivi', ico:'sliders', roles:['tenant_admin'], mod:['gps','iot','loneworker'], grp:'cfg'},
   {k:'utenti-ruoli',t:'Utenti e ruoli', ico:'shield', roles:['tenant_admin'], grp:'cfg'},
   {k:'anagrafiche',t:'Utenti e sedi', ico:'receipt', roles:['tenant_admin'], grp:'cfg'},
   {k:'privacy-audit',t:'Privacy e audit', ico:'shield', roles:['tenant_admin'], grp:'cfg'},
@@ -145,7 +145,7 @@ const I18N={ en:{
   "nav_dashboard":"Dashboard","nav_centrale":"Alarm center","nav_miei-allarmi":"My alarms",
   "nav_mappa":"Alarm map","nav_mappa-dispositivi":"Device map","nav_piantine":"Floor plans","nav_cruscotti":"IoT dashboards","nav_report":"Reports","nav_iot-alerts":"IoT alerts","nav_iot-monitor":"IoT monitoring",
   "nav_ordini":"Work orders","nav_consuntivi":"Timesheets","nav_turni":"Shifts","nav_agente":"AI agent",
-  "nav_dispositivi":"Devices & Apps","nav_trigger":"Safety triggers","nav_profili":"Protection profiles","nav_connettori":"Connectors","nav_gruppi":"Escalation & on-call",
+  "nav_dispositivi":"Devices & Apps","nav_trigger":"Safety triggers","nav_profili":"Protection profiles","nav_connettori":"Device connection","nav_gruppi":"Escalation & on-call",
   "nav_anagrafiche":"Users & sites","nav_ai":"AI · youworker.ai","nav_moduli":"Modules",
   // Centrale allarmi
   cen_title:"Alarm center", cen_tab_open:"Open", cen_tab_closed:"Closed", cen_tab_all:"All",
@@ -173,7 +173,7 @@ const I18N={ en:{
   priv_title:"Privacy & audit",
   // titoli pagina (altre viste)
   ord_title:"Work orders", consun_title:"Timesheets", turni_title:"Shifts", moduli_title:"Modules",
-  report_title:"Reports", connettori_title:"Connectors", trigger_title:"Safety triggers",
+  report_title:"Reports", connettori_title:"Device connection", trigger_title:"Safety triggers",
   profili_title:"Protection profiles", escal_title:"Escalation & on-call", anag_title:"Users & sites",
   ronde_title:"Patrols",
   // azioni comuni
@@ -199,7 +199,7 @@ const I18N_PH = {
   "Dashboard":"Dashboard","Centrale allarmi":"Alarm center","Mappa allarmi":"Alarm map","Mappa dispositivi":"Device map","Piantine":"Floor plans","Report":"Reports",
   "Ordini di lavoro":"Work orders","Consuntivi":"Timesheets","Turni":"Shifts","Ronde":"Patrols","Agente AI":"AI agent",
   "Dispositivi e app":"Devices & Apps","Dispositivi & app":"Devices & Apps","Trigger di sicurezza":"Safety triggers","Profili di protezione":"Protection profiles",
-  "Connettori":"Connectors","Escalation e reperibilità":"Escalation & on-call","Utenti e sedi":"Users & sites","Moduli":"Modules","I miei allarmi":"My alarms","Privacy e audit":"Privacy & audit",
+  "Collegamento dispositivi":"Device connection","Escalation e reperibilità":"Escalation & on-call","Utenti e sedi":"Users & sites","Moduli":"Modules","I miei allarmi":"My alarms","Privacy e audit":"Privacy & audit",
   // privacy / audit
   "GDPR (accesso e oblio), ritenzione e registro attività del tenant":"GDPR (access & erasure), retention and tenant activity log",
   "GDPR · dati personali":"GDPR · personal data","Ritenzione dati":"Data retention","Registro attività (audit log)":"Activity log (audit log)",
@@ -987,10 +987,7 @@ async function aiIncidentSummary(id,btn){ const box=$('#aiIncOut'); if(!box)retu
 const TL_LAB={
   notify_requested:'📣 Allarme in uscita verso la reperibilità',
   notify_dispatched:'✅ Consegnato al sistema di reperibilità',
-  goalert_notify:'📣 Allarme in uscita verso la reperibilità',
-  goalert_sent:'✅ Consegnato al sistema di reperibilità',
-  goalert_suppressed_native:'✅ Consegnato al sistema di reperibilità',
-  goalert_closed:'🟢 Allarme rientrato (chiuso)',
+  alarm_closed:'🟢 Allarme rientrato (chiuso)',
   human_ack:'🙋 Preso in carico',
   transition:'🔁 Cambio stato',
   assegnazione:'👤 Assegnazione',
@@ -1000,12 +997,12 @@ const TL_LAB={
 function tlTitle(k){ return TL_LAB[k] || esc(String(k||'').replace(/_/g,' ')); }
 function fmtDetail(k,d){ if(!d) return '';
   switch(k){
-    case 'notify_requested': case 'goalert_notify':
+    case 'notify_requested':
       return d.by?('attivato da '+esc(d.by)):'';
-    case 'goalert_sent':
-      return (d.status>=200&&d.status<300)?'notifica ricevuta dal sistema di reperibilità'
+    case 'notify_dispatched':
+      return (d.status==null||(d.status>=200&&d.status<300))?'notifica ricevuta dal sistema di reperibilità'
              :('invio non riuscito'+(d.status?(' (codice '+esc(String(d.status))+')'):''));
-    case 'goalert_closed': return 'allarme rientrato, reperibilità avvisata';
+    case 'alarm_closed': return 'allarme rientrato, reperibilità avvisata';
     case 'human_ack': return d.by?('da '+esc(d.by)):'';
     case 'transition':
       return [d.to?('→ '+esc(d.to)):'', d.outcome?('esito: '+esc(d.outcome)):'', d.by?('da '+esc(d.by)):''].filter(Boolean).join(' · ');
@@ -1031,15 +1028,15 @@ async function incClose(id){ const o=await askPrompt('Esito chiusura?','risolto 
 // principale e' quello degli ALLARMI (DVR), non percorsi/soste/presenza.
 // Registry estensibile: moduli futuri aggiungono qui le loro estrazioni.
 const REPORT_KINDS=[
-  {key:'allarmi',   label:'Allarmi (incidenti · DVR)',               need:['loneworker','traccar']},
-  {key:'movimenti', label:'Movimenti (percorsi, soste, presenza)',  need:['traccar']},
+  {key:'allarmi',   label:'Allarmi (incidenti · DVR)',               need:['loneworker','gps']},
+  {key:'movimenti', label:'Movimenti (percorsi, soste, presenza)',  need:['gps']},
 ];
 const ALARM_ETYPES=['sos','man_down','immobilita','mancato_checkin','sensore_critico','manomissione_badge',
-  'perdita_alimentazione','jamming','perdita_contatto','traccar_conn_down','batteria_critica','batteria_bassa'];
+  'perdita_alimentazione','jamming','perdita_contatto','batteria_critica','batteria_bassa'];
 const ETYPE_LAB={sos:'SOS / richiesta soccorso',man_down:'Uomo a terra (man down)',immobilita:'Immobilità prolungata',
   mancato_checkin:'Check-in mancato',sensore_critico:'Sensore critico',manomissione_badge:'Manomissione / rimozione badge',
   perdita_alimentazione:'Perdita alimentazione',jamming:'Jamming / disturbo segnale',perdita_contatto:'Perdita contatto (badge silente)',
-  traccar_conn_down:'Sistema di tracciamento irraggiungibile',batteria_critica:'Batteria in esaurimento (critico)',batteria_bassa:'Batteria bassa',
+  batteria_critica:'Batteria in esaurimento (critico)',batteria_bassa:'Batteria bassa',
   ingresso_sito:'Ingresso in sito',uscita_sito:'Uscita dal sito',
   geofence_ingresso:'Ingresso in zona vietata (geofence)',geofence_uscita:'Uscita da area sicura (geofence)',
   movimento_non_accompagnato:'Movimento non accompagnato',movimento_non_accompagnato_critico:'Movimento non accompagnato (critico)',
@@ -1051,7 +1048,7 @@ const ETYPE_LAB={sos:'SOS / richiesta soccorso',man_down:'Uomo a terra (man down
   accensione_motore:'Accensione motore',spegnimento_motore:'Spegnimento motore',
   manutenzione_richiesta:'Manutenzione richiesta',manutenzione_richiesta_critico:'Manutenzione richiesta (critico)',
   cambio_conducente:'Cambio conducente',media_ricevuto:'Media ricevuto',attraversamento_geofence:'Attraversamento geofence',
-  esito_comando:'Esito comando',device_moving:'In movimento',device_offline:'Dispositivo offline',device_alarm:'Allarme dispositivo',traccar_event:'Evento Traccar',
+  esito_comando:'Esito comando',device_moving:'In movimento',device_offline:'Dispositivo offline',device_alarm:'Allarme dispositivo',device_event:'Evento dispositivo',
   sensore_critico:'Sensore critico',allarme_sensore:'Allarme sensore (IoT)',telemetria:'Telemetria'};
 function etLab(e){ return ETYPE_LAB[e]||e; }
 function fmtD(s){ return s? new Date(s).toLocaleString('it-IT') : '—'; }
@@ -1080,7 +1077,7 @@ async function reportKindChange(){
     sub.innerHTML=`<div class="field"><label>Tipo allarme</label><select id="aEtype"><option value="">Tutti</option>${ALARM_ETYPES.map(e=>`<option value="${e}">${esc(etLab(e))}</option>`).join('')}</select></div>
       <div class="field"><label>Stato</label><select id="aState"><option value="">Tutti</option><option value="aperto">Aperti</option><option value="chiuso">Chiusi</option></select></div>`;
   } else {
-    const D=(await api('/devices').catch(()=>[])).filter(d=>d.source==='traccar');
+    const D=(await api('/devices').catch(()=>[])).filter(d=>d.source==='gps');
     sub.innerHTML=`<div class="field"><label>Dispositivo</label><select id="rDev">${D.map(d=>`<option value="${d.id}">${esc(d.label||d.external_id)}</option>`).join('')||'<option value="">—</option>'}</select></div>`;
   }
 }
@@ -1142,7 +1139,7 @@ async function pdfAlarms(){
 }
 async function runMoveReport(){
   const dev=$('#rDev')?.value, rng=repRange(), out=$('#repOut');
-  if(!dev){ out.innerHTML='<div class="card pad mut">Nessun dispositivo Traccar.</div>'; return; }
+  if(!dev){ out.innerHTML='<div class="card pad mut">Nessun dispositivo GPS.</div>'; return; }
   out.innerHTML='<div class="card pad mut">Genero…</div>';
   try{
     const [route,pres]=await Promise.all([api('/reports/route?device='+dev+'&'+rng),api('/reports/presence?'+rng)]);
@@ -3184,7 +3181,7 @@ async function saveToolConfig(code,tool,btn){
   const msg=card.querySelector('.cfg-msg'); msg.textContent='…'; msg.style.color='var(--mut)';
   try{ await api('/modules/'+code+'/tools/'+tool,{method:'POST',body:JSON.stringify({config:cfg})});
     msg.textContent='Salvato'; msg.style.color='var(--ok,green)';
-    if(code==='traccar'&&tool==='alarm_map'){ await loadCtx(); rebuildNav(); } }
+    if(code==='gps'&&tool==='alarm_map'){ await loadCtx(); rebuildNav(); } }
   catch(e){ msg.textContent=e.message; msg.style.color='var(--bad)'; }
 }
 
@@ -3193,7 +3190,7 @@ async function vDispositivi(v){
   const [D,sites,users]=await Promise.all([api('/devices').catch(()=>[]),api('/sites').catch(()=>[]),api('/users').catch(()=>[])]);
   v._sites=sites; v._users=users;
   const seen=d=>d.last_seen?`<span title="${esc(d.last_etype||'')}">${new Date(d.last_seen).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>`:'<span class="mut">mai</span>';
-  const prov=p=>{ if(!p)return''; const m={attivo:'s-attivo',in_attesa_primo_fix:'',traccar_registrato:'',configurato:''}; const lab={in_attesa_primo_fix:'attesa 1° fix',traccar_registrato:'registrato',configurato:'configurato',attivo:'attivo'}; return `<span class="chip ${m[p]||''}">${lab[p]||p}</span>`; };
+  const prov=p=>{ if(!p)return''; const m={attivo:'s-attivo',in_attesa_primo_fix:'',configurato:''}; const lab={in_attesa_primo_fix:'attesa 1° fix',configurato:'configurato',attivo:'attivo'}; return `<span class="chip ${m[p]||''}">${lab[p]||p}</span>`; };
   const who=d=> d.asset_name?('🚚 '+esc(d.asset_name)) : d.user_email?('👤 '+esc(d.user_email)) : '—';
   const model=d=> d.model_code?esc((d.manufacturer||'')+' '+(d.model_name||'')):'<span class="mut">generico</span>';
   v.innerHTML=`<div class="page-h"><div><h1>${t('dev_title','Dispositivi')}</h1><div class="mut">${D.length} ${t('dev_count','dispositivi')} · ${t('dev_sub','catalogo, flotta')}</div></div>
@@ -3211,7 +3208,7 @@ async function vDispositivi(v){
 }
 // Testo ricercabile (full-text) di un dispositivo: unisce tutte le colonne mostrate + sinonimi utili.
 function devHay(d){
-  const prov={in_attesa_primo_fix:'attesa primo fix',traccar_registrato:'registrato',configurato:'configurato',attivo:'attivo'};
+  const prov={in_attesa_primo_fix:'attesa primo fix',configurato:'configurato',attivo:'attivo'};
   const parts=[d.external_id, d.manufacturer, d.model_name, d.model_code, (!d.model_code?'generico':''),
     d.label, d.asset_name, d.user_email, (d.capabilities||[]).join(' '), d.last_etype,
     d.prov_step, (prov[d.prov_step]||''), (d.enabled?'attivo':'off disattivato'),
@@ -3232,7 +3229,7 @@ let WZ={q:'',manufacturer:'',category:''};
 const CAT_LABELS={personale:'Lavoratore (SOS/uomo a terra)',smartphone:'Smartphone / app',veicolo:'Veicolo / flotta',asset:'Asset / attrezzatura',sensore:'Sensore IoT',altro:'Altro (GPS)'};
 const catLabel=c=>CAT_LABELS[c]||c;
 // Wizard "Aggiungi dispositivo": PERIMETRO SICUREZZA/CAMPO (tracker). I sensori IoT hanno il loro
-// percorso dedicato ("⚡ Attiva per un lavoro"). Il dump GPS Traccar (2174 modelli) non compare in
+// percorso dedicato ("⚡ Attiva per un lavoro"). Il catalogo GPS generico (2174 modelli) non compare in
 // elenco: emerge solo se si digita una ricerca, così il catalogo curato non viene annegato.
 async function wizardStart(){
   WZ={q:'',manufacturer:'',category:''};
@@ -3281,7 +3278,6 @@ async function wizardStep2(m){
       <label class="small mut hide" id="wzAssetWrap">Cerca asset (digita per filtrare)
         <input id="wzAsset" list="wzAssetList" placeholder="nome o matricola…" autocomplete="off">
         <datalist id="wzAssetList">${assets.map(a=>`<option value="${esc(a.name)}">`).join('')}</datalist></label>
-      <label class="row small" style="gap:var(--s-8)"><input type="checkbox" id="wzTr"> Registra anche su Traccar (se configurato)</label>
       <div class="divider" style="margin:var(--s-6) 0"></div>
       <div class="small mut"><b>⚙ Onboarding Kit</b> — oltre al device genera credenziale di ingest, routing degli allarmi del modello e (per i device personali) un profilo di protezione. I segnali vengono dedotti dalla <b>tipologia d'uso</b> (${esc(m.category)}).</div>
       <label class="small mut">Gruppo di escalation per gli allarmi
@@ -3305,7 +3301,7 @@ async function wizardSave(model_code){
   if(k==='asset'){ const t=$('#wzAsset').value; aid=resolve(t,WZOPTS.assets,'name'); if(t&&!aid)bad='asset non trovato: '+t; }
   if(bad){ m.textContent=bad; m.style.color='var(--bad)'; return; }
   const b={model_code,external_id:$('#wzExt').value.trim(),label:$('#wzLab').value.trim()||null,
-    user_id:uid, asset_id:aid, register_traccar:$('#wzTr').checked};
+    user_id:uid, asset_id:aid};
   if(!b.external_id){m.textContent='IMEI/uniqueId richiesto';m.style.color='var(--bad)';return;}
   try{ const r=await api('/devices/provision',{method:'POST',body:JSON.stringify(b)});
     const ins=r.install||{}; const warn=r.error?`<div style="color:var(--warn)">Nota: ${esc(r.error)}</div>`:'';
@@ -3537,7 +3533,7 @@ function iotSetupGuide(r){
     return { title:'Configura l\'app sul telefono (1 minuto)', token_needed:true,
       primary:{label:'Indirizzo server (incollalo nell\'app)', value:(location.origin+'/api/ingress/osmand?token='+(r.token||'')+'&id='+ext)},
       steps:[
-        'Installa l\'app Traccar Client (Android o iOS).',
+        'Installa sul telefono un\'app di tracciamento compatibile con il protocollo OsmAnd (es. OsmAnd, Android o iOS).',
         'Incolla l\'indirizzo server qui sopra e imposta l\'identificativo uguale a quello del dispositivo.',
         'Avvia il servizio nell\'app: la posizione inizia ad arrivare.',
       ],
@@ -3549,7 +3545,7 @@ function iotSetupGuide(r){
       'Configura il dispositivo (SMS o configuratore) perché invii i dati a '+host+' (protocollo '+(r.protocol||'-')+').',
       'L\'identificativo '+ext+' è già registrato in YouWorkforce.',
     ],
-    note:'Decodifica nativa pronta per Teltonika e smartphone (OsmAnd); altri protocolli richiedono il motore Traccar.' };
+    note:'Decodifica nativa pronta per Teltonika e smartphone (OsmAnd); gli altri dispositivi possono inviare dati in formato JSON HTTP.' };
 }
 // Device Onboarding Kit: genera device + credenziale + routing + profilo in un colpo.
 async function wizardKit(model_code){
@@ -3570,12 +3566,12 @@ async function wizardKit(model_code){
         <div><div class="small mut">${esc(S.primary.label||'')}</div><div class="mono" style="word-break:break-all">${esc(S.primary.value||'')}</div></div>
         <button class="btn" onclick="navigator.clipboard.writeText('${esc(S.primary.value||'')}');toast('Copiato','ok')">📋 Copia</button></div>`:'';
     // canali grezzi SOLO come ripiego avanzato, nascosti di default
-    const adv=`<details style="margin-top:var(--s-4)"><summary class="small mut" style="cursor:pointer">Altre opzioni (avanzate: token / inoltro Traccar)</summary>
+    const adv=`<details style="margin-top:var(--s-4)"><summary class="small mut" style="cursor:pointer">Altre opzioni (avanzate: chiave e invio JSON HTTP)</summary>
       <div class="card pad" style="margin-top:var(--s-6)">
         <div class="small mut">Credenziale di ingest (mostrata una sola volta)</div>
         <div class="mono small" style="word-break:break-all;margin:var(--s-4) 0">${esc(r.token)}</div>
         <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.token)}');toast('Token copiato','ok')">copia token</button>
-        <div class="small mut" style="margin-top:var(--s-8)">Inoltro eventi da un server Traccar esistente</div>
+        <div class="small mut" style="margin-top:var(--s-8)">Invio di eventi in formato JSON HTTP (gateway o tracker compatibili)</div>
         <div class="mono small" style="word-break:break-all;margin:var(--s-4) 0">${esc(r.ingress_url)}</div>
         <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.ingress_url)}');toast('URL copiato','ok')">copia URL</button>
         ${r.osmand_url?`<div class="small mut" style="margin-top:var(--s-8)">HTTP OsmAnd manuale (template)</div>
@@ -3626,7 +3622,7 @@ function devEdit(d){
       <div id="dokReady" class="small mut" style="margin-top:var(--s-8)">carico…</div></div>`:''}
     <div class="col" style="gap:var(--s-10)">
     <label class="small mut">ID esterno (uniqueId badge / nome sensore)<input id="dEx" value="${esc(d.external_id||'')}"></label>
-    <label class="small mut">Sorgente<select id="dSrc">${['manual','traccar','iot'].map(x=>`<option ${x===d.source?'selected':''}>${x}</option>`).join('')}</select></label>
+    <label class="small mut">Tipo<select id="dSrc">${[['manual','Manuale'],['gps','GPS / badge'],['iot','Sensore IoT']].map(([x,l])=>`<option value="${x}" ${x===d.source?'selected':''}>${l}</option>`).join('')}</select></label>
     <label class="small mut">Etichetta<input id="dLab" value="${esc(d.label||'')}"></label>
     <label class="small mut">Sede (digita per cercare)<input id="dSite" list="dSiteList" autocomplete="off" placeholder="cerca sede…" value="${esc((sites.find(x=>x.id===d.site_id)||{}).name||'')}">
       <datalist id="dSiteList">${sites.map(x=>`<option value="${esc(x.name)}">`).join('')}</datalist></label>
@@ -3635,22 +3631,21 @@ function devEdit(d){
     <label class="row" style="gap:var(--s-8)"><input type="checkbox" id="dEn" ${d.enabled?'checked':''}> <span>Abilitato</span></label>
     <div class="row" style="gap:var(--s-8);margin-top:var(--s-8)"><button class="btn grow" onclick="devSave('${d.id||''}')">Salva</button>
       ${d.id?`<button class="btn ghost" onclick="devDel('${d.id}')">Elimina</button>`:''}</div>
-    ${(!isNew && d.source==='traccar')?`<div class="card pad" style="margin-top:var(--s-8)">
-       <div class="spread"><b class="small">Comandi al device</b>${d.traccar_status?`<span class="chip ${d.traccar_status==='online'?'s-attivo':'s-critico'}">${esc(d.traccar_status)}</span>`:''}</div>
-       <div class="row" id="cmdBtns" style="gap:var(--s-8);margin-top:var(--s-8);flex-wrap:wrap"><button class="btn ghost small" onclick="devCmd('${d.id}','positionSingle')">📡 Localizza</button></div>
+    ${(!isNew && d.source==='gps')?`<div class="card pad" style="margin-top:var(--s-8)">
+       <div class="spread"><b class="small">Comandi al dispositivo</b>${devOnlineChip(d)}</div>
+       <div class="small mut" style="margin-top:var(--s-4)">Il dispositivo deve essere collegato in questo momento.</div>
+       <div class="row" id="cmdBtns" style="gap:var(--s-8);margin-top:var(--s-8);flex-wrap:wrap"></div>
        <div id="cmdMsg" class="small mut" style="margin-top:var(--s-6)"></div>
        <div class="small mut" style="margin-top:var(--s-8)">Storico comandi</div>
        <div id="cmdHist" class="small mut">…</div></div>`:''}
-    ${(!isNew && d.source==='traccar')?`<div class="card pad" style="margin-top:var(--s-8)">
-       <b class="small">Report tracciamento</b>
+    ${(!isNew && d.source==='gps')?`<div class="card pad" style="margin-top:var(--s-8)">
+       <b class="small">Percorsi e soste (ultimi 7 giorni)</b>
        <div class="row" style="gap:var(--s-6);margin-top:var(--s-6);flex-wrap:wrap">
-         <button class="btn ghost small" onclick="devReport('${d.id}','trips')">🚗 Viaggi</button>
+         <button class="btn ghost small" onclick="devReport('${d.id}','trips')">🚶 Tragitti</button>
          <button class="btn ghost small" onclick="devReport('${d.id}','stops')">⏸ Soste</button>
          <button class="btn ghost small" onclick="devReport('${d.id}','summary')">📊 Riepilogo</button>
-         <a class="btn ghost small" href="#" onclick="devReportCsv('${d.id}','trips');return false">⬇ CSV viaggi</a></div>
+         <a class="btn ghost small" href="#" onclick="devReportCsv('${d.id}','trips');return false">⬇ CSV tragitti</a></div>
        <div id="devRepOut" class="small" style="margin-top:var(--s-6)"></div>
-       <div class="spread" style="margin-top:var(--s-10)"><b class="small">Contatori (odometro / ore)</b><button class="btn ghost small" onclick="devAccum('${d.id}')">mostra</button></div>
-       <div id="devAccOut" class="small mut" style="margin-top:var(--s-4)"></div>
        <div class="spread" style="margin-top:var(--s-10)"><b class="small">Telemetria IO (ultimo fix)</b><button class="btn ghost small" onclick="devTelemetry('${d.id}')">mostra</button></div>
        <div id="devTelemOut" class="small mut" style="margin-top:var(--s-4)"></div>
        <div style="margin-top:var(--s-10)"><b class="small">Comando GPRS diretto (Teltonika)</b>
@@ -3660,7 +3655,7 @@ function devEdit(d){
          <div id="gprsOut" class="small" style="margin-top:var(--s-4)"></div></div></div>`:''}
     <div class="cfg-msg small"></div></div>`);
   if(!isNew && d.last_lat!=null && d.last_lon!=null) loadAddr(d.last_lat,d.last_lon);
-  if(!isNew && d.source==='traccar'){ devCmds(d.id); devCmdTypes(d.id); }
+  if(!isNew && d.source==='gps'){ devCmds(d.id); devCmdTypes(d.id); }
   if(!isNew && d.id) devReadiness(d.id);
   if(!isNew && d.id) devTelem(d.id);
   if(!isNew && d.id) devMap(d.id);
@@ -3738,24 +3733,26 @@ async function devReadiness(id){ const el=$('#dokReady'); if(!el)return;
 async function devTestSos(id){ if(!await askConfirm('Inviare un SOS di PROVA? Percorre il flusso reale (incidente + escalation).'))return;
   try{ const r=await api('/devices/'+id+'/test-sos',{method:'POST'}); toast('SOS di prova inviato ('+r.correlation+')','ok'); setTimeout(()=>devReadiness(id),800); }
   catch(e){ toast(e.message,'bad'); } }
+// Stato collegamento leggibile: in linea se l'ultimo contatto è recente (< 15 min).
+function devOnlineChip(d){
+  if(!d.last_seen_at) return '<span class="chip">mai collegato</span>';
+  const min=Math.round((Date.now()-new Date(d.last_seen_at).getTime())/60000);
+  return min<15 ? '<span class="chip s-attivo">in linea</span>'
+    : `<span class="chip s-critico" title="ultimo contatto ${new Date(d.last_seen_at).toLocaleString('it-IT')}">silenzioso da ${min<120?min+' min':Math.round(min/60)+' h'}</span>`; }
 async function devCmd(id,type){ const m=$('#cmdMsg'); if(m){m.textContent='invio…';m.style.color='var(--mut)';}
   try{ const r=await api('/devices/'+id+'/command',{method:'POST',body:JSON.stringify({type})});
-    const okv = r.traccar_status>=200 && r.traccar_status<300;
-    if(m){ m.textContent = okv? 'Comando inviato a Traccar (device '+r.resolved_device_id+')' : 'Traccar '+r.traccar_status+': '+(r.traccar_body||'').slice(0,80); m.style.color = okv?'var(--ok,green)':'var(--bad)'; }
-    toast(okv?'Comando inviato':'Traccar: '+r.traccar_status, okv?'ok':'warn');
+    if(m){ m.textContent = r.ok ? 'Comando inviato'+(r.response?' · risposta: '+r.response:'') : r.result; m.style.color = r.ok?'var(--ok,green)':'var(--bad)'; }
+    toast(r.ok?'Comando inviato':'Comando non inviato: il dispositivo non è collegato', r.ok?'ok':'warn');
     devCmds(id);
   }catch(e){ if(m){m.textContent=e.message;m.style.color='var(--bad)';} toast(e.message,'bad'); } }
 async function devCmds(id){ const el=$('#cmdHist'); if(!el)return;
   try{ const H=await api('/devices/'+id+'/commands');
-    el.innerHTML = H.length? H.map(c=>`<div>${new Date(c.created_at).toLocaleString('it-IT')} · <b>${esc(c.ctype)}</b> · ${c.traccar_status>=200&&c.traccar_status<300?'<span style="color:var(--ok,green)">'+esc(c.result||'ok')+'</span>':'<span style="color:var(--bad)">'+esc(c.result||('HTTP '+c.traccar_status))+'</span>'} <span class="mut">(${esc((c.actor||'').split('@')[0])})</span></div>`).join('')
+    el.innerHTML = H.length? H.map(c=>`<div>${new Date(c.created_at).toLocaleString('it-IT')} · <b>${esc(c.ctype)}</b> · ${c.status_code===200?'<span style="color:var(--ok,green)">'+esc(c.result||'inviato')+'</span>':'<span style="color:var(--bad)">'+esc(c.result||'non inviato')+'</span>'} <span class="mut">(${esc((c.actor||'').split('@')[0])})</span></div>`).join('')
       : 'nessun comando inviato'; }catch(e){ el.textContent=e.message; } }
 async function devCmdTypes(id){ const el=$('#cmdBtns'); if(!el)return;
   try{ const T=await api('/devices/'+id+'/command-types');
-    const known={positionSingle:'📡 Localizza',engineStop:'⛔ Stop motore',engineResume:'▶ Riavvia motore',alarmArm:'🔒 Arma',alarmDisarm:'🔓 Disarma',rebootDevice:'↻ Riavvia device'};
-    const seen=new Set(['positionSingle']);
-    (T||[]).forEach(t=>{ const ty=t.type||t; if(!ty||seen.has(ty))return; seen.add(ty);
-      el.insertAdjacentHTML('beforeend',`<button class="btn ghost small" onclick="devCmd('${id}','${esc(ty)}')">${esc(known[ty]||ty)}</button>`); });
-  }catch(e){} }
+    el.innerHTML=(T||[]).map(c=>`<button class="btn ghost small" onclick="devCmd('${id}','${esc(c.type)}')">${esc(c.label)}</button>`).join('');
+  }catch(e){ el.innerHTML='<span class="small mut">'+esc(e.message)+'</span>'; } }
 async function devTelemetry(id){ const out=$('#devTelemOut'); if(!out)return; out.innerHTML='Carico…';
   try{ const P=await api('/devices/'+id+'/positions?limit=1'); const p=(Array.isArray(P)?P:[])[0];
     const a=(p&&p.attributes)||{}; const io=a.io||{};
@@ -3773,22 +3770,17 @@ function _repRange(){ const to=new Date(); const from=new Date(Date.now()-7*864e
   return {from:from.toISOString().slice(0,19)+'Z', to:to.toISOString().slice(0,19)+'Z'}; }
 async function devReport(id,kind){ const out=$('#devRepOut'); if(!out)return; out.innerHTML='<span class="mut">Carico…</span>';
   const r=_repRange();
-  try{ const d=await api('/traccar/reports/'+kind+'?device_id='+id+'&from='+r.from+'&to='+r.to);
+  try{ const d=await api('/devices/'+id+'/report/'+kind+'?from='+r.from+'&to='+r.to);
+    if(kind==='summary'){
+      if(!d.points){ out.innerHTML='<span class="mut">Nessuna posizione negli ultimi 7 giorni.</span>'; return; }
+      out.innerHTML=`<div>Distanza: <b>${(d.distance_m/1000).toFixed(1)} km</b> · in movimento ${Math.round(d.moving_s/60)} min · velocità media ${d.avg_moving_kmh} km/h · massima ${d.max_kmh} km/h · ${d.trips} tragitti · ${d.stops} soste</div>`; return; }
     const arr=Array.isArray(d)?d:[];
     if(!arr.length){ out.innerHTML='<span class="mut">Nessun dato negli ultimi 7 giorni.</span>'; return; }
-    if(kind==='summary'){ const s=arr[0]; out.innerHTML=`<div>Distanza: <b>${(s.distance/1000).toFixed(1)} km</b> · vel. media ${(s.averageSpeed*1.852).toFixed(0)} km/h · max ${(s.maxSpeed*1.852).toFixed(0)} km/h</div>`; return; }
-    out.innerHTML='<table class="table" data-export="report-tracciamento"><thead><tr><th>Inizio</th><th>Fine</th><th>'+(kind==='trips'?'Distanza':'Durata')+'</th></tr></thead><tbody>'+
-      arr.slice(0,20).map(t=>`<tr><td>${new Date(t.startTime).toLocaleString('it-IT')}</td><td>${new Date(t.endTime).toLocaleString('it-IT')}</td><td>${kind==='trips'?((t.distance/1000).toFixed(1)+' km'):(Math.round((t.duration||0)/60000)+' min')}</td></tr>`).join('')+'</tbody></table>';
+    out.innerHTML='<table class="table" data-export="report-'+kind+'"><thead><tr><th>Inizio</th><th>Fine</th><th>'+(kind==='trips'?'Distanza':'Durata')+'</th></tr></thead><tbody>'+
+      arr.slice(0,20).map(t=>`<tr><td>${new Date(t.start).toLocaleString('it-IT')}</td><td>${new Date(t.end).toLocaleString('it-IT')}</td><td>${kind==='trips'?((t.distance_m/1000).toFixed(1)+' km'):(Math.round((t.duration_s||0)/60)+' min')}</td></tr>`).join('')+'</tbody></table>';
   }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
 function devReportCsv(id,kind){ const r=_repRange();
-  window.open('/api/traccar/reports/'+kind+'?device_id='+id+'&from='+r.from+'&to='+r.to+'&csv=true','_blank'); }
-async function devAccum(id){ const out=$('#devAccOut'); if(!out)return; out.innerHTML='Carico…';
-  try{ const a=await api('/traccar/accumulators/'+id);
-    const km=a.total_distance!=null?(a.total_distance/1000).toFixed(1)+' km':'n/d'; const hrs=a.hours!=null?(a.hours/3600000).toFixed(0)+' h':'n/d';
-    out.innerHTML=`Odometro: <b>${km}</b> · Ore: <b>${hrs}</b> <button class="btn ghost small" onclick="devAccumReset('${id}')">azzera</button>`;
-  }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
-async function devAccumReset(id){ if(!await askConfirm('Azzerare odometro e ore del device?'))return;
-  try{ await api('/traccar/accumulators/'+id,{method:'POST',body:JSON.stringify({total_distance:0,hours:0})}); toast('Contatori azzerati','ok'); devAccum(id); }catch(e){ toast(e.message,'bad'); } }
+  window.open('/api/devices/'+id+'/report/'+kind+'?from='+r.from+'&to='+r.to+'&csv=true','_blank'); }
 async function loadAddr(lat,lon){ const el=$('#addr'); if(!el)return;
   try{ const r=await api('/geocode/reverse?lat='+lat+'&lon='+lon);
     el.innerHTML='📍 '+(r.address?esc(r.address):'<span class="mut">indirizzo non disponibile</span>'); }
@@ -3832,24 +3824,38 @@ async function devTrail(id){ const el=$('#trail'); if(!el)return; el.textContent
     el.innerHTML = P.length? P.map(p=>`<div>${new Date(p.fixed_at).toLocaleString('it-IT')} · ${p.lat.toFixed(5)},${p.lon.toFixed(5)}${p.battery!=null?' · 🔋'+Math.round(p.battery)+'%':''}</div>`).join('')
       : 'nessuna posizione'; }catch(e){ el.textContent=e.message; } }
 
-// ---------------- Connettori ----------------
+// ---------------- Collegamento dispositivi ----------------
+// Come i dispositivi parlano con YouWorkforce (tutto nativo: nessun server esterno), soglia di
+// silenzio (salva-vita), policy eventi e chiavi di collegamento.
 async function vConnettori(v){
-  const trOn=ACTIVE_MODS.has('traccar');
-  const [C,T,TS,DV]=await Promise.all([api('/connectors').catch(()=>[]),api('/ingest-tokens').catch(()=>[]),
-    trOn?api('/traccar/status').catch(()=>null):Promise.resolve(null),api('/devices').catch(()=>[])]);
-  const hint={traccar:'OsmAnd → '+location.origin.replace(/:\d+$/,':5055')+' · forwarding → /api/ingress/traccar?token=',
-    iot:'POST → /api/events (header X-Ingest-Token)'};
-  v.innerHTML=`<div class="page-h"><div><h1>${t('connettori_title','Connettori')}</h1><div class="mut">sorgenti esterne e credenziali macchina del tenant</div></div></div>
-  ${traccarHealthCard(TS)}
-  <div class="grid g2">${C.map(c=>`<div class="card pad">
-    <div class="spread"><b>${esc(c.name)}</b>${chip(c.state)}</div>
-    <div class="small mut" style="margin:var(--s-6) 0">${esc(hint[c.code]||'')}</div>
-    <div class="small">Token di ingest: <b>${c.tokens}</b> ${c.state!=='attivo'?'<span class="tag">modulo spento</span>':''}</div>
-  </div>`).join('')}</div>
-  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Credenziali di ingest</h2></div>
+  const gpsOn=ACTIVE_MODS.has('gps');
+  const [T,DV,TOOLS]=await Promise.all([api('/ingest-tokens').catch(()=>[]),api('/devices').catch(()=>[]),
+    gpsOn?api('/modules/gps/tools').catch(()=>[]):Promise.resolve([])]);
+  const host=location.hostname, origin=location.origin;
+  const amap=((TOOLS||[]).find(t=>t.tool_code==='alarm_map')||{}).config||{};
+  const silence=+(amap.silence_after_s??600);
+  const gpsDev=(DV||[]).filter(d=>d.source==='gps');
+  const assigned=gpsDev.filter(d=>d.assigned_user);
+  const silent=assigned.filter(d=>d.last_seen_at && (Date.now()-new Date(d.last_seen_at).getTime())/1000>silence);
+  v.innerHTML=`<div class="page-h"><div><h1>Collegamento dispositivi</h1><div class="mut">come i dispositivi inviano dati a YouWorkforce, quando un silenzio diventa allarme e le chiavi di collegamento</div></div></div>
+  ${gpsOn?`<div class="card pad" style="margin-bottom:var(--s-14)">
+    <div class="spread"><b>Dispositivi GPS e badge</b><span class="chip ${silent.length?'s-critico':'s-attivo'}">${silent.length?silent.length+' silenziosi':'tutti in contatto'}</span></div>
+    <div class="row" style="gap:var(--s-18);margin-top:var(--s-10);flex-wrap:wrap">
+      <div><div class="small mut">Dispositivi assegnati</div><b>${assigned.length}</b></div>
+      <div><div class="small mut">Allarme se silenzioso da</div><b>${silence>0?Math.round(silence/60)+' min':'disattivato'}</b></div></div>
+    <div class="small mut" style="margin-top:var(--s-8)">Un dispositivo assegnato a un lavoratore che smette di trasmettere (spento, scarico, senza copertura) apre un allarme <b>Perdita di contatto</b> con escalation.</div>
+    <div class="small" style="margin-top:var(--s-10)"><b>Come si collegano</b></div>
+    <ul class="small mut" style="margin:var(--s-4) 0 0 var(--s-16)">
+      <li>Teltonika (GH-5200, FMB, TMT…): server <span class="mono">${esc(host)}</span>, porta TCP <span class="mono">5027</span>. Il dispositivo si riconosce dall'IMEI, nessuna chiave da copiare.</li>
+      <li>Smartphone (protocollo OsmAnd): indirizzo pronto nella scheda del dispositivo, dopo l'aggiunta guidata.</li>
+      <li>Altri tracker o gateway: invio JSON HTTP a <span class="mono">${esc(origin)}/api/ingress/gps</span> con una chiave di collegamento.</li></ul>
+    <div class="row" style="gap:var(--s-8);margin-top:var(--s-10)"><button class="btn ghost small" onclick="openModuleConfig('gps','Localizzazione GPS e badge')">⚙ Soglie e allarmi</button>
+      <button class="btn ghost small" onclick="gpsPolicy(this)">Come trattare gli eventi</button></div>
+    <div id="gpsPolicyOut"></div></div>`:''}
+  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Chiavi di collegamento</h2></div>
     <div class="card-b" style="padding-top:var(--s-12)"><div id="newTokBox"></div>
     <div class="row" style="gap:var(--s-6);flex-wrap:wrap;margin:var(--s-8) 0">
-      <select id="tkSrc" class="small" title="sorgente">${['traccar','iot'].map(x=>`<option>${x}</option>`).join('')}</select>
+      <select id="tkSrc" class="small" title="tipo di dispositivo">${[['gps','Dispositivi GPS / badge'],['iot','Sensori IoT']].map(([x,l])=>`<option value="${x}">${l}</option>`).join('')}</select>
       <select id="tkDev" class="small" title="lega a un dispositivo (opzionale)"><option value="">— tutti i device (tenant) —</option>${(DV||[]).map(d=>`<option value="${d.id}">${esc(d.name||d.external_id||d.id)}</option>`).join('')}</select>
       <input id="tkLabel" class="small" placeholder="etichetta (opz.)" style="width:150px">
       <input id="tkExp" type="number" min="0" max="3650" class="small" placeholder="scad. giorni (0=mai)" style="width:140px">
@@ -4285,131 +4291,26 @@ async function aiSuggestRules(btn){
   }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; }
   finally{ btn.disabled=false; }
 }
-function traccarHealthCard(s){
-  if(!s) return '';
-  if(!s.configured) return `<div class="card pad" style="margin-bottom:var(--s-14)"><div class="spread"><b>Traccar — salute connessione</b><span class="chip">non configurata</span></div>
-    <div class="small mut" style="margin-top:var(--s-6)">Il superadmin deve impostare base URL e credenziali Traccar per abilitare il polling e il recupero eventi.</div></div>`;
-  const lag=s.lag_seconds;
-  const ok=s.reachable && lag!=null && lag<Math.max(60,(s.poll_interval_s||30)*3);
-  const dot=ok?'s-attivo':(s.reachable?'s-degradato':'s-critico');
-  const lagTxt=lag==null?'mai':(lag<120?lag+'s fa':Math.round(lag/60)+'m fa');
-  return `<div class="card pad" style="margin-bottom:var(--s-14)">
-    <div class="spread"><b>Traccar — salute connessione</b>
-      <span class="chip ${dot}">${s.reachable?'raggiungibile':'irraggiungibile'}</span></div>
-    <div class="row" style="gap:var(--s-18);margin-top:var(--s-10);flex-wrap:wrap">
-      <div><div class="small mut">Ultimo poll ok</div><b>${lagTxt}</b></div>
-      <div><div class="small mut">Dispositivi online</div><b>${s.online_count}/${s.device_count}</b></div>
-      <div><div class="small mut">Cadenza poll</div><b>${s.poll_interval_s}s</b></div>
-      <div><div class="small mut">Watchdog silenzio</div><b>${s.silence_after_s>0?Math.round(s.silence_after_s/60)+'m':'off'}</b></div>
-      <div><div class="small mut">Cursore eventi</div><b>#${s.last_event_id||0}</b></div>
-    </div>
-    ${s.last_error?`<div class="small" style="color:var(--bad);margin-top:var(--s-8)">⚠ ${esc(s.last_error)}</div>`:''}
-    ${s.outbox_stuck>0?`<div class="small" style="color:var(--bad);margin-top:var(--s-8)">⛔ ${s.outbox_stuck} notifica/e di sicurezza bloccata/e — in ritentativo continuo${s.outbox_last_error?': '+esc(s.outbox_last_error):''}</div>`:''}
-    <div class="small mut" style="margin-top:var(--s-8)">Pull via API Traccar: recupera eventi persi (backfill da cursore) e rileva il silenzio dei badge anche se Traccar non invia <i>deviceOffline</i>. Il forwarding resta come percorso rapido.</div>
-    ${can(['tenant_admin'])?`<div class="row" style="gap:var(--s-8);margin-top:var(--s-10)"><button class="btn ghost small" onclick="trVerify(this)">Verifica collegamento</button>
-      <button class="btn ghost small" onclick="trSettings(this)">⚙ Impostazioni sicurezza</button>
-      <button class="btn ghost small" onclick="trAdvanced(this)">🛠 Traccar avanzato</button></div>
-      <div id="trVerifyOut"></div><div id="trSettingsOut"></div><div id="trAdvOut"></div>`:''}
-  </div>`;
-}
-async function trAdvanced(btn){
-  const out=$('#trAdvOut'); if(!out)return;
+// Policy eventi dei dispositivi GPS: per ogni tipo di evento, ignora / registra / allarme.
+const GPS_EVENT_LABELS={unaccompaniedMotion:'Movimento non accompagnato',deviceInactive:'Dispositivo inattivo',proximityEnter:'Avvicinamento',proximityExit:'Allontanamento',deviceOverspeed:'Eccesso di velocità',deviceFuelDrop:'Calo carburante',deviceFuelIncrease:'Aumento carburante',ignitionOn:'Accensione motore',ignitionOff:'Spegnimento motore',maintenance:'Manutenzione richiesta',driverChanged:'Cambio conducente',media:'Foto o audio ricevuto',deviceMoving:'In movimento',geofenceCrossed:'Attraversamento area',commandResult:'Esito comando',deviceOnline:'Dispositivo in linea',deviceUnknown:'Stato sconosciuto'};
+async function gpsPolicy(btn){
+  const out=$('#gpsPolicyOut'); if(!out)return;
   if(out.dataset.open){ out.innerHTML=''; out.dataset.open=''; return; } out.dataset.open='1';
   out.innerHTML='<div class="small mut" style="margin-top:var(--s-8)">Carico…</div>';
   try{
-    const [pol,devs,drv,mnt,cmp]=await Promise.all([
-      api('/traccar/event-policy').catch(()=>({events:{}})),
-      api('/devices').catch(()=>[]),
-      api('/traccar/drivers').catch(()=>[]),
-      api('/traccar/maintenance').catch(()=>[]),
-      api('/traccar/computed').catch(()=>[])]);
-    window._trDevs=(devs||[]).filter(d=>d.source==='traccar'||!d.source);
-    const LAB={unaccompaniedMotion:'Movimento non accompagnato',deviceInactive:'Dispositivo inattivo',proximityEnter:'Prossimità ingresso',proximityExit:'Prossimità uscita',deviceOverspeed:'Eccesso velocità',deviceFuelDrop:'Calo carburante',deviceFuelIncrease:'Aumento carburante',ignitionOn:'Accensione motore',ignitionOff:'Spegnimento motore',maintenance:'Manutenzione richiesta',driverChanged:'Cambio conducente',media:'Media ricevuto',deviceMoving:'In movimento',geofenceCrossed:'Attraversamento geofence',commandResult:'Esito comando',deviceOnline:'Online',deviceUnknown:'Sconosciuto'};
-    const ev=pol.events||{};
-    const polRows=Object.keys(LAB).map(k=>`<div class="row small" style="justify-content:space-between;gap:var(--s-8);padding:var(--s-3) 0">
-      <span>${LAB[k]}</span>
-      <select id="tep_${k}" class="small">
-        <option value="ignora" ${ev[k]==='ignora'?'selected':''}>ignora</option>
-        <option value="registra" ${ev[k]==='registra'?'selected':''}>registra</option>
-        <option value="critico" ${ev[k]==='critico'?'selected':''}>critico (allarme)</option></select></div>`).join('');
-    const devOpts=`<option value="">— nessun device —</option>`+window._trDevs.map(d=>`<option value="${d.id}">${esc(d.label||d.external_id)}</option>`).join('');
+    const pol=await api('/gps/event-policy'); const ev=pol.events||{};
+    const rows=Object.keys(GPS_EVENT_LABELS).map(k=>{ const cur=ev[k]||''; return `<div class="row small" style="justify-content:space-between;gap:var(--s-8);padding:var(--s-3) 0">
+      <span>${GPS_EVENT_LABELS[k]}</span>
+      <select id="tep_${k}" class="small">${[['ignora','ignora'],['registra','registra nel diario'],['critico','allarme con escalation']].map(([x,l])=>`<option value="${x}" ${cur===x?'selected':''}>${l}</option>`).join('')}</select></div>`; }).join('');
     out.innerHTML=`<div class="card pad" style="margin-top:var(--s-10);background:var(--bg2)">
-      <details open><summary style="cursor:pointer;font-weight:600">Policy eventi</summary>
-        <div class="small mut" style="margin:var(--s-6) 0">Decidi come trattare ogni evento Traccar. <b>critico</b> = allarme + escalation.</div>
-        ${polRows}
-        <button class="btn small" style="margin-top:var(--s-8)" onclick="trPolicySave(this)">Salva policy</button></details>
-      <details style="margin-top:var(--s-10)"><summary style="cursor:pointer;font-weight:600">Conducenti (drivers)</summary>
-        <div id="trDrvList" style="margin-top:var(--s-6)">${(drv||[]).map(d=>`<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:var(--s-6);margin-bottom:var(--s-4)"><span>${esc(d.name)} · <span class="mono">${esc(d.uniqueId)}</span></span><button class="btn-ico btn ghost" onclick="trDrvDel(${d.id})">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessun conducente.</div>'}</div>
-        <div class="row small" style="gap:var(--s-6);margin-top:var(--s-6);flex-wrap:wrap">Nome <input id="drvName" style="width:120px"> ID (RFID/iButton) <input id="drvUid" style="width:120px"> device <select id="drvDev" class="small">${devOpts}</select><button class="btn small" onclick="trDrvAdd(this)">+ aggiungi</button></div></details>
-      <details style="margin-top:var(--s-10)"><summary style="cursor:pointer;font-weight:600">Manutenzioni</summary>
-        <div id="trMntList" style="margin-top:var(--s-6)">${(mnt||[]).map(m=>`<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:var(--s-6);margin-bottom:var(--s-4)"><span>${esc(m.name)} · ${esc(m.type)} · ogni ${m.period}</span><button class="btn-ico btn ghost" onclick="trMntDel(${m.id})">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessuna manutenzione.</div>'}</div>
-        <div class="row small" style="gap:var(--s-6);margin-top:var(--s-6);flex-wrap:wrap">Nome <input id="mntName" style="width:110px"> tipo <select id="mntType" class="small"><option value="totalDistance">distanza</option><option value="hours">ore motore</option><option value="fixTime">data/tempo</option></select> inizio <input id="mntStart" type="number" style="width:90px"> periodo <input id="mntPeriod" type="number" style="width:90px"> device <select id="mntDev" class="small">${devOpts}</select><button class="btn small" onclick="trMntAdd(this)">+ aggiungi</button></div></details>
-      <details style="margin-top:var(--s-10)"><summary style="cursor:pointer;font-weight:600">Attributi calcolati (computed)</summary>
-        <div id="trCmpList" style="margin-top:var(--s-6)">${(cmp||[]).map(c=>`<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:var(--s-6);margin-bottom:var(--s-4)"><span><b>${esc(c.attribute)}</b> = <span class="mono">${esc(c.expression)}</span></span><button class="btn-ico btn ghost" onclick="trCmpDel(${c.id})">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessun attributo calcolato.</div>'}</div>
-        <div class="small mut" style="margin-top:var(--s-6)">Esempio: ignition da voltaggio → <span class="mono">power ? power &gt; 13.2 : null</span></div>
-        <div class="row small" style="gap:var(--s-6);margin-top:var(--s-6);flex-wrap:wrap">Attributo <input id="cmpAttr" style="width:100px"> Espressione (JEXL) <input id="cmpExpr" style="width:200px"> tipo <select id="cmpType" class="small"><option value="boolean">bool</option><option value="number">num</option><option value="string">testo</option></select> device <select id="cmpDev" class="small">${devOpts}</select><button class="btn small" onclick="trCmpAdd(this)">+ aggiungi</button></div></details>
-    </div>`;
+      <div class="small mut" style="margin-bottom:var(--s-6)">SOS, caduta, immobilità e perdita di contatto sono sempre allarmi. Qui decidi per gli altri eventi.</div>
+      ${rows}<button class="btn small" style="margin-top:var(--s-8)" onclick="gpsPolicySave()">Salva</button></div>`;
   }catch(e){ out.innerHTML='<div class="small" style="color:var(--bad)">'+esc(e.message)+'</div>'; }
 }
-async function trPolicySave(btn){
-  const LABK=['unaccompaniedMotion','deviceInactive','proximityEnter','proximityExit','deviceOverspeed','deviceFuelDrop','deviceFuelIncrease','ignitionOn','ignitionOff','maintenance','driverChanged','media','deviceMoving','geofenceCrossed','commandResult','deviceOnline','deviceUnknown'];
-  const events={}; LABK.forEach(k=>{ const el=$('#tep_'+k); if(el) events[k]=el.value; });
-  try{ await api('/traccar/event-policy',{method:'POST',body:JSON.stringify({events})}); toast('Policy salvata','ok'); }
+async function gpsPolicySave(){
+  const events={}; Object.keys(GPS_EVENT_LABELS).forEach(k=>{ const el=$('#tep_'+k); if(el) events[k]=el.value; });
+  try{ await api('/gps/event-policy',{method:'POST',body:JSON.stringify({events})}); toast('Salvato','ok'); }
   catch(e){ toast(e.message,'bad'); }
-}
-async function trDrvAdd(btn){ const name=$('#drvName').value.trim(), uid=$('#drvUid').value.trim(), dev=$('#drvDev').value||null;
-  if(!name||!uid){ toast('nome e ID richiesti','bad'); return; }
-  try{ await api('/traccar/drivers',{method:'POST',body:JSON.stringify({name,unique_id:uid,device_id:dev})}); toast('Conducente aggiunto','ok'); trRefreshAdv(); }catch(e){ toast(e.message,'bad'); } }
-async function trDrvDel(id){ try{ await api('/traccar/drivers/'+id,{method:'DELETE'}); toast('Rimosso','ok'); trRefreshAdv(); }catch(e){ toast(e.message,'bad'); } }
-async function trMntAdd(btn){ const name=$('#mntName').value.trim(), type=$('#mntType').value, start=+($('#mntStart').value||0), period=+($('#mntPeriod').value||0), dev=$('#mntDev').value||null;
-  if(!name||period<=0){ toast('nome e periodo (>0) richiesti','bad'); return; }
-  try{ await api('/traccar/maintenance',{method:'POST',body:JSON.stringify({name,type,start,period,device_id:dev})}); toast('Manutenzione aggiunta','ok'); trRefreshAdv(); }catch(e){ toast(e.message,'bad'); } }
-async function trMntDel(id){ try{ await api('/traccar/maintenance/'+id,{method:'DELETE'}); toast('Rimossa','ok'); trRefreshAdv(); }catch(e){ toast(e.message,'bad'); } }
-async function trCmpAdd(btn){ const attribute=$('#cmpAttr').value.trim(), expression=$('#cmpExpr').value.trim(), type=$('#cmpType').value, dev=$('#cmpDev').value||null;
-  if(!attribute||!expression){ toast('attributo ed espressione richiesti','bad'); return; }
-  try{ await api('/traccar/computed',{method:'POST',body:JSON.stringify({description:attribute,attribute,expression,type,device_id:dev})}); toast('Attributo aggiunto','ok'); trRefreshAdv(); }catch(e){ toast(e.message,'bad'); } }
-async function trCmpDel(id){ try{ await api('/traccar/computed/'+id,{method:'DELETE'}); toast('Rimosso','ok'); trRefreshAdv(); }catch(e){ toast(e.message,'bad'); } }
-function trRefreshAdv(){ const out=$('#trAdvOut'); if(out){ out.dataset.open=''; trAdvanced(); } }
-function trSettings(btn){
-  const out=$('#trSettingsOut'); if(!out)return;
-  if(out.dataset.open){ out.innerHTML=''; out.dataset.open=''; return; } out.dataset.open='1';
-  api('/traccar/settings').then(s=>{
-    if(!s.configured){ out.innerHTML='<div class="small mut" style="margin-top:var(--s-8)">Connessione non configurata (superadmin).</div>'; return; }
-    out.innerHTML=`<div class="card pad" style="margin-top:var(--s-10);background:var(--bg2)">
-      <div class="small mut" style="margin-bottom:var(--s-8)">Parametri di sicurezza: decidi quando un badge silente o un Traccar irraggiungibile diventano allarme.</div>
-      <label class="small mut" style="display:block;margin:var(--s-4) 0">Cadenza poll (s, 5–600)<input id="ts_poll" type="number" min="5" max="600" value="${s.poll_interval_s}"></label>
-      <label class="small mut" style="display:block;margin:var(--s-4) 0">Soglia silenzio badge → <b>perdita_contatto</b> (s, 0=off)<input id="ts_sil" type="number" min="0" max="86400" value="${s.silence_after_s}"></label>
-      <label class="small mut" style="display:block;margin:var(--s-4) 0">Soglia down connessione → <b>traccar_conn_down</b> (s, 30–3600)<input id="ts_down" type="number" min="30" max="3600" value="${s.conn_down_after_s}"></label>
-      <label class="row small" style="gap:var(--s-8);margin:var(--s-6) 0"><input type="checkbox" id="ts_en" ${s.poll_enabled?'checked':''}> Poll attivo</label>
-      <button class="btn small" onclick="trSettingsSave()">Salva impostazioni</button></div>`;
-  }).catch(e=>{ out.innerHTML='<div class="small" style="color:var(--bad)">'+esc(e.message)+'</div>'; });
-}
-async function trSettingsSave(){
-  const body={ poll_interval_s:+$('#ts_poll').value, silence_after_s:+$('#ts_sil').value,
-    conn_down_after_s:+$('#ts_down').value, poll_enabled:$('#ts_en').checked };
-  try{ await api('/traccar/settings',{method:'POST',body:JSON.stringify(body)}); toast('Impostazioni salvate','ok'); }
-  catch(e){ toast(e.message,'bad'); }
-}
-async function trVerify(btn){
-  const out=$('#trVerifyOut'); if(btn){btn.disabled=true;btn.textContent='Verifico…';}
-  try{
-    const r=await api('/traccar/verify',{method:'POST'});
-    const okc=r.reachable?'s-attivo':'s-critico';
-    out.innerHTML=`<div class="card pad" style="margin-top:var(--s-10);background:var(--bg2)">
-      <div class="spread"><b>Esito: <span class="chip ${okc}">${esc(r.verdict)}</span></b></div>
-      <div class="small" style="margin-top:var(--s-8)">Device su Traccar: <b>${r.online_count}/${r.device_count} online</b> · specchiati nel nostro DB (pos. recente): <b>${r.mirror_fresh}/${r.mirror_total}</b></div>
-      ${r.last_error?`<div class="small" style="color:var(--bad);margin-top:var(--s-6)">⚠ ${esc(r.last_error)}</div>`:''}
-      <div class="small mut" style="margin-top:var(--s-8)">${esc(r.pull_note)}</div>
-      <details style="margin-top:var(--s-8)"><summary class="small">Forward fast-path (opzionale) — env Traccar</summary>
-        <div class="small mut" style="margin:var(--s-6) 0">${esc(r.forward.note)}</div>
-        <pre class="mono small" style="white-space:pre-wrap;background:var(--card);padding:var(--s-8);border-radius:8px">EVENT_FORWARD_URL=${esc(r.forward.env.EVENT_FORWARD_URL)}
-FORWARD_URL=${esc(r.forward.env.FORWARD_URL)}
-FORWARD_ENABLE=true</pre>
-        <button class="btn ghost small" onclick="navigator.clipboard&&navigator.clipboard.writeText('EVENT_FORWARD_URL=${esc(r.forward.env.EVENT_FORWARD_URL)}\\nFORWARD_URL=${esc(r.forward.env.FORWARD_URL)}\\nFORWARD_ENABLE=true')&&toast('Copiato','ok')">copia env</button>
-      </details></div>`;
-    toast(r.reachable?'Traccar collegato':'Traccar irraggiungibile', r.reachable?'ok':'bad');
-  }catch(e){ toast(e.message,'bad'); }
-  finally{ if(btn){btn.disabled=false;btn.textContent='Verifica collegamento';} }
 }
 async function tokNew(){
   const body={source:$('#tkSrc').value,
@@ -4563,7 +4464,7 @@ async function vGruppi(v){
     api('/oncall-settings').catch(()=>({voice_fallback_on:true,voice_fallback_min:5,status_updates_on:true}))]);
   v._users=users; v._groups=G.groups; window._OCS=ocs; window._users=users; window._groupsCache=G.groups;
   const ETYPES=['sos','man_down','immobilita','mancato_checkin','sensore_critico',
-    'perdita_contatto','manomissione_badge','perdita_alimentazione','jamming','traccar_conn_down',
+    'perdita_contatto','manomissione_badge','perdita_alimentazione','jamming',
     'batteria_critica','batteria_bassa'];
   const routeOf=e=>(G.routing.find(r=>r.etype===e)||{}).group_id||'';
   v.innerHTML=`<div class="page-h"><div><h1>${t('escal_title','Escalation e reperibilità')}</h1><div class="mut">destinatari, canali e rotazione per tipo di evento</div></div>

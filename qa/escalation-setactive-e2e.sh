@@ -23,7 +23,7 @@ api -H 'content-type: application/json' -X POST "$BASE/api/groups/$G/members" -d
 api -H 'content-type: application/json' -X POST "$BASE/api/groups/$G/members" -d "{\"user_id\":\"$M2\",\"position\":2}" >/dev/null
 # modalita' a turni + routing di default su questo gruppo
 api -H 'content-type: application/json' -X POST "$BASE/api/groups/$G/oncall" -d '{"mode":"turni","oncall_type":"weekly","shift":1}' >/dev/null
-sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id,escalation_engine) SELECT $TID,'$G','native' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$G',escalation_engine='native'" >/dev/null
+sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id) SELECT $TID,'$G' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$G'" >/dev/null
 sql "DELETE FROM app.esc_rotation_state s USING app.tenants t WHERE t.id=s.tenant_id AND t.slug='$SLUG'" >/dev/null
 
 # Set Active su M2 (posizione 1 nell'indice 0-based)
@@ -35,18 +35,19 @@ POS=$(sql "SELECT position||'/'||seeded_from FROM app.esc_rotation_state rs JOIN
 sql "DELETE FROM app.esc_alert_state s USING app.tenants t WHERE t.id=s.tenant_id AND t.slug='$SLUG'" >/dev/null
 sql "DELETE FROM app.esc_delivery_log el USING app.tenants t WHERE t.id=el.tenant_id AND t.slug='$SLUG'" >/dev/null
 # forced_group_id: pinna l'incidente al gruppo di test, immune a routing/gruppi residui di altre suite
-sql "INSERT INTO app.incidents(tenant_id,etype,state,priority,correlation,opened_at,forced_group_id) SELECT $TID,'sos','nuovo',1,'sa-'||gen_random_uuid(),now(),'$G'" >/dev/null
+IID=$(sql "INSERT INTO app.incidents(tenant_id,etype,state,priority,correlation,opened_at,forced_group_id) SELECT $TID,'sos','nuovo',1,'sa-'||gen_random_uuid(),now(),'$G' RETURNING id" | head -1)
 api -H 'content-type: application/json' -X POST "$BASE/api/escalation/delivery/run" -d '{}' >/dev/null
-TO=$(sql "SELECT to_value FROM app.esc_delivery_log el JOIN app.tenants t ON t.id=el.tenant_id WHERE t.slug='$SLUG' ORDER BY el.id DESC LIMIT 1")
+# solo le consegne di QUESTO incidente (altre suite possono lasciare incidenti aperti nel tenant)
+TO=$(sql "SELECT to_value FROM app.esc_delivery_log WHERE incident_id='$IID' ORDER BY id DESC LIMIT 1")
 [ "$TO" = "+393944000002" ] && ok "consegna al reperibile attivato (M2)" || no "consegna non a M2" "$TO"
 
 # Set Active su M1 (indice 0) -> cambia il reperibile corrente
 api -H 'content-type: application/json' -X POST "$BASE/api/groups/$G/rotation/set-active" -d "{\"user_id\":\"$M1\"}" >/dev/null
 sql "DELETE FROM app.esc_alert_state s USING app.tenants t WHERE t.id=s.tenant_id AND t.slug='$SLUG'" >/dev/null
 sql "DELETE FROM app.esc_delivery_log el USING app.tenants t WHERE t.id=el.tenant_id AND t.slug='$SLUG'" >/dev/null
-sql "INSERT INTO app.incidents(tenant_id,etype,state,priority,correlation,opened_at,forced_group_id) SELECT $TID,'sos','nuovo',1,'sa2-'||gen_random_uuid(),now(),'$G'" >/dev/null
+IID2=$(sql "INSERT INTO app.incidents(tenant_id,etype,state,priority,correlation,opened_at,forced_group_id) SELECT $TID,'sos','nuovo',1,'sa2-'||gen_random_uuid(),now(),'$G' RETURNING id" | head -1)
 api -H 'content-type: application/json' -X POST "$BASE/api/escalation/delivery/run" -d '{}' >/dev/null
-TO2=$(sql "SELECT to_value FROM app.esc_delivery_log el JOIN app.tenants t ON t.id=el.tenant_id WHERE t.slug='$SLUG' ORDER BY el.id DESC LIMIT 1")
+TO2=$(sql "SELECT to_value FROM app.esc_delivery_log WHERE incident_id='$IID2' ORDER BY id DESC LIMIT 1")
 [ "$TO2" = "+393944000001" ] && ok "Set Active cambia il reperibile corrente (M1)" || no "cambio reperibile ko" "$TO2"
 
 # validazione: utente non membro -> 400

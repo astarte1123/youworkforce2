@@ -13,7 +13,7 @@ dell'utente è tra quelli ammessi (lista vuota = tutti). Widget iniziali:
 
 | key | moduli | note |
 |-----|--------|------|
-| `incidents` | loneworker/traccar/iot/thingsboard | aperti + ultimi |
+| `incidents` | loneworker/gps/iot | aperti + ultimi |
 | `checkins` | loneworker | check-in attivi |
 | `orders` | interventi | ordini attivi + ultimi |
 | `timesheets` | consuntivi | in revisione |

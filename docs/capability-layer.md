@@ -21,7 +21,7 @@ toccare il codice. Additivo e non distruttivo; i ruoli restano, le capability li
 | `config.view`        | lettura configurazione/diagnostica | module-tools, assistant plan |
 | `users.manage`       | utenti/gruppi/permessi/ruoli custom/sedi/squadre/asset | ~32 endpoint (Tappa 2) |
 | `devices.admin`      | censimento/token/onboarding/geofence/provisioning | ~20 endpoint (Tappa 2) |
-| `iot.manage`         | Traccar/YWAlert/regole sensori/email ingest | ~31 endpoint (Tappa 2) |
+| `iot.manage`         | dispositivi, regole sensori, allarmi da email | ~31 endpoint (Tappa 2) |
 | `escalation.manage`  | gruppi allarme/on-call/override/profili/trigger/recapiti | ~60 endpoint (Tappa 2) |
 | `settings.manage`    | impostazioni tenant (UI/feature) | ui_features_set (Tappa 2) |
 | `gdpr.manage`        | export/anonimizzazione dati personali | gdpr_export/anonymize/retention |

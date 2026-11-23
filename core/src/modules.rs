@@ -4,8 +4,8 @@
 //!                 di persone, sedi, permessi/ruoli, privacy/audit, dashboard). Non attivabili dal
 //!                 superadmin: ci sono sempre.
 //!   - `product`   moduli funzionali attivabili per-tenant (loneworker, interventi, giri, ...).
-//!   - `connector` integrazioni edge attivabili (traccar, iot). Escalation = YWAlert nativo; IoT nativo.
-//! Il catalogo DB (app.modules_catalog) resta la fonte per l'ELENCO attivabile (product+connector);
+//!   Nessun connettore esterno: escalation, GPS/badge e IoT sono motori nativi.
+//! Il catalogo DB (app.modules_catalog) resta la fonte per l'ELENCO attivabile (product);
 //! qui si aggiungono le relazioni/metadata che il DB non modella + lo strato `core`.
 
 /// Manifest statico di un modulo o servizio core.
@@ -51,7 +51,7 @@ pub const REGISTRY: &[Manifest] = &[
         description:"Dashboard unica configurabile: aggrega i widget dei moduli attivi." },
     Manifest{ code:"core.devices", name:"Dispositivi (inventario)", kind:"core", requires:&[], provides:&["device_inventory"],
         capabilities:&["devices.admin","devices.manage"], widgets:&[],
-        description:"Inventario/config dispositivi: infrastruttura condivisa. L'inventario è trasversale; la PIPELINE allarmi è dei moduli safety (loneworker/traccar/iot)." },
+        description:"Inventario/config dispositivi: infrastruttura condivisa. L'inventario è trasversale; la PIPELINE allarmi è dei moduli safety (loneworker/gps/iot)." },
     // ---- Product: moduli funzionali attivabili ---------------------------------------------
     Manifest{ code:"loneworker", name:"Lone Worker e centrale allarmi", kind:"product", requires:&[], provides:&["incidents","checkins"],
         capabilities:&["incidents.view","incidents.handle","escalation.manage"], widgets:&["incidents","checkins"],
@@ -80,13 +80,12 @@ pub const REGISTRY: &[Manifest] = &[
     Manifest{ code:"prevenzione", name:"Prevenzione e checklist", kind:"product", requires:&[], provides:&["checklists"],
         capabilities:&[], widgets:&[],
         description:"Prevenzione, checklist, audit di sicurezza." },
-    // ---- Connector: integrazioni esterne attivabili ----------------------------------------
-    Manifest{ code:"traccar", name:"Traccar (badge)", kind:"connector", requires:&["loneworker"], provides:&["gps","badge"],
+    Manifest{ code:"gps", name:"Localizzazione GPS e badge", kind:"product", requires:&["loneworker"], provides:&["gps","badge"],
         capabilities:&["iot.manage","devices.admin"], widgets:&["incidents"],
-        description:"Tracciamento badge/GPS: posizioni ed eventi diventano incidenti." },
+        description:"Dispositivi GPS e badge (Teltonika, smartphone OsmAnd, JSON HTTP) con decodifica nativa: posizioni, SOS, caduta e silenzio del dispositivo diventano incidenti." },
     Manifest{ code:"iot", name:"Dispositivi e IoT industriale", kind:"product", requires:&[], provides:&["telemetry","iot"],
         capabilities:&["iot.manage","devices.admin"], widgets:&["incidents"],
-        description:"Piattaforma IoT NATIVA: dispositivi, telemetria time-series, attributi, comandi/RPC, regole/soglie→incidenti, dashboard. (ThingsBoard esterno ritirato, tutto nativo.)" },
+        description:"Piattaforma IoT NATIVA: dispositivi, telemetria time-series, attributi, comandi/RPC, regole/soglie→incidenti, dashboard e scenari attivabili." },
 ];
 
 pub fn manifest(code: &str) -> Option<&'static Manifest> {
@@ -112,9 +111,9 @@ mod tests {
     fn set(v: &[&str]) -> HashSet<String> { v.iter().map(|s| s.to_string()).collect() }
 
     #[test]
-    fn traccar_requires_loneworker() {
-        assert_eq!(missing_deps("traccar", &set(&["iot"])), vec!["loneworker"]);
-        assert!(missing_deps("traccar", &set(&["loneworker"])).is_empty());
+    fn gps_requires_loneworker() {
+        assert_eq!(missing_deps("gps", &set(&["iot"])), vec!["loneworker"]);
+        assert!(missing_deps("gps", &set(&["loneworker"])).is_empty());
     }
     #[test]
     fn standalone_modules_have_no_deps() {
@@ -130,9 +129,9 @@ mod tests {
     }
     #[test]
     fn dependents_warn_before_disable() {
-        let act = set(&["loneworker","traccar"]);
+        let act = set(&["loneworker","gps"]);
         let mut d = dependents_active("loneworker", &act); d.sort();
-        assert_eq!(d, vec!["traccar"]);
+        assert_eq!(d, vec!["gps"]);
     }
     #[test]
     fn registry_covers_catalog() {

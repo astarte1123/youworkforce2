@@ -18,7 +18,7 @@ CS=$(awk '$6=="yw_csrf"{print $7}' "$JAR" | tail -1)
 api(){ curl -s -b "$JAR" -H "x-tenant-slug: $SLUG" -H "x-csrf-token: $CS" "$@"; }
 TID="(SELECT id FROM app.tenants WHERE slug='$SLUG')"
 GID=$(api "$BASE/api/groups" | python -c "import sys,json;g=[x for x in json.load(sys.stdin)['groups'] if '$SLUG' in str(x['members'])];print(g[0]['id'] if g else '')")
-sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id,escalation_engine) SELECT $TID,'$GID','native' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$GID',escalation_engine='native'" >/dev/null
+sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id) SELECT $TID,'$GID' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$GID'" >/dev/null
 
 # ---- S4: on-call-now nativo ----
 AV=$(api "$BASE/api/oncall-now-native" | python -c "import sys,json;d=json.load(sys.stdin);print(d.get('available'),d.get('engine'))")

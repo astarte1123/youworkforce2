@@ -1,7 +1,7 @@
 # IoT industriale nativo (YouWorkforce)
 
 Il modulo **`iot`** ("Dispositivi e IoT industriale") è la piattaforma IoT **nativa** di YW:
-assorbe le funzioni che prima si appoggiavano a ThingsBoard esterno, **senza alcun server
+offre tutte le funzioni IoT industriali **senza alcun server
 esterno** (coerente con la direzione self-contained; unica integrazione esterna resta l'AI).
 
 ## Cosa copre (nativo)
@@ -120,7 +120,7 @@ Il catalogo `device_models` è unico ma **segmentato per perimetro** via il para
   "Attiva per un lavoro".
 - `scope=safety` → tracker di **Sicurezza Lavoratore / Lavoro sul campo**
   (`personale/smartphone/veicolo/asset`): è ciò che vede "Aggiungi dispositivo (guidato)".
-- Il bucket `altro` (2174 modelli GPS importati da Traccar) **non compare in elenco**: emerge
+- Il bucket `altro` (2174 modelli GPS generici) **non compare in elenco**: emerge
   **solo** quando si digita una ricerca testuale, così il catalogo curato non viene annegato.
   `GET /api/catalog/facets?scope=…` restituisce produttori/scopi coerenti col perimetro.
 
@@ -148,13 +148,6 @@ l'ingest dei sensori e il downlink dei comandi. Disattivabile con `YW_MQTT_PORT=
 - Riusa il **core**: inventario dispositivi, geofence, mappe, audit, RLS per-tenant, ingest token.
 - Integra con **Lone Worker** (le soglie diventano incidenti con escalation), **Vigilanza/Cantieri**
   (i device sul campo), **Mappa dispositivi** (posizioni live).
-
-## ThingsBoard esterno: ritirato del tutto
-
-Il connettore `thingsboard` è stato **smantellato**: modulo rimosso dal catalogo (mig 0108),
-route proxy già assenti, tabelle di connessione/pull droppate (mig 0118), poller del worker,
-endpoint, tool agente `tb_*`, UI di connessione, servizio docker-compose e manuale dedicato
-**eliminati**. Tutte le funzioni IoT industriali sono native sotto `/api/iot/*` + regole sensori.
 
 ## Tenant demo
 

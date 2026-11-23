@@ -12,16 +12,16 @@ pub(crate) type R = Result<Json<Value>, (StatusCode, String)>;
 pub(crate) fn err(c: StatusCode, m: &str) -> (StatusCode, String) { (c, m.to_string()) }
 
 const CRITICAL: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin", "sensore_critico",
-    "manomissione_badge", "perdita_alimentazione", "jamming", "perdita_contatto", "traccar_conn_down",
+    "manomissione_badge", "perdita_alimentazione", "jamming", "perdita_contatto",
     "batteria_critica", "heartbeat_down", "email_alarm", "geofence_ingresso", "geofence_uscita"];
 
-/// Traccar alarm -> normalized etype. Safety-first defaults for lone workers.
+/// Allarme del dispositivo GPS/badge -> etype normalizzato. Safety-first defaults for lone workers.
 /// `sos_as` lets a tenant route the SOS alarm to `sos` or `man_down`.
 /// Returns the normalized etype; whether it is critical is decided by CRITICAL.
-fn traccar_alarm_etype(alarm: &str, sos_as: &str) -> String {
+fn gps_alarm_etype(alarm: &str, sos_as: &str) -> String {
     match alarm {
         "sos" | "panic" | "sosButton" => sos_as.to_string(),
-        // caduta / uomo a terra: accetta sia i token Traccar sia l'etype canonico già risolto
+        // caduta / uomo a terra: accetta sia i token dei protocolli GPS sia l'etype canonico già risolto
         // (es. GH-5200 io_alarm_map 242->"man_down"), così la semantica salva-vita non si perde.
         "fallDown" | "accident" | "man_down" | "mandown" | "falldown" => "man_down".into(),
         // immobilità / assenza di movimento
@@ -35,10 +35,10 @@ fn traccar_alarm_etype(alarm: &str, sos_as: &str) -> String {
     }
 }
 
-/// Default handling + etype base per tipo evento Traccar (tipi reali da
-/// /api/notifications/types). Safety-first per il lavoratore isolato.
+/// Default handling + etype base per tipo evento dei dispositivi GPS (nomi standard del
+/// formato JSON di ingest). Safety-first per il lavoratore isolato.
 /// Ritorna (etype_base, default_handling ∈ ignora|registra|critico).
-fn traccar_event_default(evt_type: &str) -> (&'static str, &'static str) {
+fn gps_event_default(evt_type: &str) -> (&'static str, &'static str) {
     match evt_type {
         "unaccompaniedMotion" => ("movimento_non_accompagnato", "critico"),
         "deviceInactive"      => ("dispositivo_inattivo", "critico"),
@@ -55,23 +55,22 @@ fn traccar_event_default(evt_type: &str) -> (&'static str, &'static str) {
         "deviceMoving"        => ("device_moving", "ignora"),
         "geofenceCrossed"     => ("attraversamento_geofence", "registra"),
         "commandResult"       => ("esito_comando", "ignora"),
-        "deviceOnline" | "deviceUnknown" | "queuedCommandSent" => ("traccar_event", "ignora"),
-        _ => ("traccar_event", "registra"),
+        "deviceOnline" | "deviceUnknown" | "queuedCommandSent" => ("device_event", "ignora"),
+        _ => ("device_event", "registra"),
     }
 }
-/// Tipi evento Traccar esposti nella policy (per la UI). Esclusi quelli con
+/// Tipi evento esposti nella policy (per la UI). Esclusi quelli con
 /// gestione dedicata propria (alarm, deviceOffline, deviceStopped, geofenceEnter/Exit).
-pub const TRACCAR_POLICY_EVENTS: &[&str] = &[
+pub const GPS_POLICY_EVENTS: &[&str] = &[
     "unaccompaniedMotion","deviceInactive","proximityEnter","proximityExit","deviceOverspeed",
     "deviceFuelDrop","deviceFuelIncrease","ignitionOn","ignitionOff","maintenance","driverChanged",
     "media","deviceMoving","geofenceCrossed","commandResult","deviceOnline","deviceUnknown"];
 
-/// Mappa un evento Traccar (tipo + eventuale alarm + batteria) nell'etype
-/// normalizzato, applicando la config per-tenant `traccar/alarm_map` (incl. `events`).
-/// Usata SIA dal webhook di forwarding SIA dal poller API, così push e pull
-/// producono esattamente lo stesso incidente (idempotente a valle). Ritorna "ignore"
+/// Mappa un evento GPS (tipo + eventuale alarm + batteria) nell'etype normalizzato,
+/// applicando la config per-tenant `gps/alarm_map` (incl. `events`). Usata da tutti i canali
+/// d'ingest nativi (JSON HTTP, OsmAnd, Teltonika), così producono lo stesso incidente. Ritorna "ignore"
 /// quando la policy è `ignora` (il chiamante salta la persistenza).
-pub fn map_traccar_etype(amap: &Value, evt_type: &str, alarm: Option<&str>, battery: Option<f64>) -> String {
+pub fn map_gps_etype(amap: &Value, evt_type: &str, alarm: Option<&str>, battery: Option<f64>) -> String {
     let sos_as = amap.get("sos_as").and_then(|v| v.as_str()).unwrap_or("sos");
     let offline_critical = amap.get("offline_critical").and_then(|v| v.as_str()).map(|s| s=="si").unwrap_or(false);
     let stopped_immobilita = amap.get("stopped_as_immobilita").and_then(|v| v.as_str()).map(|s| s=="si").unwrap_or(false);
@@ -79,7 +78,7 @@ pub fn map_traccar_etype(amap: &Value, evt_type: &str, alarm: Option<&str>, batt
     // policy batteria configurabile dall'admin: off (ignora) | warning (evento, default) | critico (allarme)
     let battery_as = amap.get("battery_as").and_then(|v| v.as_str()).unwrap_or("warning");
     let mut etype: String = if let Some(a) = alarm {
-        traccar_alarm_etype(a, sos_as)
+        gps_alarm_etype(a, sos_as)
     } else if evt_type == "deviceOffline" {
         if offline_critical { "perdita_contatto".into() } else { "device_offline".into() }
     } else if evt_type == "deviceStopped" && stopped_immobilita {
@@ -92,7 +91,7 @@ pub fn map_traccar_etype(amap: &Value, evt_type: &str, alarm: Option<&str>, batt
         "batteria_bassa".into()
     } else {
         // event policy configurabile: ignora | registra | critico (etype *_critico)
-        let (base, def) = traccar_event_default(evt_type);
+        let (base, def) = gps_event_default(evt_type);
         let handling = amap.get("events").and_then(|e| e.get(evt_type)).and_then(|v| v.as_str()).unwrap_or(def);
         match handling {
             "ignora" => "ignore".into(),
@@ -103,7 +102,7 @@ pub fn map_traccar_etype(amap: &Value, evt_type: &str, alarm: Option<&str>, batt
     // Applica la policy batteria sia al percorso alarm=lowBattery sia alla soglia %.
     if etype == "batteria_bassa" {
         etype = match battery_as {
-            "off" => "traccar_event".into(),      // non segnalata
+            "off" => "device_event".into(),      // non segnalata
             "critico" => "batteria_critica".into(), // allarme + escalation (in CRITICAL)
             _ => "batteria_bassa".into(),          // warning registrato, non critico
         };
@@ -914,90 +913,8 @@ pub async fn set_module(State(st): State<AppState>, h: HeaderMap, Path(tid): Pat
     Ok(Json(json!({"ok":true,"warning":warning})))
 }
 
-#[derive(Deserialize)]
-pub struct SetTraccarConn { pub base_url: String, pub username: String, pub password: Option<String> }
-pub async fn super_set_traccar(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetTraccarConn>) -> R {
-    require_super(&st, &h).await?;
-    let base = { let b = b.base_url.trim_end_matches('/'); b.strip_suffix("/api").unwrap_or(b).to_string() };
-    let pw = b.password.unwrap_or_default();
-    if pw.is_empty() {
-        // password invariata: aggiorna solo URL/utente (richiede connessione esistente)
-        let n = sqlx::query("UPDATE app.traccar_connections SET base_url=$2,username=$3,updated_at=now() WHERE tenant_id=$1")
-            .bind(tid).bind(&base).bind(&b.username).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
-        if n == 0 { return Err(err(StatusCode::BAD_REQUEST, "password richiesta per la prima configurazione")); }
-    } else {
-        let enc_pass = st.secrets.encrypt(&pw);   // P3: cifrato a riposo
-        sqlx::query("INSERT INTO app.traccar_connections(tenant_id,base_url,username,password) VALUES($1,$2,$3,$4)
-            ON CONFLICT (tenant_id) DO UPDATE SET base_url=EXCLUDED.base_url,username=EXCLUDED.username,password=EXCLUDED.password,updated_at=now()")
-            .bind(tid).bind(&base).bind(&b.username).bind(&enc_pass).execute(&st.owner_pool).await.map_err(ise)?;
-    }
-    sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,'superadmin','set_traccar_conn',$2)")
-        .bind(tid).bind(json!({"base_url":base})).execute(&st.owner_pool).await.map_err(ise)?;
-    Ok(Json(json!({"ok":true})))
-}
 
-// ============ Auto-integrazioni: moduli integrati configurati dal prodotto, non dall'uomo ============
-// I motori integrati (YWAlert, Traccar) girano sulla nostra infrastruttura: base URL e
-// credenziali admin vengono dai default del prodotto (env), così l'attivazione di un modulo li
-// configura DA SOLA, senza intervento dell'amministratore. I provider AI restano esterni (chiave cliente).
-fn env_opt(k: &str) -> Option<String> { std::env::var(k).ok().filter(|s| !s.trim().is_empty()) }
-fn norm_base(b: &str) -> String { let b=b.trim_end_matches('/'); b.strip_suffix("/api").unwrap_or(b).to_string() }
 
-/// Connette Traccar automaticamente dai default del prodotto se il modulo è attivo.
-pub async fn auto_connect_traccar(st: &AppState, tid: Uuid) -> Result<bool, String> {
-    if !module_active(st, tid, "traccar").await { return Ok(false); }
-    let base = env_opt("TRACCAR_BASE").ok_or("motore Traccar non configurato nel prodotto (TRACCAR_BASE)")?;
-    let has: i64 = sqlx::query_scalar("SELECT count(*) FROM app.traccar_connections WHERE tenant_id=$1")
-        .bind(tid).fetch_one(&st.owner_pool).await.map_err(|e| e.to_string())?;
-    if has > 0 { return Ok(false); }
-    let user = env_opt("TRACCAR_USER").unwrap_or_else(|| "admin".into());
-    let pass = env_opt("TRACCAR_PASS").unwrap_or_else(|| "admin".into());
-    let enc = st.secrets.encrypt(&pass);
-    sqlx::query("INSERT INTO app.traccar_connections(tenant_id,base_url,username,password,poll_enabled) VALUES($1,$2,$3,$4,true)
-        ON CONFLICT (tenant_id) DO NOTHING")
-        .bind(tid).bind(norm_base(&base)).bind(&user).bind(&enc).execute(&st.owner_pool).await.map_err(|e| e.to_string())?;
-    audit(st, tid, "system", "auto_connect_traccar", json!({"base":norm_base(&base)})).await;
-    Ok(true)
-}
-/// Stato delle integrazioni di un tenant (semaforo: ok / anomalia / spento). Segnala solo i problemi.
-pub async fn super_integrations_status(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
-    require_super(&st, &h).await?;
-    // Traccar
-    let tr_on = module_active(&st, tid, "traccar").await;
-    let tr_cfg: i64 = sqlx::query_scalar("SELECT count(*) FROM app.traccar_connections WHERE tenant_id=$1").bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
-    let tr_reach: Option<bool> = sqlx::query_scalar("SELECT reachable FROM app.traccar_poll_state WHERE tenant_id=$1").bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
-    let tr = if !tr_on { json!({"module":false,"status":"spento"}) }
-        else if tr_cfg==0 { json!({"module":true,"status":"anomalia","detail":"motore Traccar non configurato nel prodotto (TRACCAR_BASE)"}) }
-        else if tr_reach==Some(false) { json!({"module":true,"status":"anomalia","detail":"server Traccar irraggiungibile"}) }
-        else { json!({"module":true,"status":"ok","detail":"connesso"}) };
-    Ok(Json(json!({"traccar":tr})))
-}
-
-/// Elimina la configurazione di un motore SOLO quando il modulo è esplicitamente spento
-/// (non_abilitato o assente). Stati intermedi (da_configurare/degradato/in_disattivazione)
-/// MANTENGONO le credenziali: non si cancella un segreto su uno stato transitorio.
-async fn deauto_integration(st: &AppState, tid: Uuid, module: &str) {
-    let state: Option<String> = sqlx::query_scalar("SELECT state FROM app.tenant_modules WHERE tenant_id=$1 AND module_code=$2")
-        .bind(tid).bind(module).fetch_optional(&st.owner_pool).await.ok().flatten();
-    let off = matches!(state.as_deref(), None | Some("non_abilitato"));
-    if !off { return; }
-    let (table, extra): (&str, Option<&str>) = match module {
-        "traccar" => ("app.traccar_connections", Some("app.traccar_poll_state")),
-        _ => return,
-    };
-    let n = sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id=$1")).bind(tid).execute(&st.owner_pool).await.map(|r| r.rows_affected()).unwrap_or(0);
-    if let Some(ps) = extra { let _ = sqlx::query(&format!("DELETE FROM {ps} WHERE tenant_id=$1")).bind(tid).execute(&st.owner_pool).await; }
-    if n > 0 { audit(st, tid, "system", "deauto_integration", json!({"module":module})).await; }
-}
-/// Riconcilia tutte le integrazioni dei tenant (idempotente). Chiamata dal worker.
-/// Auto-provisioning se il modulo è attivo (serve); eliminazione se è spento (non serve).
-pub async fn reconcile_integrations(st: &AppState) {
-    let tids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM app.tenants").fetch_all(&st.owner_pool).await.unwrap_or_default();
-    for tid in tids {
-        if let Err(e) = auto_connect_traccar(st, tid).await { tracing::debug!("auto traccar {tid}: {e}"); }
-        for m in ["traccar"] { deauto_integration(st, tid, m).await; }
-    }
-}
 
 // ---- "YouWorkforce pilota YWAlert": sincronizza Gruppi/Routing/Escalation -> YWAlert ----
 // Escapa una stringa per inserirla in un literal GraphQL.
@@ -1025,48 +942,7 @@ async fn oncall_cfg(st: &AppState, tid: Uuid) -> OncallCfg {
         None => OncallCfg{ voice_on:true, voice_min:5, status_on:true },
     }
 }
-// ====== Config server Traccar, gestita DA YouWorkforce (PUT /api/server) ======
-// Porte/forwarding = config d'avvio (nostra compose/env). I filtri posizione sono
-// già nel nostro strumento traccar/alarm_map. Qui le impostazioni runtime del server.
-const TR_CFG_BOOL: &[&str] = &["registration","readonly","deviceReadonly","limitCommands","disableReports","forceSettings"];
-const TR_CFG_STR:  &[&str] = &["mapUrl","overlayUrl","coordinateFormat","poiLayer","announcement"];
-const TR_CFG_NUM:  &[&str] = &["zoom","latitude","longitude"];
-pub async fn traccar_conn(st: &AppState, tid: Uuid) -> Option<(String,String,String)> {
-    let r = sqlx::query("SELECT base_url,username,password FROM app.traccar_connections WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten()?;
-    let pass: String = r.get("password");
-    Some((r.get("base_url"), r.get("username"), st.secrets.decrypt(&pass)))   // P3: decifra a riposo
-}
-/// Compone base_url Traccar + path tollerando il caso comune in cui l'utente include "/api"
-/// nel base URL (es. http://host:8082/api) oppure lo slash finale.
-pub fn traccar_url(base: &str, path: &str) -> String {
-    let b = base.trim_end_matches('/');
-    let b = b.strip_suffix("/api").unwrap_or(b);
-    let p = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
-    format!("{b}{p}")
-}
-/// Login con diagnostica: distingue irraggiungibile / credenziali / HTTP / cookie assente.
-pub async fn traccar_login_diag(http: &reqwest::Client, base: &str, user: &str, pass: &str) -> Result<String, String> {
-    let resp = http.post(traccar_url(base, "/api/session"))
-        .form(&[("email", user), ("password", pass)]).send().await
-        .map_err(|e| format!("server Traccar irraggiungibile: {e}"))?;
-    let code = resp.status();
-    if !code.is_success() {
-        return Err(match code.as_u16() {
-            401 | 403 => "credenziali Traccar non valide (controlla utente/password)".into(),
-            404 => "endpoint Traccar non trovato (controlla il base URL, senza /api finale)".into(),
-            c => format!("Traccar HTTP {c}"),
-        });
-    }
-    let mut c = Vec::new();
-    for v in resp.headers().get_all(reqwest::header::SET_COOKIE).iter() {
-        if let Ok(s)=v.to_str() { if let Some(p)=s.split(';').next() { c.push(p.to_string()); } } }
-    if c.is_empty() { Err("Traccar: nessun cookie di sessione (versione/endpoint inatteso)".into()) } else { Ok(c.join("; ")) }
-}
-pub async fn traccar_login(http: &reqwest::Client, base: &str, user: &str, pass: &str) -> Option<String> {
-    traccar_login_diag(http, base, user, pass).await.ok()
-}
-// ================= Ambienti / casi d'uso (ispirati a thingsboard.io/use-cases) =================
+// ================= Ambienti / casi d'uso IoT (scenari attivabili) =================
 // Scenari attivabili dal superadmin su QUALSIASI tenant. Applicare uno scenario provisiona,
 // riusando le primitive esistenti: abilita i moduli giusti, inserisce un bundle di regole
 // sensori (metrica/operatore/soglia -> etype) e, se richiesto, crea device + sito demo.
@@ -1884,236 +1760,10 @@ pub async fn ai_features_set(State(st): State<AppState>, h: HeaderMap, Json(b): 
     Ok(Json(json!({"ok":true})))
 }
 
-pub async fn traccar_get_config(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
-    require_super(&st, &h).await?;
-    let (base,user,pass) = traccar_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata"))?;
-    let cookie = traccar_login_diag(&st.http, &base, &user, &pass).await.map_err(|e| err(StatusCode::BAD_GATEWAY, &e))?;
-    let srv: Value = st.http.get(traccar_url(&base, "/api/server")).header("Cookie", &cookie).send().await
-        .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar irraggiungibile"))?.json().await
-        .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar json"))?;
-    let mut out = Vec::new();
-    for id in TR_CFG_BOOL { out.push(json!({"id":id,"type":"boolean","value":srv.get(id).and_then(|v|v.as_bool()).unwrap_or(false)})); }
-    for id in TR_CFG_STR  { out.push(json!({"id":id,"type":"string","value":srv.get(id).and_then(|v|v.as_str()).unwrap_or("")})); }
-    for id in TR_CFG_NUM  { out.push(json!({"id":id,"type":"number","value":srv.get(id).and_then(|v|v.as_f64()).unwrap_or(0.0)})); }
-    Ok(Json(json!(out)))
-}
-pub async fn traccar_set_config(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<GaCfgSet>) -> R {
-    require_super(&st, &h).await?;
-    let (base,user,pass) = traccar_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata"))?;
-    let cookie = traccar_login_diag(&st.http, &base, &user, &pass).await.map_err(|e| err(StatusCode::BAD_GATEWAY, &e))?;
-    let mut srv: Value = st.http.get(traccar_url(&base, "/api/server")).header("Cookie", &cookie).send().await
-        .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar irraggiungibile"))?.json().await
-        .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar json"))?;
-    let o = srv.as_object_mut().ok_or_else(|| err(StatusCode::BAD_GATEWAY, "server model"))?;
-    for e in &b.entries {
-        if TR_CFG_BOOL.contains(&e.id.as_str()) { o.insert(e.id.clone(), json!(e.value=="true")); }
-        else if TR_CFG_STR.contains(&e.id.as_str()) { o.insert(e.id.clone(), json!(e.value)); }
-        else if TR_CFG_NUM.contains(&e.id.as_str()) { o.insert(e.id.clone(), json!(e.value.parse::<f64>().unwrap_or(0.0))); }
-    }
-    let put = st.http.put(traccar_url(&base, "/api/server")).header("Cookie", &cookie).json(&srv).send().await
-        .map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar PUT fallito"))?;
-    if !put.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("Traccar PUT {}", put.status()))); }
-    audit(&st, tid, "superadmin", "traccar_set_config", json!({"n":b.entries.len()})).await;
-    Ok(Json(json!({"ok":true})))
-}
 
-/// Stato salute della connessione/poller Traccar del tenant (card Connettori).
-/// Lo alimenta il worker::traccar_poll; qui lo leggiamo per operatore/admin/auditor.
-pub async fn traccar_status(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?;
-    let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "traccar").await?;
-    if !has_cap(&s,"incidents.view") {
-        return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato"));
-    }
-    let configured = traccar_conn(&st, tid).await.is_some();
-    let cfg: Option<(bool,i32,i32,i32)> = sqlx::query_as("SELECT poll_enabled,poll_interval_s,silence_after_s,conn_down_after_s FROM app.traccar_connections WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
-    let (poll_enabled, poll_interval_s, silence_after_s, conn_down_after_s) = cfg.unwrap_or((false,30,600,180));
-    let row = sqlx::query("SELECT last_event_id,last_poll_at,last_ok_at,reachable,last_error,device_count,online_count FROM app.traccar_poll_state WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
-    let now = st.clock.now();
-    let (reachable, last_ok_at, last_poll_at, last_error, device_count, online_count, last_event_id) = match &row {
-        Some(r) => (
-            r.get::<bool,_>("reachable"),
-            r.try_get::<chrono::DateTime<chrono::Utc>,_>("last_ok_at").ok(),
-            r.try_get::<chrono::DateTime<chrono::Utc>,_>("last_poll_at").ok(),
-            r.try_get::<String,_>("last_error").ok(),
-            r.get::<i32,_>("device_count"),
-            r.get::<i32,_>("online_count"),
-            r.get::<i64,_>("last_event_id"),
-        ),
-        None => (false, None, None, None, 0, 0, 0),
-    };
-    let lag_seconds = last_ok_at.map(|t| (now - t).num_seconds());
-    // #6 — invii di sicurezza bloccati: notifiche/chiusure YWAlert che non passano
-    // (oltre soglia, ancora in coda a ritentare). Visibile all'admin come degrado.
-    let outbox_stuck: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM app.outbox WHERE tenant_id=$1 AND kind IN ('notify','close') AND state<>'done' AND attempts>=6")
-        .bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
-    let outbox_last_error: Option<String> = sqlx::query_scalar(
-        "SELECT last_error FROM app.outbox WHERE tenant_id=$1 AND kind IN ('notify','close') AND state<>'done' AND attempts>=6 ORDER BY attempts DESC LIMIT 1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
-    Ok(Json(json!({
-        "configured": configured,
-        "outbox_stuck": outbox_stuck,
-        "outbox_last_error": outbox_last_error,
-        "poll_enabled": poll_enabled,
-        "poll_interval_s": poll_interval_s,
-        "silence_after_s": silence_after_s,
-        "conn_down_after_s": conn_down_after_s,
-        "reachable": reachable,
-        "last_ok_at": last_ok_at,
-        "last_poll_at": last_poll_at,
-        "lag_seconds": lag_seconds,
-        "last_error": last_error,
-        "device_count": device_count,
-        "online_count": online_count,
-        "last_event_id": last_event_id,
-    })))
-}
 
-/// Lettura connessione Traccar del tenant per la UI superadmin (password MAI
-/// restituita, solo has_password). Include le impostazioni poll/watchdog.
-pub async fn super_get_traccar(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
-    require_super(&st, &h).await?;
-    let row = sqlx::query("SELECT base_url,username,password,poll_enabled,poll_interval_s,silence_after_s,conn_down_after_s
-         FROM app.traccar_connections WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
-    match row {
-        None => Ok(Json(json!({"configured":false}))),
-        Some(r) => Ok(Json(json!({
-            "configured": true,
-            "base_url": r.get::<String,_>("base_url"),
-            "username": r.get::<String,_>("username"),
-            "has_password": !r.get::<String,_>("password").is_empty(),
-            "poll_enabled": r.get::<bool,_>("poll_enabled"),
-            "poll_interval_s": r.get::<i32,_>("poll_interval_s"),
-            "silence_after_s": r.get::<i32,_>("silence_after_s"),
-            "conn_down_after_s": r.get::<i32,_>("conn_down_after_s"),
-        }))),
-    }
-}
 
-#[derive(Deserialize)]
-pub struct TraccarSettings {
-    pub poll_enabled: Option<bool>,
-    pub poll_interval_s: Option<i32>,
-    pub silence_after_s: Option<i32>,
-    pub conn_down_after_s: Option<i32>,
-}
-/// GAP C — impostazioni operative Traccar configurabili dall'admin del tenant:
-/// cadenza poll, soglia silenzio badge (watchdog), soglia down connessione.
-/// Sono parametri di SICUREZZA: l'admin decide quando un badge silente o un
-/// Traccar irraggiungibile diventano allarme.
-pub async fn traccar_settings_get(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "traccar").await?;
-    let row = sqlx::query("SELECT poll_enabled,poll_interval_s,silence_after_s,conn_down_after_s FROM app.traccar_connections WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
-    match row {
-        None => Ok(Json(json!({"configured":false}))),
-        Some(r) => Ok(Json(json!({
-            "configured": true,
-            "poll_enabled": r.get::<bool,_>("poll_enabled"),
-            "poll_interval_s": r.get::<i32,_>("poll_interval_s"),
-            "silence_after_s": r.get::<i32,_>("silence_after_s"),
-            "conn_down_after_s": r.get::<i32,_>("conn_down_after_s"),
-        }))),
-    }
-}
-pub async fn traccar_settings_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<TraccarSettings>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "traccar").await?;
-    if traccar_conn(&st, tid).await.is_none() {
-        return Err(err(StatusCode::BAD_REQUEST, "configura prima la connessione Traccar (superadmin)"));
-    }
-    // bound di sicurezza: no poll troppo aggressivo, no soglie fuori scala
-    let clamp = |v: i32, lo: i32, hi: i32| v.max(lo).min(hi);
-    if let Some(v) = b.poll_enabled {
-        sqlx::query("UPDATE app.traccar_connections SET poll_enabled=$2 WHERE tenant_id=$1").bind(tid).bind(v).execute(&st.owner_pool).await.map_err(ise)?;
-    }
-    if let Some(v) = b.poll_interval_s {
-        sqlx::query("UPDATE app.traccar_connections SET poll_interval_s=$2 WHERE tenant_id=$1").bind(tid).bind(clamp(v,5,600)).execute(&st.owner_pool).await.map_err(ise)?;
-    }
-    if let Some(v) = b.silence_after_s {
-        sqlx::query("UPDATE app.traccar_connections SET silence_after_s=$2 WHERE tenant_id=$1").bind(tid).bind(clamp(v,0,86400)).execute(&st.owner_pool).await.map_err(ise)?;
-    }
-    if let Some(v) = b.conn_down_after_s {
-        sqlx::query("UPDATE app.traccar_connections SET conn_down_after_s=$2 WHERE tenant_id=$1").bind(tid).bind(clamp(v,30,3600)).execute(&st.owner_pool).await.map_err(ise)?;
-    }
-    audit(&st, tid, &s.email, "traccar_settings", json!({})).await;
-    Ok(Json(json!({"ok":true})))
-}
 
-/// P2 — "Verifica & collega" dal pannello: forza un poll immediato, verifica la
-/// catena end-to-end (Traccar raggiungibile -> device sincronizzati nel nostro DB)
-/// e restituisce la config di forwarding (fast-path opzionale) pronta da copiare.
-/// Il pull non richiede config lato Traccar oltre alle credenziali: quindi il
-/// collegamento e' "nostro" anche senza toccare la UI di Traccar.
-pub async fn traccar_verify(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "traccar").await?;
-    if traccar_conn(&st, tid).await.is_none() {
-        return Err(err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata (superadmin)"));
-    }
-    // garantisce un token di ingest 'traccar' (serve per il forward fast-path)
-    let token: String = match sqlx::query_scalar::<_,String>("SELECT token FROM app.ingest_tokens WHERE tenant_id=$1 AND source='traccar' ORDER BY created_at LIMIT 1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)? {
-        Some(t) => t,
-        None => {
-            let t = format!("traccar-{}", &auth::new_token()[..24]);
-            sqlx::query("INSERT INTO app.ingest_tokens(token,tenant_id,source) VALUES($1,$2,'traccar')")
-                .bind(&t).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
-            t
-        }
-    };
-    // poll immediato (aggiorna raggiungibilita' + sync device)
-    let poll_err = crate::worker::poll_now(&st, tid).await.err().map(|e| e.to_string());
-    // stato fresco
-    let row = sqlx::query("SELECT reachable,last_ok_at,device_count,online_count,last_error FROM app.traccar_poll_state WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
-    let reachable = row.as_ref().map(|r| r.get::<bool,_>("reachable")).unwrap_or(false);
-    let device_count = row.as_ref().map(|r| r.get::<i32,_>("device_count")).unwrap_or(0);
-    let online_count = row.as_ref().map(|r| r.get::<i32,_>("online_count")).unwrap_or(0);
-    let last_error = row.as_ref().and_then(|r| r.try_get::<String,_>("last_error").ok());
-    // specchio: quanti nostri device traccar hanno una posizione recente nel DB
-    let mirror = sqlx::query("SELECT count(*)::int total, count(*) FILTER (WHERE last_pos_at > now() - interval '15 minutes')::int fresh
-         FROM app.devices WHERE tenant_id=$1 AND source='traccar'")
-        .bind(tid).fetch_one(&st.owner_pool).await.map_err(ise)?;
-    let mirror_total: i32 = mirror.get("total");
-    let mirror_fresh: i32 = mirror.get("fresh");
-    let ingress = std::env::var("YW_INGRESS_BASE").unwrap_or_else(|_| "http://host.docker.internal:8080".into());
-    let ev_url = format!("{ingress}/api/ingress/traccar?token={token}");
-    let pos_url = format!("{ingress}/api/ingress/traccar/position?token={token}");
-    let verdict = if reachable { "collegato" } else { "irraggiungibile" };
-    audit(&st, tid, &s.email, "traccar_verify", json!({"reachable":reachable,"devices":device_count})).await;
-    Ok(Json(json!({
-        "verdict": verdict,
-        "reachable": reachable,
-        "device_count": device_count,
-        "online_count": online_count,
-        "mirror_total": mirror_total,
-        "mirror_fresh": mirror_fresh,
-        "last_error": last_error,
-        "poll_error": poll_err,
-        "pull_note": "Il pull via API non richiede config lato Traccar: basta la connessione (base URL + credenziali) impostata dal superadmin.",
-        "forward": {
-            "ingest_token": token,
-            "event_forward_url": ev_url,
-            "position_forward_url": pos_url,
-            "env": {
-                "EVENT_FORWARD_URL": ev_url,
-                "FORWARD_URL": pos_url,
-                "FORWARD_ENABLE": "true"
-            },
-            "note": "Fast-path opzionale a bassa latenza: queste env vanno impostate all'avvio del container Traccar (il forward non e' riconfigurabile a runtime via API)."
-        }
-    })))
-}
 
 /// Validazione E.164: '+' seguito da 8-15 cifre, prima cifra 1-9.
 pub(crate) fn is_e164(s: &str) -> bool {
@@ -2123,10 +1773,6 @@ pub(crate) fn is_e164(s: &str) -> bool {
     b[1..].iter().all(|c| c.is_ascii_digit())
 }
 
-#[derive(Deserialize)]
-pub struct GaCfgSet { pub entries: Vec<GaCfgEntry> }
-#[derive(Deserialize)]
-pub struct GaCfgEntry { pub id: String, pub value: String }
 // ----------------------------- tenant plane -----------------------------
 pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Json<LoginReq>) -> impl IntoResponse {
     // tenant resolved from Host (or X-Tenant-Slug for local dev)
@@ -2243,8 +1889,8 @@ pub fn cap_modules(cap: &str) -> &'static [&'static str] {
     match cap {
         "incidents.view" | "incidents.handle" => &["loneworker"],
         "escalation.manage"                    => &["loneworker"],
-        "devices.manage" | "devices.admin"     => &["loneworker","traccar","iot"],
-        "iot.manage"                           => &["iot","traccar"],
+        "devices.manage" | "devices.admin"     => &["loneworker","gps","iot"],
+        "iot.manage"                           => &["iot","gps"],
         "plan"                                 => &["interventi","cantieri","giri","workforce"],
         "approve" | "timesheets.view_all"      => &["consuntivi"],
         _ => &[], // core: utenti/ruoli/privacy/audit/dashboard/impostazioni/diagnostica
@@ -2263,7 +1909,7 @@ pub const CAPABILITIES: &[(&str,&str)] = &[
     // (solo `tenant_admin` via `admin` super); assegnabili a ruoli custom per delega mirata.
     ("users.manage",         "Amministrazione: utenti, gruppi di persone, permessi, ruoli custom, sedi/squadre/asset"),
     ("devices.admin",        "Amministrazione dispositivi: censimento, token/onboarding, geofence, provisioning"),
-    ("iot.manage",           "IoT e connettori: Traccar/YWAlert, regole sensori, email ingest"),
+    ("iot.manage",           "Dispositivi e IoT: allarmi dei dispositivi, regole sensori, allarmi da email"),
     ("escalation.manage",    "Escalation e reperibilità: gruppi allarme, turni on-call, override, profili, trigger"),
     ("settings.manage",      "Impostazioni tenant: funzionalità UI e configurazione generale"),
     ("gdpr.manage",          "Privacy GDPR: export e anonimizzazione dati personali"),
@@ -2361,7 +2007,7 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
     let rows = sqlx::query(
         "SELECT d.id,d.external_id,d.source,d.label,d.enabled,d.config,d.site_id,d.assigned_user,
                 d.last_lat,d.last_lon,d.last_battery,d.last_pos_at,d.last_attributes,d.model_code,d.assigned_asset,
-                d.traccar_status,d.floorplan_id,d.fp_x,d.fp_y,
+                d.last_seen_at,d.floorplan_id,d.fp_x,d.fp_y,
                 s.name AS site_name, u.email AS user_email, a.name AS asset_name,
                 m.manufacturer, m.model_name, m.category, m.capabilities,
                 pr.step AS prov_step,
@@ -2393,7 +2039,7 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
         "capabilities": r.try_get::<Vec<String>,_>("capabilities").ok(),
         "assigned_asset": r.try_get::<Uuid,_>("assigned_asset").ok(),
         "asset_name": r.try_get::<String,_>("asset_name").ok(),
-        "traccar_status": r.try_get::<String,_>("traccar_status").ok(),
+        "last_seen_at": r.try_get::<chrono::DateTime<chrono::Utc>,_>("last_seen_at").ok(),
         "floorplan_id": r.try_get::<Uuid,_>("floorplan_id").ok(),
         "fp_x": r.try_get::<f64,_>("fp_x").ok(), "fp_y": r.try_get::<f64,_>("fp_y").ok(),
         "prov_step": r.try_get::<String,_>("prov_step").ok() })).collect();
@@ -2492,7 +2138,7 @@ pub async fn bound_device_external(st: &AppState, device_id: Uuid) -> Option<Str
 pub async fn list_ingest_tokens(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
-    require_any_module(&st, tid, CONNECTOR_MODS).await?;
+    require_any_module(&st, tid, DEVICE_MODS).await?;
     let rows = sqlx::query(
         "SELECT t.token,t.token_hash,t.source,t.created_at,t.device_id,t.label,t.expires_at,t.revoked_at,t.last_used_at, COALESCE(d.label, d.external_id) AS device_name \
          FROM app.ingest_tokens t LEFT JOIN app.devices d ON d.id=t.device_id \
@@ -2528,7 +2174,7 @@ pub struct TokenReq {
 pub async fn create_ingest_token(State(st): State<AppState>, h: HeaderMap, Json(b): Json<TokenReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
-    const SRC: &[&str] = &["traccar","iot"];
+    const SRC: &[&str] = &["gps","iot"];
     if !SRC.contains(&b.source.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "sorgente non valida")); }
     // device opzionale: deve appartenere al tenant
     if let Some(did) = b.device_id {
@@ -2569,23 +2215,6 @@ pub async fn delete_ingest_token(State(st): State<AppState>, h: HeaderMap, Path(
     Ok(Json(json!({"ok":true})))
 }
 
-// ---------------- Connettori (riepilogo) ----------------
-pub async fn list_connectors(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap();
-    require_any_module(&st, tid, CONNECTOR_MODS).await?;
-    let defs = [("iot","IoT nativo",0usize)]; // suite self-contained: solo motore IoT nativo
-    let mut out = Vec::new();
-    for (code,name,_p) in defs {
-        let state: Option<String> = sqlx::query_scalar("SELECT state FROM app.tenant_modules WHERE tenant_id=$1 AND module_code=$2")
-            .bind(tid).bind(code).fetch_optional(&st.owner_pool).await.map_err(ise)?;
-        let toks: i64 = sqlx::query_scalar("SELECT count(*) FROM app.ingest_tokens WHERE tenant_id=$1 AND source=$2")
-            .bind(tid).bind(code).fetch_one(&st.owner_pool).await.map_err(ise)?;
-        out.push(json!({"code":code,"name":name,"state":state.unwrap_or("non_abilitato".into()),"tokens":toks}));
-    }
-    Ok(Json(json!(out)))
-}
-
 // ================= Fase A — Catalogo modelli dispositivo =================
 pub async fn list_catalog(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
@@ -2595,7 +2224,7 @@ pub async fn list_catalog(State(st): State<AppState>, h: HeaderMap,
     let manu = q.get("manufacturer").filter(|s| !s.is_empty()).cloned();
     let cat = q.get("category").filter(|s| !s.is_empty()).cloned();
     // scope = perimetro: 'iot' -> solo sensori; 'safety' -> tracker sicurezza/campo (il dump GPS
-    // 'altro', 2174 modelli Traccar, compare solo se si CERCA, per non annegare il catalogo curato).
+    // 'altro', 2174 modelli GPS generici, compare solo se si CERCA, per non annegare il catalogo curato).
     let scope = q.get("scope").filter(|s| !s.is_empty()).cloned();
     let rows = sqlx::query(
         "SELECT model_code,manufacturer,model_name,protocol,default_port,category,capabilities,osmand,recommended,notes,blueprint
@@ -2623,7 +2252,7 @@ pub async fn list_catalog(State(st): State<AppState>, h: HeaderMap,
 pub async fn catalog_facets(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
     let _ = require_tenant(&st, &h).await?;
-    // facets coerenti col perimetro; il bucket 'altro' (dump GPS Traccar) è sempre escluso dai filtri
+    // facets coerenti col perimetro; il bucket 'altro' (catalogo GPS generico) è sempre escluso dai filtri
     // per non proporre centinaia di produttori-rumore (resta comunque cercabile per testo).
     let scope = q.get("scope").filter(|s| !s.is_empty()).cloned();
     let manu: Vec<String> = sqlx::query_scalar(
@@ -2784,7 +2413,7 @@ pub async fn dok_build(st: &AppState, tid: Uuid, actor: &str, b: DokReq) -> Resu
     let label = b.label.clone().unwrap_or_else(|| format!("{manufacturer} {model_name}"));
     let drow = sqlx::query(
         "INSERT INTO app.devices(tenant_id,external_id,source,label,site_id,assigned_user,enabled,config,model_code)
-         VALUES($1,$2,'traccar',$3,$4,$5,true,$6,$7) RETURNING id")
+         VALUES($1,$2,'gps',$3,$4,$5,true,$6,$7) RETURNING id")
         .bind(tid).bind(b.external_id.trim()).bind(&label).bind(b.site_id).bind(b.user_id).bind(&dcfg).bind(&b.model_code)
         .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "dispositivo gia' presente (uniqueId)"))?;
     let dev_id = drow.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id");
@@ -2827,10 +2456,10 @@ pub async fn dok_build(st: &AppState, tid: Uuid, actor: &str, b: DokReq) -> Resu
     tx.commit().await.map_err(ise)?;
 
     // 4) credenziale di ingest device-bound (segreto one-time)
-    let secret = format!("traccar-{}", &auth::new_token()[..24]);
+    let secret = format!("dev-{}", &auth::new_token()[..24]);
     let hash = hash_token(&secret);
-    let handle = format!("traccar-{}", &secret[8..16]);
-    sqlx::query("INSERT INTO app.ingest_tokens(token,token_hash,tenant_id,source,device_id,label) VALUES($1,$2,$3,'traccar',$4,$5)")
+    let handle = format!("dev-{}", &secret[4..12]);
+    sqlx::query("INSERT INTO app.ingest_tokens(token,token_hash,tenant_id,source,device_id,label) VALUES($1,$2,$3,'gps',$4,$5)")
         .bind(&handle).bind(&hash).bind(tid).bind(dev_id).bind(&label).execute(&st.owner_pool).await.map_err(ise)?;
 
     audit(st, tid, actor, "device_onboarding_kit", json!({"device":dev_id,"model":b.model_code,"category":category,"etypes":etypes,"profile":profile_id})).await;
@@ -2845,7 +2474,7 @@ pub async fn dok_build(st: &AppState, tid: Uuid, actor: &str, b: DokReq) -> Resu
         "token": secret, "handle": handle,
         // Dati per la guida di collegamento (la console costruisce i passi per protocollo).
         "server_host": host, "teltonika_port": tport,
-        "ingress_url": format!("{base}/api/ingress/traccar?token={secret}"),
+        "ingress_url": format!("{base}/api/ingress/gps?token={secret}"),
         "osmand_url": format!("{base}/api/ingress/osmand?token={secret}&id={}&lat={{lat}}&lon={{lon}}&timestamp={{unix}}", b.external_id.trim()),
     }))
 }
@@ -2908,7 +2537,7 @@ pub async fn device_test_sos(State(st): State<AppState>, h: HeaderMap, Path(id):
     let corr = format!("TEST-SOS-{}", &Uuid::new_v4().to_string()[..8]);
     let src_evt = format!("test-sos-{}", Uuid::new_v4());
     let r = persist_ingest(&st, tid, Normalized{
-        source:"traccar".into(), source_event: src_evt.clone(), idem: src_evt,
+        source:"gps".into(), source_event: src_evt.clone(), idem: src_evt,
         etype:"sos".into(), device_external_id: Some(ext.clone()),
         site_name:None, lat:None, lon:None, accuracy_m:None, correlation: corr.clone(),
         payload: json!({"test":true,"by":s.email,"source":"test_sos_console"}),
@@ -2921,7 +2550,7 @@ pub async fn device_test_sos(State(st): State<AppState>, h: HeaderMap, Path(id):
 #[derive(Deserialize)]
 pub struct ProvisionReq {
     pub model_code: String, pub external_id: String, pub label: Option<String>, pub site_id: Option<Uuid>,
-    pub user_id: Option<Uuid>, pub asset_id: Option<Uuid>, pub register_traccar: Option<bool> }
+    pub user_id: Option<Uuid>, pub asset_id: Option<Uuid> }
 pub async fn provision_device(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ProvisionReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
@@ -2936,12 +2565,12 @@ pub async fn provision_device(State(st): State<AppState>, h: HeaderMap, Json(b):
     let port: Option<i32> = m.try_get("default_port").ok();
     let caps: Vec<String> = m.get("capabilities");
     let def_cfg: Value = m.get("default_config");
-    // crea device (source 'traccar': tutti i protocolli arrivano via forwarding Traccar)
+    // crea device (source 'gps': decodifica nativa Teltonika / OsmAnd / JSON HTTP)
     let dcfg = json!({"model_code": b.model_code, "capabilities": caps, "protocol": protocol});
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let drow = sqlx::query(
         "INSERT INTO app.devices(tenant_id,external_id,source,label,site_id,assigned_user,assigned_asset,enabled,config,model_code)
-         VALUES($1,$2,'traccar',$3,$4,$5,$6,true,$7,$8) RETURNING id")
+         VALUES($1,$2,'gps',$3,$4,$5,$6,true,$7,$8) RETURNING id")
         .bind(tid).bind(b.external_id.trim()).bind(&b.label).bind(b.site_id).bind(b.user_id).bind(b.asset_id)
         .bind(&dcfg).bind(&b.model_code)
         .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "dispositivo gia' presente (uniqueId)"))?;
@@ -2949,40 +2578,21 @@ pub async fn provision_device(State(st): State<AppState>, h: HeaderMap, Json(b):
     if b.user_id.is_some() { record_device_assignment(&mut tx, tid, dev_id, None, b.user_id, st.clock.now()).await.map_err(ise)?; }
     tx.commit().await.map_err(ise)?;
     // default alarm_map dal modello SOLO se il tenant non ha gia' una config propria
-    let has_cfg: Option<Uuid> = sqlx::query_scalar("SELECT tenant_id FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='traccar' AND tool_code='alarm_map'")
+    let has_cfg: Option<Uuid> = sqlx::query_scalar("SELECT tenant_id FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='gps' AND tool_code='alarm_map'")
         .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
     if has_cfg.is_none() && def_cfg.is_object() && !def_cfg.as_object().unwrap().is_empty() {
         let mut ttx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-        let _ = sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'traccar','alarm_map',$2,$3) ON CONFLICT DO NOTHING")
+        let _ = sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'gps','alarm_map',$2,$3) ON CONFLICT DO NOTHING")
             .bind(tid).bind(&def_cfg).bind(s.user_id).execute(&mut *ttx).await;
         let _ = ttx.commit().await;
     }
-    // registrazione su Traccar (opzionale, se connessione configurata)
-    let mut step = "in_attesa_primo_fix".to_string();
-    let mut tdid: Option<i64> = None; let mut last_err: Option<String> = None;
-    if b.register_traccar.unwrap_or(false) {
-        if let Some(conn) = sqlx::query("SELECT base_url,username,password FROM app.traccar_connections WHERE tenant_id=$1")
-            .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)? {
-            let base: String = conn.get("base_url"); let user: String = conn.get("username");
-            let pass: String = st.secrets.decrypt(&conn.get::<String,_>("password"));   // P3
-            let name = b.label.clone().unwrap_or_else(|| b.external_id.clone());
-            match st.http.post(format!("{base}/api/devices")).basic_auth(&user, Some(&pass))
-                .json(&json!({"name":name,"uniqueId":b.external_id})).send().await {
-                Ok(r) if r.status().is_success() => {
-                    if let Ok(v) = r.json::<Value>().await { tdid = v.get("id").and_then(|x| x.as_i64()); }
-                    step = "traccar_registrato".into();
-                }
-                Ok(r) => last_err = Some(format!("Traccar {}", r.status())),
-                Err(e) => last_err = Some(format!("Traccar irraggiungibile: {e}")),
-            }
-        } else { last_err = Some("connessione Traccar non configurata".into()); }
-    }
-    sqlx::query("INSERT INTO app.device_provisioning(device_id,tenant_id,step,traccar_device_id,last_error) VALUES($1,$2,$3,$4,$5)
-        ON CONFLICT (device_id) DO UPDATE SET step=EXCLUDED.step,traccar_device_id=EXCLUDED.traccar_device_id,last_error=EXCLUDED.last_error,updated_at=now()")
-        .bind(dev_id).bind(tid).bind(&step).bind(tdid).bind(&last_err).execute(&st.owner_pool).await.map_err(ise)?;
+    let step = "in_attesa_primo_fix".to_string();
+    sqlx::query("INSERT INTO app.device_provisioning(device_id,tenant_id,step,last_error) VALUES($1,$2,$3,NULL)
+        ON CONFLICT (device_id) DO UPDATE SET step=EXCLUDED.step,last_error=NULL,updated_at=now()")
+        .bind(dev_id).bind(tid).bind(&step).execute(&st.owner_pool).await.map_err(ise)?;
     audit(&st, tid, &s.email, "provision_device", json!({"model":b.model_code,"external_id":b.external_id})).await;
-    Ok(Json(json!({"device_id":dev_id,"step":step,"traccar_device_id":tdid,"error":last_err,
-        "install":{"protocol":protocol,"port":port,"note":"Configura il device verso host:porta del server Traccar (o OsmAnd per smartphone)."}})))
+    Ok(Json(json!({"device_id":dev_id,"step":step,
+        "install":{"protocol":protocol,"port":port,"note":"Configura il dispositivo verso l'indirizzo e la porta di YouWorkforce (Teltonika: porta TCP nativa; smartphone: app OsmAnd)."}})))
 }
 
 
@@ -5091,7 +4701,7 @@ pub async fn ingest_event(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
 }
 
 /// A source-neutral normalized ingress. Every machine source (direct badge HTTP,
-/// Traccar adapter, …) maps onto this shape so the SOS chain stays single-path.
+/// JSON HTTP, Teltonika, OsmAnd, …) maps onto this shape so the SOS chain stays single-path.
 pub struct Normalized {
     pub source: String,
     pub source_event: String,
@@ -5107,7 +4717,7 @@ pub struct Normalized {
     pub zone: Option<String>,
 }
 
-/// Estrae l'identificatore beacon dagli attributi di una posizione/evento Traccar.
+/// Estrae l'identificatore beacon dagli attributi di una posizione/evento.
 /// Supporta: beaconId (stringa), major+minor (iBeacon), beacon (stringa generica).
 pub fn extract_beacon_uid(attrs: &Value) -> Option<String> {
     if let Some(b) = attrs.get("beaconId").and_then(|v| v.as_str()) { return Some(b.to_string()); }
@@ -5304,18 +4914,17 @@ pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
     Ok(Json(json!({"event_id":eid,"incident_id":incident_id,"correlation":n.correlation})))
 }
 
-// ----------------------------- Traccar adapter (UPSTREAM REALE) -----------------------------
-/// Receives Traccar *event forwarding* webhooks and maps them onto the same
-/// normalized SOS chain. Tenant is derived from the ingest token (header
-/// `X-Ingest-Token` or `?token=`), NEVER from the forwarded body. Traccar's
-/// device `uniqueId` must match a registered device's external_id (source
-/// `traccar`). Alarm mapping:
-///   alarm=sos      -> sos       (critical)
-///   alarm=fallDown -> man_down  (critical, lone-worker fall detection)
-///   other alarm    -> device_alarm (recorded, non-critical)
+// ----------------------------- Ingest JSON HTTP nativo: eventi -----------------------------
+/// Riceve eventi di dispositivi GPS/badge in formato JSON `{device:{uniqueId}, event:{type,
+/// attributes:{alarm}}, position:{latitude,longitude,attributes}}` (gateway e tracker che parlano
+/// HTTP) e li porta sulla catena normalizzata. Il tenant deriva SOLO dal token di ingest (header
+/// `X-Ingest-Token` o `?token=`), mai dal corpo. Mappatura allarmi:
+///   alarm=sos      -> sos       (critico)
+///   alarm=fallDown -> man_down  (critico, caduta del lavoratore isolato)
+///   altro alarm    -> device_alarm (registrato, non critico)
 ///   deviceOffline  -> device_offline
-///   else           -> traccar_event
-pub async fn ingest_traccar(
+///   altro          -> secondo la policy eventi del tenant (`device_event` di default)
+pub async fn ingest_gps_event(
     State(st): State<AppState>,
     h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>,
@@ -5338,6 +4947,7 @@ pub async fn ingest_traccar(
     let pos = b.get("position");
 
     let unique_id = dev.and_then(|d| d.get("uniqueId")).and_then(|v| v.as_str()).map(|s| s.to_string());
+    if let Some(ext) = bound_ext.as_deref().or(unique_id.as_deref()) { touch_device_seen(&st, tid, &source, ext).await; }
     let lat = pos.and_then(|p| p.get("latitude")).and_then(|v| v.as_f64());
     let lon = pos.and_then(|p| p.get("longitude")).and_then(|v| v.as_f64());
     let evt_type = ev.and_then(|e| e.get("type")).and_then(|v| v.as_str()).unwrap_or("");
@@ -5347,12 +4957,12 @@ pub async fn ingest_traccar(
         .or_else(|| pos.and_then(|p| p.get("id")).map(|v| v.to_string()))
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    // Per-tenant mapping (traccar/alarm_map): sos routing, offline severity, soglia batteria.
-    let amap = tool_config(&st, tid, "traccar", "alarm_map").await;
+    // Per-tenant mapping (gps/alarm_map): sos routing, offline severity, soglia batteria.
+    let amap = tool_config(&st, tid, "gps", "alarm_map").await;
     // battery level dagli attributi (posizione o evento)
     let battery = pos.and_then(|p| p.get("attributes")).and_then(|a| a.get("batteryLevel")).and_then(|v| v.as_f64())
         .or_else(|| ev.and_then(|e| e.get("attributes")).and_then(|a| a.get("batteryLevel")).and_then(|v| v.as_f64()));
-    let etype = map_traccar_etype(&amap, evt_type, alarm, battery);
+    let etype = map_gps_etype(&amap, evt_type, alarm, battery);
 
     // Indoor/beacon: se la posizione (o l'evento) porta un beacon, l'allarme e' indoor
     // e lo localizziamo per zona. L'ancora del beacon vince sul GPS (in fabbrica inaffidabile).
@@ -5361,7 +4971,7 @@ pub async fn ingest_traccar(
     let (indoor, beacon_uid, zone, anchor) = resolve_indoor(&st, tid, attrs).await;
     let (lat, lon) = if indoor { if let Some((a,o)) = anchor { (Some(a), Some(o)) } else { (lat, lon) } } else { (lat, lon) };
 
-    let source_event = format!("traccar-evt-{}", evt_id);
+    let source_event = format!("gps-evt-{}", evt_id);
     persist_ingest(&st, tid, Normalized {
         source,
         source_event: source_event.clone(),
@@ -5376,52 +4986,56 @@ pub async fn ingest_traccar(
     }).await
 }
 
-// ----------------------------- #2 Comandi al device (via API Traccar) -----------------------------
+// ----------------------------- Comandi al device (nativi, GPRS Teltonika codec12) -----------------------------
 #[derive(Deserialize)]
 pub struct DeviceCmd { #[serde(rename="type")] pub kind: String, pub data: Option<String> }
-/// Inoltra un comando al device tramite l'API Traccar del tenant (es. richiesta posizione).
-/// Risolve uniqueId -> id numerico Traccar, poi POST /api/commands/send. operatore/admin.
+/// Catalogo dei comandi rapidi: (tipo, etichetta per l'utente, comando GPRS Teltonika).
+/// `personalizzato` invia il testo libero in `data` (per tecnici).
+const DEVICE_COMMANDS: &[(&str, &str, &str)] = &[
+    ("posizione", "Chiedi la posizione adesso", "getgps"),
+    ("stato",     "Stato del dispositivo",       "getstatus"),
+    ("info",      "Informazioni di rete e SIM",  "getinfo"),
+    ("versione",  "Versione firmware",           "getver"),
+    ("riavvio",   "Riavvia il dispositivo",      "cpureset"),
+];
+/// Invia un comando al dispositivo sulla connessione TCP nativa (Teltonika codec12) e registra
+/// l'esito nello storico. Il device deve essere collegato in quel momento.
 pub async fn device_command(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<DeviceCmd>) -> R {
     let s = require_tenant(&st, &h).await?;
     if !has_cap(&s,"devices.manage") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let tid = s.tenant_id.unwrap();
-    // device (deve essere sorgente traccar)
-    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let ext: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND source='traccar'")
-        .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
-    tx.commit().await.map_err(ise)?;
-    let ext = ext.ok_or_else(|| err(StatusCode::NOT_FOUND, "device traccar inesistente"))?;
-    // connessione Traccar per-tenant
-    let conn = sqlx::query("SELECT base_url,username,password FROM app.traccar_connections WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata (superadmin)"))?;
-    let base: String = conn.get("base_url"); let user: String = conn.get("username");
-    let pass: String = st.secrets.decrypt(&conn.get::<String,_>("password"));   // P3
-    // risolvi uniqueId -> id numerico
-    let dl = st.http.get(format!("{base}/api/devices?uniqueId={ext}"))
-        .basic_auth(&user, Some(&pass)).send().await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar non raggiungibile: {e}")))?;
-    if !dl.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, "Traccar: auth/lookup fallito")); }
-    let arr: Value = dl.json().await.map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar: json device non valido"))?;
-    let dev_id = arr.as_array().and_then(|a| a.first()).and_then(|d| d.get("id")).and_then(|v| v.as_i64())
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "device non trovato su Traccar"))?;
-    // invia comando
-    let mut payload = json!({"deviceId": dev_id, "type": b.kind});
-    if let Some(d) = &b.data { payload["attributes"] = json!({"data": d}); }
-    let cr = st.http.post(format!("{base}/api/commands/send"))
-        .basic_auth(&user, Some(&pass)).json(&payload).send().await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar send: {e}")))?;
-    let status = cr.status().as_u16();
-    let body = cr.text().await.unwrap_or_default();
-    // P4: storicizza il comando con esito
-    let result = if (200..300).contains(&status) { "inviato".to_string() }
-        else { format!("errore {}: {}", status, body.chars().take(140).collect::<String>()) };
-    let _ = sqlx::query("INSERT INTO app.device_commands(tenant_id,device_id,ctype,actor,traccar_status,result) VALUES($1,$2,$3,$4,$5,$6)")
-        .bind(tid).bind(id).bind(&b.kind).bind(&s.email).bind(status as i32).bind(&result)
-        .execute(&st.owner_pool).await;
-    audit(&st, tid, &s.email, "device_command", json!({"device":id,"type":b.kind,"traccar_status":status})).await;
-    // relay esito Traccar (anche se il device non supporta il comando)
-    Ok(Json(json!({"resolved_device_id":dev_id,"traccar_status":status,"traccar_body":body,"result":result})))
+    let ext: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND tenant_id=$2")
+        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let ext = ext.ok_or_else(|| err(StatusCode::NOT_FOUND, "dispositivo inesistente"))?;
+    let text: String = if b.kind == "personalizzato" {
+        b.data.as_deref().map(str::trim).filter(|t| !t.is_empty())
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "scrivi il comando da inviare"))?.to_string()
+    } else {
+        DEVICE_COMMANDS.iter().find(|c| c.0 == b.kind).map(|c| c.2.to_string())
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "comando non disponibile per questo dispositivo"))?
+    };
+    let (code, result, reply) = match crate::teltonika::send_command(&ext, &text).await {
+        Ok(resp) => (200i32, "inviato".to_string(), Some(resp)),
+        Err(e) => (502i32, format!("non inviato: {e}"), None),
+    };
+    sqlx::query("INSERT INTO app.device_commands(tenant_id,device_id,ctype,actor,status_code,result) VALUES($1,$2,$3,$4,$5,$6)")
+        .bind(tid).bind(id).bind(&b.kind).bind(&s.email).bind(code).bind(&result)
+        .execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, &s.email, "device_command", json!({"device":id,"type":b.kind,"status_code":code})).await;
+    Ok(Json(json!({"ok": code==200, "status_code":code, "result":result, "response":reply})))
+}
+
+/// Comandi rapidi disponibili (per la UI).
+pub async fn device_command_types(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, DEVICE_MODS).await?;
+    if !has_cap(&s,"devices.manage") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.devices WHERE id=$1 AND tenant_id=$2")
+        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    if exists.is_none() { return Err(err(StatusCode::NOT_FOUND, "dispositivo inesistente")); }
+    let out: Vec<Value> = DEVICE_COMMANDS.iter().map(|c| json!({"type":c.0,"label":c.1})).collect();
+    Ok(Json(json!(out)))
 }
 
 /// P4: storico comandi inviati a un device (operatore/admin/auditor).
@@ -5430,44 +5044,19 @@ pub async fn list_device_commands(State(st): State<AppState>, h: HeaderMap, Path
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, DEVICE_MODS).await?;
     if !has_cap(&s,"incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
-    let rows = sqlx::query("SELECT ctype,actor,traccar_status,result,created_at FROM app.device_commands
+    let rows = sqlx::query("SELECT ctype,actor,status_code,result,created_at FROM app.device_commands
          WHERE tenant_id=$1 AND device_id=$2 ORDER BY created_at DESC LIMIT 50")
         .bind(tid).bind(id).fetch_all(&st.owner_pool).await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({
         "ctype": r.get::<String,_>("ctype"),
         "actor": r.get::<String,_>("actor"),
-        "traccar_status": r.try_get::<i32,_>("traccar_status").ok(),
+        "status_code": r.try_get::<i32,_>("status_code").ok(),
         "result": r.try_get::<String,_>("result").ok(),
         "created_at": r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
     })).collect();
     Ok(Json(json!(out)))
 }
 
-/// P4: tipi di comando supportati dal device secondo Traccar (per popolare la UI).
-pub async fn device_command_types(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?;
-    let tid = s.tenant_id.unwrap();
-    require_any_module(&st, tid, DEVICE_MODS).await?;
-    if !has_cap(&s,"devices.manage") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
-    let ext: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND tenant_id=$2 AND source='traccar'")
-        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
-    let ext = ext.ok_or_else(|| err(StatusCode::NOT_FOUND, "device traccar inesistente"))?;
-    let (base,user,pass) = traccar_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata"))?;
-    // risolvi id numerico
-    let dl = st.http.get(format!("{base}/api/devices?uniqueId={ext}")).basic_auth(&user, Some(&pass)).send().await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
-    let arr: Value = dl.json().await.unwrap_or(json!([]));
-    let dev_id = arr.as_array().and_then(|a| a.first()).and_then(|d| d.get("id")).and_then(|v| v.as_i64());
-    let types: Value = match dev_id {
-        Some(did) => match st.http.get(format!("{base}/api/commands/types?deviceId={did}"))
-            .basic_auth(&user, Some(&pass)).send().await {
-            Ok(r) => r.json::<Value>().await.unwrap_or(json!([])),
-            Err(_) => json!([]),
-        },
-        None => json!([]),
-    };
-    Ok(Json(types))
-}
 
 // ----------------------------- #3 Geofence + presenza -----------------------------
 fn haversine_m(a_lat: f64, a_lon: f64, b_lat: f64, b_lon: f64) -> f64 {
@@ -5678,7 +5267,7 @@ fn report_role(s: &Session) -> Result<(), (StatusCode,String)> {
 pub async fn report_route(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
     let s = require_tenant(&st, &h).await?; report_role(&s)?;
-    require_any_module(&st, s.tenant_id.unwrap(), &["loneworker","traccar"]).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), &["loneworker","gps"]).await?;
     let dev = q.get("device").and_then(|x| Uuid::parse_str(x).ok()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "device richiesto"))?;
     let (from, to) = rep_dates(&q)?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
@@ -5729,7 +5318,7 @@ pub async fn report_route_csv(State(st): State<AppState>, h: HeaderMap,
 pub async fn report_presence(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
     let s = require_tenant(&st, &h).await?; report_role(&s)?;
-    require_any_module(&st, s.tenant_id.unwrap(), &["loneworker","traccar"]).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), &["loneworker","gps"]).await?;
     let (from, to) = rep_dates(&q)?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let rows = sqlx::query(
@@ -5777,7 +5366,7 @@ fn text_response(body: String, filename: &str) -> Response {
 }
 
 // ============ Report Allarmi (DVR) — guidato dal modulo allarmi ============
-// Quando il tenant ha un modulo che genera allarmi (loneworker/traccar), il report
+// Quando il tenant ha un modulo che genera allarmi (loneworker/gps), il report
 // principale e' quello degli ALLARMI/incidenti, non percorsi/soste/presenze.
 // Descrizioni leggibili per ogni tipo di allarme (DVR, operatori non tecnici).
 pub fn etype_label(e: &str) -> &'static str {
@@ -5791,7 +5380,6 @@ pub fn etype_label(e: &str) -> &'static str {
         "perdita_alimentazione" => "Perdita alimentazione",
         "jamming" => "Jamming / disturbo del segnale",
         "perdita_contatto" => "Perdita contatto (badge silente)",
-        "traccar_conn_down" => "Sistema di tracciamento irraggiungibile",
         "batteria_critica" => "Batteria in esaurimento (critico)",
         "batteria_bassa" => "Batteria bassa",
         "geofence_ingresso" => "Ingresso in zona vietata (geofence)",
@@ -5862,7 +5450,7 @@ fn fmt_resp(sec: Option<i64>) -> String {
 pub async fn report_alarms(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
     let s = require_tenant(&st, &h).await?; report_role(&s)?;
-    require_any_module(&st, s.tenant_id.unwrap(), &["loneworker","traccar"]).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), &["loneworker","gps"]).await?;
     let (from, to, rows) = alarms_rows(&st, &s, &q).await?;
     let total = rows.len();
     let aperti = rows.iter().filter(|r| r.state != "chiuso").count();
@@ -5945,7 +5533,7 @@ pub async fn report_alarms_txt(State(st): State<AppState>, h: HeaderMap,
 pub async fn alarms_map(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
     let s = require_tenant(&st, &h).await?; report_role(&s)?;
-    require_any_module(&st, s.tenant_id.unwrap(), &["loneworker","traccar"]).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), &["loneworker","gps"]).await?;
     let tid = s.tenant_id.unwrap();
     let (from, to) = rep_dates(&q)?;
     let etype_f = q.get("etype").filter(|x| !x.is_empty()).cloned();
@@ -6225,11 +5813,10 @@ pub async fn reverse_geocode(State(st): State<AppState>, h: HeaderMap,
     Ok(Json(json!({"address":name,"cached":false})))
 }
 
-// ----------------------------- Traccar position forwarding (P2) -----------------------------
-/// Riceve il *position forwarding* di Traccar ({position, device}) e aggiorna
-/// l'ultima posizione nota del device + lo storico. Tenant dal token di ingest.
-/// Alta frequenza: idempotente per id posizione, nessun incidente qui.
-pub async fn ingest_traccar_position(
+// ----------------------------- Ingest JSON HTTP nativo: posizioni -----------------------------
+/// Riceve posizioni `{position, device}` e aggiorna l'ultima posizione nota del device + lo
+/// storico. Tenant dal token di ingest. Alta frequenza: idempotente per id posizione.
+pub async fn ingest_gps_position(
     State(st): State<AppState>,
     h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>,
@@ -6255,14 +5842,14 @@ pub async fn ingest_traccar_position(
     let lon = pos.get("longitude").and_then(|v| v.as_f64());
     if lat.is_none() || lon.is_none() { return Err(err(StatusCode::BAD_REQUEST, "posizione senza coordinate")); }
     let Some(ext) = unique_id else { return Err(err(StatusCode::BAD_REQUEST, "device uniqueId mancante")); };
-    let out = process_traccar_position(&st, tid, pos, ext).await.map_err(ise)?;
+    let out = process_gps_position(&st, tid, pos, ext).await.map_err(ise)?;
     Ok(Json(out))
 }
 
-/// Ingest NATIVO OsmAnd/HTTP (senza server Traccar): smartphone e tracker che parlano il
+/// Ingest NATIVO OsmAnd/HTTP: smartphone e tracker che parlano il
 /// protocollo OsmAnd inviano posizioni e allarmi via HTTP (GET/POST con query string).
 /// Autenticazione con token device-bound (anti-spoof, come gli altri ingress). Riusa la pipeline
-/// nativa: process_traccar_position (posizione/presenza) + persist_ingest (allarme->incidente),
+/// nativa: process_gps_position (posizione/presenza) + persist_ingest (allarme->incidente),
 /// con orario-evento affidabile (timestamp del device) per l'attribuzione temporale.
 pub async fn ingest_osmand(
     State(st): State<AppState>, h: HeaderMap,
@@ -6282,8 +5869,8 @@ pub async fn ingest_osmand(
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "device id mancante"))?;
     // sorgente reale del device (per far combaciare la risoluzione in persist_ingest/position)
     let dev_source: String = match cred.device_id {
-        Some(did) => sqlx::query_scalar("SELECT source FROM app.devices WHERE id=$1").bind(did).fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_else(|| "traccar".into()),
-        None => "traccar".into(),
+        Some(did) => sqlx::query_scalar("SELECT source FROM app.devices WHERE id=$1").bind(did).fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_else(|| "gps".into()),
+        None => "gps".into(),
     };
     let getf = |keys: &[&str]| -> Option<f64> { for k in keys { if let Some(v)=q.get(*k){ if let Ok(x)=v.parse::<f64>(){ return Some(x); } } } None };
     let lat = getf(&["lat","latitude"]); let lon = getf(&["lon","longitude"]);
@@ -6303,16 +5890,16 @@ pub async fn ingest_osmand(
             "attributes":{"batteryLevel":battery,"accuracy":accuracy},
             "id": format!("osmand-{}-{}", ext, ts_rfc.clone().unwrap_or_default()),
             "fixTime": ts_rfc.clone(), "source": dev_source});
-        // process_traccar_position filtra source='traccar': per device con quella sorgente aggiorna,
+        // process_gps_position filtra source='gps': per device con quella sorgente aggiorna,
         // altrimenti ignora (la posizione resta comunque nel payload dell'eventuale allarme).
-        if dev_source=="traccar" { position = process_traccar_position(&st, tid, &pos, &ext).await.map_err(ise)?; }
-        else { position = json!({"skipped":"source_non_traccar"}); }
+        if dev_source=="gps" { position = process_gps_position(&st, tid, &pos, &ext).await.map_err(ise)?; }
+        else { position = json!({"skipped":"sorgente_non_gps"}); }
     }
     // 2) allarme -> incidente (etype mappato; orario affidabile -> attribuzione temporale)
     let mut incident = json!(null);
     if let Some(al) = alarm.as_deref() {
-        let amap = tool_config(&st, tid, "traccar", "alarm_map").await;
-        let etype = map_traccar_etype(&amap, "", Some(al), battery);
+        let amap = tool_config(&st, tid, "gps", "alarm_map").await;
+        let etype = map_gps_etype(&amap, "", Some(al), battery);
         let corr = format!("osmand-{}-{}", ext, &Uuid::new_v4().to_string()[..8]);
         let src_evt = format!("osmand-evt-{}", Uuid::new_v4());
         let payload = json!({"channel":"osmand","alarm":al,"lat":lat,"lon":lon,"battery":battery,"occurred_at":ts_rfc});
@@ -6326,7 +5913,7 @@ pub async fn ingest_osmand(
     Ok(Json(json!({"ok":true,"external_id":ext,"position":position,"incident":incident})))
 }
 
-// ===== IoT nativo F1: telemetria time-series (native, nessun ThingsBoard) =====
+// ===== IoT nativo F1: telemetria time-series =====
 /// Ingest telemetria nativa (token device-bound): body {ts?, values:{key:val,...}} oppure {key:val,...}.
 pub async fn ingest_telemetry(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>, Json(b): Json<Value>) -> R {
@@ -6919,6 +6506,12 @@ pub async fn iot_offline_watchdog(st: &AppState) -> anyhow::Result<()> {
     }
     Ok(())
 }
+/// Hook di test (solo TEST_CLOCK): forza una passata del watchdog del silenzio dei dispositivi GPS.
+pub async fn test_gps_silence_watchdog(State(st): State<AppState>) -> R {
+    if !st.clock.test_mode { return Err(err(StatusCode::FORBIDDEN,"test clock disabled")); }
+    crate::worker::gps_silence_watchdog(&st).await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
 /// Hook di test (solo TEST_CLOCK): forza una passata del watchdog offline per e2e deterministici.
 pub async fn test_iot_watchdog(State(st): State<AppState>) -> R {
     if !st.clock.test_mode { return Err(err(StatusCode::FORBIDDEN,"test clock disabled")); }
@@ -6931,7 +6524,7 @@ pub async fn test_iot_watchdog(State(st): State<AppState>) -> R {
 pub async fn iot_alerts_list(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<IotAlertQuery>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
-    require_any_module(&st, tid, CONNECTOR_MODS).await?;
+    require_any_module(&st, tid, IOT_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let rows = sqlx::query(
         "SELECT a.id,a.device_id,COALESCE(d.label,d.external_id) AS device_name,a.kind,a.severity,a.state,
@@ -6962,7 +6555,7 @@ pub async fn iot_alerts_list(State(st): State<AppState>, h: HeaderMap,
 }
 pub async fn iot_alerts_summary(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
-    require_any_module(&st, tid, CONNECTOR_MODS).await?;
+    require_any_module(&st, tid, IOT_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let r = sqlx::query(
         "SELECT count(*) FILTER (WHERE state<>'chiuso') AS open,
@@ -7006,7 +6599,7 @@ pub async fn iot_alert_close(State(st): State<AppState>, h: HeaderMap, Path(id):
 // canonici (metrica+unità), alert aperti, e una mini-serie (spark) della metrica primaria.
 pub async fn iot_monitor(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
-    require_any_module(&st, tid, CONNECTOR_MODS).await?;
+    require_any_module(&st, tid, IOT_MODS).await?;
     let now = st.clock.now();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let devs = sqlx::query(
@@ -7089,7 +6682,7 @@ pub async fn teltonika_resolve(st: &AppState, imei: &str) -> Option<(Uuid, Uuid,
     let row = sqlx::query("SELECT id, tenant_id, source FROM app.devices WHERE external_id=$1 LIMIT 1")
         .bind(imei).fetch_optional(&st.owner_pool).await.ok().flatten()?;
     Some((row.get::<Uuid,_>("tenant_id"), row.get::<Uuid,_>("id"),
-          row.try_get::<String,_>("source").unwrap_or_else(|_| "traccar".into())))
+          row.try_get::<String,_>("source").unwrap_or_else(|_| "gps".into())))
 }
 /// Mappa IO->allarme EFFETTIVA per un device Teltonika: default del MODELLO
 /// (device_models.default_config.io_alarm_map) con OVERRIDE per-tenant
@@ -7129,17 +6722,17 @@ pub async fn any_device_module(st: &AppState, tid: Uuid) -> bool {
 pub async fn teltonika_ingest_one(st: &AppState, tid: Uuid, ext: &str, source: &str, ts_rfc: &str,
     lat: f64, lon: f64, speed: Option<f64>, course: Option<f64>, battery: Option<f64>, alarm: Option<String>,
     io_attrs: Value) {
-    if source == "traccar" {
+    if source == "gps" {
         let mut attrs = match io_attrs { Value::Object(m) => m, _ => serde_json::Map::new() };
         attrs.insert("batteryLevel".into(), json!(battery));
         let pos = json!({"latitude":lat,"longitude":lon,"speed":speed,"course":course,
             "attributes": Value::Object(attrs),
             "id": format!("telt-{}-{}", ext, ts_rfc), "fixTime": ts_rfc, "source": source});
-        let _ = process_traccar_position(st, tid, &pos, ext).await;
+        let _ = process_gps_position(st, tid, &pos, ext).await;
     }
     if let Some(al) = alarm {
-        let amap = tool_config(st, tid, "traccar", "alarm_map").await;
-        let etype = map_traccar_etype(&amap, "", Some(&al), battery);
+        let amap = tool_config(st, tid, "gps", "alarm_map").await;
+        let etype = map_gps_etype(&amap, "", Some(&al), battery);
         let src_evt = format!("telt-evt-{}", Uuid::new_v4());
         let corr = format!("telt-{}-{}", ext, &Uuid::new_v4().to_string()[..8]);
         let _ = persist_ingest(st, tid, Normalized{
@@ -7181,7 +6774,17 @@ pub async fn patrol_auto_punch(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, t
 /// Pipeline posizione condivisa da webhook (push) e poller API (pull): filtri #7,
 /// storico, ultima posizione, presenza geofence #3, primo-fix->attivo. Idempotente
 /// per (tenant,device,source_id) cosi' push e pull convergono senza duplicare.
-pub async fn process_traccar_position(st: &AppState, tid: Uuid, pos: &Value, ext: &str) -> anyhow::Result<Value> {
+/// Registra l'ultimo contatto con un dispositivo (qualsiasi pacchetto, anche senza fix GPS).
+/// Alimenta il watchdog nativo del silenzio (`worker::gps_silence_watchdog`).
+pub async fn touch_device_seen(st: &AppState, tid: Uuid, source: &str, ext: &str) {
+    if let Err(e) = sqlx::query("UPDATE app.devices SET last_seen_at=$4 WHERE tenant_id=$1 AND source=$2 AND external_id=$3")
+        .bind(tid).bind(source).bind(ext).bind(st.clock.now()).execute(&st.owner_pool).await {
+        tracing::warn!("touch_device_seen {ext}: {e}");
+    }
+}
+
+pub async fn process_gps_position(st: &AppState, tid: Uuid, pos: &Value, ext: &str) -> anyhow::Result<Value> {
+    touch_device_seen(st, tid, "gps", ext).await;
     let (Some(lat), Some(lon)) = (pos.get("latitude").and_then(|v| v.as_f64()), pos.get("longitude").and_then(|v| v.as_f64()))
         else { return Ok(json!({"ignored":"no_coords"})); };
     let speed = pos.get("speed").and_then(|v| v.as_f64());
@@ -7193,11 +6796,11 @@ pub async fn process_traccar_position(st: &AppState, tid: Uuid, pos: &Value, ext
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|d| d.with_timezone(&chrono::Utc))
         .unwrap_or_else(|| st.clock.now());
     // #7 filtri posizione (config per-tenant)
-    let fcfg = tool_config(st, tid, "traccar", "alarm_map").await;
+    let fcfg = tool_config(st, tid, "gps", "alarm_map").await;
     let max_jump = fcfg.get("max_jump_kmh").and_then(|v| v.as_f64()).unwrap_or(300.0);
     let min_move = fcfg.get("min_move_m").and_then(|v| v.as_f64()).unwrap_or(5.0);
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await?;
-    let drow = sqlx::query("SELECT id,last_lat,last_lon,last_pos_at FROM app.devices WHERE source='traccar' AND external_id=$1")
+    let drow = sqlx::query("SELECT id,last_lat,last_lon,last_pos_at FROM app.devices WHERE source='gps' AND external_id=$1")
         .bind(ext).fetch_optional(&mut *tx).await?;
     let Some(drow) = drow else {
         tx.commit().await?;
@@ -7568,7 +7171,7 @@ pub async fn worker_position(State(st): State<AppState>, h: HeaderMap, Json(b): 
          WHERE id=$1 AND (last_pos_at IS NULL OR last_pos_at <= $6)")
         .bind(dev_id).bind(lat).bind(lon).bind(speed).bind(battery).bind(now)
         .execute(&mut *tx).await.map_err(ise)?;
-    // presenza geofence (dentro/fuori) — stessa logica del pull Traccar
+    // presenza geofence (dentro/fuori)
     let mut changes: Vec<(Uuid, bool)> = Vec::new();
     let gfs = sqlx::query("SELECT id,geom FROM app.geofences").fetch_all(&mut *tx).await.map_err(ise)?;
     for g in gfs {
@@ -7852,12 +7455,12 @@ pub async fn setup_status(State(st): State<AppState>, h: HeaderMap) -> R {
     // moduli attivi (per decidere quali item mostrare)
     let lw = module_active(&st, tid, "loneworker").await;
     let iot = module_active(&st, tid, "iot").await;
-    let traccar = module_active(&st, tid, "traccar").await;
+    let gps = module_active(&st, tid, "gps").await;
     let cantieri = module_active(&st, tid, "cantieri").await;
     let interventi = module_active(&st, tid, "interventi").await;
     let workforce = module_active(&st, tid, "workforce").await;
-    let safety = lw || iot || traccar;        // moduli che generano allarmi/escalation
-    let devices_mod = lw || iot || traccar;   // moduli con dispositivi
+    let safety = lw || iot || gps;        // moduli che generano allarmi/escalation
+    let devices_mod = lw || iot || gps;   // moduli con dispositivi
     let field = cantieri || interventi;       // lavoro sul campo con clienti
 
     let n_sites = cnt("SELECT count(*) FROM app.sites WHERE tenant_id=$1").await;
@@ -7947,12 +7550,12 @@ async fn require_module(st: &AppState, tid: Uuid, code: &str) -> Result<(), (Sta
     if module_active(st, tid, code).await { Ok(()) }
     else { Err(err(StatusCode::FORBIDDEN, &format!("modulo {code} non abilitato"))) }
 }
-async fn require_any_module(st: &AppState, tid: Uuid, codes: &[&str]) -> Result<(), (StatusCode, String)> {
+pub(crate) async fn require_any_module(st: &AppState, tid: Uuid, codes: &[&str]) -> Result<(), (StatusCode, String)> {
     for c in codes { if module_active(st, tid, c).await { return Ok(()); } }
     Err(err(StatusCode::FORBIDDEN, "nessun modulo abilitato per questa funzione"))
 }
-const DEVICE_MODS: &[&str] = &["loneworker","iot"]; // suite self-contained: niente connettori esterni
-const CONNECTOR_MODS: &[&str] = &["iot"]; // solo IoT nativo (connettori esterni ritirati)
+pub(crate) const DEVICE_MODS: &[&str] = &["loneworker","iot","gps"]; // suite self-contained: niente connettori esterni
+const IOT_MODS: &[&str] = &["iot"]; // funzioni riservate al modulo IoT
 /// Moduli che possono PRODURRE incidenti → l'escalation/centrale è condivisa fra tutti.
 /// La configurazione e la visibilità escalation (gruppi, routing, on-call, recapiti,
 /// override, maintenance, centrale allarmi) non devono sparire se "Sicurezza lavoratore"
@@ -7980,12 +7583,12 @@ pub async fn tool_config(st: &AppState, tid: Uuid, module: &str, tool: &str) -> 
 }
 
 /// UI nav feature flags for the current tenant (any authenticated role).
-/// Deriva dalle scelte dell'admin sul tool traccar/alarm_map: quali voci di
+/// Deriva dalle scelte dell'admin sul tool gps/alarm_map: quali voci di
 /// menu mappa esporre. Default parametrici: Mappa on, Piantine off.
 pub async fn ui_features(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
-    let c = tool_config(&st, tid, "traccar", "alarm_map").await;
+    let c = tool_config(&st, tid, "gps", "alarm_map").await;
     let on = |k: &str, d: bool| c.get(k).and_then(|v| v.as_str()).map(|v| v == "si").unwrap_or(d);
     Ok(Json(json!({
         "map_outdoor": on("view_mappa", true),
@@ -8001,12 +7604,12 @@ pub async fn ui_features(State(st): State<AppState>, h: HeaderMap) -> R {
 pub async fn ui_features_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GeofenceAlarmsFlag>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "settings.manage")?;
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
-    let existing: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='traccar' AND tool_code='alarm_map'")
+    let existing: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='gps' AND tool_code='alarm_map'")
         .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
     let mut obj = match existing { Some(Value::Object(m)) => m, _ => serde_json::Map::new() };
     obj.insert("geofence_alarms".into(), json!(if b.geofence_alarms {"si"} else {"no"}));
     let cfg = Value::Object(obj);
-    sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'traccar','alarm_map',$2,NULL)
+    sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'gps','alarm_map',$2,NULL)
          ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config=EXCLUDED.config, updated_at=now()")
         .bind(tid).bind(&cfg).execute(&st.owner_pool).await.map_err(ise)?;
     audit(&st, tid, "tenant_admin", "geofence_alarms_set", json!({"geofence_alarms":b.geofence_alarms})).await;
@@ -8014,10 +7617,10 @@ pub async fn ui_features_set(State(st): State<AppState>, h: HeaderMap, Json(b): 
 }
 
 /// Visibilità voci di menu mappa (superadmin): legge/scrive i flag view_mappa/view_piantine
-/// del tool traccar/alarm_map. Il superadmin decide se mostrare Mappa, Piantine, entrambe o nessuna.
+/// del tool gps/alarm_map. Il superadmin decide se mostrare Mappa, Piantine, entrambe o nessuna.
 pub async fn super_map_visibility_get(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
     require_super(&st, &h).await?;
-    let c = tool_config(&st, tid, "traccar", "alarm_map").await;
+    let c = tool_config(&st, tid, "gps", "alarm_map").await;
     let on = |k: &str, d: bool| c.get(k).and_then(|v| v.as_str()).map(|v| v == "si").unwrap_or(d);
     Ok(Json(json!({"map_outdoor": on("view_mappa", true), "map_indoor": on("view_piantine", false)})))
 }
@@ -8025,13 +7628,13 @@ pub async fn super_map_visibility_get(State(st): State<AppState>, h: HeaderMap, 
 pub async fn super_map_visibility_set(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<MapVisibility>) -> R {
     require_super(&st, &h).await?;
     // merge preservando gli altri campi del tool alarm_map
-    let existing: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='traccar' AND tool_code='alarm_map'")
+    let existing: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='gps' AND tool_code='alarm_map'")
         .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
     let mut obj = match existing { Some(Value::Object(m)) => m, _ => serde_json::Map::new() };
     obj.insert("view_mappa".into(), json!(if b.map_outdoor {"si"} else {"no"}));
     obj.insert("view_piantine".into(), json!(if b.map_indoor {"si"} else {"no"}));
     let cfg = Value::Object(obj);
-    sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'traccar','alarm_map',$2,NULL)
+    sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'gps','alarm_map',$2,NULL)
          ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config=EXCLUDED.config, updated_at=now()")
         .bind(tid).bind(&cfg).execute(&st.owner_pool).await.map_err(ise)?;
     audit(&st, tid, "superadmin", "map_visibility_set", json!({"map_outdoor":b.map_outdoor,"map_indoor":b.map_indoor})).await;
@@ -8039,13 +7642,13 @@ pub async fn super_map_visibility_set(State(st): State<AppState>, h: HeaderMap, 
 }
 
 /// Trigger di sicurezza (Worker Safety) — vista unica dei trigger critici del perimetro lavoratore
-/// e della loro configurazione per-tenant. Aggrega config già esistenti (traccar/alarm_map,
+/// e della loro configurazione per-tenant. Aggrega config già esistenti (gps/alarm_map,
 /// loneworker/sos_escalation, loneworker/checkin_timer). Solo tenant_admin, richiede loneworker.
 pub async fn safety_triggers_get(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
     require_module(&st, tid, "loneworker").await?;
-    let amap = tool_config(&st, tid, "traccar", "alarm_map").await;
+    let amap = tool_config(&st, tid, "gps", "alarm_map").await;
     let sos_esc = tool_config(&st, tid, "loneworker", "sos_escalation").await;
     let chk = tool_config(&st, tid, "loneworker", "checkin_timer").await;
     let sos_as = amap.get("sos_as").and_then(|v| v.as_str()).unwrap_or("sos").to_string();
@@ -8054,12 +7657,12 @@ pub async fn safety_triggers_get(State(st): State<AppState>, h: HeaderMap) -> R 
     let geo_crit = amap.get("events").and_then(|v| v.as_object())
         .map(|m| m.values().any(|v| v.as_str()==Some("critico"))).unwrap_or(false);
     let triggers = json!([
-        {"etype":"sos","label":"SOS","desc":"Pulsante antipanico dall'app lavoratore o dal dispositivo","sources":["App lavoratore (/api/sos)","Traccar: sos"],"critical":true},
-        {"etype":"man_down","label":"Uomo a terra","desc":"Rilevamento caduta/incidente","sources":["Traccar: fallDown, accident"],"critical":true},
-        {"etype":"immobilita","label":"Immobilità","desc":"Dispositivo fermo oltre soglia","sources":["Traccar: deviceStopped"],"critical":stopped},
+        {"etype":"sos","label":"SOS","desc":"Pulsante antipanico dall'app lavoratore o dal dispositivo","sources":["App lavoratore (/api/sos)","Dispositivo: pulsante SOS"],"critical":true},
+        {"etype":"man_down","label":"Uomo a terra","desc":"Rilevamento caduta/incidente","sources":["Dispositivo: caduta / uomo a terra"],"critical":true},
+        {"etype":"immobilita","label":"Immobilità","desc":"Dispositivo fermo oltre soglia","sources":["Dispositivo: fermo prolungato"],"critical":stopped},
         {"etype":"mancato_checkin","label":"Check-in mancato","desc":"Dead-man timer: il lavoratore non conferma entro i minuti previsti","sources":["Timer check-in"],"critical":true},
-        {"etype":"movimento_non_accompagnato","label":"Movimento non accompagnato","desc":"Moto senza presenza attesa","sources":["Traccar: unaccompaniedMotion"],"critical":true},
-        {"etype":"attraversamento_geofence","label":"Attraversamento area","desc":"Ingresso/uscita da un'area; critico solo se mappato","sources":["Traccar: geofence"],"critical":geo_crit}
+        {"etype":"movimento_non_accompagnato","label":"Movimento non accompagnato","desc":"Moto senza presenza attesa","sources":["Dispositivo: movimento non accompagnato"],"critical":true},
+        {"etype":"attraversamento_geofence","label":"Attraversamento area","desc":"Ingresso/uscita da un'area; critico solo se mappato","sources":["Dispositivo: ingresso/uscita area"],"critical":geo_crit}
     ]);
     Ok(Json(json!({
         "triggers": triggers,
@@ -8102,7 +7705,7 @@ pub async fn safety_triggers_set(State(st): State<AppState>, h: HeaderMap, Json(
             .bind(tid).bind(module).bind(tool).bind(&cfg).execute(&st.owner_pool).await.map_err(ise)?;
         Ok(())
     }
-    merge_tool(&st, tid, "traccar", "alarm_map", vec![
+    merge_tool(&st, tid, "gps", "alarm_map", vec![
         ("sos_as", json!(b.sos_as)),
         ("stopped_as_immobilita", json!(if b.stopped_as_immobilita {"si"} else {"no"})),
     ]).await?;
@@ -8410,7 +8013,9 @@ pub async fn set_module_tool(State(st): State<AppState>, h: HeaderMap, Path((cod
         "INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by)
          VALUES($1,$2,$3,$4,$5)
          ON CONFLICT (tenant_id,module_code,tool_code)
-         DO UPDATE SET config=EXCLUDED.config, updated_by=EXCLUDED.updated_by, updated_at=now()")
+         -- merge: i campi del form sovrascrivono, le chiavi gestite altrove (es. la policy eventi
+         -- `events` del tool gps/alarm_map) restano intatte
+         DO UPDATE SET config=app.tenant_module_config.config || EXCLUDED.config, updated_by=EXCLUDED.updated_by, updated_at=now()")
         .bind(tid).bind(&code).bind(&tool).bind(&clean).bind(s.user_id)
         .execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
@@ -10348,10 +9953,8 @@ pub async fn oncall_settings_get(State(st): State<AppState>, h: HeaderMap) -> R 
     // gruppo di default (catch-all nativo) + motore corrente, per la UI Escalation
     let dg: Option<Uuid> = sqlx::query_scalar("SELECT default_group_id FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().flatten();
-    let engine: String = sqlx::query_scalar("SELECT escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().unwrap_or_else(|| "native".into());
     Ok(Json(json!({"voice_fallback_on":c.voice_on,"voice_fallback_min":c.voice_min,"status_updates_on":c.status_on,
-        "default_group_id":dg,"engine":engine})))
+        "default_group_id":dg,"engine":"native"})))
 }
 #[derive(Deserialize)]
 pub struct OncallSettingsReq { pub voice_fallback_on: Option<bool>, pub voice_fallback_min: Option<i32>, pub status_updates_on: Option<bool>,
@@ -11061,57 +10664,39 @@ pub async fn calendar_ics(State(st): State<AppState>, axum::extract::Query(q): a
 /// chiude via SMS/voce/console YWAlert, lo stato dell'incidente YW lo riflette.
 /// Girata periodicamente dal worker. Best-effort: un tenant giu' non blocca gli altri.
 // ============================================================================
-// Traccar parity: event policy, report proxy, drivers, maintenance, computed
+// Policy eventi dei dispositivi GPS
 // attributes, accumulators. Tutto pilotato da YouWorkforce (tenant_admin).
 // ============================================================================
 
-/// Connessione Traccar del tenant o errore parlante.
-async fn tc_conn_or_err(st: &AppState, tid: Uuid) -> Result<(String,String,String),(StatusCode,String)> {
-    traccar_conn(st, tid).await
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione Traccar non configurata (chiedi al superadmin)"))
-}
-/// Risolve il nostro device uuid -> id numerico Traccar (via uniqueId).
-async fn tc_device_num(st: &AppState, base: &str, user: &str, pass: &str, tid: Uuid, dev: Uuid) -> Result<i64,(StatusCode,String)> {
-    let ext: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND tenant_id=$2 AND source='traccar'")
-        .bind(dev).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
-    let ext = ext.ok_or_else(|| err(StatusCode::NOT_FOUND, "device Traccar inesistente"))?;
-    let dl = st.http.get(traccar_url(base, &format!("/api/devices?uniqueId={ext}")))
-        .basic_auth(user, Some(pass)).send().await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar non raggiungibile: {e}")))?;
-    if !dl.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, "Traccar: auth/lookup fallito")); }
-    let arr: Value = dl.json().await.map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar: json non valido"))?;
-    arr.as_array().and_then(|a| a.first()).and_then(|d| d.get("id")).and_then(|v| v.as_i64())
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "device non trovato su Traccar"))
-}
 
-// ---- Event policy (ignora|registra|critico per tipo evento Traccar) ----
-pub async fn traccar_event_policy_get(State(st): State<AppState>, h: HeaderMap) -> R {
+// ---- Event policy (ignora|registra|critico per tipo evento) ----
+pub async fn gps_event_policy_get(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "traccar").await?;
-    let amap = tool_config(&st, tid, "traccar", "alarm_map").await;
+    require_module(&st, tid, "gps").await?;
+    let amap = tool_config(&st, tid, "gps", "alarm_map").await;
     let events = amap.get("events").cloned().unwrap_or_else(|| json!({}));
     // ritorna, per ogni tipo noto, handling corrente o default
     let mut out = serde_json::Map::new();
-    for &et in TRACCAR_POLICY_EVENTS {
-        let (_, def) = traccar_event_default(et);
+    for &et in GPS_POLICY_EVENTS {
+        let (_, def) = gps_event_default(et);
         let cur = events.get(et).and_then(|v| v.as_str()).unwrap_or(def);
         out.insert(et.to_string(), json!(cur));
     }
     Ok(Json(json!({"events":out})))
 }
 #[derive(Deserialize)] pub struct EventPolicyReq { pub events: std::collections::HashMap<String,String> }
-pub async fn traccar_event_policy_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<EventPolicyReq>) -> R {
+pub async fn gps_event_policy_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<EventPolicyReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
     let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "traccar").await?;
+    require_module(&st, tid, "gps").await?;
     // valida chiavi/valori
     for (k, v) in &b.events {
-        if !TRACCAR_POLICY_EVENTS.contains(&k.as_str()) { return Err(err(StatusCode::BAD_REQUEST, &format!("tipo evento non valido: {k}"))); }
+        if !GPS_POLICY_EVENTS.contains(&k.as_str()) { return Err(err(StatusCode::BAD_REQUEST, &format!("tipo evento non valido: {k}"))); }
         if !matches!(v.as_str(), "ignora"|"registra"|"critico") { return Err(err(StatusCode::BAD_REQUEST, &format!("handling non valido per {k}: {v}"))); }
     }
     // merge dentro la config esistente alarm_map.events (preserva sos_as/battery_as ecc.)
-    let cur: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='traccar' AND tool_code='alarm_map'")
+    let cur: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='gps' AND tool_code='alarm_map'")
         .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
     let mut cfg = cur.and_then(|v| v.as_object().cloned()).unwrap_or_default();
     let mut events = cfg.get("events").and_then(|v| v.as_object().cloned()).unwrap_or_default();
@@ -11119,200 +10704,17 @@ pub async fn traccar_event_policy_set(State(st): State<AppState>, h: HeaderMap, 
     cfg.insert("events".into(), Value::Object(events));
     let cfg_v = Value::Object(cfg);
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'traccar','alarm_map',$2,$3) ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config=EXCLUDED.config,updated_by=EXCLUDED.updated_by,updated_at=now()")
+    sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'gps','alarm_map',$2,$3) ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config=EXCLUDED.config,updated_by=EXCLUDED.updated_by,updated_at=now()")
         .bind(tid).bind(&cfg_v).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    audit(&st, tid, &s.email, "traccar_event_policy", json!({"n":b.events.len()})).await;
+    audit(&st, tid, &s.email, "gps_event_policy", json!({"n":b.events.len()})).await;
     Ok(Json(json!({"ok":true,"updated":b.events.len()})))
 }
 
-// ---- Report proxy (trips/stops/summary/route), opzionale CSV ----
-#[derive(Deserialize)] pub struct TcReportQuery { pub device_id: Uuid, pub from: String, pub to: String, pub csv: Option<bool> }
-async fn tc_report(st: &AppState, tid: Uuid, kind: &str, q: &TcReportQuery) -> Result<(bool,String),(StatusCode,String)> {
-    if !matches!(kind, "trips"|"stops"|"summary"|"route") { return Err(err(StatusCode::BAD_REQUEST, "report non valido")); }
-    let (base, user, pass) = tc_conn_or_err(st, tid).await?;
-    let num = tc_device_num(st, &base, &user, &pass, tid, q.device_id).await?;
-    let csv = q.csv.unwrap_or(false);
-    let accept = if csv { "text/csv" } else { "application/json" };
-    // from/to: ISO 8601 (YYYY-MM-DDTHH:MM:SSZ); valido in query senza encoding
-    let fq = q.from.replace(' ', "");
-    let tq = q.to.replace(' ', "");
-    let url = traccar_url(&base, &format!("/api/reports/{kind}?deviceId={num}&from={fq}&to={tq}"));
-    let r = st.http.get(&url).header("accept", accept).basic_auth(&user, Some(&pass)).send().await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar non raggiungibile: {e}")))?;
-    if !r.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("Traccar report {}: HTTP {}", kind, r.status().as_u16()))); }
-    let body = r.text().await.map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar: risposta non leggibile"))?;
-    Ok((csv, body))
-}
-pub async fn traccar_report(State(st): State<AppState>, h: HeaderMap, Path(kind): Path<String>, axum::extract::Query(q): axum::extract::Query<TcReportQuery>) -> impl axum::response::IntoResponse {
-    use axum::response::IntoResponse;
-    let s = match require_tenant(&st, &h).await { Ok(s) => s, Err(e) => return e.into_response() };
-    if !has_cap(&s,"incidents.view") { return err(StatusCode::FORBIDDEN, "ruolo non abilitato").into_response(); }
-    let tid = s.tenant_id.unwrap();
-    if let Err(e) = require_module(&st, tid, "traccar").await { return e.into_response(); }
-    match tc_report(&st, tid, &kind, &q).await {
-        Ok((true, body)) => ([(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8")], body).into_response(),
-        Ok((false, body)) => ([(axum::http::header::CONTENT_TYPE, "application/json")], body).into_response(),
-        Err(e) => e.into_response(),
-    }
-}
 
-// ---- Drivers (proxy Traccar + link device) ----
-pub async fn traccar_drivers_list(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
-    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
-    let r = st.http.get(traccar_url(&base, "/api/drivers?all=true")).basic_auth(&user, Some(&pass)).send().await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
-    let v: Value = r.json().await.unwrap_or_else(|_| json!([]));
-    Ok(Json(v))
-}
-#[derive(Deserialize)] pub struct DriverReq { pub name: String, pub unique_id: String, pub device_id: Option<Uuid> }
-pub async fn traccar_driver_add(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DriverReq>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
-    if b.name.trim().is_empty() || b.unique_id.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome e identificativo richiesti")); }
-    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
-    let r = st.http.post(traccar_url(&base, "/api/drivers")).basic_auth(&user, Some(&pass))
-        .json(&json!({"name":b.name.trim(),"uniqueId":b.unique_id.trim()})).send().await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
-    if !r.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("Traccar: HTTP {}", r.status().as_u16()))); }
-    let created: Value = r.json().await.map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar: json non valido"))?;
-    let did = created.get("id").and_then(|v| v.as_i64());
-    if let (Some(did), Some(dev)) = (did, b.device_id) {
-        if let Ok(num) = tc_device_num(&st, &base, &user, &pass, tid, dev).await {
-            let _ = st.http.post(traccar_url(&base, "/api/permissions")).basic_auth(&user, Some(&pass))
-                .json(&json!({"deviceId":num,"driverId":did})).send().await;
-        }
-    }
-    audit(&st, tid, &s.email, "traccar_driver_add", json!({"name":b.name})).await;
-    Ok(Json(created))
-}
-pub async fn traccar_driver_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<i64>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
-    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
-    let _ = st.http.delete(traccar_url(&base, &format!("/api/drivers/{id}"))).basic_auth(&user, Some(&pass)).send().await;
-    Ok(Json(json!({"ok":true})))
-}
 
-// ---- Maintenance (proxy Traccar + link device) ----
-pub async fn traccar_maint_list(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
-    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
-    let r = st.http.get(traccar_url(&base, "/api/maintenance?all=true")).basic_auth(&user, Some(&pass)).send().await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
-    let v: Value = r.json().await.unwrap_or_else(|_| json!([]));
-    Ok(Json(v))
-}
-#[derive(Deserialize)] pub struct MaintReqT { pub name: String, #[serde(rename="type")] pub kind: String, pub start: f64, pub period: f64, pub device_id: Option<Uuid> }
-pub async fn traccar_maint_add(State(st): State<AppState>, h: HeaderMap, Json(b): Json<MaintReqT>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
-    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
-    if !matches!(b.kind.as_str(), "totalDistance"|"hours"|"fixTime"|"odometer") { return Err(err(StatusCode::BAD_REQUEST, "tipo: totalDistance|hours|fixTime|odometer")); }
-    if b.period <= 0.0 { return Err(err(StatusCode::BAD_REQUEST, "periodo deve essere positivo")); }
-    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
-    let r = st.http.post(traccar_url(&base, "/api/maintenance")).basic_auth(&user, Some(&pass))
-        .json(&json!({"name":b.name.trim(),"type":b.kind,"start":b.start,"period":b.period})).send().await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
-    if !r.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("Traccar: HTTP {}", r.status().as_u16()))); }
-    let created: Value = r.json().await.map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar: json non valido"))?;
-    let mid = created.get("id").and_then(|v| v.as_i64());
-    if let (Some(mid), Some(dev)) = (mid, b.device_id) {
-        if let Ok(num) = tc_device_num(&st, &base, &user, &pass, tid, dev).await {
-            let _ = st.http.post(traccar_url(&base, "/api/permissions")).basic_auth(&user, Some(&pass))
-                .json(&json!({"deviceId":num,"maintenanceId":mid})).send().await;
-        }
-    }
-    audit(&st, tid, &s.email, "traccar_maint_add", json!({"name":b.name})).await;
-    Ok(Json(created))
-}
-pub async fn traccar_maint_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<i64>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
-    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
-    let _ = st.http.delete(traccar_url(&base, &format!("/api/maintenance/{id}"))).basic_auth(&user, Some(&pass)).send().await;
-    Ok(Json(json!({"ok":true})))
-}
 
-// ---- Computed attributes (proxy Traccar + link device) ----
-pub async fn traccar_computed_list(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
-    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
-    let r = st.http.get(traccar_url(&base, "/api/attributes/computed?all=true")).basic_auth(&user, Some(&pass)).send().await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
-    let v: Value = r.json().await.unwrap_or_else(|_| json!([]));
-    Ok(Json(v))
-}
-#[derive(Deserialize)] pub struct ComputedReq { pub description: String, pub attribute: String, pub expression: String, #[serde(rename="type")] pub kind: String, pub device_id: Option<Uuid> }
-pub async fn traccar_computed_add(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ComputedReq>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
-    if b.attribute.trim().is_empty() || b.expression.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "attributo ed espressione richiesti")); }
-    if !matches!(b.kind.as_str(), "number"|"boolean"|"string") { return Err(err(StatusCode::BAD_REQUEST, "tipo: number|boolean|string")); }
-    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
-    let r = st.http.post(traccar_url(&base, "/api/attributes/computed")).basic_auth(&user, Some(&pass))
-        .json(&json!({"description":b.description,"attribute":b.attribute.trim(),"expression":b.expression.trim(),"type":b.kind})).send().await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
-    if !r.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("Traccar: HTTP {} (espressione non valida?)", r.status().as_u16()))); }
-    let created: Value = r.json().await.map_err(|_| err(StatusCode::BAD_GATEWAY, "Traccar: json non valido"))?;
-    let aid = created.get("id").and_then(|v| v.as_i64());
-    if let (Some(aid), Some(dev)) = (aid, b.device_id) {
-        if let Ok(num) = tc_device_num(&st, &base, &user, &pass, tid, dev).await {
-            let _ = st.http.post(traccar_url(&base, "/api/permissions")).basic_auth(&user, Some(&pass))
-                .json(&json!({"deviceId":num,"attributeId":aid})).send().await;
-        }
-    }
-    audit(&st, tid, &s.email, "traccar_computed_add", json!({"attribute":b.attribute})).await;
-    Ok(Json(created))
-}
-pub async fn traccar_computed_del(State(st): State<AppState>, h: HeaderMap, Path(id): Path<i64>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
-    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
-    let _ = st.http.delete(traccar_url(&base, &format!("/api/attributes/computed/{id}"))).basic_auth(&user, Some(&pass)).send().await;
-    Ok(Json(json!({"ok":true})))
-}
 
-// ---- Accumulators (lettura ultima posizione + reset) ----
-pub async fn traccar_accumulators_get(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
-    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
-    let num = tc_device_num(&st, &base, &user, &pass, tid, dev).await?;
-    // leggi device -> positionId -> posizione -> attributi
-    let dl = st.http.get(traccar_url(&base, &format!("/api/devices?id={num}"))).basic_auth(&user, Some(&pass)).send().await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
-    let devs: Value = dl.json().await.unwrap_or_else(|_| json!([]));
-    let pos_id = devs.as_array().and_then(|a| a.first()).and_then(|d| d.get("positionId")).and_then(|v| v.as_i64()).unwrap_or(0);
-    let mut total = Value::Null; let mut hours = Value::Null;
-    if pos_id > 0 {
-        let pl = st.http.get(traccar_url(&base, &format!("/api/positions?id={pos_id}"))).basic_auth(&user, Some(&pass)).send().await;
-        if let Ok(pl) = pl { if let Ok(arr) = pl.json::<Value>().await {
-            if let Some(a) = arr.as_array().and_then(|a| a.first()).and_then(|p| p.get("attributes")) {
-                total = a.get("totalDistance").cloned().unwrap_or(Value::Null);
-                hours = a.get("hours").cloned().unwrap_or(Value::Null);
-            }
-        }}
-    }
-    Ok(Json(json!({"total_distance":total,"hours":hours})))
-}
-#[derive(Deserialize)] pub struct AccumSet { pub total_distance: Option<f64>, pub hours: Option<f64> }
-pub async fn traccar_accumulators_set(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>, Json(b): Json<AccumSet>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "iot.manage")?;
-    let tid = s.tenant_id.unwrap(); require_module(&st, tid, "traccar").await?;
-    let (base, user, pass) = tc_conn_or_err(&st, tid).await?;
-    let num = tc_device_num(&st, &base, &user, &pass, tid, dev).await?;
-    let payload = json!({"deviceId":num,"totalDistance":b.total_distance.unwrap_or(0.0),"hours":b.hours.unwrap_or(0.0)});
-    let r = st.http.put(traccar_url(&base, &format!("/api/devices/{num}/accumulators"))).basic_auth(&user, Some(&pass))
-        .json(&payload).send().await.map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Traccar: {e}")))?;
-    if !r.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, &format!("Traccar: HTTP {}", r.status().as_u16()))); }
-    audit(&st, tid, &s.email, "traccar_accumulators", json!({"device":dev})).await;
-    Ok(Json(json!({"ok":true})))
-}
 
 // ============================================================================
 // #8 Osservabilità: /metrics in formato Prometheus (aggregati, nessun dato per-tenant
@@ -11408,7 +10810,7 @@ fn esc_rot_kind(oc_type: &str) -> (crate::escalation::RotationType, i64) {
     }
 }
 /// Costruisce la Schedule nativa dalla config del gruppo (stessi input della sync nativa).
-/// Gli override (assenze) sono tirati da YWAlert e innestati a valle da [`esc_goalert_overrides`]
+/// Gli override (assenze) sono tirati da YWAlert e innestati a valle da [`esc_absence_overrides`]
 /// (qui `overrides` parte vuoto; serve una query GraphQL async che non appartiene a questa fn pura).
 fn esc_build_schedule(g: &sqlx::postgres::PgRow, members: &[Uuid]) -> crate::escalation::Schedule {
     let mode: String = g.try_get("oncall_mode").unwrap_or_else(|_| "tutti".into());
@@ -11521,8 +10923,7 @@ async fn esc_resolve_rot_member(
 /// On-call nativo di un gruppo a `now`, con i recapiti per la ladder. SELF-SUFFICIENT:
 /// gli override/assenze sono quelli NATIVI (app.esc_overrides); la rotation è seminata
 /// nativamente (posizione 0 deterministica) quando non c'è una sessione YWAlert.
-/// `_ga` è un parametro vestigiale (ground-truth GoAlert esterno, ora sempre None dopo il ritiro):
-/// mantenuto nella firma per compat dei chiamanti, non più usato.
+/// `_ga` è un parametro non più usato (sempre None), mantenuto nella firma per compat dei chiamanti.
 /// `seed=true` SOLO nella consegna (persiste la semina rotation). Le letture (on-call-now, slack,
 /// status-update, bundle) passano `seed=false`: calcolano l'on-call senza MAI mutare lo stato.
 async fn esc_native_oncall_contacts(
@@ -12185,14 +11586,14 @@ pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i
     let slack_token = std::env::var("YW_ESC_SLACK_TOKEN").unwrap_or_default();
     let relay = std::env::var("YW_ESC_SMTP_RELAY_URL").unwrap_or_default();
     let public_base = std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_default();
-    // config vocale + repeat + motore (FASE 3) del tenant
-    let vrow = sqlx::query("SELECT voice_fallback_on,voice_fallback_min,esc_repeat,escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
+    // config vocale + repeat del tenant
+    let vrow = sqlx::query("SELECT voice_fallback_on,voice_fallback_min,esc_repeat FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
         .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
-    let (voice_on, voice_min, repeat, engine) = vrow.map(|r| (r.get::<bool,_>("voice_fallback_on"), r.get::<i32,_>("voice_fallback_min") as i64, r.get::<i32,_>("esc_repeat") as i64, r.get::<String,_>("escalation_engine")))
-        .unwrap_or((true,5,0,"native".into()));
-    let native = engine == "native"; // nativo autoritativo per questo tenant (default di prodotto)
-    // in cutover usa gli adapter live se configurati; in shadow solo col gate globale.
-    let live_on = live_cfg.is_some() && (native || crate::delivery::TwilioCfg::live_enabled());
+    let (voice_on, voice_min, repeat) = vrow.map(|r| (r.get::<bool,_>("voice_fallback_on"), r.get::<i32,_>("voice_fallback_min") as i64, r.get::<i32,_>("esc_repeat") as i64))
+        .unwrap_or((true,5,0));
+    let engine = "native".to_string(); // unico motore: escalation nativa
+    // adapter live (Twilio) usati quando configurati
+    let live_on = live_cfg.is_some();
     // La policy di consegna è PER-GRUPPO (F3): ogni gruppo può avere step personalizzati.
     // Costruita dentro il loop in base al gruppo instradato dell'incidente.
 
@@ -12290,7 +11691,7 @@ pub async fn slack_announce_scan(st: &AppState) {
 }
 
 /// Scansione consegna del motore nativo (dal worker). SELF-SUFFICIENT: copre OGNI tenant che ha
-/// incidenti aperti (qualunque modulo li produca: safety/IoT/Traccar).
+/// incidenti aperti (qualunque modulo li produca: sicurezza/IoT/GPS).
 pub async fn escalation_delivery_scan(st: &AppState) {
     let tids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT DISTINCT tenant_id FROM app.incidents WHERE state <> 'chiuso'")
@@ -12371,11 +11772,8 @@ async fn esc_apply_ack(st: &AppState, tid: Uuid, iid: Uuid, action: &str, via: &
     let status = if action == "close" { "closed" } else { "ack" };
     let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,status) VALUES($1,$2,0,now(),$3) ON CONFLICT (tenant_id,incident_id) DO UPDATE SET status=$3,updated_at=now()")
         .bind(tid).bind(iid).bind(status).execute(&st.owner_pool).await;
-    // motore YWAlert nativo: engine='native' (default di prodotto) -> applica la transizione reale.
-    // Il gate globale YW_ESC_ACK_APPLY=1 resta per forzarla anche su eventuali tenant non-native.
-    let native = sqlx::query_scalar::<_, String>("SELECT escalation_engine FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
-        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().as_deref() == Some("native");
-    let apply = native || std::env::var("YW_ESC_ACK_APPLY").ok().as_deref() == Some("1");
+    // motore di escalation nativo (unico): la risposta del reperibile applica sempre la transizione reale
+    let apply = true;
     let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_ack_inbound',$3)")
         .bind(tid).bind(iid).bind(json!({"action":action,"via":via,"applied":apply})).execute(&st.owner_pool).await;
     if apply {

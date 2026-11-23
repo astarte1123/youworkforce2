@@ -14,10 +14,10 @@ curl -s -o /dev/null -c "$JA" -X POST "$BASE/api/login" -H 'content-type: applic
 curl -s -o /dev/null -c "$JM" -X POST "$BASE/api/login" -H 'content-type: application/json' -H 'x-tenant-slug: acme' -d '{"email":"mario@acme.loneworker.eu","password":"demo"}'
 CA=$(csrfh "$JA"); CM=$(csrfh "$JM")
 A(){ curl -s -b "$JA" -H 'x-tenant-slug: acme' -H "x-csrf-token: $CA" -H 'content-type: application/json' "$@"; }
-pos(){ curl -s -o /dev/null -X POST "$BASE/api/ingress/traccar/position?token=$TOK" -H 'content-type: application/json' \
+pos(){ curl -s -o /dev/null -X POST "$BASE/api/ingress/gps/position?token=$TOK" -H 'content-type: application/json' \
   -d "{\"device\":{\"uniqueId\":\"$EXT\"},\"position\":{\"id\":\"$1\",\"latitude\":$2,\"longitude\":$3,\"speed\":$4,\"fixTime\":\"$5\"}}"; }
 
-DID=$(A -X POST "$BASE/api/devices" -d "{\"external_id\":\"$EXT\",\"source\":\"traccar\",\"label\":\"Rep badge\"}" | jget 'd["id"]')
+DID=$(A -X POST "$BASE/api/devices" -d "{\"external_id\":\"$EXT\",\"source\":\"gps\",\"label\":\"Rep badge\"}" | jget 'd["id"]')
 GID=$(A -X POST "$BASE/api/geofences" -d "{\"name\":\"RepArea $RUN\",\"kind\":\"circle\",\"geom\":{\"lat\":45.4641,\"lon\":9.1919,\"radius\":300}}" | jget 'd["id"]')
 
 # sosta dentro ~6 min (stesso punto) poi spostamento fuori

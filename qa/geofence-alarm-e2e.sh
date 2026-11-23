@@ -14,9 +14,9 @@ RUN="$(date +%s)-$$"; EXT="GF-$RUN"
 
 JA=$(mktemp); curl -s -o /dev/null -c "$JA" -X POST "$BASE/api/login" -H 'content-type: application/json' -H 'x-tenant-slug: acme' -d '{"email":"admin@acme.loneworker.eu","password":"demo"}'
 CA=$(csrfh "$JA"); A(){ curl -s -b "$JA" -H 'x-tenant-slug: acme' -H "x-csrf-token: $CA" -H 'content-type: application/json' "$@"; }
-A -X POST "$BASE/api/modules/traccar/tools/alarm_map" -d '{"config":{"sos_as":"sos","max_jump_kmh":300,"min_move_m":5}}' >/dev/null
-DID=$(A -X POST "$BASE/api/devices" -d "{\"external_id\":\"$EXT\",\"source\":\"traccar\",\"label\":\"Geo $RUN\"}" | jget 'd["id"]')
-pos(){ curl -s -X POST "$BASE/api/ingress/traccar/position?token=$TOK" -H 'content-type: application/json' \
+A -X POST "$BASE/api/modules/gps/tools/alarm_map" -d '{"config":{"sos_as":"sos","max_jump_kmh":300,"min_move_m":5}}' >/dev/null
+DID=$(A -X POST "$BASE/api/devices" -d "{\"external_id\":\"$EXT\",\"source\":\"gps\",\"label\":\"Geo $RUN\"}" | jget 'd["id"]')
+pos(){ curl -s -X POST "$BASE/api/ingress/gps/position?token=$TOK" -H 'content-type: application/json' \
   -d "{\"device\":{\"uniqueId\":\"$EXT\"},\"position\":{\"id\":\"$1\",\"latitude\":$2,\"longitude\":$3,\"fixTime\":\"$4\"}}"; }
 cnt_uscita(){ sql "SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE i.tenant_id=$TIDQ AND i.etype='geofence_uscita' AND e.source='geofence'"; }
 cnt_ingresso(){ sql "SELECT count(*) FROM app.incidents i WHERE i.tenant_id=$TIDQ AND i.etype='geofence_ingresso'"; }

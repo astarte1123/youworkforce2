@@ -16,7 +16,7 @@ use crate::db;
 /// suo modulo è attivo (lista vuota = sempre, es. core) e il ruolo combacia (lista vuota = tutti).
 /// L'ordine qui è il default quando il tenant non ha un layout salvato.
 pub const DASHBOARD_WIDGETS: &[(&str, &[&str], &[&str], &str)] = &[
-    ("incidents",  &["loneworker","traccar","iot"], &["operatore","tenant_admin","auditor","responsabile"], "half"),
+    ("incidents",  &["loneworker","gps","iot"], &["operatore","tenant_admin","auditor","responsabile"], "half"),
     ("checkins",   &["loneworker"], &["operatore","tenant_admin","auditor"], "half"),
     ("orders",     &["interventi"], &["pianificatore","tenant_admin","lavoratore","auditor"], "half"),
     ("timesheets", &["consuntivi"], &["lavoratore","responsabile","tenant_admin","auditor"], "half"),

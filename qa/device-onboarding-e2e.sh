@@ -38,7 +38,7 @@ A "$BASE/api/devices" | python -c "import sys,json;d=json.load(sys.stdin);x=next
   && ok "device mostra modello, capacita', stato onboarding" || no "device enriched" "-"
 
 # attivo al primo fix
-curl -s -o /dev/null -X POST "$BASE/api/ingress/traccar/position?token=$TOK" -H 'content-type: application/json' \
+curl -s -o /dev/null -X POST "$BASE/api/ingress/gps/position?token=$TOK" -H 'content-type: application/json' \
   -d "{\"device\":{\"uniqueId\":\"$EXT\"},\"position\":{\"id\":\"onb1\",\"latitude\":45.46,\"longitude\":9.19,\"fixTime\":\"2026-11-10T10:00:00Z\"}}"
 A "$BASE/api/devices" | python -c "import sys,json;d=json.load(sys.stdin);x=next(v for v in d if v['id']=='$DID');assert x['prov_step']=='attivo',x;print('ok')" >/dev/null 2>&1 \
   && ok "attivo al primo fix" || no "active" "-"

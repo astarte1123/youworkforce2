@@ -76,10 +76,10 @@ Pagina **Dispositivi & app**: censimento, assegnazione a lavoratore/asset/area, 
 - **Device Onboarding Kit (DOK)**: crea in un colpo tutto ciò che serve per un dispositivo (o N
   dispositivi via CSV), per tipologia d'uso.
 - **Canali di ricezione dati**:
-  - **Traccar** (edge di decodifica) e **ingest nativo OsmAnd/HTTP** (senza server Traccar).
+  - **Decodifica nativa**: Teltonika (TCP), smartphone OsmAnd, JSON HTTP. Nessun server esterno.
   - **Edge nativo Teltonika** (TCP Codec8/8E): posizioni, **telemetria IO** e **comandi GPRS**
     direttamente dal tracker. Nel dettaglio device: pannello telemetria IO + invio comando GPRS.
-    Vedi [teltonika-edge](teltonika-edge.md).
+    Vedi [Dispositivi GPS e badge](dispositivi-gps.md).
 - **Mappa dispositivi**: posizioni live, geofence, presenza. Condivisa fra Sicurezza e Campo.
 - **Piantine indoor**: posizionamento beacon/dispositivi, allarmi indoor agganciati alle zone.
 
@@ -113,7 +113,7 @@ Modulo **giri**: giri di controllo per guardie/manutentori.
 ## 10. IoT e scenari
 
 - **IoT (nativo)**: regole sensori parametriche, telemetria time-series, attributi e comandi/RPC,
-  soglie→incidenti, tutto senza server esterni. Vedi [iot-nativo](iot-nativo.md). (ThingsBoard ritirato.)
+  soglie→incidenti, tutto senza server esterni. Vedi [iot-nativo](iot-nativo.md). 
 - **Scenari/casi d'uso**: 16 ambienti attivabili dal superadmin su ogni tenant (moduli + regole
   sensori + demo). Generatore di scenari da descrizione/immagini.
 
@@ -136,8 +136,8 @@ Modulo **assistant**.
 ## 13. Amministrazione multi-tenant (superadmin)
 
 Licenze e branding (logo, palette), attivazione moduli e scenari per tenant, impersonazione del
-tenant per assistenza. Le integrazioni (YWAlert/Traccar) si **auto-configurano** dai
-default di prodotto. L'IoT è nativo (nessun ThingsBoard).
+tenant per assistenza. Tutti i motori (escalation, dispositivi, IoT) sono nativi:
+non c'è nulla da collegare all'esterno.
 
 **Creazione tenant — onboarding admin sicuro.** Il form valida lo **slug** (normalizzato a
 `a-z0-9-`, con anteprima dell'indirizzo `slug.<host>`) e l'**email** admin. Per l'attivazione
@@ -212,9 +212,8 @@ Vedi [gdpr-privacy-audit](gdpr-privacy-audit.md).
 |---|---|
 | Console (UI, ricerca, mappe, tema, responsive, i18n) | [console-ui-manuale.md](console-ui-manuale.md) |
 | Escalation e reperibilità | [escalation-manuale.md](escalation-manuale.md) · [ywalert-manuale.md](ywalert-manuale.md) |
-| Traccar (badge/GPS) | [traccar-manuale.md](traccar-manuale.md) |
+| Dispositivi GPS e badge | [dispositivi-gps.md](dispositivi-gps.md) |
 | IoT nativo (telemetria/attributi/comandi/regole) | [iot-nativo.md](iot-nativo.md) |
-| Edge nativo Teltonika (TCP/IO/GPRS) | [teltonika-edge.md](teltonika-edge.md) |
 | Gruppi di persone condivisi | [gruppi-condivisi.md](gruppi-condivisi.md) |
 | Permessi (capability) | [capability-layer.md](capability-layer.md) |
 | Ruoli personalizzati | [custom-roles.md](custom-roles.md) |

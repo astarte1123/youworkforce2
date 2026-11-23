@@ -1,7 +1,7 @@
-# Progetto: Ambienti / Casi d'uso (ThingsBoard use-cases su YouWorkforce)
+# Scenari IoT attivabili (modulo IoT Dashboard)
 
-Replica dei casi d'uso reali di [thingsboard.io/use-cases](https://thingsboard.io/use-cases/)
-come **scenari attivabili dal superadmin su qualsiasi tenant**, riusando le primitive di
+Casi d'uso IoT industriali tipici (energia, acqua, flotte, sanità, SCADA, …) come
+**scenari attivabili dal superadmin su qualsiasi tenant**, riusando le primitive di
 YouWorkforce (moduli, regole sensori, device/sedi, catena incidenti, AI). Nessun ambiente
 separato: ogni scenario è un **bundle di configurazione** applicato al tenant.
 
@@ -14,9 +14,8 @@ Uno scenario NON è codice nuovo per use-case: è un **profilo parametrico** nel
 4. **Stato** in `app.tenant_scenarios` (per attivare/rimuovere in modo pulito).
 
 Gli allarmi usano gli **etype esistenti** (`sensore_critico`, `man_down`, `telemetria`, …):
-gli etype critici entrano nella catena incidenti già pronta (incidente → YWAlert → routing →
-turni) e sono leggibili/azionabili anche dall'**agente AI**. Pull e push ThingsBoard
-convergono sullo stesso motore regole.
+gli etype critici entrano nella catena incidenti già pronta (incidente → escalation nativa → routing →
+turni) e sono leggibili/azionabili anche dall'**agente AI**.
 
 ## Attivazione (superadmin, qualsiasi tenant)
 - `GET /api/superadmin/scenarios` — catalogo (16).
@@ -30,22 +29,22 @@ convergono sullo stesso motore regole.
 ## Catalogo (16 scenari → mappatura)
 | Code | Nome | Settore | Moduli | Regole chiave (metric op soglia → etype) |
 |---|---|---|---|---|
-| `smart_energy` | Smart Energy | Energia | iot, thingsboard | power_kw≥50→crit · voltage≥250/≤200→crit · energy_kwh≥1000→tele |
+| `smart_energy` | Smart Energy | Energia | iot | power_kw≥50→crit · voltage≥250/≤200→crit · energy_kwh≥1000→tele |
 | `environment_monitoring` | Environment Monitoring | Ambiente | iot | temperature≥35→crit · humidity≥85→tele · co2≥1500→crit |
 | `smart_office` | Smart Office | Edifici | iot | co2≥1200→crit · temperature≥30→tele · smoke=true→crit |
-| `water_metering` | Water Metering | Utility | iot, thingsboard | leak=true→crit · fraud=true→crit · flow≥100→tele |
+| `water_metering` | Water Metering | Utility | iot | leak=true→crit · fraud=true→crit · flow≥100→tele |
 | `smart_retail` | Smart Retail (catena freddo) | Retail | iot | temperature≥8→crit · temperature≤-25→crit · door_open=true→tele |
 | `smart_farming` | Smart Farming | Agricoltura | iot | soil_moisture≤20→crit · temperature≤2→crit · humidity≥90→tele |
-| `site_fleet_tracking` | Site Fleet Tracking | Mezzi | traccar, loneworker, iot | fuel≤10→crit · engine_temp≥110→crit (geofence via Traccar) |
-| `smart_metering` | Smart Metering | Utility | iot, thingsboard | leak=true→crit · fraud=true→crit · consumption≥1000→tele |
-| `health_care` | Health Care (assisted living) | Sanità | loneworker, iot, goalert | heart_rate≥120/≤40→crit · fall=true→man_down |
+| `site_fleet_tracking` | Site Fleet Tracking | Mezzi | gps, loneworker, iot | fuel≤10→crit · engine_temp≥110→crit (geofence native) |
+| `smart_metering` | Smart Metering | Utility | iot | leak=true→crit · fraud=true→crit · consumption≥1000→tele |
+| `health_care` | Health Care (assisted living) | Sanità | loneworker, iot | heart_rate≥120/≤40→crit · fall=true→man_down |
 | `air_quality` | Air Quality Monitoring | Ambiente | iot | pm25≥35→crit · co2≥1000→crit · humidity≥90→tele · temperature≥40→tele |
 | `smart_irrigation` | Smart Irrigation | Agricoltura | iot | soil_moisture≤15→crit · flow≤1→tele |
 | `waste_management` | Waste Management | Utility | iot | fill_level≥90→crit · fill_level≥70→tele |
-| `tank_level` | Tank Level Monitoring | Industria | iot, thingsboard | level≤10→crit · level≥95→crit (overflow) |
-| `scada_pool` | SCADA Swimming Pool | SCADA | iot, thingsboard | ph≤6.8/≥7.8→crit · chlorine≤0.5→crit · temperature≥32→tele |
-| `scada_oil_gas` | SCADA Oil & Gas Drilling | SCADA | iot, thingsboard, goalert | pressure≥350→crit · gas≥20→crit · vibration≥80→crit |
-| `scada_energy` | SCADA Energy Management | SCADA | iot, thingsboard | demand_kw≥500→crit · power_factor≤0.8→tele |
+| `tank_level` | Tank Level Monitoring | Industria | iot | level≤10→crit · level≥95→crit (overflow) |
+| `scada_pool` | SCADA Swimming Pool | SCADA | iot | ph≤6.8/≥7.8→crit · chlorine≤0.5→crit · temperature≥32→tele |
+| `scada_oil_gas` | SCADA Oil & Gas Drilling | SCADA | iot | pressure≥350→crit · gas≥20→crit · vibration≥80→crit |
+| `scada_energy` | SCADA Energy Management | SCADA | iot | demand_kw≥500→crit · power_factor≤0.8→tele |
 
 `crit` = `sensore_critico`, `tele` = `telemetria`. Le soglie sono default ragionevoli,
 **modificabili per tenant** dalla card Regole sensori (o dall'agente AI con conferma).
@@ -77,7 +76,7 @@ YouCo e i **dati reali** del tenant.
 - `GET /api/scenarios` — scenari attivi del tenant corrente.
 - `GET /api/scenarios/:code/dashboard` — widget + ultimo valore + serie (ultimi 30 punti) +
   incidenti recenti, dai device demo dello scenario (RLS; solo se lo scenario è attivo).
-- UI: voce menu **Cruscotti IoT** (operatore/admin/auditor, moduli iot/thingsboard), tab per
+- UI: voce menu **Cruscotti IoT** (operatore/admin/auditor, modulo iot), tab per
   scenario, gauge/sparkline SVG inline.
 
 Tipi di widget: **gauge** (numerico), **status** (booleano), **KPI aggregati** (device, metriche,

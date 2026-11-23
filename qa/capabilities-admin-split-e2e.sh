@@ -2,7 +2,7 @@
 # Fase 4 Tappa 2 - split di `admin` nelle capability per-area (*.manage). Prova che i ~149 endpoint
 # prima `admin_only` ora rispondono alle capability d'area: default-preserving (admin ovunque 200,
 # non-admin ovunque 403) + delega mirata (un ruolo custom/override con UNA area sblocca SOLO quell'area).
-# Endpoint campione (uno per area): iot.manage=/connectors, users.manage=/user-groups,
+# Endpoint campione (uno per area): iot.manage=/email-inboxes, users.manage=/user-groups,
 # devices.admin=/ingest-tokens, escalation.manage=/safety/profiles, audit.view=/audit-log,
 # gdpr.manage=/gdpr/retention.
 set -uo pipefail
@@ -14,7 +14,7 @@ sql(){ docker exec -i ywdb psql -U postgres -d youworkforce -tAc "$1"; }
 one(){ sql "$1"|head -1|tr -d '[:space:]'; }
 TID=$(one "SELECT id FROM app.tenants WHERE slug='$SLUG'")
 sql "DELETE FROM app.role_capabilities WHERE tenant_id='$TID'" >/dev/null
-# /connectors (campione iot.manage) richiede il modulo IoT nativo attivo: garantiscilo sul tenant.
+# modulo IoT nativo attivo sul tenant (area iot.manage).
 sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','iot','attivo') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo'" >/dev/null
 R=$RANDOM; HASH=$(one "SELECT pass_hash FROM app.users WHERE tenant_id='$TID' AND email='$ADMIN'")
 OPM="op-sp-$R@globex.loneworker.eu"
@@ -25,7 +25,7 @@ relog(){ OJ=$(login "$OPM"); OCS=$(awk '$6=="yw_csrf"{print $7}' "$OJ"|tail -1);
 relog
 adm(){ curl -s -b "$AJ" -H "x-tenant-slug: $SLUG" -H "x-csrf-token: $ACS" -o /dev/null -w '%{http_code}' "$@"; }
 op(){  curl -s -b "$OJ" -H "x-tenant-slug: $SLUG" -H "x-csrf-token: $OCS" -o /dev/null -w '%{http_code}' "$@"; }
-IOT="$BASE/api/connectors"; USERS="$BASE/api/user-groups"; DEV="$BASE/api/ingest-tokens"
+IOT="$BASE/api/email-inboxes"; USERS="$BASE/api/user-groups"; DEV="$BASE/api/ingest-tokens"
 ESC="$BASE/api/safety/profiles"; AUD="$BASE/api/audit-log"; GDPR="$BASE/api/gdpr/retention"
 
 # 1) default-preserving: admin 200 ovunque
@@ -39,7 +39,7 @@ O_BLOCK=1; for u in "$IOT" "$USERS" "$DEV" "$ESC" "$AUD" "$GDPR"; do [ "$(op "$u
 CRID=$(curl -s -b "$AJ" -H "x-tenant-slug: $SLUG" -H "x-csrf-token: $ACS" -H 'content-type: application/json' -X POST "$BASE/api/custom-roles" -d '{"name":"IoT mgr '"$R"'","capabilities":["iot.manage"]}' | python -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
 curl -s -b "$AJ" -H "x-tenant-slug: $SLUG" -H "x-csrf-token: $ACS" -H 'content-type: application/json' -X POST "$BASE/api/custom-roles/$CRID/users" -d "{\"user_id\":\"$OPU\"}" >/dev/null
 relog
-[ "$(op "$IOT")" = 200 ] && ok "custom role iot.manage -> /connectors 200" || no "deleg iot" "$(op "$IOT")"
+[ "$(op "$IOT")" = 200 ] && ok "custom role iot.manage -> /email-inboxes 200" || no "deleg iot" "$(op "$IOT")"
 [ "$(op "$USERS")" = 403 ] && [ "$(op "$DEV")" = 403 ] && [ "$(op "$ESC")" = 403 ] && ok "iot.manage NON sblocca altre aree (isolamento)" || no "iot isolation" "users=$(op "$USERS") dev=$(op "$DEV") esc=$(op "$ESC")"
 
 # 4) DELEGA via override ruolo: concedi escalation.manage al ruolo operatore -> sblocca SOLO escalation

@@ -19,7 +19,7 @@ TID="(SELECT id FROM app.tenants WHERE slug='$SLUG')"
 
 GID=$(api "$BASE/api/groups" | python -c "import sys,json;g=[x for x in json.load(sys.stdin)['groups'] if '$SLUG' in str(x['members'])];print(g[0]['id'] if g else '')")
 [ -n "$GID" ] && ok "gruppo globex trovato" || no "nessun gruppo" "-"
-sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id,escalation_engine) SELECT $TID,'$GID','native' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$GID',escalation_engine='native'" >/dev/null
+sql "INSERT INTO app.tenant_oncall_cfg(tenant_id,default_group_id) SELECT $TID,'$GID' ON CONFLICT (tenant_id) DO UPDATE SET default_group_id='$GID'" >/dev/null
 sql "UPDATE app.users u SET phone='+390000000009' FROM app.alarm_group_members m WHERE m.group_id='$GID' AND m.user_id=u.id AND (u.phone IS NULL OR u.phone='')" >/dev/null
 
 # ---- CRUD policy multi-step ----

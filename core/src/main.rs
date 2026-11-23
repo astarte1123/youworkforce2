@@ -2,7 +2,8 @@ mod state; mod clock; mod auth; mod db; mod worker; mod api; mod crypto;
 #[allow(dead_code)] mod escalation; // #4 FASE 0: libreria pura (non ancora wirata; YWAlert resta il motore)
 mod delivery; // #4 FASE 2: adapter di consegna in ombra (sink di prova; YWAlert resta il motore)
 mod modules; // #3 FASE 1: registry manifest moduli (dipendenze + metadata)
-mod teltonika; // edge nativo Teltonika Codec8/8E su TCP (decode-edge senza Traccar)
+mod teltonika; // edge nativo Teltonika Codec8/8E su TCP
+mod track; // report di tracciamento nativi (percorsi, soste, riepilogo) dallo storico posizioni
 mod mqtt; // broker MQTT nativo (IoT): ingest telemetria + downlink comandi su TCP 1883
 mod dashboard; // servizio core: dashboard unica configurabile (widget + layout per-tenant)
 mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
@@ -21,15 +22,16 @@ use uuid::Uuid;
 use sqlx::Row;
 use state::{AppState, TenantEvent};
 
-/// P3: cifra a riposo i segreti upstream ancora in chiaro (percorso di migrazione
-/// idempotente: salta cio' che e' gia' "enc:v1:"). Richiede YW_SECRET_KEY.
+/// Cifra a riposo i segreti ancora in chiaro (percorso di migrazione idempotente: salta ciò
+/// che è già "enc:v1:"). L'unico segreto esterno è la chiave del provider AI. Richiede YW_SECRET_KEY.
 async fn crypto_migrate(st: &AppState) -> anyhow::Result<()> {
-    let tr = sqlx::query("SELECT tenant_id,password FROM app.traccar_connections WHERE password NOT LIKE 'enc:v1:%'")
+    let rows = sqlx::query("SELECT tenant_id,api_key FROM app.ai_connections WHERE api_key<>'' AND api_key NOT LIKE 'enc:v1:%'")
         .fetch_all(&st.owner_pool).await?;
-    for r in tr {
+    for r in rows {
         let tid: Uuid = r.get("tenant_id");
-        let enc = st.secrets.encrypt(&r.get::<String,_>("password"));
-        sqlx::query("UPDATE app.traccar_connections SET password=$2 WHERE tenant_id=$1")
+        let enc = st.secrets.encrypt(&r.get::<String,_>("api_key"));
+        if !enc.starts_with("enc:v1:") { continue; }   // YW_SECRET_KEY assente: resta in chiaro
+        sqlx::query("UPDATE app.ai_connections SET api_key=$2 WHERE tenant_id=$1")
             .bind(tid).bind(enc).execute(&st.owner_pool).await?;
     }
     Ok(())
@@ -195,9 +197,6 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/superadmin/tenants/:id/status", post(api::set_tenant_status))
         .route("/api/superadmin/tenants/:id", axum::routing::delete(api::delete_tenant))
         .route("/api/superadmin/tenants/:id/modules", post(api::set_module).get(api::super_list_modules))
-        .route("/api/superadmin/tenants/:id/traccar", get(api::super_get_traccar).post(api::super_set_traccar))
-        .route("/api/superadmin/tenants/:id/integrations", get(api::super_integrations_status))
-        .route("/api/superadmin/tenants/:id/traccar/config", get(api::traccar_get_config).post(api::traccar_set_config))
         .route("/api/superadmin/tenants/:id/ai", get(api::super_get_ai).post(api::super_set_ai))
         .route("/api/superadmin/tenants/:id/ai/verify", post(api::ai_verify))
         .route("/api/superadmin/plans", get(api::super_plans_list))
@@ -391,23 +390,12 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/ingest-tokens", get(api::list_ingest_tokens).post(api::create_ingest_token))
         .route("/api/ingest-tokens/:token", axum::routing::delete(api::delete_ingest_token))
         .route("/api/ingest-tokens/:token/revoke", post(api::revoke_ingest_token))
-        .route("/api/connectors", get(api::list_connectors))
-        .route("/api/traccar/status", get(api::traccar_status))
-        .route("/api/traccar/verify", post(api::traccar_verify))
-        .route("/api/traccar/settings", get(api::traccar_settings_get).post(api::traccar_settings_set))
-        // Traccar parity: event policy, report, drivers, maintenance, computed, accumulators
-        .route("/api/traccar/event-policy", get(api::traccar_event_policy_get).post(api::traccar_event_policy_set))
-        .route("/api/traccar/reports/:kind", get(api::traccar_report))
-        .route("/api/traccar/drivers", get(api::traccar_drivers_list).post(api::traccar_driver_add))
-        .route("/api/traccar/drivers/:id", axum::routing::delete(api::traccar_driver_del))
-        .route("/api/traccar/maintenance", get(api::traccar_maint_list).post(api::traccar_maint_add))
-        .route("/api/traccar/maintenance/:id", axum::routing::delete(api::traccar_maint_del))
-        .route("/api/traccar/computed", get(api::traccar_computed_list).post(api::traccar_computed_add))
-        .route("/api/traccar/computed/:id", axum::routing::delete(api::traccar_computed_del))
-        .route("/api/traccar/accumulators/:dev", get(api::traccar_accumulators_get).post(api::traccar_accumulators_set))
+        // Dispositivi GPS/badge: policy eventi + report percorsi/soste (nativi)
+        .route("/api/gps/event-policy", get(api::gps_event_policy_get).post(api::gps_event_policy_set))
+        .route("/api/devices/:id/report/:kind", get(track::device_report))
         .route("/api/events", post(api::ingest_event))
-        .route("/api/ingress/traccar", post(api::ingest_traccar))
-        .route("/api/ingress/traccar/position", post(api::ingest_traccar_position))
+        .route("/api/ingress/gps", post(api::ingest_gps_event))
+        .route("/api/ingress/gps/position", post(api::ingest_gps_position))
         .route("/api/ingress/osmand", get(api::ingest_osmand).post(api::ingest_osmand))
         .route("/api/devices/:id/positions", get(api::list_device_positions))
         .route("/api/geocode/reverse", get(api::reverse_geocode))
@@ -502,6 +490,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/stream", get(api::stream))
         .route("/api/_test/advance", post(api::test_advance))
         .route("/api/_test/iot-watchdog", post(api::test_iot_watchdog))
+        .route("/api/_test/gps-silence-watchdog", post(api::test_gps_silence_watchdog))
         .layer(axum::middleware::from_fn(api::csrf_guard))
         .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024)) // upload piantine indoor
         .with_state(st);
@@ -578,7 +567,7 @@ async fn bootstrap(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     // ma un ywdb persistente puo' avere stati moduli vecchi (deriva seed). In dev i
     // tenant demo sono usa-e-getta, quindi li riportiamo sempre allo stato canonico.
     for (slug, active) in [
-        ("acme",   "loneworker,iot,consuntivi,interventi,workforce,assistant,giri,cantieri,traccar"),
+        ("acme",   "loneworker,iot,consuntivi,interventi,workforce,assistant,giri,cantieri,gps"),
         ("globex", "loneworker,interventi,giri"),
     ] {
         let codes: Vec<String> = active.split(',').map(|s| s.to_string()).collect();

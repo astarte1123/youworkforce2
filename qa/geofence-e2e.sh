@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Geofence: crea, rinomina, sposta/ridimensiona, associa dispositivi+eventi, elimina.
-# (tenant_admin; modulo traccar). Verifica il fix elimina/modifica + le associazioni.
+# (tenant_admin; modulo gps). Verifica il fix elimina/modifica + le associazioni.
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"
 PASS=0; FAIL=0

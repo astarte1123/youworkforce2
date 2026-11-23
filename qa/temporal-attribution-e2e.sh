@@ -13,13 +13,13 @@ R=$RANDOM
 TID=$(one "SELECT id FROM app.tenants WHERE slug='globex'")
 UA=$(one "INSERT INTO app.users(tenant_id,email,pass_hash,role) VALUES('$TID','attrA-$R@globex.loneworker.eu','x','operatore') RETURNING id")
 UB=$(one "INSERT INTO app.users(tenant_id,email,pass_hash,role) VALUES('$TID','attrB-$R@globex.loneworker.eu','x','operatore') RETURNING id")
-DID=$(one "INSERT INTO app.devices(tenant_id,source,external_id,label,assigned_user,enabled) VALUES('$TID','traccar','TATTR-$R','Badge attr','$UB'::uuid,true) RETURNING id")
-TOK="tattr$R"; sql "INSERT INTO app.ingest_tokens(tenant_id,token,source,device_id) VALUES('$TID','$TOK','traccar','$DID')" >/dev/null
+DID=$(one "INSERT INTO app.devices(tenant_id,source,external_id,label,assigned_user,enabled) VALUES('$TID','gps','TATTR-$R','Badge attr','$UB'::uuid,true) RETURNING id")
+TOK="tattr$R"; sql "INSERT INTO app.ingest_tokens(tenant_id,token,source,device_id) VALUES('$TID','$TOK','gps','$DID')" >/dev/null
 # Storico: A [now-3d .. now-1d], B [now-1d .. aperta]; assegnatario corrente = B
 sql "INSERT INTO app.device_assignments(tenant_id,device_id,user_id,assigned_at,unassigned_at) VALUES('$TID','$DID','$UA',now()-interval '3 days',now()-interval '1 day')" >/dev/null
 sql "INSERT INTO app.device_assignments(tenant_id,device_id,user_id,assigned_at) VALUES('$TID','$DID','$UB',now()-interval '1 day')" >/dev/null
 
-POST(){ curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/api/ingress/traccar?token=$TOK" -H 'content-type: application/json' -d "$1"; }
+POST(){ curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/api/ingress/gps?token=$TOK" -H 'content-type: application/json' -d "$1"; }
 # worker + incertezza dell'ULTIMO incidente del device con un dato etype-id (via events.device_id)
 W(){ sql "SELECT COALESCE(u.email,'-')||'|'||i.attribution_uncertain FROM app.incidents i
      JOIN app.events e ON e.id=i.event_id LEFT JOIN app.users u ON u.id=i.worker_user_id

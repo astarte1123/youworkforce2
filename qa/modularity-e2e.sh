@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Modularità per-tenant: un modulo spento rifiuta anche i NUOVI ingress (contratto),
 # e il superadmin lo accende/spegne per tenant SENZA deploy, con effetto immediato.
-# Usa globex (loneworker attivo; traccar/thingsboard spenti).
+# Usa globex (loneworker attivo; iot spento).
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"
 PASS=0; FAIL=0
@@ -12,9 +12,9 @@ code(){ curl -s -o /dev/null -w "%{http_code}" "$@"; }
 TBPAY='{"temperature":96}'
 TRPAY='{"event":{"id":1,"type":"alarm","attributes":{"alarm":"sos"}},"device":{"uniqueId":"X-1"},"position":{"latitude":45,"longitude":9}}'
 
-echo "== ingress rispetta i moduli spenti (globex: traccar OFF) =="
-C=$(code -X POST "$BASE/api/ingress/traccar?token=globex-ingest-token" -H 'content-type: application/json' -d "$TRPAY")
-[ "$C" = "403" ] && ok "ingress Traccar su modulo spento -> 403" || no "traccar gated" "$C"
+echo "== ingress rispetta i moduli spenti (globex: iot OFF) =="
+C=$(code -X POST "$BASE/api/ingress/gps?token=globex-ingest-token" -H 'content-type: application/json' -d "$TRPAY")
+[ "$C" = "403" ] && ok "ingress JSON dispositivi su modulo spento -> 403" || no "ingress gated" "$C"
 # loneworker è attivo per globex: /api/events deve funzionare
 C=$(code -X POST "$BASE/api/events" -H 'content-type: application/json' -H 'x-ingest-token: globex-ingest-token' \
   -d "{\"etype\":\"sos\",\"source_event\":\"mod-$(date +%s)\",\"correlation\":\"mod-$(date +%s)\"}")
@@ -31,13 +31,13 @@ sm(){ curl -s -o /dev/null -w "%{http_code}" -b "$S" -H 'content-type: applicati
 R=$(sm iot attivo); [ "$R" = "200" ] && ok "set_module iot=attivo (globex)" || no "enable" "$R"
 
 # ora lo stesso ingress NON è più 403 (modulo attivo) -> crea l'incidente
-C=$(code -X POST "$BASE/api/ingress/traccar?token=globex-ingest-token" -H 'content-type: application/json' -d "$TRPAY")
-[ "$C" != "403" ] && ok "dopo l'accensione l'ingress Traccar passa ($C, no deploy)" || no "post-enable" "$C"
+C=$(code -X POST "$BASE/api/ingress/gps?token=globex-ingest-token" -H 'content-type: application/json' -d "$TRPAY")
+[ "$C" != "403" ] && ok "dopo l'accensione l'ingress JSON dispositivi passa ($C, no deploy)" || no "post-enable" "$C"
 
 echo "== rispegne 'iot' per globex =="
 R=$(sm iot non_abilitato); [ "$R" = "200" ] && ok "set_module iot=non_abilitato" || no "disable" "$R"
-C=$(code -X POST "$BASE/api/ingress/traccar?token=globex-ingest-token" -H 'content-type: application/json' -d "$TRPAY")
-[ "$C" = "403" ] && ok "ingress Traccar di nuovo bloccato -> 403" || no "re-gated" "$C"
+C=$(code -X POST "$BASE/api/ingress/gps?token=globex-ingest-token" -H 'content-type: application/json' -d "$TRPAY")
+[ "$C" = "403" ] && ok "ingress JSON dispositivi di nuovo bloccato -> 403" || no "re-gated" "$C"
 
 echo "== isolamento: globex non vede un incidente specifico di acme (RLS) =="
 ISO="iso-acme-$(date +%s)-$RANDOM"
@@ -48,6 +48,12 @@ curl -s -o /dev/null -c "$G" -X POST "$BASE/api/login" -H 'content-type: applica
   -d '{"email":"admin@globex.loneworker.eu","password":"demo"}'
 curl -s -b "$G" -H 'x-tenant-slug: globex' "$BASE/api/incidents" | grep -q "$ISO" \
   && no "isolation" "globex vede $ISO di acme" || ok "globex non vede l'incidente acme $ISO (RLS)"
+
+# teardown: chiude gli incidenti creati dalla suite (altrimenti restano aperti e le suite di
+# escalation vedrebbero consegne estranee nel tenant)
+docker exec -i ywdb psql -U postgres -d youworkforce -tAc "UPDATE app.incidents SET state='chiuso',closed_at=now(),outcome='e2e modularity'
+  WHERE state<>'chiuso' AND (correlation LIKE 'mod-%' OR correlation LIKE 'iso-acme-%'
+    OR (correlation='gps-evt-1' AND tenant_id=(SELECT id FROM app.tenants WHERE slug='globex')))" >/dev/null
 
 echo "== $PASS passed, $FAIL failed =="
 exit $FAIL

@@ -28,7 +28,7 @@ BID=$(api -X POST "$BASE/api/beacons" -d "{\"beacon_uid\":\"$UIDM\",\"zone_name\
 [ -n "$BID" ] && ok "admin registra zona beacon (CRUD)" || no "registrazione beacon fallita" "-"
 
 # --- allarme INDOOR: SOS con beacon mappato, GPS assente ---
-ii=$(curl -s -X POST "$BASE/api/ingress/traccar?token=$TOK" -H 'content-type: application/json' \
+ii=$(curl -s -X POST "$BASE/api/ingress/gps?token=$TOK" -H 'content-type: application/json' \
   -d "{\"event\":{\"id\":\"ind-$RUN\",\"type\":\"alarm\",\"attributes\":{\"alarm\":\"sos\"}},\"device\":{\"uniqueId\":\"BADGE-001\"},\"position\":{\"attributes\":{\"beaconId\":\"$UIDM\"}}}" \
   | python -c 'import sys,json;print(json.load(sys.stdin).get("event_id",""))')
 R=$(sql "SELECT indoor||'|'||coalesce(zone,'')||'|'||coalesce(lat::text,'')||'|'||coalesce(beacon_uid,'') FROM app.events WHERE id='$ii'")
@@ -38,14 +38,14 @@ echo "$R" | grep -q "Reparto Test" && ok "zona risolta dal beacon" || no "zona n
 echo "$R" | grep -q "45.5" && ok "ancora del beacon applicata come posizione" || no "ancora non applicata" "$R"
 
 # --- allarme OUTDOOR: SOS con GPS, nessun beacon ---
-io=$(curl -s -X POST "$BASE/api/ingress/traccar?token=$TOK" -H 'content-type: application/json' \
+io=$(curl -s -X POST "$BASE/api/ingress/gps?token=$TOK" -H 'content-type: application/json' \
   -d "{\"event\":{\"id\":\"out-$RUN\",\"type\":\"alarm\",\"attributes\":{\"alarm\":\"sos\"}},\"device\":{\"uniqueId\":\"BADGE-001\"},\"position\":{\"latitude\":45.40,\"longitude\":9.10}}" \
   | python -c 'import sys,json;print(json.load(sys.stdin).get("event_id",""))')
 RO=$(sql "SELECT indoor FROM app.events WHERE id='$io'")
 [ "$RO" = "f" ] && ok "allarme con GPS, senza beacon -> outdoor (indoor=false)" || no "outdoor marcato indoor" "$RO"
 
 # --- beacon NON mappato: indoor con zona ignota (da registrare) ---
-iu=$(curl -s -X POST "$BASE/api/ingress/traccar?token=$TOK" -H 'content-type: application/json' \
+iu=$(curl -s -X POST "$BASE/api/ingress/gps?token=$TOK" -H 'content-type: application/json' \
   -d "{\"event\":{\"id\":\"unm-$RUN\",\"type\":\"alarm\",\"attributes\":{\"alarm\":\"sos\"}},\"device\":{\"uniqueId\":\"BADGE-001\"},\"position\":{\"attributes\":{\"beaconId\":\"$UIDU\"}}}" \
   | python -c 'import sys,json;print(json.load(sys.stdin).get("event_id",""))')
 RU=$(sql "SELECT indoor||'|'||coalesce(zone,'NULL')||'|'||coalesce(beacon_uid,'') FROM app.events WHERE id='$iu'")

@@ -16,13 +16,13 @@ JA=$(mktemp)
 curl -s -o /dev/null -c "$JA" -X POST "$BASE/api/login" -H 'content-type: application/json' -H 'x-tenant-slug: acme' -d '{"email":"admin@acme.loneworker.eu","password":"demo"}'
 CA=$(csrfh "$JA")
 setmap(){ curl -s -o /dev/null -b "$JA" -H 'x-tenant-slug: acme' -H "x-csrf-token: $CA" -H 'content-type: application/json' \
-  -X POST "$BASE/api/modules/traccar/tools/alarm_map" -d "$1"; }
+  -X POST "$BASE/api/modules/gps/tools/alarm_map" -d "$1"; }
 send_batt(){ local id="$RUN-$RANDOM-$RANDOM"
-  curl -s -X POST "$BASE/api/ingress/traccar?token=$TOK" -H 'content-type: application/json' \
+  curl -s -X POST "$BASE/api/ingress/gps?token=$TOK" -H 'content-type: application/json' \
     -d "{\"event\":{\"id\":\"$id\",\"type\":\"deviceMoving\"},\"device\":{\"uniqueId\":\"BADGE-001\"},\"position\":{\"latitude\":45.4,\"longitude\":9.1,\"attributes\":{\"batteryLevel\":$1}}}" \
     | python -c 'import sys,json;d=json.load(sys.stdin);print(d.get("incident_id"),"EVT" if d.get("event_id") else "NOEVT")'; }
 send_alarm(){ local id="$RUN-$RANDOM-$RANDOM"
-  curl -s -X POST "$BASE/api/ingress/traccar?token=$TOK" -H 'content-type: application/json' \
+  curl -s -X POST "$BASE/api/ingress/gps?token=$TOK" -H 'content-type: application/json' \
     -d "{\"event\":{\"id\":\"$id\",\"type\":\"alarm\",\"attributes\":{\"alarm\":\"$1\"}},\"device\":{\"uniqueId\":\"BADGE-001\"},\"position\":{\"latitude\":45.4,\"longitude\":9.1}}" \
     | python -c 'import sys,json;d=json.load(sys.stdin);print(d.get("incident_id"))'; }
 TIDQ="(SELECT id FROM app.tenants WHERE slug='acme')"
@@ -35,8 +35,8 @@ OUT=$(send_batt 5); IID=$(echo "$OUT" | awk '{print $1}')
 if [ "$IID" != "None" ] && [ -n "$IID" ]; then ok "critico: batteria 5% -> incidente ($IID)"; else no "critico: nessun incidente" "$OUT"; fi
 ET=$(docker exec ywdb psql -U postgres -d youworkforce -tAc "SELECT etype FROM app.incidents WHERE id='$IID'" 2>/dev/null)
 [ "$ET" = "batteria_critica" ] && ok "critico: etype=batteria_critica (in CRITICAL)" || no "etype errato" "$ET"
-GN=$(docker exec ywdb psql -U postgres -d youworkforce -tAc "SELECT count(*) FROM app.outbox WHERE tenant_id=$TIDQ AND kind='goalert_notify' AND payload->>'etype'='batteria_critica'")
-[ "${GN:-0}" -ge 1 ] && ok "critico: escalation YWAlert richiesta (outbox)" || no "nessuna escalation" "goalert_notify=$GN"
+GN=$(docker exec ywdb psql -U postgres -d youworkforce -tAc "SELECT count(*) FROM app.outbox WHERE tenant_id=$TIDQ AND kind='notify' AND payload->>'etype'='batteria_critica'")
+[ "${GN:-0}" -ge 1 ] && ok "critico: escalation YWAlert richiesta (outbox)" || no "nessuna escalation" "notify=$GN"
 # anche l'alarm lowBattery deve seguire la policy
 R=$(send_alarm lowBattery); [ "$R" != "None" ] && [ -n "$R" ] && ok "critico: alarm lowBattery -> incidente" || no "lowBattery non critico sotto policy critico" "$R"
 
