@@ -59,12 +59,28 @@ risolto (`man_down`, `immobilita`), così la semantica salva-vita non degrada ma
 La mappa resta **configurabile**: l'admin può ridefinire `teltonika.io_alarm_map` per-tenant senza
 toccare il decoder.
 
-### Onboarding con scanner QR/barcode (console)
+### Onboarding con scanner QR/barcode (console) + PWA
 
 Nel wizard *Aggiungi dispositivo · 2/2* il campo IMEI ha **📷 Scansiona**: apre la camera e legge il
-**QR** (codice device) o il **barcode** (IMEI universale) dall'etichetta — niente digitazione a mano.
-Usa `BarcodeDetector` nativo (Chromium/Android) con **fallback ZXing**; estrae l'IMEI (15 cifre) e lo
-inserisce nel campo. In contesti senza camera (es. webview) degrada all'input manuale, nessun blocco.
+**QR** o il **barcode** (IMEI) dall'etichetta — niente digitazione a mano. Estrae l'IMEI (15/16 cifre)
+e lo inserisce; se il codice non è un IMEI lo propone comunque con avviso (nessuno scarto silenzioso).
+
+**Scanner v2** (pensato per webcam PC a fuoco fisso e codici piccoli su superfici lucide):
+
+- pipeline propria *video→canvas ROI→decode*: lo **zoom** ingrandisce la regione inquadrata e si
+  decodifica il canvas, quindi funziona anche dove la camera non ha zoom ottico;
+- **zoom hardware** quando il track lo espone (telefoni/alcune webcam), altrimenti **zoom software**
+  sulla ROI; slider manuale 1–5× + **auto-zoom progressivo** mentre cerca (cicla 1→4×);
+- **tap/clic per mirare** (sposta il centro della ROI: codice decentrato / evita riflessi), **torcia**
+  (se supportata), **focus continuo**, cattura a **1920×1080** (più pixel sul codice);
+- motore: `BarcodeDetector` nativo **solo se** supporta `qr_code`, altrimenti **ZXing core**
+  (`MultiFormatReader` + `HybridBinarizer` su canvas, hint `TRY_HARDER`). Diagnostica in console
+  (`[scan] engine=…`). Richiede contesto sicuro (https/localhost) e un browser esterno, non la webview.
+
+**PWA**: la console è installabile (`manifest.webmanifest` + `sw.js` **network-first** — nessuna cache
+stantia, le `/api` non sono mai in cache). Dal telefono/tablet si installa sulla home e usa la camera
+posteriore (più precisa del PC) per l'onboarding sul campo. La precisione dipende dall'hardware della
+camera, non dal tipo di app: una PWA sul telefono = qualità "nativa" senza app dedicata.
 
 ## Configurazione
 

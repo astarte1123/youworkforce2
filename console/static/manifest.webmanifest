@@ -1,0 +1,21 @@
+{
+  "name": "YouWorkforce Console",
+  "short_name": "YouWorkforce",
+  "description": "Console YouWorkforce — centrale allarmi, dispositivi e onboarding sul campo (scanner QR/barcode).",
+  "lang": "it",
+  "start_url": "/app.html",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0d0d0d",
+  "theme_color": "#e2001a",
+  "icons": [
+    { "src": "/youworkforce.webp", "sizes": "192x192", "type": "image/webp", "purpose": "any" },
+    { "src": "/youworkforce.webp", "sizes": "512x512", "type": "image/webp", "purpose": "any" },
+    { "src": "/youworkforce.webp", "sizes": "512x512", "type": "image/webp", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Onboarding dispositivo", "short_name": "Onboarding", "url": "/app.html#/dispositivi", "description": "Aggiungi un dispositivo scansionando QR/barcode" },
+    { "name": "Centrale allarmi", "short_name": "Centrale", "url": "/app.html#/centrale" }
+  ]
+}
