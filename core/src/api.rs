@@ -20,8 +20,12 @@ const CRITICAL: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin", 
 /// Returns the normalized etype; whether it is critical is decided by CRITICAL.
 fn traccar_alarm_etype(alarm: &str, sos_as: &str) -> String {
     match alarm {
-        "sos" => sos_as.to_string(),
-        "fallDown" | "accident" => "man_down".into(),
+        "sos" | "panic" | "sosButton" => sos_as.to_string(),
+        // caduta / uomo a terra: accetta sia i token Traccar sia l'etype canonico già risolto
+        // (es. GH-5200 io_alarm_map 242->"man_down"), così la semantica salva-vita non si perde.
+        "fallDown" | "accident" | "man_down" | "mandown" | "falldown" => "man_down".into(),
+        // immobilità / assenza di movimento
+        "immobilita" | "immobility" | "noMovement" | "no_movement" | "deadman" => "immobilita".into(),
         "removing" | "tampering" | "bonnet" => "manomissione_badge".into(), // badge rimosso/manomesso
         "powerCut" | "powerOff" => "perdita_alimentazione".into(),
         "jamming" | "gpsAntennaCut" => "jamming".into(),
@@ -7086,6 +7090,34 @@ pub async fn teltonika_resolve(st: &AppState, imei: &str) -> Option<(Uuid, Uuid,
         .bind(imei).fetch_optional(&st.owner_pool).await.ok().flatten()?;
     Some((row.get::<Uuid,_>("tenant_id"), row.get::<Uuid,_>("id"),
           row.try_get::<String,_>("source").unwrap_or_else(|_| "traccar".into())))
+}
+/// Mappa IO->allarme EFFETTIVA per un device Teltonika: default del MODELLO
+/// (device_models.default_config.io_alarm_map) con OVERRIDE per-tenant
+/// (tool_config teltonika.io_alarm_map) che vince. Risolta UNA volta per connessione e
+/// passata al decoder, così la semantica salva-vita (236->sos, 242->man_down del GH-5200)
+/// è un DATO di prodotto configurabile, non hardcoded nel decoder.
+pub async fn teltonika_io_alarm_map(st: &AppState, tid: Uuid, did: Uuid) -> std::collections::HashMap<i64,String> {
+    let mut out: std::collections::HashMap<i64,String> = std::collections::HashMap::new();
+    let ingest = |m: &mut std::collections::HashMap<i64,String>, v: &Value| {
+        if let Some(obj) = v.as_object() {
+            for (k, val) in obj {
+                if let (Ok(id), Some(s)) = (k.parse::<i64>(), val.as_str()) {
+                    if !s.trim().is_empty() { m.insert(id, s.trim().to_string()); }
+                }
+            }
+        }
+    };
+    // 1) default del modello del device
+    if let Some(row) = sqlx::query(
+        "SELECT m.default_config->'io_alarm_map' AS map
+           FROM app.devices d JOIN app.device_models m ON m.model_code=d.model_code
+          WHERE d.id=$1 AND d.tenant_id=$2")
+        .bind(did).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten() {
+        if let Ok(Some(map)) = row.try_get::<Option<Value>,_>("map") { ingest(&mut out, &map); }
+    }
+    // 2) override per-tenant (vince)
+    ingest(&mut out, &tool_config(st, tid, "teltonika", "io_alarm_map").await);
+    out
 }
 /// Almeno un modulo dispositivi attivo sul tenant?
 pub async fn any_device_module(st: &AppState, tid: Uuid) -> bool {

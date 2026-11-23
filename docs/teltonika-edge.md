@@ -36,9 +36,35 @@ Ogni record entra nella **pipeline nativa** (la stessa di OsmAnd/HTTP):
   `trip_odometer_m` 199, `din1/2/3` 1/2/3, `dout1/2` 179/180, `temp1/2/3_dc` 72/73/74). Supporta
   set a 1/2/4/8 byte (Codec8) e id/contatori a 2 byte (Codec8E).
 - **Allarme** → se l'`event IO id` è mappato, `persist_ingest` crea l'incidente (etype via
-  `alarm_map` Traccar; attribuzione temporale dall'orario del record). Mappa di **default**
-  built-in: `1→sos` (DIN1/panico), `236→alarm`, `247→crash`, `246→tow`; override per-tenant
-  possibile via config `teltonika.io_alarm_map`.
+  `alarm_map` Traccar; attribuzione temporale dall'orario del record). La mappa IO→allarme è
+  risolta **per connessione** con questa precedenza: **override per-tenant** (`teltonika.io_alarm_map`)
+  **>** **mappa del MODELLO** (`device_models.default_config.io_alarm_map`) **>** **default built-in**.
+  Default built-in: `1→sos` (DIN1/panico), `242→man_down` (ManDown/FallDown dei tracker personali
+  GH/TMT), `236→alarm`, `247→crash`, `246→tow`.
+
+### Tracker personali lone-worker (GH-5200, TMT250) — percorso salva-vita
+
+Il **GH-5200** è a catalogo come `teltonika-gh-5200`, categoria **personale**, con
+`io_alarm_map` del modello `{236→sos, 242→man_down}`. All'onboarding (capabilities
+`sos,fall,movement`) il Device Onboarding Kit crea in automatico il **routing degli allarmi**
+(`sos`/`man_down`/`immobilita` → gruppo) e il **profilo di protezione** del lavoratore. In ingest:
+
+- **IO 236** (pulsante SOS) → etype **`sos`** (CRITICAL → incidente + escalation nativa).
+- **IO 242** (ManDown/FallDown) → etype **`man_down`** (uomo a terra / brusca caduta, CRITICAL).
+- **IO 240** (Movement) → telemetria; immobilità derivabile (`stopped_as_immobilita`).
+- **GPS** → posizione del lavoratore su mappa/piantina.
+
+`traccar_alarm_etype` accetta sia i token Traccar (`fallDown`/`accident`) sia l'etype canonico già
+risolto (`man_down`, `immobilita`), così la semantica salva-vita non degrada mai a `device_alarm`.
+La mappa resta **configurabile**: l'admin può ridefinire `teltonika.io_alarm_map` per-tenant senza
+toccare il decoder.
+
+### Onboarding con scanner QR/barcode (console)
+
+Nel wizard *Aggiungi dispositivo · 2/2* il campo IMEI ha **📷 Scansiona**: apre la camera e legge il
+**QR** (codice device) o il **barcode** (IMEI universale) dall'etichetta — niente digitazione a mano.
+Usa `BarcodeDetector` nativo (Chromium/Android) con **fallback ZXing**; estrae l'IMEI (15 cifre) e lo
+inserisce nel campo. In contesti senza camera (es. webview) degrada all'input manuale, nessun blocco.
 
 ## Configurazione
 
@@ -70,10 +96,13 @@ supportati; connessioni con IMEI non valido vengono chiuse subito.
 
 ## Prove
 
-`qa/teltonika-e2e.sh` **7/7**: IMEI sconosciuto rifiutato (0x00), IMEI censito accettato (0x01) +
+`qa/teltonika-e2e.sh` **8/8**: IMEI sconosciuto rifiutato (0x00), IMEI censito accettato (0x01) +
 Codec8 con ACK record, posizione ingerita (ultima posizione aggiornata), **telemetria IO decodificata
 in attributes** (movement/temp/raw io), Codec8 Extended con ACK, event IO mappato → incidente.
-Regressione verde (loneworker 15, patrols 14, iot-mgmt 8).
+
+`qa/gh5200-lifesafety-e2e.sh` **8/8** (percorso salva-vita GH-5200): device onboarded col modello,
+**IO 242 → incidente `man_down`**, **IO 236 → incidente `sos`** (via mappa modello, non `device_alarm`),
+posizione GPS ingerita, device eliminabile del tutto. Regressione: teltonika 8/8, device-onboarding-kit 13/13.
 
 ## Console
 

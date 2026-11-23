@@ -97,10 +97,12 @@ async fn handle(st: AppState, mut sock: TcpStream) -> std::io::Result<()> {
     let imei = String::from_utf8_lossy(&imei_buf).trim().to_string();
 
     let resolved = crate::api::teltonika_resolve(&st, &imei).await;
-    let (tid, _did, source) = match resolved {
+    let (tid, did, source) = match resolved {
         Some(x) if crate::api::any_device_module(&st, x.0).await => x,
         _ => { let _ = sock.write_all(&[0x00]).await; tracing::debug!("teltonika: IMEI {imei} rifiutato"); return Ok(()); }
     };
+    // mappa IO->allarme del modello+tenant risolta UNA volta per connessione (salva-vita configurabile)
+    let io_alarm_map = crate::api::teltonika_io_alarm_map(&st, tid, did).await;
     sock.write_all(&[0x01]).await?; // accept
     tracing::info!("teltonika: IMEI {imei} accettato (tenant {tid})");
 
@@ -118,13 +120,14 @@ async fn handle(st: AppState, mut sock: TcpStream) -> std::io::Result<()> {
     });
 
     // reader loop: AVL (ingest) + risposte comando (codec12 type 0x06 -> fulfill pending)
-    let res = read_loop(&st, tid, &imei, &source, &pending, &mut rd).await;
+    let res = read_loop(&st, tid, &imei, &source, &io_alarm_map, &pending, &mut rd).await;
     registry().lock().unwrap().remove(&imei);
     writer.abort();
     res
 }
 
 async fn read_loop(st: &AppState, tid: uuid::Uuid, imei: &str, source: &str,
+    io_alarm_map: &HashMap<i64,String>,
     pending: &Arc<Mutex<Option<oneshot::Sender<String>>>>,
     rd: &mut tokio::net::tcp::OwnedReadHalf) -> std::io::Result<()> {
     loop {
@@ -148,7 +151,7 @@ async fn read_loop(st: &AppState, tid: uuid::Uuid, imei: &str, source: &str,
                 for r in &records {
                     let ts_rfc = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(r.ts_ms)
                         .unwrap_or_else(chrono::Utc::now).to_rfc3339();
-                    let alarm = alarm_for(st, tid, r.event_io).await;
+                    let alarm = alarm_for(io_alarm_map, r.event_io);
                     let io_attrs = io_attributes(&r.io);
                     crate::api::teltonika_ingest_one(st, tid, imei, source, &ts_rfc,
                         r.lat, r.lon, r.speed, r.course, r.battery, alarm, io_attrs).await;
@@ -171,17 +174,17 @@ async fn read_loop(st: &AppState, tid: uuid::Uuid, imei: &str, source: &str,
 
 /// event IO id -> stringa allarme. Mappa di DEFAULT built-in per gli IO Teltonika più comuni,
 /// con override opzionale per-tenant (config teltonika.io_alarm_map, se il catalogo la espone).
-async fn alarm_for(st: &AppState, tid: uuid::Uuid, event_io: i64) -> Option<String> {
+fn alarm_for(io_alarm_map: &HashMap<i64,String>, event_io: i64) -> Option<String> {
     if event_io == 0 { return None; }
-    // override tenant (vince sul default)
-    let cfg = crate::api::tool_config(st, tid, "teltonika", "io_alarm_map").await;
-    if let Some(v) = cfg.get(event_io.to_string()).and_then(|v| v.as_str()) { return Some(v.to_string()); }
-    // default built-in
+    // mappa modello+tenant (vince sul built-in): es. GH-5200 236->sos, 242->man_down
+    if let Some(v) = io_alarm_map.get(&event_io) { return Some(v.clone()); }
+    // default built-in per gli IO Teltonika più comuni
     let def = match event_io {
-        1   => "sos",    // DIN1 / pulsante panico (cablaggio tipico)
-        236 => "alarm",  // Teltonika "Alarm"
-        247 => "crash",  // Crash detection
-        246 => "tow",    // Towing
+        1   => "sos",      // DIN1 / pulsante panico (cablaggio tipico)
+        242 => "man_down", // ManDown/FallDown (tracker personali GH/TMT) — uomo a terra / caduta
+        236 => "alarm",    // "Alarm" generico (per i personali la mappa-modello lo porta a 'sos')
+        247 => "crash",    // Crash detection
+        246 => "tow",      // Towing
         _   => return None,
     };
     Some(def.to_string())
