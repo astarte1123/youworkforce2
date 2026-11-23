@@ -3314,64 +3314,82 @@ async function wizardSave(model_code){
 // L'etichetta del dispositivo porta spesso un QR (codice device) e un barcode (IMEI universale):
 // l'admin li inquadra invece di digitarli. BarcodeDetector nativo (Chromium/Android), fallback
 // ZXing. Senza camera (es. webview) degrada: resta l'input manuale, nessun blocco.
-let SCAN={stream:null,timer:null,reader:null,active:false};
+let SCAN={stream:null,timer:null,reader:null,active:false,inputId:null};
 function scanStop(){
   try{ if(SCAN.timer){clearInterval(SCAN.timer);SCAN.timer=null;} }catch(e){}
   try{ if(SCAN.reader&&SCAN.reader.reset){SCAN.reader.reset();} }catch(e){} SCAN.reader=null;
   try{ if(SCAN.stream){SCAN.stream.getTracks().forEach(t=>t.stop());SCAN.stream=null;} }catch(e){}
   SCAN.active=false; const o=document.getElementById('scanOverlay'); if(o)o.remove();
 }
-// estrae un IMEI/uniqueId plausibile dal testo del codice (IMEI = 15 cifre; barcode numerico;
-// altrimenti un token alfanumerico pulito). null se non riconoscibile.
-function scanExtractImei(text){
-  if(!text)return null; const t=String(text).trim();
+function scanMsg(s){ const mm=document.getElementById('scanMsg'); if(mm)mm.textContent=s||''; }
+// estrae un IMEI (15/16 cifre) dal testo del codice; il barcode può contenere un prefisso.
+function scanImeiOf(text){ const t=String(text||'').trim();
   const m=t.match(/\b\d{15,16}\b/); if(m)return m[0];
   const d=t.replace(/\D/g,''); if(d.length>=14&&d.length<=17)return d;
-  if(/^[A-Za-z0-9._:-]{4,40}$/.test(t))return t;
   return null;
 }
-function scanMsg(s){ const mm=document.getElementById('scanMsg'); if(mm)mm.textContent=s||''; }
+// scanner QR/barcode. BarcodeDetector nativo SOLO se supporta QR (su Chrome desktop Windows spesso
+// non c'è/non supporta → si usa ZXing). Mai scarto silenzioso: ciò che viene letto è SEMPRE mostrato
+// e proposto; se non è un IMEI, l'admin conferma a mano.
 async function scanDevice(inputId){
-  if(SCAN.active)return;
-  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
-    toast('Camera non disponibile qui: inserisci l\'IMEI manualmente (o apri la console nel browser/telefono)','warn'); return; }
+  if(SCAN.active)scanStop();
+  SCAN.inputId=inputId; SCAN.active=true;
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia||!window.isSecureContext){
+    SCAN.active=false;
+    toast('Camera non disponibile qui (serve https o localhost, e un browser esterno — non la webview). Inserisci l\'IMEI a mano.','warn'); return; }
   const ov=document.createElement('div'); ov.id='scanOverlay';
-  ov.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.85);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--s-12);padding:var(--s-16)';
+  ov.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.88);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--s-10);padding:var(--s-16)';
   ov.innerHTML=`<div style="color:#fff;font-weight:700">Inquadra il QR o il barcode del dispositivo</div>
-    <video id="scanVid" playsinline muted style="max-width:min(92vw,520px);width:100%;border-radius:12px;background:#000"></video>
-    <div id="scanMsg" style="color:#cbd5e1;font-size:13px;min-height:18px"></div>
-    <button class="btn" onclick="scanStop()">Annulla</button>`;
+    <video id="scanVid" playsinline muted autoplay style="max-width:min(92vw,520px);width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:12px;background:#000"></video>
+    <div id="scanMsg" style="color:#cbd5e1;font-size:13px;min-height:18px;text-align:center;max-width:92vw"></div>
+    <div id="scanRaw" style="color:#9fb3c8;font-size:12px;min-height:16px;word-break:break-all;max-width:92vw;text-align:center"></div>
+    <div class="row" style="gap:var(--s-8)">
+      <button class="btn ghost" onclick="scanStop()">Chiudi</button>
+    </div>`;
   document.body.appendChild(ov);
   const vid=document.getElementById('scanVid');
-  const done=(text)=>{ const imei=scanExtractImei(text);
-    if(!imei){ scanMsg('Codice letto ma non è un IMEI valido: '+String(text).slice(0,24)); return; }
-    const inp=document.getElementById(inputId); if(inp){ inp.value=imei; inp.dispatchEvent(new Event('change')); }
-    const hint=/gh[-\s]?5200/i.test(text);
-    scanStop(); toast('Letto: '+imei,'ok'); if(hint)toast('Rilevato modello GH-5200','ok');
+  const useVal=(text,accepted)=>{ const inp=document.getElementById(SCAN.inputId);
+    if(inp){ inp.value=text; inp.dispatchEvent(new Event('change')); inp.dispatchEvent(new Event('input')); }
+    scanStop();
+    if(accepted){ toast('IMEI letto: '+text,'ok'); if(/gh[-\s]?5200/i.test(text))toast('Rilevato modello GH-5200','ok'); }
+    else toast('Codice letto: '+text+' — verifica che sia l\'IMEI','warn');
   };
-  SCAN.active=true;
-  // BarcodeDetector nativo: gestiamo noi lo stream e facciamo polling.
+  const onText=(text)=>{ if(!SCAN.active||!text)return;
+    const raw=String(text).trim(); const r=document.getElementById('scanRaw'); if(r)r.textContent='letto: '+raw.slice(0,60);
+    const imei=scanImeiOf(raw);
+    if(imei){ useVal(imei,true); }
+    else { useVal(raw,false); }   // niente scarto silenzioso: proponiamo comunque il codice
+  };
+  // scelta motore: BarcodeDetector solo se supporta davvero il QR, altrimenti ZXing.
+  let engine=null;
   if('BarcodeDetector' in window){
-    try{
-      SCAN.stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    try{ const sup=await window.BarcodeDetector.getSupportedFormats(); if(sup&&sup.includes('qr_code'))engine='native'; }catch(e){}
+  }
+  if(!engine && window.ZXing && ZXing.BrowserMultiFormatReader) engine='zxing';
+  if(!engine && 'BarcodeDetector' in window) engine='native'; // ultimo tentativo
+  console.log('[scan] engine=',engine,'secure=',window.isSecureContext,'BarcodeDetector=',('BarcodeDetector' in window),'ZXing=',!!(window.ZXing&&ZXing.BrowserMultiFormatReader));
+  if(!engine){ scanMsg('Nessun lettore disponibile su questo browser. Inserisci l\'IMEI a mano.'); return; }
+  scanMsg('Lettore: '+engine+' — inquadra il codice (QR o barcode)');
+  if(engine==='native'){
+    try{ SCAN.stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}});
       vid.srcObject=SCAN.stream; await vid.play();
-    }catch(e){ scanMsg('Permesso camera negato o non disponibile'); return; }
+    }catch(e){ scanMsg('Camera negata o non disponibile: '+(e&&e.name||e)); return; }
     let fmts=['qr_code','code_128','code_39','ean_13','ean_8','itf','codabar','upc_a','upc_e','data_matrix'];
     try{ const sup=await window.BarcodeDetector.getSupportedFormats(); fmts=fmts.filter(f=>sup.includes(f)); }catch(e){}
     if(!fmts.length)fmts=['qr_code'];
     let det; try{ det=new window.BarcodeDetector({formats:fmts}); }catch(e){ det=new window.BarcodeDetector(); }
-    SCAN.timer=setInterval(async()=>{ if(!SCAN.active)return;
-      try{ const codes=await det.detect(vid); if(codes&&codes.length)done(codes[0].rawValue); }catch(e){} },300);
+    SCAN.timer=setInterval(async()=>{ if(!SCAN.active||vid.readyState<2)return;
+      try{ const codes=await det.detect(vid); if(codes&&codes.length)onText(codes[0].rawValue); }catch(e){} },250);
     return;
   }
-  // Fallback ZXing: gestisce lui la camera (apre il device, decodifica in continuo).
-  if(window.ZXing&&ZXing.BrowserMultiFormatReader){
-    try{ SCAN.reader=new ZXing.BrowserMultiFormatReader();
-      SCAN.reader.decodeFromVideoDevice(null, vid, (res,err)=>{ if(res&&SCAN.active)done(res.getText()); });
-    }catch(e){ scanMsg('Scanner non disponibile: inserisci manualmente'); }
-    return;
-  }
-  scanMsg('Scanner non disponibile su questo browser: inserisci manualmente');
+  // ZXing: gestisce lui la camera. Prima con facingMode, poi fallback alla camera di default.
+  try{
+    SCAN.reader=new ZXing.BrowserMultiFormatReader();
+    const cb=(res,err)=>{ if(res&&SCAN.active)onText(res.getText()); };
+    try{ await SCAN.reader.decodeFromConstraints({video:{facingMode:{ideal:'environment'}}}, vid, cb); }
+    catch(e1){ try{ await SCAN.reader.decodeFromVideoDevice(undefined, vid, cb); }
+      catch(e2){ scanMsg('Impossibile avviare la camera: '+(e2&&e2.name||e2)); } }
+  }catch(e){ scanMsg('Scanner ZXing non inizializzabile: '+(e&&e.message||e)); }
 }
 // DOK massivo: censisce N device da una lista (un IMEI per riga, opz. ,email-lavoratore).
 // ⚡ Attivazione IoT zero-touch: scegli il LAVORO (blueprint) -> tutto si configura da solo.
