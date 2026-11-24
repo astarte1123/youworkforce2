@@ -438,6 +438,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/sos", post(api::worker_sos))
         .route("/api/worker/position", post(api::worker_position))
         .route("/api/checkins", post(api::create_checkin))
+        .route("/api/checkins/mine", get(api::my_active_checkin))
         .route("/api/checkins/:id/confirm", post(api::confirm_checkin))
         .route("/api/shifts/start", post(api::shift_start))
         .route("/api/shifts/end", post(api::shift_end))

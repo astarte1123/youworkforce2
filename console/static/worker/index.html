@@ -96,7 +96,7 @@ function app(){
     <div class="small mut center" style="margin-top:8px">Input manuale sempre disponibile. La dettatura usa il riconoscimento vocale del browser; se assente o negato, scrivi a mano.</div>
     <div id="diaryList" class="col" style="gap:8px;margin-top:10px"></div></div>`:''}
   </div>`;
-  if(safetyWorker()){ renderCheckin(); renderTracking(); }
+  if(safetyWorker()){ renderCheckin(); renderTracking(); restoreCI(); }
   if(MODS.has('interventi')) loadOrders();
   if(MODS.has('workforce')){ renderShift(); loadPlans(); }
   if(fieldDiary()){ loadDiary(); flushNotes(); }
@@ -122,13 +122,46 @@ async function planConfirm(id){ try{ await api('/shift-plans/'+id,{method:'POST'
 
 async function out(){ try{ await api('/logout',{method:'POST'}); }catch(e){} location.reload(); }
 
-// ---- SOS ----
-async function sos(){
-  let pos={}; try{ const p=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{timeout:5000,enableHighAccuracy:true}));
-    pos={lat:p.coords.latitude,lon:p.coords.longitude,accuracy:p.coords.accuracy}; }catch(e){}
-  try{ const r=await api('/sos',{method:'POST',body:JSON.stringify(pos)});
-    toast('SOS inviato → centrale allertata','bad'); }catch(e){ toast('SOS errore: '+e.message,'bad'); }
+// ---- SOS (SL-10) ----
+// Ogni pressione ha una chiave stabile: l'SOS resta in coda (anche se l'app viene chiusa o ricaricata)
+// e viene ritentato finché la centrale non lo riceve; il server riconosce i ritentativi (stesso SOS,
+// nessun doppione). Finché non è consegnato compare un avviso con la chiamata di emergenza.
+const SOS_KEY='yw_sos_pending', EMERGENCY_NUMBER='112';
+let SOS_TIMER=null;
+function sosPending(){ try{ return JSON.parse(localStorage.getItem(SOS_KEY)||'null'); }catch(e){ return null; } }
+function sosSave(p){ try{ p?localStorage.setItem(SOS_KEY,JSON.stringify(p)):localStorage.removeItem(SOS_KEY); }catch(e){} }
+function sosBanner(p){
+  let b=document.getElementById('sosPend');
+  if(!p){ if(b) b.remove(); return; }
+  if(!b){ b=document.createElement('div'); b.id='sosPend'; b.setAttribute('role','alert');
+    b.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;z-index:50;background:#d81e36;color:#fff;border-radius:16px;padding:14px;box-shadow:0 8px 30px rgba(0,0,0,.35)';
+    document.body.appendChild(b); }
+  b.innerHTML=`<b>SOS non ancora consegnato</b><div style="margin:6px 0 10px;font-size:14px">Riprovo in automatico (tentativo ${p.tries||1}). Se sei in pericolo chiama subito i soccorsi.</div>
+    <a href="tel:${EMERGENCY_NUMBER}" style="display:block;text-align:center;background:#fff;color:#d81e36;border-radius:12px;padding:12px;font-weight:700;text-decoration:none">Chiama ${EMERGENCY_NUMBER}</a>`;
 }
+async function sosSend(){
+  const p=sosPending(); if(!p) return;
+  try{ await api('/sos',{method:'POST',body:JSON.stringify(p.body)});
+    sosSave(null); sosBanner(null); clearTimeout(SOS_TIMER); SOS_TIMER=null;
+    toast('SOS inviato → centrale allertata','bad');
+  }catch(e){
+    p.tries=(p.tries||1)+1; sosSave(p); sosBanner(p);
+    clearTimeout(SOS_TIMER); SOS_TIMER=setTimeout(sosSend, Math.min(30000, 3000*p.tries));
+  }
+}
+async function sos(){
+  if(sosPending()){ sosSend(); return; }           // già in coda: nessun secondo SOS, si ritenta subito
+  const key=(crypto.randomUUID?crypto.randomUUID():(Date.now()+'-'+Math.random().toString(16).slice(2)));
+  const body={client_key:key};
+  sosSave({body,tries:1});                           // salvato PRIMA della posizione: niente persi
+  sosBanner(sosPending());
+  try{ const p=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{timeout:5000,enableHighAccuracy:true}));
+    Object.assign(body,{lat:p.coords.latitude,lon:p.coords.longitude,accuracy:p.coords.accuracy}); sosSave({body,tries:1}); }catch(e){}
+  sosSend();
+}
+// all'avvio: un SOS rimasto in coda (app chiusa, rete assente) riparte da solo
+window.addEventListener('load',()=>{ if(sosPending()){ sosBanner(sosPending()); setTimeout(sosSend,500); } });
+window.addEventListener('online',()=>{ if(sosPending()) sosSend(); });
 
 // ---- Tracking posizione (watchPosition) legato al turno; bind sessione↔device lato server ----
 let WATCH=null, LASTSENT=0;
@@ -181,6 +214,10 @@ function tickCI(){ clearInterval(CITimer); CITimer=setInterval(()=>{ if(!CI)retu
   cd.textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
   cd.style.color = s<=30 ? 'var(--bad)' : (s<=60?'var(--warn)':'var(--fg)');
   if(s<=0){ clearInterval(CITimer); cd.textContent='SCADUTO'; cd.style.color='var(--bad)'; toast('Check-in scaduto: incidente aperto','bad'); } },1000); }
+// SL-10: dopo un ricaricamento il check-in attivo viene ripreso dal server (il conto alla rovescia non si perde)
+async function restoreCI(){
+  try{ const r=await api('/checkins/mine'); if(r&&r.id){ CI={id:r.id,due:new Date(r.due_at).getTime()}; if($('#ciBox')) renderCheckin(); } }catch(e){}
+}
 async function confirmCI(){ if(!CI)return; try{ const r=await api('/checkins/'+CI.id+'/confirm',{method:'POST'});
   if(r.ok) toast('Presenza confermata','ok'); else toast('Già scaduto','warn');
   CI=null; clearInterval(CITimer); renderCheckin(); }catch(e){ toast(e.message,'bad'); } }

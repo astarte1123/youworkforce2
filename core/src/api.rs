@@ -2166,8 +2166,17 @@ async fn allowed_sites(st: &AppState, s: &Session) -> Option<std::collections::H
         .bind(s.user_id).fetch_all(&st.owner_pool).await.ok()?;
     if rows.is_empty() { None } else { Some(rows.into_iter().collect()) }
 }
+/// SL-6: un incidente SENZA sede (SOS dall'app, check-in mancato di un lavoratore senza sede
+/// assegnata) è visibile a TUTTI gli operatori, anche a quelli ristretti per sede: meglio un allarme
+/// visto da più persone che un allarme che nessuno vede.
 fn site_allowed(set: &Option<std::collections::HashSet<Uuid>>, site_id: Option<Uuid>) -> bool {
-    match set { None => true, Some(s) => site_id.map(|x| s.contains(&x)).unwrap_or(false) }
+    match set { None => true, Some(s) => site_id.map(|x| s.contains(&x)).unwrap_or(true) }
+}
+/// Sede del lavoratore quando è univoca (una sola sede assegnata), altrimenti None.
+pub(crate) async fn user_single_site(st: &AppState, tid: Uuid, uid: Uuid) -> Option<Uuid> {
+    let v: Vec<Uuid> = sqlx::query_scalar("SELECT site_id FROM app.operator_sites WHERE tenant_id=$1 AND user_id=$2 LIMIT 2")
+        .bind(tid).bind(uid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    if v.len() == 1 { Some(v[0]) } else { None }
 }
 /// ACL per-sito sulle AZIONI di incidente: un operatore ristretto a certe sedi non può
 /// ack/chiudere/assegnare/annotare/leggere la timeline di incidenti di altre sedi (coerente
@@ -7518,12 +7527,30 @@ pub async fn worker_sos(State(st): State<AppState>, h: HeaderMap, Json(b): Json<
     let (pri, repeat) = sos_escalation(&st, tid).await;
     // Fase B: l'SOS è attribuito al device del lavoratore (bind sessione↔device).
     let dev_id = worker_app_device(&st, tid, s.user_id, &s.email).await.ok().map(|(id,_)| id);
+    // SL-10: l'app manda una chiave stabile per ogni pressione (`client_key`) e la ripete nei nuovi
+    // tentativi dopo un errore di rete: stesso SOS, nessun doppione. Senza chiave: un evento per richiesta.
+    let client_key: Option<String> = b.get("client_key").and_then(|v| v.as_str())
+        .map(|k| k.trim().chars().filter(|c| c.is_ascii_alphanumeric() || *c=='-').take(64).collect::<String>())
+        .filter(|k| !k.is_empty());
+    let idem = match &client_key { Some(k) => format!("sos-{}-{}", s.user_id, k), None => format!("sos-{}-{}", s.user_id, now.timestamp_millis()) };
+    // SL-6: lavoratore e (se univoca) sede sull'incidente: l'operatore sa chi soccorrere e dove
+    let site_id = user_single_site(&st, tid, s.user_id).await;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let ev = sqlx::query(
-        "INSERT INTO app.events(tenant_id,source,source_event,idem_key,etype,origin_ts,received_ts,lat,lon,accuracy_m,device_id,correlation)
-         VALUES($1,'pwa',$2,$2,'sos',$3,$3,$4,$5,$6,$7,$8) RETURNING id")
-        .bind(tid).bind(format!("sos-{}-{}", s.user_id, now.timestamp_millis()))
-        .bind(now).bind(lat).bind(lon).bind(accuracy).bind(dev_id).bind(&correlation).fetch_one(&mut *tx).await.map_err(ise)?;
+        "INSERT INTO app.events(tenant_id,source,source_event,idem_key,etype,origin_ts,received_ts,lat,lon,accuracy_m,device_id,correlation,site_id)
+         VALUES($1,'pwa',$2,$2,'sos',$3,$3,$4,$5,$6,$7,$8,$9)
+         ON CONFLICT (tenant_id,source,idem_key) DO NOTHING RETURNING id")
+        .bind(tid).bind(&idem)
+        .bind(now).bind(lat).bind(lon).bind(accuracy).bind(dev_id).bind(&correlation).bind(site_id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let Some(ev) = ev else {
+        // ritentativo dello stesso SOS: si restituisce l'incidente già aperto
+        let prev = sqlx::query("SELECT i.id, i.correlation FROM app.events e JOIN app.incidents i ON i.event_id=e.id
+                                WHERE e.tenant_id=$1 AND e.source='pwa' AND e.idem_key=$2 LIMIT 1")
+            .bind(tid).bind(&idem).fetch_optional(&mut *tx).await.map_err(ise)?;
+        tx.commit().await.map_err(ise)?;
+        return Ok(Json(json!({"incident_id": prev.as_ref().map(|r| r.get::<Uuid,_>("id")),
+            "correlation": prev.as_ref().map(|r| r.get::<String,_>("correlation")), "deduplicated": true})));
+    };
     let eid: Uuid = ev.get("id");
     // Fase C gating: un profilo attivo del lavoratore può disabilitare il trigger SOS (fail-open).
     if trigger_suppressed(&st, tid, Some(s.user_id), None, "sos").await {
@@ -7532,8 +7559,8 @@ pub async fn worker_sos(State(st): State<AppState>, h: HeaderMap, Json(b): Json<
         return Ok(Json(json!({"event_id":eid,"suppressed_by_profile":true,"etype":"sos","correlation":correlation})));
     }
     let irow = sqlx::query(
-        "INSERT INTO app.incidents(tenant_id,event_id,etype,correlation,priority) VALUES($1,$2,'sos',$3,$4) RETURNING id")
-        .bind(tid).bind(eid).bind(&correlation).bind(pri).fetch_one(&mut *tx).await.map_err(ise)?;
+        "INSERT INTO app.incidents(tenant_id,event_id,etype,correlation,priority,worker_user_id,site_id) VALUES($1,$2,'sos',$3,$4,$5,$6) RETURNING id")
+        .bind(tid).bind(eid).bind(&correlation).bind(pri).bind(s.user_id).bind(site_id).fetch_one(&mut *tx).await.map_err(ise)?;
     let iid: Uuid = irow.get("id");
     sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'notify_requested',$3)")
         .bind(tid).bind(iid).bind(json!({"etype":"sos","by":s.email,"priority":pri,"repeat_seconds":repeat})).execute(&mut *tx).await.map_err(ise)?;
@@ -7567,6 +7594,21 @@ pub async fn create_checkin(State(st): State<AppState>, h: HeaderMap, Json(b): J
         .bind(tid).bind(s.user_id).bind(due).fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":row.get::<Uuid,_>("id"),"due_at":due})))
+}
+
+/// SL-10: il check-in ATTIVO del lavoratore (per ripristinarlo dopo un ricaricamento dell'app).
+pub async fn my_active_checkin(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "loneworker").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let r = sqlx::query("SELECT id,due_at FROM app.checkins WHERE user_id=$1 AND state='attivo' ORDER BY due_at DESC LIMIT 1")
+        .bind(s.user_id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(match r {
+        Some(r) => json!({"id":r.get::<Uuid,_>("id"),"due_at":r.get::<chrono::DateTime<chrono::Utc>,_>("due_at")}),
+        None => Value::Null,
+    }))
 }
 
 pub async fn confirm_checkin(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {

@@ -83,6 +83,19 @@ Motore di escalation **nativo** (parità con YWAlert). Dettagli: [escalation-man
 Pagina **Dispositivi & app**: censimento, assegnazione a lavoratore/asset/area, stato di prontezza
 (readiness), ricerca full-text, SOS di prova.
 
+**App del lavoratore: SOS e check-in affidabili (SL-5, SL-6, SL-10).**
+- Il **SOS** viene salvato sul telefono prima ancora di leggere la posizione e ritentato in automatico
+  (anche dopo aver chiuso o ricaricato l'app, o al ritorno della rete) finché la centrale non lo
+  riceve; ogni pressione ha una chiave propria, quindi i ritentativi non creano doppioni. Finché non è
+  consegnato compare un avviso rosso con il pulsante **Chiama 112**.
+- Il **check-in attivo** viene ripreso dal server dopo un ricaricamento: il conto alla rovescia non si
+  perde (`GET /api/checkins/mine`).
+- **Check-in mancato** e **SOS dall'app** riportano il **lavoratore** e la **sede** (quella del
+  check-in, oppure l'unica sede assegnata al lavoratore). Il check-in scaduto, l'incidente e la
+  notifica si registrano insieme: un errore a metà non perde l'allarme.
+- Un incidente **senza sede** è visibile a **tutti** gli operatori, anche a quelli ristretti per sede.
+e2e: `qa/checkin-sos-attribution-e2e.sh`.
+
 - **Device Onboarding Kit (DOK)**: crea in un colpo tutto ciò che serve per un dispositivo (o N
   dispositivi via CSV), per tipologia d'uso.
 - **Canali di ricezione dati**:

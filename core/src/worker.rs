@@ -183,41 +183,52 @@ async fn drain_outbox(st: &AppState) -> anyhow::Result<()> {
 }
 
 async fn sweep_checkins(st: &AppState) -> anyhow::Result<()> {
+    // SL-5: UN check-in scaduto per transazione. Prima il check-in veniva marcato 'scaduto' in blocco
+    // e l'incidente creato dopo, fuori transazione: un errore a metà lasciava il check-in scaduto
+    // SENZA allarme (e non sarebbe più stato ripreso). Ora marcatura, evento, incidente e notifica
+    // si confermano insieme o per niente; FOR UPDATE SKIP LOCKED evita doppioni tra istanze.
     let now = st.clock.now();
-    let rows = sqlx::query(
-        "UPDATE app.checkins c SET state='scaduto'
-         WHERE state='attivo' AND due_at <= $1
-           AND NOT EXISTS (SELECT 1 FROM app.tenants t WHERE t.id=c.tenant_id AND t.status='sospeso')
-         RETURNING id, tenant_id, user_id, site_id")
-        .bind(now).fetch_all(&st.owner_pool).await?;
-
-    for r in rows {
+    for _ in 0..500 {
+        let mut tx = st.owner_pool.begin().await?;
+        let row = sqlx::query(
+            "SELECT c.id, c.tenant_id, c.user_id, c.site_id FROM app.checkins c
+              WHERE c.state='attivo' AND c.due_at <= $1
+                AND NOT EXISTS (SELECT 1 FROM app.tenants t WHERE t.id=c.tenant_id AND t.status='sospeso')
+              ORDER BY c.due_at LIMIT 1 FOR UPDATE SKIP LOCKED")
+            .bind(now).fetch_optional(&mut *tx).await?;
+        let Some(r) = row else { tx.rollback().await?; break; };
+        let cid: Uuid = r.get("id");
         let tid: Uuid = r.get("tenant_id");
-        let uid: Option<Uuid> = r.try_get("user_id").ok();
-        let site_id: Option<Uuid> = r.try_get("site_id").ok();
-        let correlation = Uuid::new_v4().to_string();
+        let uid: Option<Uuid> = r.try_get("user_id").ok().flatten();
+        sqlx::query("UPDATE app.checkins SET state='scaduto' WHERE id=$1 AND tenant_id=$2").bind(cid).bind(tid).execute(&mut *tx).await?;
         // Fase C gating: un profilo attivo del lavoratore può disabilitare il trigger mancato_checkin
         // (fail-open). Il check-in resta 'scaduto', ma non si apre l'incidente.
         if crate::api::trigger_suppressed(st, tid, uid, None, "mancato_checkin").await {
+            tx.commit().await?;
             crate::api::audit(st, tid, "system", "trigger_suppressed_by_profile", json!({"etype":"mancato_checkin","user_id":uid})).await;
             continue;
         }
-        // mancato_checkin -> event + incident + outbox, system scope
+        // SL-6: sede del check-in, altrimenti quella del lavoratore se univoca; lavoratore sull'incidente
+        let mut site_id: Option<Uuid> = r.try_get("site_id").ok().flatten();
+        if site_id.is_none() { if let Some(u) = uid { site_id = crate::api::user_single_site(st, tid, u).await; } }
+        let correlation = Uuid::new_v4().to_string();
         let ev = sqlx::query(
             "INSERT INTO app.events(tenant_id,source,source_event,idem_key,site_id,etype,origin_ts,received_ts,correlation)
-             VALUES($1,'core',$2,$2,$3,'mancato_checkin',$4,$4,$5) RETURNING id")
-            .bind(tid).bind(format!("checkin-{}", r.get::<Uuid,_>("id")))
-            .bind(site_id).bind(now).bind(&correlation).fetch_one(&st.owner_pool).await?;
+             VALUES($1,'core',$2,$2,$3,'mancato_checkin',$4,$4,$5)
+             ON CONFLICT (tenant_id,source,idem_key) DO NOTHING RETURNING id")
+            .bind(tid).bind(format!("checkin-{cid}")).bind(site_id).bind(now).bind(&correlation).fetch_optional(&mut *tx).await?;
+        let Some(ev) = ev else { tx.commit().await?; continue; }; // già gestito
         let eid: Uuid = ev.get("id");
         let irow = sqlx::query(
-            "INSERT INTO app.incidents(tenant_id,event_id,site_id,etype,correlation,priority) VALUES($1,$2,$3,'mancato_checkin',$4,2) RETURNING id")
-            .bind(tid).bind(eid).bind(site_id).bind(&correlation).fetch_one(&st.owner_pool).await?;
+            "INSERT INTO app.incidents(tenant_id,event_id,site_id,etype,correlation,priority,worker_user_id) VALUES($1,$2,$3,'mancato_checkin',$4,2,$5) RETURNING id")
+            .bind(tid).bind(eid).bind(site_id).bind(&correlation).bind(uid).fetch_one(&mut *tx).await?;
         let iid: Uuid = irow.get("id");
         sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'notify_requested',$3)")
-            .bind(tid).bind(iid).bind(json!({"etype":"mancato_checkin"})).execute(&st.owner_pool).await?;
+            .bind(tid).bind(iid).bind(json!({"etype":"mancato_checkin","checkin_id":cid})).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'notify',$2)")
             .bind(tid).bind(json!({"incident_id":iid,"summary":format!("mancato_checkin [{}]",correlation),"dedup":correlation,"integration_key":"","etype":"mancato_checkin","details":format!("mancato check-in; correlazione={}",correlation)}))
-            .execute(&st.owner_pool).await?;
+            .execute(&mut *tx).await?;
+        tx.commit().await?;
         crate::api::publish_event(&st, TenantEvent{tenant_id:tid,payload:json!({"type":"incident_opened","incident_id":iid,"etype":"mancato_checkin"})}).await;
     }
     Ok(())

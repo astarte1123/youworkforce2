@@ -18,7 +18,7 @@ run(){ local s=$1
 skip(){ echo "SKIP  $1   ($2)"; SKIP=$((SKIP+1)); }
 
 # ---- liste per tier ----
-CORE="smoke.sh loneworker-e2e.sh acl-e2e.sh \
+CORE="smoke.sh loneworker-e2e.sh checkin-sos-attribution-e2e.sh acl-e2e.sh \
  auth-hardening.sh csrf-hardening.sh ratelimit-hardening.sh session-hardening.sh \
  module-gating-e2e.sh modularity-e2e.sh module-config-e2e.sh config-consumers-e2e.sh \
  geofence-e2e.sh floorplans-e2e.sh alarms-indoor-e2e.sh geofence-alarm-e2e.sh geocode-e2e.sh posfilter-e2e.sh \
