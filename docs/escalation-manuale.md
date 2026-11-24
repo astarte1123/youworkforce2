@@ -168,9 +168,15 @@ sostituto, scegliendo gruppo, persone e date. Si applica subito.
 la reperibilità del gruppo con una sequenza di **blocchi** (persona + ore). Mentre è attiva, **solo**
 la persona del blocco corrente riceve gli allarmi del gruppo. Alla fine si torna ai turni normali.
 
-**Manutenzione** — sospende l'escalation per 1/2/4 ore (lavori programmati). Gli allarmi vengono
-comunque registrati; a **fine finestra** gli on-call ricevono **un unico riepilogo** degli allarmi
-accumulati, poi l'escalation riprende. **Termina** la riattiva subito.
+**Manutenzione** — sospende l'escalation per 1/2/4 ore (lavori programmati) degli allarmi **non
+salva-vita** (sensori, dispositivi, monitor…): vengono registrati e a **fine finestra** gli on-call
+ricevono **un unico riepilogo**, poi l'escalation riprende. **Termina** la riattiva subito.
+Gli allarmi **salva-vita** — SOS, uomo a terra, immobilità, check-in mancato, perdita di contatto —
+**non si sospendono mai** (SL-13): continuano a essere inoltrati, rete di ultima istanza compresa.
+
+**Chiudi tutti** (Centrale) — chiude gli allarmi aperti con un unico esito, **tranne i salva-vita**:
+per chiudere anche quelli serve una seconda conferma esplicita («ho verificato che ogni persona è al
+sicuro»). La risposta indica quanti salva-vita sono rimasti aperti (API `include_life_safety`).
 
 **Il mio calendario reperibilità** — genera un URL iCal (Apple/Google Calendar) con i tuoi turni,
 **calcolati dalla rotazione** dei prossimi 30 giorni oltre agli eventuali turni manuali. Puoi
@@ -217,7 +223,7 @@ utile per iscriversi al calendario di un team specifico.
 | Membro non avvisato | manca telefono, o recapito non verificato | aggiungi il telefono in Utenti; poi **verifica** |
 | Niente chiamata di fallback | fallback vocale off, o Twilio non attivo | attiva fallback vocale + Twilio |
 | Allarme critico senza destinatari | nessun routing né gruppo di default | imposta il **gruppo di default** o un routing |
-| Allarmi durante manutenzione | manutenzione attiva | **Termina** la manutenzione |
+| Allarmi non salva-vita non inoltrati | manutenzione attiva (i salva-vita passano comunque) | **Termina** la manutenzione |
 | La sezione escalation non compare | nessun modulo che produce allarmi è attivo | attiva almeno uno fra Sicurezza lavoratore / IoT / Localizzazione GPS |
 
 ---

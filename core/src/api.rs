@@ -11,6 +11,9 @@ use crate::{auth, db};
 pub(crate) type R = Result<Json<Value>, (StatusCode, String)>;
 pub(crate) fn err(c: StatusCode, m: &str) -> (StatusCode, String) { (c, m.to_string()) }
 
+/// SL-13: allarmi SALVA-VITA. Non si sospendono con la manutenzione e non si chiudono in blocco senza
+/// una conferma esplicita: dietro c'è una persona che potrebbe essere in pericolo.
+pub(crate) const LIFE_SAFETY: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin", "perdita_contatto"];
 const CRITICAL: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin", "sensore_critico",
     "manomissione_badge", "perdita_alimentazione", "jamming", "perdita_contatto",
     "batteria_critica", "heartbeat_down", "email_alarm", "geofence_ingresso", "geofence_uscita"];
@@ -7412,7 +7415,7 @@ pub async fn ack_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): P
 }
 
 #[derive(Deserialize)]
-pub struct CloseReq { pub outcome: String }
+pub struct CloseReq { pub outcome: String, #[serde(default)] pub include_life_safety: bool }
 pub async fn close_incident(State(st): State<AppState>, h: HeaderMap, Path(iid): Path<Uuid>, Json(b): Json<CloseReq>) -> R {
     let s = require_tenant(&st, &h).await?;
     if !has_cap(&s,"incidents.handle") {
@@ -11928,12 +11931,15 @@ pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i
     if tenant_suspended(st, tid).await { return (0, 0); }
     // MAINTENANCE nativo: finestra attiva -> sospendi le consegne (gli incidenti continuano a
     // essere creati; la ladder riparte a fine finestra). Indipendente da YWAlert.
-    if maintenance_active(st, tid).await {
-        // segna gli incidenti aperti come "in bundle": a fine finestra verrà inviato UN riepilogo.
-        let _ = sqlx::query("UPDATE app.incidents SET bundled_at=now() WHERE tenant_id=$1 AND state<>'chiuso' AND bundled_at IS NULL")
-            .bind(tid).execute(&st.owner_pool).await;
-        return (0,0);
+    // SL-13: la manutenzione sospende solo gli allarmi NON salva-vita; SOS, uomo a terra, immobilità,
+    // check-in mancato e perdita di contatto continuano a essere inoltrati anche durante la finestra.
+    let in_maintenance = maintenance_active(st, tid).await;
+    if in_maintenance {
+        // segna gli incidenti aperti (non salva-vita) come "in bundle": a fine finestra UN riepilogo.
+        let _ = sqlx::query("UPDATE app.incidents SET bundled_at=now() WHERE tenant_id=$1 AND state<>'chiuso' AND bundled_at IS NULL AND NOT (etype = ANY($2))")
+            .bind(tid).bind(LIFE_SAFETY).execute(&st.owner_pool).await;
     }
+    if !in_maintenance {
     // USCITA manutenzione: se ci sono incidenti accumulati, invia UN solo riepilogo (parità YWAlert
     // alert bundling) agli on-call del gruppo di default, poi riprende l'escalation normale.
     let bundled: i64 = sqlx::query_scalar("SELECT count(*) FROM app.incidents WHERE tenant_id=$1 AND state<>'chiuso' AND bundled_at IS NOT NULL")
@@ -11955,6 +11961,7 @@ pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i
         let _ = sqlx::query("UPDATE app.incidents SET bundled_at=NULL WHERE tenant_id=$1 AND bundled_at IS NOT NULL")
             .bind(tid).execute(&st.owner_pool).await;
     }
+    } // fine: riepilogo all'uscita dalla manutenzione
     // Motore nativo autoritativo: nessun ground-truth esterno (YWAlert ritirato). Seed rotation nativo.
     let ga_opt: Option<(&str,&str)> = None;
     // riferimento temporale del motore nativo = orologio controllabile: step_fired_at viene SCRITTO
@@ -12008,9 +12015,10 @@ pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i
           WHERE i.tenant_id=$1 AND i.state <> 'chiuso'
             AND COALESCE(eas.status,'new') NOT IN ('exhausted','ack','closed')
             AND COALESCE(i.forced_group_id, pp.escalation_group_id, r.group_id, oc.default_group_id) IS NOT NULL
+            AND (NOT $3 OR i.etype = ANY($4))
           ORDER BY i.priority DESC, i.opened_at ASC
           LIMIT $2")
-        .bind(tid).bind(ESC_INCIDENTS_PER_TICK).fetch_all(&st.owner_pool).await.unwrap_or_default();
+        .bind(tid).bind(ESC_INCIDENTS_PER_TICK).bind(in_maintenance).bind(LIFE_SAFETY).fetch_all(&st.owner_pool).await.unwrap_or_default();
     let tr = EscTransport{ from:&from, sink:&sink, relay:&relay, slack_token:&slack_token, public_base:&public_base, live_on, live_cfg: live_cfg.as_ref() };
     let (mut seen, mut delivered) = (0i64, 0i64);
     // Un incidente per volta, pollato da uno stack shallow: `Box::pin` sposta il future (grande) del
@@ -12022,7 +12030,7 @@ pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i
             st, tid, inc, voice_on, voice_min, repeat, &engine, live_on, ga_opt, now, &tr,
         )).await;
     }
-    delivered += Box::pin(esc_fallback_run(st, tid, now, &tr)).await;
+    delivered += Box::pin(esc_fallback_run(st, tid, now, &tr, in_maintenance)).await;
     (seen, delivered)
 }
 
@@ -12053,7 +12061,7 @@ async fn esc_fallback_start(st: &AppState, tid: Uuid, iid: Uuid, reason: &str, n
 }
 
 /// Consegna le rung dovute della rete per gli incidenti aperti e non presi in carico.
-async fn esc_fallback_run(st: &AppState, tid: Uuid, now: chrono::DateTime<chrono::Utc>, tr: &EscTransport<'_>) -> i64 {
+async fn esc_fallback_run(st: &AppState, tid: Uuid, now: chrono::DateTime<chrono::Utc>, tr: &EscTransport<'_>, in_maintenance: bool) -> i64 {
     use crate::delivery::Channel;
     // incidenti critici aperti SENZA alcun gruppo instradato: prima non li vedeva nessuno (SL-12)
     let orphans: Vec<Uuid> = sqlx::query_scalar(
@@ -12068,7 +12076,7 @@ async fn esc_fallback_run(st: &AppState, tid: Uuid, now: chrono::DateTime<chrono
             AND COALESCE(i.forced_group_id, pp.escalation_group_id, r.group_id, oc.default_group_id) IS NULL
             AND NOT EXISTS (SELECT 1 FROM app.esc_fallback_state f WHERE f.tenant_id=i.tenant_id AND f.incident_id=i.id)
           LIMIT 500")
-        .bind(tid).bind(CRITICAL).fetch_all(&st.owner_pool).await.unwrap_or_default();
+        .bind(tid).bind(if in_maintenance { LIFE_SAFETY } else { CRITICAL }).fetch_all(&st.owner_pool).await.unwrap_or_default();
     for iid in orphans { esc_fallback_start(st, tid, iid, "nessun_gruppo", now).await; }
 
     let contacts = sqlx::query("SELECT channel,value FROM app.esc_fallback_contacts WHERE tenant_id=$1 ORDER BY position, created_at")
@@ -12083,8 +12091,9 @@ async fn esc_fallback_run(st: &AppState, tid: Uuid, now: chrono::DateTime<chrono
            FROM app.esc_fallback_state f JOIN app.incidents i ON i.id=f.incident_id AND i.tenant_id=f.tenant_id
            LEFT JOIN app.sites s ON s.id=i.site_id
           WHERE f.tenant_id=$1 AND i.state NOT IN ('chiuso','preso_in_carico','intervento')
+            AND (NOT $2 OR i.etype = ANY($3))
           ORDER BY i.priority DESC, f.started_at LIMIT 500")
-        .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+        .bind(tid).bind(in_maintenance).bind(LIFE_SAFETY).fetch_all(&st.owner_pool).await.unwrap_or_default();
     let mut delivered = 0i64;
     for a in &active {
         let iid: Uuid = a.get("incident_id");
@@ -12584,12 +12593,17 @@ pub async fn incidents_close_all(State(st): State<AppState>, h: HeaderMap, Json(
     // Incidenti senza sede esclusi per operatore ristretto (coerente con guard_incident_site).
     // tenant_id ESPLICITO oltre alla RLS: un bulk destructive non deve MAI poter uscire dal tenant,
     // nemmeno se il ruolo DB fosse mal configurato (owner/BYPASSRLS).
+    // SL-13: gli allarmi salva-vita restano aperti salvo conferma esplicita (include_life_safety)
+    let excl: Vec<&str> = if b.include_life_safety { vec![] } else { LIFE_SAFETY.to_vec() };
     let rows = match &acl {
-        Some(sites) => sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$1,closed_at=now(),version=version+1 WHERE tenant_id=$3 AND state<>'chiuso' AND site_id = ANY($2) RETURNING id,correlation,etype")
-            .bind(&b.outcome).bind(sites).bind(tid).fetch_all(&mut *tx).await.map_err(ise)?,
-        None => sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$1,closed_at=now(),version=version+1 WHERE tenant_id=$2 AND state<>'chiuso' RETURNING id,correlation,etype")
-            .bind(&b.outcome).bind(tid).fetch_all(&mut *tx).await.map_err(ise)?,
+        Some(sites) => sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$1,closed_at=now(),version=version+1 WHERE tenant_id=$3 AND state<>'chiuso' AND site_id = ANY($2) AND NOT (etype = ANY($4)) RETURNING id,correlation,etype")
+            .bind(&b.outcome).bind(sites).bind(tid).bind(&excl).fetch_all(&mut *tx).await.map_err(ise)?,
+        None => sqlx::query("UPDATE app.incidents SET state='chiuso',outcome=$1,closed_at=now(),version=version+1 WHERE tenant_id=$2 AND state<>'chiuso' AND NOT (etype = ANY($3)) RETURNING id,correlation,etype")
+            .bind(&b.outcome).bind(tid).bind(&excl).fetch_all(&mut *tx).await.map_err(ise)?,
     };
+    let kept: i64 = if b.include_life_safety { 0 } else {
+        sqlx::query_scalar("SELECT count(*) FROM app.incidents WHERE tenant_id=$1 AND state<>'chiuso' AND etype = ANY($2)")
+            .bind(tid).bind(LIFE_SAFETY).fetch_one(&mut *tx).await.map_err(ise)? };
     for r in &rows {
         let iid: Uuid = r.get("id"); let correlation: String = r.get("correlation"); let etype: String = r.get("etype");
         // trail per-incidente come la chiusura singola
@@ -12601,8 +12615,8 @@ pub async fn incidents_close_all(State(st): State<AppState>, h: HeaderMap, Json(
     }
     tx.commit().await.map_err(ise)?;
     let n = rows.len();
-    audit(&st, tid, &s.email, "incidents_close_all", json!({"count":n})).await;
-    Ok(Json(json!({"ok":true,"closed":n})))
+    audit(&st, tid, &s.email, "incidents_close_all", json!({"count":n,"salva_vita_inclusi":b.include_life_safety})).await;
+    Ok(Json(json!({"ok":true,"closed":n,"life_safety_kept_open":kept})))
 }
 
 // ---- S4: on-call-now NATIVO (chi è reperibile ora, per gruppo) ----

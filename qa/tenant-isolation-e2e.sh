@@ -39,7 +39,7 @@ say "setup: acme e globex hanno allarmi aperti"
 [ "$A0" -ge 1 ] && [ "$G0" -ge 1 ] && ok || no "acme=$A0 globex=$G0"
 
 # GLOBEX chiude tutti i propri
-R=$(req POST /api/incidents/close-all "$J/g" '{"outcome":"iso test globex"}' globex)
+R=$(req POST /api/incidents/close-all "$J/g" '{"outcome":"iso test globex","include_life_safety":true}' globex)
 say "globex close-all chiude i SUOI"
 echo "$R" | grep -q '"closed"' && [ "$(glob_open)" = "0" ] && ok || no "$R globex_dopo=$(glob_open)"
 
@@ -53,7 +53,7 @@ c=$(curl -s -o /dev/null -w '%{http_code}' -b "$J/g" -H 'x-tenant-slug: globex' 
 [ "$c" != "200" ] && [ "$(acme_open)" = "$A0" ] && ok || no "code=$c acme=$(acme_open)"
 
 # cleanup: chiudi acme + rimetti globex loneworker non_abilitato
-req POST /api/incidents/close-all "$J/a" '{"outcome":"cleanup"}' acme >/dev/null
+req POST /api/incidents/close-all "$J/a" '{"outcome":"cleanup","include_life_safety":true}' acme >/dev/null
 req POST "/api/superadmin/tenants/$GID/modules" "$J/sa" '{"module_code":"loneworker","state":"non_abilitato"}' >/dev/null
 
 echo "== $PASS passed, $FAIL failed =="

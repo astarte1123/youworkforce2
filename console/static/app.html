@@ -944,8 +944,15 @@ function incHay(i){
 }
 async function incAckAll(btn){ if(!await askConfirm('Prendere in carico TUTTI gli allarmi aperti?'))return;
   try{ const r=await api('/incidents/ack-all',{method:'POST'}); toast(r.acknowledged+' presi in carico','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
+// SL-13: i salva-vita (SOS, uomo a terra, immobilità, check-in mancato, perdita di contatto) restano
+// aperti salvo una SECONDA conferma esplicita.
+const LIFE_SAFETY=['sos','man_down','immobilita','mancato_checkin','perdita_contatto'];
 async function incCloseAll(btn){ const o=await askPrompt('Esito di chiusura per TUTTI gli allarmi?'); if(!o)return;
-  try{ const r=await api('/incidents/close-all',{method:'POST',body:JSON.stringify({outcome:o})}); toast(r.closed+' chiusi','ok'); route(); }catch(e){ toast(e.message,'bad'); } }
+  const ls=((CEN&&CEN.all)||[]).filter(i=>i.state!=='chiuso'&&LIFE_SAFETY.includes(i.etype)).length;
+  let incl=false;
+  if(ls>0) incl=await askConfirm(`Ci sono ${ls} allarmi salva-vita aperti (SOS, uomo a terra, immobilità, check-in mancato, perdita di contatto). Conferma solo se hai verificato che ogni persona è al sicuro: chiudere anche questi?`);
+  try{ const r=await api('/incidents/close-all',{method:'POST',body:JSON.stringify({outcome:o,include_life_safety:incl})});
+    toast(r.closed+' chiusi'+(r.life_safety_kept_open?` · ${r.life_safety_kept_open} salva-vita lasciati aperti`:''),'ok'); route(); }catch(e){ toast(e.message,'bad'); } }
 async function aiCheckinAnomaly(btn){ const box=$('#aiCkOut'); if(!box)return; btn.disabled=true; box.innerHTML='<div class="small mut" style="padding:0 var(--s-16) var(--s-8)">youworker.ai analizza i check-in…</div>';
   try{ const r=await api('/checkin/ai-anomaly'); box.innerHTML=`<div class="card pad" style="margin:0 var(--s-16) var(--s-10);background:var(--brand-soft)"><div class="small mut">✦ youworker.ai (${r.count} mancati check-in / 14gg)</div><div style="white-space:pre-wrap;margin-top:var(--s-4)">${esc(r.analysis)}</div></div>`; }
   catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad);padding:0 var(--s-16) var(--s-8)">${esc(e.message)}</div>`; } finally{ btn.disabled=false; } }

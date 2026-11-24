@@ -31,8 +31,11 @@ ACK=$(api -X POST "$BASE/api/incidents/ack-all" | python -c "import sys,json;pri
 [ "$ACK" -ge 2 ] && ok "S3 ack-all prende in carico ($ACK)" || no "S3 ack-all ko" "$ACK"
 LEFT=$(sql "SELECT count(*) FROM app.incidents i JOIN app.tenants t ON t.id=i.tenant_id WHERE t.slug='$SLUG' AND i.state='aperto'")
 [ "$LEFT" = 0 ] && ok "S3 nessun incidente resta 'aperto'" || no "S3 restano aperti" "$LEFT"
-CL=$(api -H 'content-type: application/json' -X POST "$BASE/api/incidents/close-all" -d '{"outcome":"bulk e2e"}' | python -c "import sys,json;print(json.load(sys.stdin)['closed'])")
-[ "$CL" -ge 2 ] && ok "S3 close-all chiude ($CL)" || no "S3 close-all ko" "$CL"
+# SL-13: senza conferma esplicita i SOS restano aperti; con la conferma si chiudono
+KEPT=$(api -H 'content-type: application/json' -X POST "$BASE/api/incidents/close-all" -d '{"outcome":"bulk e2e"}' | python -c "import sys,json;print(json.load(sys.stdin)['life_safety_kept_open'])")
+[ "$KEPT" -ge 2 ] && ok "SL-13 close-all senza conferma lascia aperti i SOS ($KEPT)" || no "SL-13 SOS chiusi senza conferma" "$KEPT"
+CL=$(api -H 'content-type: application/json' -X POST "$BASE/api/incidents/close-all" -d '{"outcome":"bulk e2e","include_life_safety":true}' | python -c "import sys,json;print(json.load(sys.stdin)['closed'])")
+[ "$CL" -ge 2 ] && ok "S3 close-all con conferma esplicita chiude ($CL)" || no "S3 close-all ko" "$CL"
 OPENN=$(sql "SELECT count(*) FROM app.incidents i JOIN app.tenants t ON t.id=i.tenant_id WHERE t.slug='$SLUG' AND i.state<>'chiuso'")
 [ "$OPENN" = 0 ] && ok "S3 nessun incidente aperto dopo close-all" || no "S3 restano aperti dopo close" "$OPENN"
 

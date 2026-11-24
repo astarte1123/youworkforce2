@@ -64,14 +64,19 @@ sql "INSERT INTO app.incidents(tenant_id,etype,state,priority,correlation,opened
 DLV=$(api -H 'content-type: application/json' -X POST "$BASE/api/escalation/delivery/run" -d '{}' | python -c "import sys,json;d=json.load(sys.stdin);print(d['deliveries'])")
 [ "$DLV" -ge 1 ] && ok "F2 consegna nativa SENZA YWAlert ($DLV rung)" || no "nessuna consegna nativa" "$DLV"
 
-# ---- F1: maintenance nativo sospende la consegna ----
-sql "INSERT INTO app.incidents(tenant_id,etype,state,priority,correlation,opened_at,forced_group_id) SELECT $TID,'sos','nuovo',1,'e2e-maint-'||gen_random_uuid(),now(),'$GID'" >/dev/null
+# ---- F1: maintenance nativo sospende la consegna (SL-13: NON per i salva-vita) ----
+MI=$(sql "INSERT INTO app.incidents(tenant_id,etype,state,priority,correlation,opened_at,forced_group_id) SELECT $TID,'sensore_critico','aperto',2,'e2e-maint-'||gen_random_uuid(),now(),'$GID' RETURNING id" | head -1 | tr -d '[:space:]')
+MS=$(sql "INSERT INTO app.incidents(tenant_id,etype,state,priority,correlation,opened_at,forced_group_id) SELECT $TID,'sos','aperto',3,'e2e-maint-sos-'||gen_random_uuid(),now(),'$GID' RETURNING id" | head -1 | tr -d '[:space:]')
 api -H 'content-type: application/json' -X POST "$BASE/api/oncall-maintenance" -d '{"hours":1}' >/dev/null
-INCM=$(api -H 'content-type: application/json' -X POST "$BASE/api/escalation/delivery/run" -d '{}' | python -c "import sys,json;print(json.load(sys.stdin)['incidents'])")
-[ "$INCM" = 0 ] && ok "F1 maintenance nativo sospende la consegna" || no "maintenance non sospende" "$INCM"
+api -H 'content-type: application/json' -X POST "$BASE/api/escalation/delivery/run" -d '{}' >/dev/null
+DM=$(sql "SELECT count(*) FROM app.esc_delivery_log WHERE incident_id='$MI'" | tr -d '[:space:]')
+[ "$DM" = 0 ] && ok "F1 maintenance nativo sospende la consegna (allarme non salva-vita)" || no "maintenance non sospende" "$DM"
+DS=$(sql "SELECT count(*) FROM app.esc_delivery_log WHERE incident_id='$MS'" | tr -d '[:space:]')
+[ "$DS" -ge 1 ] && ok "SL-13 durante la manutenzione il SOS viene comunque consegnato" || no "SOS sospeso in manutenzione" "$DS"
 api -H 'content-type: application/json' -X POST "$BASE/api/oncall-maintenance" -d '{"hours":0}' >/dev/null
-INCA=$(api -H 'content-type: application/json' -X POST "$BASE/api/escalation/delivery/run" -d '{}' | python -c "import sys,json;print(json.load(sys.stdin)['incidents'])")
-[ "$INCA" -ge 1 ] && ok "F1 consegna riprende a maintenance OFF" || no "consegna non ripresa" "$INCA"
+api -H 'content-type: application/json' -X POST "$BASE/api/escalation/delivery/run" -d '{}' >/dev/null
+DA=$(sql "SELECT count(*) FROM app.esc_delivery_log WHERE incident_id='$MI'" | tr -d '[:space:]')
+[ "$DA" -ge 1 ] && ok "F1 consegna riprende a maintenance OFF" || no "consegna non ripresa" "$DA"
 
 # ---- teardown COMPLETO: ripristino stato globex (iot torna al suo stato di seed) ----
 sql "UPDATE app.tenant_modules tm SET state='attivo' FROM app.tenants t WHERE t.id=tm.tenant_id AND t.slug='$SLUG' AND tm.module_code='loneworker'" >/dev/null
