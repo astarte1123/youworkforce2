@@ -191,9 +191,16 @@ utile per iscriversi al calendario di un team specifico.
   degli altri critici), poi i più vecchi; con molti allarmi aperti un SOS non resta in coda.
 - **Dedup**: un secondo allarme con la **stessa chiave** (correlation) di un incidente ancora aperto
   non ne apre un altro (viene annotato sull'esistente).
-- **Ack/chiusura**: se il reperibile prende in carico o chiude via SMS (rispondendo `OK`/`CHIUDI`),
-  tastierino sulla chiamata (**1** = presa in carico, **9** = opt-out), o dalla Centrale, l'incidente
-  si aggiorna (preso in carico / chiuso).
+- **Messaggio al reperibile** (SL-9): tipo d'allarme in chiaro, lavoratore, sede, link alla posizione e
+  istruzioni, es. «ALLARME SOS / richiesta soccorso - mario@… - Cantiere Nord - posizione https://… .
+  Rispondi OK 1a2b3c4d per prenderlo in carico, CHIUDI 1a2b3c4d per chiuderlo.»
+- **Ack/chiusura via SMS** (SL-8): la parola chiave deve essere la **prima** (`OK`, `ACK`, `1`,
+  `PRESO` = presa in carico; `CHIUDI`, `RISOLTO` = chiusura), quindi «NON OK» non vale. Il **codice**
+  dopo la parola indica l'allarme esatto; senza codice la risposta vale solo se quel numero ha un unico
+  allarme da gestire, altrimenti l'SMS di risposta elenca i codici. Si considerano solo gli allarmi
+  per cui **quel numero è stato avvisato** (il tenant si ricava dal log di consegna). Sulla chiamata
+  vocale: **1** = presa in carico dell'allarme per cui si è stati chiamati, **9** = opt-out. Dalla
+  Centrale come sempre. e2e: `qa/sms-ack-e2e.sh`.
 - **Opt-out rispettato**: un recapito che ha fatto STOP/9 non riceve più nulla finché non viene
   riattivato (START o Riabilita + ri-verifica).
 - **Rientro**: quando la condizione rientra, l'incidente si chiude.

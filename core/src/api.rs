@@ -11872,7 +11872,7 @@ async fn esc_process_incident(
                 let spec = specs.get(cur_step as usize).cloned().unwrap_or(EscStepTarget{ channel:Channel::Sms, kind:"oncall".into(), group:None, user:None, slack:None });
                 let (oncall, slack_ch) = esc_step_recipients(st, tid, gid, &spec, ga_opt, now).await;
                 let sstr = iid.to_string(); let short = &sstr[..8];
-                let text = format!("Allarme {etype} (incidente {short})");
+                let text = esc_alert_text(st, tid, iid, &etype, short, &tr.public_base).await;
                 delivered += esc_deliver_step_rungs(st, tid, iid, cur_step, fired_at, rc, spec.channel, &oncall, now, &text, tr).await;
                 if let Some(sc) = slack_ch { delivered += esc_deliver_slack_rung(st, tid, iid, cur_step, rc, &sc, &text, tr).await; }
             }
@@ -11885,7 +11885,7 @@ async fn esc_process_incident(
             let spec = specs.get(idx).cloned().unwrap_or(EscStepTarget{ channel:Channel::Sms, kind:"oncall".into(), group:None, user:None, slack:None });
             let (oncall, slack_ch) = esc_step_recipients(st, tid, gid, &spec, ga_opt, now).await;
             let sstr = iid.to_string(); let short = &sstr[..8];
-            let text = format!("Allarme {etype} (incidente {short})");
+            let text = esc_alert_text(st, tid, iid, &etype, short, &tr.public_base).await;
             // SL-1: nessun destinatario per questo gradino (fuori fascia di copertura, gruppo vuoto,
             // nessun recapito): lo si dichiara in cronologia e parte la rete di ultima istanza.
             if oncall.is_empty() && slack_ch.is_none() && CRITICAL.contains(&etype.as_str()) {
@@ -12283,14 +12283,79 @@ fn esc_verify_inbound(h: &HeaderMap, path: &str, params: &[(String,String)]) -> 
 }
 
 /// Mappa un numero mittente -> incidente aperto più recente a cui era stata consegnata una rung.
-async fn esc_incident_by_number(st: &AppState, number: &str) -> Option<(Uuid, Uuid, String)> {
+/// SL-9: testo della notifica al reperibile, senza codici grezzi: tipo d'allarme in chiaro, lavoratore,
+/// sede, link alla posizione e come rispondere (con il codice breve dell'incidente).
+async fn esc_alert_text(st: &AppState, tid: Uuid, iid: Uuid, etype: &str, short: &str, _public_base: &str) -> String {
+    let r = sqlx::query(
+        "SELECT COALESCE(w.email, du.email) AS worker, s.name AS site, e.lat, e.lon
+           FROM app.incidents i
+           LEFT JOIN app.users w ON w.id=i.worker_user_id
+           LEFT JOIN app.events e ON e.id=i.event_id
+           LEFT JOIN app.devices d ON d.id=e.device_id
+           LEFT JOIN app.users du ON du.id=d.assigned_user
+           LEFT JOIN app.sites s ON s.id=i.site_id
+          WHERE i.id=$1 AND i.tenant_id=$2")
+        .bind(iid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let mut parts = vec![format!("ALLARME {}", etype_label(etype))];
+    if let Some(r) = &r {
+        if let Some(w) = r.try_get::<Option<String>,_>("worker").ok().flatten() { parts.push(w); }
+        if let Some(sn) = r.try_get::<Option<String>,_>("site").ok().flatten() { parts.push(sn); }
+        if let (Some(la), Some(lo)) = (r.try_get::<Option<f64>,_>("lat").ok().flatten(), r.try_get::<Option<f64>,_>("lon").ok().flatten()) {
+            parts.push(format!("posizione https://maps.google.com/?q={la:.5},{lo:.5}"));
+        }
+    }
+    format!("{}. Rispondi OK {short} per prenderlo in carico, CHIUDI {short} per chiuderlo.", parts.join(" - "))
+}
+
+/// SL-8: interpreta la risposta SMS del reperibile. La parola chiave deve essere la PRIMA parola
+/// (così «NON OK» non vale come presa in carico); il secondo elemento facoltativo è il codice breve
+/// dell'incidente (primi caratteri dell'identificativo, come nel messaggio ricevuto).
+pub(crate) fn parse_sms_reply(body: &str) -> (Option<&'static str>, Option<String>) {
+    let up = body.trim().to_uppercase();
+    let mut it = up.split_whitespace();
+    let first = it.next().unwrap_or("");
+    let action = match first {
+        "OK" | "ACK" | "1" | "PRESO" | "PRESA" => Some("ack"),
+        "CHIUDI" | "CLOSE" | "RISOLTO" => Some("close"),
+        _ => None,
+    };
+    let code = it.next().map(|c| c.to_lowercase())
+        .filter(|c| c.len() >= 6 && c.len() <= 36 && c.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-'));
+    (action, code)
+}
+
+pub(crate) enum ReplyTarget { One(Uuid, Uuid), Ambiguous(Vec<String>), None }
+/// SL-8: incidente a cui si riferisce la risposta di `number`. Solo incidenti APERTI per cui quel
+/// numero è stato effettivamente avvisato (il tenant si deduce dal log di consegna, mai indovinato).
+/// Con il codice: quello. Senza codice: vale solo se il numero ha un unico allarme aperto.
+async fn esc_incident_for_reply(st: &AppState, number: &str, code: Option<&str>, action: &str) -> ReplyTarget {
+    // presa in carico: solo allarmi ancora da prendere; chiusura: anche quelli già presi in carico
+    let states: &[&str] = if action == "close" { &["aperto","preso_in_carico","intervento"] } else { &["aperto"] };
+    let rows = sqlx::query(
+        "SELECT DISTINCT ON (d.incident_id) d.tenant_id, d.incident_id, d.at
+           FROM app.esc_delivery_log d JOIN app.incidents i ON i.id=d.incident_id AND i.tenant_id=d.tenant_id
+          WHERE d.to_value=$1 AND d.channel IN ('sms','voice') AND i.state = ANY($2)
+          ORDER BY d.incident_id, d.at DESC")
+        .bind(number).bind(states).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let mut cands: Vec<(Uuid, Uuid, chrono::DateTime<chrono::Utc>)> = rows.iter()
+        .map(|r| (r.get("tenant_id"), r.get("incident_id"), r.get("at"))).collect();
+    if let Some(c) = code {
+        cands.retain(|(_, iid, _)| iid.to_string().starts_with(c));
+    }
+    match cands.len() {
+        0 => ReplyTarget::None,
+        1 => ReplyTarget::One(cands[0].0, cands[0].1),
+        _ => { cands.sort_by(|a, b| b.2.cmp(&a.2));
+               ReplyTarget::Ambiguous(cands.iter().take(5).map(|(_, i, _)| i.to_string()[..8].to_string()).collect()) }
+    }
+}
+/// Voce: la chiamata riguarda l'ultimo incidente chiamato su quel numero (non ambiguo per costruzione).
+async fn esc_incident_last_called(st: &AppState, number: &str) -> Option<(Uuid, Uuid)> {
     let row = sqlx::query(
-        "SELECT d.tenant_id, d.incident_id, i.state
-           FROM app.esc_delivery_log d JOIN app.incidents i ON i.id=d.incident_id
-          WHERE d.to_value=$1 AND d.channel IN ('sms','voice') AND i.state <> 'chiuso'
-          ORDER BY d.at DESC LIMIT 1")
+        "SELECT d.tenant_id, d.incident_id FROM app.esc_delivery_log d JOIN app.incidents i ON i.id=d.incident_id AND i.tenant_id=d.tenant_id
+          WHERE d.to_value=$1 AND d.channel='voice' AND i.state <> 'chiuso' ORDER BY d.at DESC LIMIT 1")
         .bind(number).fetch_optional(&st.owner_pool).await.ok().flatten()?;
-    Some((row.get("tenant_id"), row.get("incident_id"), row.get("state")))
+    Some((row.get("tenant_id"), row.get("incident_id")))
 }
 
 /// Registra l'ack: stato macchina + delivery_log(acked) + timeline. In SHADOW NON tocca
@@ -12642,15 +12707,21 @@ pub async fn twilio_ingress_sms(State(st): State<AppState>, h: HeaderMap, axum::
         esc_optout_clear(&st, &from).await;
         return twiml("<Response><Message>Riattivato. Verifica il recapito in YouWorkforce.</Message></Response>");
     }
-    let action = if ["CHIUDI","CLOSE","RISOLTO"].iter().any(|w| body.contains(w)) { "close" }
-                 else if ["OK","ACK","1","PRESO"].iter().any(|w| body.contains(w)) { "ack" }
-                 else { "" };
-    if !action.is_empty() {
-        if let Some((tid, iid, _)) = esc_incident_by_number(&st, &from).await {
+    let (action, code) = parse_sms_reply(&body);
+    let Some(action) = action else {
+        return twiml("<Response><Message>Risposta non riconosciuta. Scrivi OK seguito dal codice dell'allarme per prenderlo in carico, CHIUDI seguito dal codice per chiuderlo.</Message></Response>");
+    };
+    match esc_incident_for_reply(&st, &from, code.as_deref(), action).await {
+        ReplyTarget::One(tid, iid) => {
             esc_apply_ack(&st, tid, iid, action, "sms").await;
+            let what = if action == "close" { "Chiuso" } else { "Preso in carico" };
+            twiml(&format!("<Response><Message>{what}: allarme {}.</Message></Response>", &iid.to_string()[..8]))
         }
+        ReplyTarget::Ambiguous(codes) => twiml(&format!(
+            "<Response><Message>Hai piu' allarmi aperti: rispondi {} seguito dal codice ({}).</Message></Response>",
+            if action == "close" { "CHIUDI" } else { "OK" }, codes.join(", "))),
+        ReplyTarget::None => twiml("<Response><Message>Nessun allarme aperto corrisponde alla risposta.</Message></Response>"),
     }
-    twiml("<Response></Response>")
 }
 
 /// Inbound VOCE: Twilio invia i `Digits` del Gather. "1" -> presa in carico. Se mancano i Digits
@@ -12663,7 +12734,7 @@ pub async fn twilio_ingress_voice(State(st): State<AppState>, h: HeaderMap, axum
         return twiml("<Response><Gather numDigits=\"1\" timeout=\"20\"><Say language=\"it-IT\">Allarme. Premi 1 per prendere in carico, oppure 9 per non ricevere piu' chiamate.</Say></Gather></Response>");
     }
     if digits == "1" {
-        if let Some((tid, iid, _)) = esc_incident_by_number(&st, &from).await {
+        if let Some((tid, iid)) = esc_incident_last_called(&st, &from).await {
             esc_apply_ack(&st, tid, iid, "ack", "voice").await;
         }
         return twiml("<Response><Say language=\"it-IT\">Preso in carico. Grazie.</Say></Response>");
@@ -12771,5 +12842,24 @@ mod logo_tests {
         assert_eq!(logo_kind(b"<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>"), None);
         assert_eq!(logo_kind(b"<html><script>alert(1)</script></html>"), None);
         assert_eq!(logo_kind(b""), None);
+    }
+}
+
+#[cfg(test)]
+mod sms_reply_tests {
+    use super::*;
+    #[test]
+    fn keyword_must_be_first_word() {
+        assert_eq!(parse_sms_reply("ok").0, Some("ack"));
+        assert_eq!(parse_sms_reply("  Preso ").0, Some("ack"));
+        assert_eq!(parse_sms_reply("NON OK").0, None);
+        assert_eq!(parse_sms_reply("non chiudere").0, None);
+        assert_eq!(parse_sms_reply("chiudi").0, Some("close"));
+    }
+    #[test]
+    fn incident_code_is_parsed() {
+        assert_eq!(parse_sms_reply("OK 1a2b3c4d"), (Some("ack"), Some("1a2b3c4d".into())));
+        assert_eq!(parse_sms_reply("chiudi 1A2B3C4D"), (Some("close"), Some("1a2b3c4d".into())));
+        assert_eq!(parse_sms_reply("OK grazie"), (Some("ack"), None));
     }
 }

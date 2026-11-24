@@ -30,7 +30,7 @@ CORE="smoke.sh loneworker-e2e.sh checkin-sos-attribution-e2e.sh acl-e2e.sh \
  cantieri-e2e.sh cantieri-squadre-e2e.sh cantieri-cronoprogramma-e2e.sh cantieri-costi-e2e.sh cantieri-giornale-fatture-e2e.sh cronoprogramma-deps-e2e.sh \
  clients-e2e.sh listino-e2e.sh dispatch-e2e.sh richieste-e2e.sh contratti-e2e.sh anagrafiche-e2e.sh commessa-allegati-e2e.sh tenant-invite-e2e.sh tenant-lifecycle-e2e.sh tenant-suspension-e2e.sh superadmin-hardening-e2e.sh license-advisory-e2e.sh system-monitoring-e2e.sh \
  vigilanza-e2e.sh vigilanza-piani-e2e.sh vigilanza-autopunch-e2e.sh \
- escalation-decouple-e2e.sh escalation-fallback-e2e.sh miei-allarmi-e2e.sh escalation-setactive-e2e.sh escalation-rest-e2e.sh escalation-schedules-e2e.sh \
+ escalation-decouple-e2e.sh escalation-fallback-e2e.sh miei-allarmi-e2e.sh sms-ack-e2e.sh escalation-setactive-e2e.sh escalation-rest-e2e.sh escalation-schedules-e2e.sh \
  escalation-policy-e2e.sh escalation-policy-targets-e2e.sh escalation-profile-e2e.sh escalation-services-e2e.sh escalation-schedule-minors-e2e.sh ywalert-delivery-e2e.sh \
  iot-telemetry-e2e.sh iot-attr-cmd-e2e.sh iot-threshold-e2e.sh iot-normalize-e2e.sh iot-blueprint-e2e.sh iot-mqtt-e2e.sh iot-alerts-e2e.sh iot-monitor-e2e.sh iot-catalog-e2e.sh"
 # NB: motore di escalation YWAlert = NATIVO (nessun connettore esterno). Le suite 'escalation-*' +
