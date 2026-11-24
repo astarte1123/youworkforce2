@@ -42,10 +42,14 @@ expect "A consuntivi bloccati (consuntivi off)" 403 "$(code adm "$BASE/api/times
 expect "A squadre bloccate (workforce off)" 403 "$(code adm "$BASE/api/teams")"
 expect "A diario bloccato (nessun modulo Campo)" 403 "$(code wrk -X POST "$BASE/api/diary" -H 'content-type: application/json' -d "$DN")"
 
-echo "== Scenario B: SOLO Lavoro sul campo (interventi,consuntivi,workforce,giri) =="
-setmods interventi consuntivi workforce giri
+echo "== Scenario B: SOLO Lavoro sul campo senza Ronde (interventi,consuntivi,workforce) =="
+setmods interventi consuntivi workforce
 expect "B check-in bloccato (loneworker off)" 403 "$(code wrk -X POST "$BASE/api/checkins" -H 'content-type: application/json' -d "$CK")"
-expect "B incidenti bloccati (nessun modulo safety)" 403 "$(code adm "$BASE/api/incidents")"
+expect "B incidenti bloccati (nessun modulo che produce allarmi)" 403 "$(code adm "$BASE/api/incidents")"
+# CA-12 (24/11/2026): il modulo Ronde produce l'allarme «Ronda mancata» e porta con sé la Centrale
+setmods interventi consuntivi workforce giri
+expect "B+Ronde: incidenti visibili (ronda mancata)" 200 "$(code adm "$BASE/api/incidents")"
+expect "B+Ronde: check-in resta bloccato (loneworker off)" 403 "$(code wrk -X POST "$BASE/api/checkins" -H 'content-type: application/json' -d "$CK")"
 expect "B ordini visibili (interventi on)" 200 "$(code adm "$BASE/api/orders")"
 expect "B consuntivi visibili (consuntivi on)" 200 "$(code adm "$BASE/api/timesheets")"
 expect "B squadre visibili (workforce on)" 200 "$(code adm "$BASE/api/teams")"

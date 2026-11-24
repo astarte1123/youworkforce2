@@ -18,7 +18,7 @@ use crate::db;
 /// permessi sono scelti in modo che i ruoli predefiniti vedano esattamente gli stessi widget di prima.
 /// L'ordine qui è il default quando il tenant non ha un layout salvato.
 pub const DASHBOARD_WIDGETS: &[(&str, &[&str], &[&str], &str, &[&str])] = &[
-    ("incidents",  &["loneworker","gps","iot"], &["operatore","tenant_admin","auditor","responsabile"], "half", &["incidents.view"]),
+    ("incidents",  &["loneworker","gps","iot","giri"], &["operatore","tenant_admin","auditor","responsabile"], "half", &["incidents.view"]),
     ("checkins",   &["loneworker"], &["operatore","tenant_admin","auditor"], "half", &[]),
     ("orders",     &["interventi"], &["pianificatore","tenant_admin","lavoratore","auditor"], "half", &["plan"]),
     ("timesheets", &["consuntivi"], &["lavoratore","responsabile","tenant_admin","auditor"], "half", &["approve","timesheets.view_all"]),

@@ -84,8 +84,8 @@ const FIELD_MODS=['interventi','cantieri','giri','workforce','consuntivi'];
 const NAV = [
   {k:'dashboard', t:'Dashboard', ico:'home', roles:null, grp:'op'},
   // --- Sicurezza Lavoratore (perimetro man-down/SOS): operatività allarmi + config del perimetro ---
-  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker','gps','iot'], grp:'safety'},
-  {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker','gps','iot'], grp:'safety'},
+  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker','gps','iot','giri'], grp:'safety'},
+  {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker','gps','iot','giri'], grp:'safety'},
   {k:'mappa',     t:'Mappa allarmi', ico:'map', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'safety'},
   // Piantine (indoor): due voci separate, ciascuna legata al PROPRIO perimetro, così non si
   // duplica. In Sicurezza solo se c'è un modulo dispositivi/allarmi; in Lavoro sul campo solo se
@@ -98,7 +98,7 @@ const NAV = [
   {k:'dispositivi',t:'Dispositivi & App', ico:'shield', roles:['tenant_admin'], cap:'devices.admin', mod:DEVICE_MODS, grp:'safety'},
   {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], cap:'escalation.manage', mod:['loneworker'], grp:'safety'},
   {k:'profili',   t:'Profili di protezione', ico:'shield', roles:['tenant_admin'], cap:'escalation.manage', mod:['loneworker'], grp:'safety'},
-  {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], cap:'escalation.manage', mod:['loneworker','gps','iot'], grp:'safety'},
+  {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], cap:'escalation.manage', mod:['loneworker','gps','iot','giri'], grp:'safety'},
   // --- IoT: monitoraggio flotta + alert di processo (soglia/offline/ripristino), VISTA SEPARATA ---
   {k:'iot-monitor',t:'Monitoraggio IoT', ico:'home', roles:['operatore','tenant_admin','auditor'], cap:'iot.manage', mod:['iot'], grp:'iot'},
   {k:'iot-alerts',t:'Alert IoT', ico:'alert', roles:['operatore','tenant_admin','auditor'], cap:'iot.manage', mod:['iot'], grp:'iot'},
@@ -1073,7 +1073,8 @@ const ALARM_ETYPES=['sos','man_down','immobilita','mancato_checkin','sensore_cri
   'perdita_alimentazione','jamming','perdita_contatto','batteria_critica','batteria_bassa'];
 const ETYPE_LAB={sos:'SOS / richiesta soccorso',man_down:'Uomo a terra (man down)',immobilita:'Immobilità prolungata',
   mancato_checkin:'Check-in mancato',sensore_critico:'Sensore critico',manomissione_badge:'Manomissione / rimozione badge',
-  perdita_alimentazione:'Perdita alimentazione',jamming:'Jamming / disturbo segnale',perdita_contatto:'Perdita contatto (badge silente)',traccar_conn_down:'Server di tracciamento esterno irraggiungibile (storico)',
+  perdita_alimentazione:'Perdita alimentazione',jamming:'Jamming / disturbo segnale',perdita_contatto:'Perdita contatto (badge silente)',
+  ronda_mancata:'Ronda mancata (orario pianificato non svolto)',traccar_conn_down:'Server di tracciamento esterno irraggiungibile (storico)',
   batteria_critica:'Batteria in esaurimento (critico)',batteria_bassa:'Batteria bassa',
   ingresso_sito:'Ingresso in sito',uscita_sito:'Uscita dal sito',
   geofence_ingresso:'Ingresso in zona vietata (geofence)',geofence_uscita:'Uscita da area sicura (geofence)',
@@ -2063,9 +2064,11 @@ async function vRonde(v){
   v._sites=sites;
 }
 async function ronNew(){
-  const groups=await api('/user-groups').catch(()=>[]);
+  const [groups,sites]=await Promise.all([api('/user-groups').catch(()=>[]),api('/sites').catch(()=>[])]);
   drawer('Nuovo giro', `<div class="col" style="gap:var(--s-10)">
     <label class="small mut">Nome giro<input id="rn_name"></label>
+    <label class="small mut">Sede (opz.)<select id="rn_site"><option value="">— nessuna —</option>${sites.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>
+      <div class="small mut">Gli orari delle ronde pianificate seguono il fuso orario della sede (o dell'azienda); l'allarme «Ronda mancata» è attribuito a questa sede.</div></label>
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Finestra max giro (min, opz.)<input id="rn_win" type="number" min="1"></label>
       <label class="small mut grow">Tolleranza tempi (min)<input id="rn_grace" type="number" min="0" value="0"></label></div>
     <label class="small mut">Modalità<select id="rn_mode"><option value="piedi">A piedi</option><option value="mezzo">Con mezzo</option></select></label>
@@ -2074,7 +2077,7 @@ async function ronNew(){
     <label class="small mut">Assegna a gruppo di persone (opz.)<select id="rn_grp"><option value="">— aperto a tutti —</option>${groups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select><div class="small mut">se impostato, solo i membri vedono e avviano il giro</div></label>
     <button class="btn" id="rn_save">Crea giro</button><div class="cfg-msg small"></div></div>`);
   $('#rn_save').onclick=async()=>{ const m=$('.cfg-msg'); const n=$('#rn_name').value.trim(); if(!n){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
-    const w=$('#rn_win').value; const b={name:n,window_minutes:w?parseInt(w):null,assigned_group:$('#rn_grp').value||null,mode:$('#rn_mode').value,grace_min:parseInt($('#rn_grace').value||'0'),manual_code_allowed:$('#rn_manual').checked};
+    const w=$('#rn_win').value; const b={name:n,site_id:$('#rn_site').value||null,window_minutes:w?parseInt(w):null,assigned_group:$('#rn_grp').value||null,mode:$('#rn_mode').value,grace_min:parseInt($('#rn_grace').value||'0'),manual_code_allowed:$('#rn_manual').checked};
     try{await api('/patrol-routes',{method:'POST',body:JSON.stringify(b)}); toast('Giro creato','ok'); closeDrawer(); route();}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }; }
 async function ronDel(id){ if(!await askConfirm('Eliminare il giro? (ronde e checkpoint inclusi)'))return; try{await api('/patrol-routes/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e.message,'bad');} }
 async function ronCp(rid,rname){ const all=await api('/patrol-routes').catch(()=>[]); const r=all.find(x=>x.id===rid); if(!r)return;
@@ -2133,7 +2136,9 @@ async function vVigilanza(v){
   // slot dovuti raggruppati per giro
   const byR={}; (d&&d.slots||[]).forEach(s=>{(byR[s.route_name]=byR[s.route_name]||[]).push(s);});
   const slotsHtml=Object.keys(byR).map(rn=>`<div style="margin-bottom:var(--s-6)"><div class="small" style="font-weight:600">${esc(rn)}</div>
-    <div class="row" style="gap:var(--s-4);flex-wrap:wrap">${byR[rn].map(s=>{const col=s.status==='mancante'?'background:var(--bad);color:#fff':(s.status==='svolta'?'background:var(--ok,#16a34a);color:#fff':'');return `<span class="chip" style="${col}" title="${esc(s.status)}">${new Date(s.at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}</span>`;}).join('')}</div></div>`).join('')
+    <div class="row" style="gap:var(--s-4);flex-wrap:wrap">${byR[rn].map(s=>{const col=s.status==='mancante'?'background:var(--bad);color:#fff':(s.status==='svolta'?'background:var(--ok,#16a34a);color:#fff':'');const lab={svolta:'svolta',mancante:'mancata',attesa:'in attesa'}[s.status]||s.status;
+      return s.incident_id?`<span class="chip clk" style="${col}" title="Ronda mancata: apri l'allarme" onclick="openIncident('${s.incident_id}')">${esc(s.local_time||'')} ⚠</span>`
+        :`<span class="chip" style="${col}" title="${esc(lab)}">${esc(s.local_time||new Date(s.at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}))}</span>`;}).join('')}</div></div>`).join('')
     ||'<div class="small mut">Nessuna ronda pianificata per oggi. Crea un piano qui sotto.</div>';
   const schRows=(scheds||[]).map(s=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin:var(--s-4) 0">
     <div><b class="small">${esc(s.route_name)}</b><div class="small mut">${DOW_V.filter((_,i)=>s.days_mask[i]==='1').join(' ')} · ${esc(s.from_time)}–${esc(s.to_time)} · ogni ${s.every_minutes} min</div></div>
@@ -5203,9 +5208,9 @@ async function vAnagrafiche(v){
       <table class="table" data-export="utenti"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
       <tbody>${users.map(u=>`<tr class="clk" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
         <td></td></tr>`).join('')}</tbody></table></div>
-    <div class="card"><div class="card-h"><h2>Sedi (${sites.length})</h2><button class="btn ghost small" onclick="siteForm()">+ aggiungi</button></div>
+    <div class="card"><div class="card-h"><h2>Sedi (${sites.length})</h2><span>${hasCap('settings.manage')?'<button class="btn ghost small" onclick="tenantTzEdit()">🕒 fuso orario</button> ':''}<button class="btn ghost small" onclick="siteForm()">+ aggiungi</button></span></div>
       <table class="table" data-export="sedi"><thead><tr><th>Nome</th><th>Indirizzo</th><th></th></tr></thead>
-      <tbody>${sites.map(s=>`<tr class="clk" onclick='siteForm(${JSON.stringify(s).replace(/'/g,"&#39;")})'><td>${esc(s.name)}</td><td class="small mut">${esc(s.address||'—')}${(s.lat!=null&&s.lon!=null)?' · 📍':''}${s.access_notes?' · 🔑':''}</td>
+      <tbody>${sites.map(s=>`<tr class="clk" onclick='siteForm(${JSON.stringify(s).replace(/'/g,"&#39;")})'><td>${esc(s.name)}</td><td class="small mut">${esc(s.address||'—')}${(s.lat!=null&&s.lon!=null)?' · 📍':''}${s.access_notes?' · 🔑':''}${s.timezone?' · 🕒 '+esc(s.timezone):''}</td>
         <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();siteDel('${s.id}')">${ICON.x}</button></td></tr>`).join('')
         ||emptyRow(3, ICON.building, 'Nessuna sede', 'Le sedi sono i luoghi di lavoro: a loro colleghi dispositivi, turni e allarmi. Aggiungine una.', {fn:'siteForm()',label:'+ Aggiungi sede'})}</tbody></table></div>
   </div>
@@ -5589,6 +5594,19 @@ async function userSave(id,scoped){
 }
 async function userDel(id){ if(!await askConfirm('Eliminare utente?'))return;
   try{await api('/users/'+id,{method:'DELETE'}); toast('Eliminato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
+// CA-16: elenco fusi orari (IANA) dal browser; i più comuni in cima.
+function tzOptions(sel){ const common=['Europe/Rome','Europe/London','Europe/Paris','Europe/Berlin','Europe/Madrid','UTC'];
+  let all=[]; try{ all=Intl.supportedValuesOf('timeZone'); }catch(e){ all=common; }
+  const list=[...common, ...all.filter(z=>!common.includes(z))];
+  if(sel && !list.includes(sel)) list.unshift(sel);
+  return list.map(z=>`<option value="${esc(z)}" ${z===sel?'selected':''}>${esc(z)}</option>`).join(''); }
+async function tenantTzEdit(){ const cur=(await api('/settings/timezone').catch(()=>({}))).timezone||'Europe/Rome';
+  drawer('Fuso orario dell\'azienda', `<div class="col" style="gap:var(--s-10)">
+    <label class="small mut">Fuso orario<select id="ttz">${tzOptions(cur)}</select></label>
+    <div class="small mut">Gli orari delle ronde pianificate (es. «22:00») si intendono in questo fuso, salvo le sedi che ne hanno uno proprio.</div>
+    <button class="btn" onclick="tenantTzSave()">Salva</button><div class="cfg-msg small"></div></div>`); }
+async function tenantTzSave(){ try{ await api('/settings/timezone',{method:'PUT',body:JSON.stringify({timezone:$('#ttz').value})}); toast('Fuso orario salvato','ok'); closeDrawer(); route(); }
+  catch(e){ const m=$('.cfg-msg'); m.textContent=e.message; m.style.color='var(--bad)'; } }
 // Form sede: nome + indirizzo + coordinate + indicazioni d'accesso (opzionali).
 let STMAP=null, STMARK=null;
 function siteForm(s){ s=s||{};
@@ -5600,6 +5618,8 @@ function siteForm(s){ s=s||{};
     <div class="small mut">Trascina il segnaposto per correggere la posizione esatta (cancello, ingresso cantiere).</div>
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Lat<input id="stLat" type="number" step="any" value="${s.lat!=null?s.lat:''}" oninput="siteSyncMarker()"></label>
       <label class="small mut grow">Lon<input id="stLon" type="number" step="any" value="${s.lon!=null?s.lon:''}" oninput="siteSyncMarker()"></label></div>
+    <label class="small mut">Fuso orario<select id="stTz"><option value="">come l'azienda</option>${tzOptions(s.timezone)}</select>
+      <div class="small mut">Serve per gli orari delle ronde pianificate in questa sede. Cambialo solo se la sede è in un altro fuso.</div></label>
     <label class="small mut">Indicazioni d'accesso (visibili solo agli autorizzati)<textarea id="stAcc" style="width:100%;height:60px" placeholder="es. chiave in portineria, codice cancello…">${esc(s.access_notes||'')}</textarea></label>
     <button class="btn" onclick="siteSave('${s.id||''}')">Salva</button><div class="cfg-msg small"></div></div>`);
   setTimeout(siteMapInit,60);
@@ -5634,7 +5654,7 @@ async function siteGeocode(){
   }catch(e){ if(m){m.textContent='geocodifica non disponibile: inserisci lat/lon o trascina il segnaposto';m.style.color='var(--bad)';} }
 }
 async function siteSave(id){ const m=$('.cfg-msg'); const name=$('#stName').value.trim(); if(!name){ m.textContent='nome richiesto'; m.style.color='var(--bad)'; return; }
-  const b={name, address:$('#stAddr').value.trim()||null, lat:$('#stLat').value!==''?Number($('#stLat').value):null, lon:$('#stLon').value!==''?Number($('#stLon').value):null, access_notes:$('#stAcc').value.trim()||null};
+  const b={name, address:$('#stAddr').value.trim()||null, lat:$('#stLat').value!==''?Number($('#stLat').value):null, lon:$('#stLon').value!==''?Number($('#stLon').value):null, access_notes:$('#stAcc').value.trim()||null, timezone:$('#stTz').value};
   try{ await api(id?('/sites/'+id):'/sites',{method:'POST',body:JSON.stringify(b)}); toast('Sede salvata','ok'); closeDrawer(); route(); }catch(e){ m.textContent=e.message; m.style.color='var(--bad)'; } }
 async function siteRen(id,cur){ const n=await askPrompt('Nuovo nome?',cur); if(!n||n===cur)return;
   try{await api('/sites/'+id,{method:'POST',body:JSON.stringify({name:n})}); toast('Rinominata','ok'); route();}catch(e){toast(e.message,'bad');} }

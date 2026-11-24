@@ -115,12 +115,36 @@ ronda, punch QR ok/ko, punch GPS dentro/fuori raggio, chiusura completato/incomp
 `qa/field-integrity-e2e.sh` **25/25** (mig 0134): codice mai inviato alla guardia, codice
 generato, avviso su codice corto, metodo reale, digitato = anomalia, giro solo scansione, tentativo
 fallito che non declassa l'OK, pianificatore che non punzona per altri, distanza dal punto; più
-la parte ordini (CA-1/CA-7, vedi `lavoro-campo-modalita.md`).
+la parte ordini (CA-1/CA-7, vedi `campo-gruppi.md`).
+
+## Ronde pianificate: fuso orario e ronda mancata (mig `0135`, CA-12/CA-16)
+
+- **Fuso orario.** Gli orari dei piani (`from_time`/`to_time`, es. «22:00») sono nell'ora locale
+  della **sede del giro**; se la sede non ha un fuso proprio vale quello del **tenant** (default
+  `Europe/Rome`). Prima erano letti in UTC (un'ora di differenza in inverno, due in estate).
+  - `GET/PUT /api/settings/timezone` `{timezone}` (modifica: capability `settings.manage`); in
+    console: *Utenti e sedi → Sedi → 🕒 fuso orario*.
+  - Sede: campo `timezone` (vuoto = come il tenant) nel form sede.
+  - Nuovo giro: selettore **Sede** (serve per il fuso e per la sede dell'allarme).
+  - Passaggio all'ora legale: un orario inesistente viene saltato.
+- **Ronda mancata.** Un controllo del worker (~ogni 30 s) guarda gli slot dei piani attivi: se la
+  scadenza dello slot (orario + intervallo) è passata e nessuna ronda del giro è stata avviata tra
+  metà intervallo prima e la scadenza, apre l'incidente **`ronda_mancata`** («Ronda mancata
+  (orario pianificato non svolto)») attribuito alla sede del giro. Escalation normale (gruppi,
+  reperibilità, rete di ultima istanza); **non** è salva-vita: la manutenzione lo sospende.
+  - Un solo incidente per slot (`app.patrol_missed`, UNIQUE(schedule_id, slot_at)).
+  - Solo scadenze delle ultime 6 ore e mai slot precedenti alla creazione del piano: creare o
+    riattivare un piano non genera allarmi arretrati.
+  - Cruscotto vigilanza: ogni slot mostra l'ora locale; lo slot mancato ha ⚠ e apre l'allarme.
+- `qa/patrol-missed-e2e.sh` **13/13**.
 
 ## Perimetro
 
-Ronde = **Lavoro sul campo**, non Sicurezza: niente escalation/SOS/reperibilità. Riusa `sites`
-(facoltativo) e i geofence come riferimento d'area; indipendente dagli altri moduli campo.
+Ronde = **Lavoro sul campo**. Dal 24/11/2026 (decisione PO, CA-12) il modulo produce un solo tipo
+di allarme, la **ronda mancata**, e per questo porta con sé **Centrale ed escalation** anche senza
+Sicurezza Lavoratore (`ESCALATION_MODS` e capability `incidents.*`/`escalation.manage` includono
+`giri`). Niente SOS, check-in o dispositivi di sicurezza. Riusa `sites` (facoltativo) e i geofence
+come riferimento d'area; indipendente dagli altri moduli campo.
 
 **Assegnazione a gruppo (Tappa 3):** un giro può essere assegnato a un **gruppo di persone**
 condiviso (`assigned_group`). In tal caso solo i membri (o il pianificatore) lo vedono e possono

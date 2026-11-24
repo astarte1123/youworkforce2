@@ -16,7 +16,8 @@ pub(crate) fn err(c: StatusCode, m: &str) -> (StatusCode, String) { (c, m.to_str
 pub(crate) const LIFE_SAFETY: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin", "perdita_contatto"];
 const CRITICAL: &[&str] = &["sos", "man_down", "immobilita", "mancato_checkin", "sensore_critico",
     "manomissione_badge", "perdita_alimentazione", "jamming", "perdita_contatto",
-    "batteria_critica", "heartbeat_down", "email_alarm", "geofence_ingresso", "geofence_uscita"];
+    "batteria_critica", "heartbeat_down", "email_alarm", "geofence_ingresso", "geofence_uscita",
+    "ronda_mancata"];
 
 /// Allarme del dispositivo GPS/badge -> etype normalizzato. Safety-first defaults for lone workers.
 /// `sos_as` lets a tenant route the SOS alarm to `sos` or `man_down`.
@@ -2169,8 +2170,9 @@ pub async fn alarm_group_import_members(State(st): State<AppState>, h: HeaderMap
 /// Serve alla UI permessi per mostrare solo i permessi dei moduli attivi + i core.
 pub fn cap_modules(cap: &str) -> &'static [&'static str] {
     match cap {
-        "incidents.view" | "incidents.handle" => &["loneworker","gps","iot"],
-        "escalation.manage"                    => &["loneworker","gps","iot"],
+        // giri: la ronda mancata è un incidente (CA-12) -> Centrale ed escalation anche senza Sicurezza
+        "incidents.view" | "incidents.handle" => &["loneworker","gps","iot","giri"],
+        "escalation.manage"                    => &["loneworker","gps","iot","giri"],
         "devices.manage" | "devices.admin"     => &["loneworker","gps","iot"],
         "iot.manage"                           => &["iot","gps"],
         "plan"                                 => &["interventi","cantieri","giri","workforce"],
@@ -3812,14 +3814,49 @@ pub async fn delete_patrol_schedule(State(st): State<AppState>, h: HeaderMap, Pa
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
-/// Cruscotto vigilanza: ronde in corso (live), ronde dovute vs svolte oggi, anomalie di giornata.
+/// CA-16: fuso orario valido (nome IANA, es. Europe/Rome).
+pub(crate) fn parse_tz(name: &str) -> Option<chrono_tz::Tz> { name.trim().parse::<chrono_tz::Tz>().ok() }
+
+/// Orari previsti di una pianificazione per il giorno LOCALE `day`, nel fuso `tz` (CA-16).
+/// `days_mask` vale per il giorno di inizio; una fascia che finisce prima di iniziare (22:00→06:00)
+/// prosegue nel giorno dopo. Orari inesistenti (passaggio all'ora legale) sono saltati.
+pub(crate) fn patrol_slots_for_day(dm: &str, ft: chrono::NaiveTime, tt: chrono::NaiveTime, every: i32,
+    tz: chrono_tz::Tz, day: chrono::NaiveDate) -> Vec<chrono::DateTime<chrono::Utc>> {
+    use chrono::{Datelike, Duration, TimeZone as _};
+    let widx = day.weekday().num_days_from_monday() as usize;
+    if dm.chars().nth(widx) != Some('1') { return vec![]; }
+    let step = Duration::minutes(every.max(5) as i64);
+    let start = day.and_time(ft);
+    let mut end = day.and_time(tt);
+    if end <= start { end = end + Duration::days(1); }
+    let mut out = Vec::new();
+    let mut t = start;
+    while t <= end {
+        if let Some(u) = tz.from_local_datetime(&t).earliest() { out.push(u.with_timezone(&chrono::Utc)); }
+        t = t + step;
+    }
+    out
+}
+/// Una ronda copre lo slot se è stata avviata da metà intervallo prima fino alla scadenza.
+fn patrol_slot_covered(rounds: &[(Uuid, chrono::DateTime<chrono::Utc>)], rid: Uuid, slot: chrono::DateTime<chrono::Utc>, step: chrono::Duration) -> bool {
+    rounds.iter().any(|(r,t)| *r==rid && *t >= slot - step/2 && *t < slot + step)
+}
+
+/// Cruscotto vigilanza: ronde in corso (live), ronde dovute vs svolte oggi (giorno e orari nel fuso
+/// della sede del giro, o del tenant), anomalie di giornata. Gli slot mancati riportano l'incidente.
 pub async fn patrol_dashboard(State(st): State<AppState>, h: HeaderMap) -> R {
-    use chrono::{TimeZone as _, Datelike, Duration};
+    use chrono::Duration;
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "giri").await?;
-    let now = st.clock.now(); let today = now.date_naive(); // orologio controllabile (coerente col resto; TEST_CLOCK)
-    let widx = today.weekday().num_days_from_monday() as usize;
-    let win_start = chrono::Utc.from_utc_datetime(&today.and_hms_opt(0,0,0).unwrap()) - Duration::hours(12); // include la sera prima (notturni)
+    let now = st.clock.now(); // orologio controllabile (coerente col resto; TEST_CLOCK)
+    let ttz: chrono_tz::Tz = sqlx::query_scalar::<_,String>("SELECT timezone FROM app.tenants WHERE id=$1").bind(tid)
+        .fetch_optional(&st.owner_pool).await.ok().flatten().and_then(|z| parse_tz(&z)).unwrap_or(chrono_tz::Europe::Rome);
+    let local_midnight = {
+        use chrono::TimeZone as _;
+        let d = now.with_timezone(&ttz).date_naive();
+        ttz.from_local_datetime(&d.and_hms_opt(0,0,0).unwrap()).earliest().map(|x| x.with_timezone(&chrono::Utc)).unwrap_or(now - Duration::hours(24))
+    };
+    let win_start = now - Duration::hours(36); // include la notte precedente
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let live = sqlx::query("SELECT ro.id,ro.route_id,rt.name AS route_name,u.email,ro.started_at,
             (SELECT count(*) FROM app.patrol_checkpoints c WHERE c.route_id=ro.route_id)::int AS total,
@@ -3829,28 +3866,34 @@ pub async fn patrol_dashboard(State(st): State<AppState>, h: HeaderMap) -> R {
          FROM app.patrol_rounds ro JOIN app.patrol_routes rt ON rt.id=ro.route_id JOIN app.users u ON u.id=ro.user_id
          WHERE ro.status='in_corso' ORDER BY ro.started_at").fetch_all(&mut *tx).await.map_err(ise)?;
     let rounds = sqlx::query("SELECT route_id,started_at FROM app.patrol_rounds WHERE started_at >= $1").bind(win_start).fetch_all(&mut *tx).await.map_err(ise)?;
-    let scheds = sqlx::query("SELECT sc.route_id,rt.name AS route_name,sc.days_mask,sc.from_time,sc.to_time,sc.every_minutes FROM app.patrol_schedules sc JOIN app.patrol_routes rt ON rt.id=sc.route_id WHERE sc.active").fetch_all(&mut *tx).await.map_err(ise)?;
-    let anom_today: i64 = sqlx::query_scalar("SELECT count(*) FROM app.patrol_anomalies WHERE created_at >= $1").bind(win_start).fetch_one(&mut *tx).await.map_err(ise)?;
+    let anom_today: i64 = sqlx::query_scalar("SELECT count(*) FROM app.patrol_anomalies WHERE created_at >= $1").bind(local_midnight).fetch_one(&mut *tx).await.map_err(ise)?;
+    let missed = sqlx::query("SELECT schedule_id,slot_at,incident_id FROM app.patrol_missed WHERE slot_at >= $1").bind(win_start).fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    let scheds = sqlx::query("SELECT sc.id,sc.route_id,rt.name AS route_name,sc.days_mask,sc.from_time,sc.to_time,sc.every_minutes,
+            COALESCE(si.timezone,t.timezone) AS tz
+          FROM app.patrol_schedules sc JOIN app.patrol_routes rt ON rt.id=sc.route_id JOIN app.tenants t ON t.id=sc.tenant_id
+          LEFT JOIN app.sites si ON si.id=rt.site_id WHERE sc.active AND sc.tenant_id=$1")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
     let round_times: Vec<(Uuid, chrono::DateTime<chrono::Utc>)> = rounds.iter().map(|r| (r.get("route_id"), r.get("started_at"))).collect();
+    let missed_inc: std::collections::HashMap<(Uuid, i64), Option<Uuid>> = missed.iter()
+        .map(|m| ((m.get::<Uuid,_>("schedule_id"), m.get::<chrono::DateTime<chrono::Utc>,_>("slot_at").timestamp()), m.try_get::<Uuid,_>("incident_id").ok())).collect();
     let mut slots: Vec<Value> = Vec::new();
     let (mut done_n, mut miss_n, mut up_n) = (0i64,0i64,0i64);
     for sc in &scheds {
+        let tz = sc.try_get::<String,_>("tz").ok().and_then(|z| parse_tz(&z)).unwrap_or(ttz);
+        let sid: Uuid = sc.get("id");
         let dm: String = sc.get("days_mask");
         let ft: chrono::NaiveTime = sc.get("from_time"); let tt: chrono::NaiveTime = sc.get("to_time");
         let ev: i32 = sc.get("every_minutes");
         let rid: Uuid = sc.get("route_id"); let rname: String = sc.get("route_name");
-        if dm.chars().nth(widx) != Some('1') { continue; }
-        let start = chrono::Utc.from_utc_datetime(&today.and_time(ft));
-        let mut end = chrono::Utc.from_utc_datetime(&today.and_time(tt));
-        if end <= start { end = end + Duration::days(1); } // notturno
         let step = Duration::minutes(ev.max(5) as i64);
-        let mut slot = start;
-        while slot <= end {
-            let covered = round_times.iter().any(|(r,t)| *r==rid && *t >= slot - step/2 && *t < slot + step);
+        let today = now.with_timezone(&tz).date_naive();
+        for slot in patrol_slots_for_day(&dm, ft, tt, ev, tz, today) {
+            let covered = patrol_slot_covered(&round_times, rid, slot, step);
             let status = if covered { done_n+=1; "svolta" } else if slot + step < now { miss_n+=1; "mancante" } else { up_n+=1; "attesa" };
-            slots.push(json!({"route_id":rid,"route_name":rname,"at":slot.to_rfc3339(),"status":status}));
-            slot = slot + step;
+            let inc = missed_inc.get(&(sid, slot.timestamp())).cloned().flatten();
+            slots.push(json!({"route_id":rid,"route_name":rname,"at":slot.to_rfc3339(),
+                "local_time":slot.with_timezone(&tz).format("%H:%M").to_string(),"status":status,"incident_id":inc}));
         }
     }
     let live_v: Vec<Value> = live.iter().map(|r| json!({
@@ -3858,7 +3901,79 @@ pub async fn patrol_dashboard(State(st): State<AppState>, h: HeaderMap) -> R {
         "started_at":r.get::<chrono::DateTime<chrono::Utc>,_>("started_at").to_rfc3339(),
         "done":r.get::<i32,_>("done"),"total":r.get::<i32,_>("total"),
         "dev_lat":r.try_get::<f64,_>("dev_lat").ok(),"dev_lon":r.try_get::<f64,_>("dev_lon").ok() })).collect();
-    Ok(Json(json!({"live":live_v,"slots":slots,"summary":{"svolte":done_n,"mancanti":miss_n,"attese":up_n,"anomalie_oggi":anom_today}})))
+    Ok(Json(json!({"live":live_v,"slots":slots,"timezone":ttz.name(),
+        "summary":{"svolte":done_n,"mancanti":miss_n,"attese":up_n,"anomalie_oggi":anom_today}})))
+}
+
+/// CA-12: ronda pianificata non svolta entro la scadenza -> incidente «Ronda mancata» (escalation
+/// normale, non salva-vita). Gira nel worker. Una sola apertura per slot (presa atomica su
+/// patrol_missed). Guarda solo le scadenze delle ultime 6 ore e mai slot precedenti alla creazione
+/// della pianificazione (niente raffica di allarmi storici quando si crea o riattiva un piano).
+pub async fn patrol_missed_watchdog(st: &AppState) {
+    use chrono::Duration;
+    let now = st.clock.now();
+    let rows = sqlx::query("SELECT sc.id, sc.tenant_id, sc.route_id, rt.name AS route_name, si.name AS site_name,
+            sc.days_mask, sc.from_time, sc.to_time, sc.every_minutes, sc.created_at, COALESCE(si.timezone,t.timezone) AS tz
+          FROM app.patrol_schedules sc
+          JOIN app.patrol_routes rt ON rt.id=sc.route_id AND rt.active
+          JOIN app.tenants t ON t.id=sc.tenant_id AND t.status<>'sospeso'
+          LEFT JOIN app.sites si ON si.id=rt.site_id
+         WHERE sc.active AND EXISTS (SELECT 1 FROM app.tenant_modules tm
+                 WHERE tm.tenant_id=sc.tenant_id AND tm.module_code='giri' AND tm.state='attivo')")
+        .fetch_all(&st.owner_pool).await.unwrap_or_default();
+    for r in rows {
+        let sid: Uuid = r.get("id"); let tid: Uuid = r.get("tenant_id"); let rid: Uuid = r.get("route_id");
+        let tz = r.try_get::<String,_>("tz").ok().and_then(|z| parse_tz(&z)).unwrap_or(chrono_tz::Europe::Rome);
+        let dm: String = r.get("days_mask");
+        let (ft, tt): (chrono::NaiveTime, chrono::NaiveTime) = (r.get("from_time"), r.get("to_time"));
+        let ev: i32 = r.get("every_minutes");
+        let created: chrono::DateTime<chrono::Utc> = r.get("created_at");
+        let step = Duration::minutes(ev.max(5) as i64);
+        let today = now.with_timezone(&tz).date_naive();
+        let mut slots = patrol_slots_for_day(&dm, ft, tt, ev, tz, today - Duration::days(1));
+        slots.extend(patrol_slots_for_day(&dm, ft, tt, ev, tz, today));
+        for slot in slots {
+            let deadline = slot + step;
+            if deadline > now || deadline < now - Duration::hours(6) || slot < created { continue; }
+            let covered: i64 = sqlx::query_scalar("SELECT count(*) FROM app.patrol_rounds WHERE tenant_id=$1 AND route_id=$2 AND started_at >= $3 AND started_at < $4")
+                .bind(tid).bind(rid).bind(slot - step/2).bind(deadline).fetch_one(&st.owner_pool).await.unwrap_or(1);
+            if covered > 0 { continue; }
+            let claimed: Option<Uuid> = sqlx::query_scalar("INSERT INTO app.patrol_missed(tenant_id,schedule_id,route_id,slot_at,deadline_at) VALUES($1,$2,$3,$4,$5)
+                    ON CONFLICT (schedule_id,slot_at) DO NOTHING RETURNING id")
+                .bind(tid).bind(sid).bind(rid).bind(slot).bind(deadline).fetch_optional(&st.owner_pool).await.ok().flatten();
+            let Some(mid) = claimed else { continue; };
+            let rname: String = r.get("route_name");
+            let key = format!("ronda-mancata-{sid}-{}", slot.timestamp());
+            let res = persist_ingest(st, tid, Normalized{
+                source: "giri".into(), source_event: key.clone(), idem: key.clone(), etype: "ronda_mancata".into(),
+                device_external_id: None, site_name: r.try_get::<String,_>("site_name").ok(),
+                lat: None, lon: None, accuracy_m: None, correlation: key,
+                payload: json!({"giro": rname, "previsto": slot.with_timezone(&tz).format("%d/%m/%Y %H:%M").to_string(),
+                    "scadenza": deadline.with_timezone(&tz).format("%H:%M").to_string(), "fuso": tz.name()}),
+                indoor: false, beacon_uid: None, zone: None }).await;
+            if let Ok(Json(v)) = res {
+                if let Some(iid) = v.get("incident_id").and_then(|x| x.as_str()).and_then(|x| Uuid::parse_str(x).ok()) {
+                    let _ = sqlx::query("UPDATE app.patrol_missed SET incident_id=$2 WHERE id=$1").bind(mid).bind(iid).execute(&st.owner_pool).await;
+                }
+            }
+        }
+    }
+}
+
+/// CA-16: fuso orario del tenant (orari delle ronde pianificate; la sede può avere il proprio).
+pub async fn tenant_timezone_get(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    let tz: String = sqlx::query_scalar("SELECT timezone FROM app.tenants WHERE id=$1").bind(tid).fetch_one(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"timezone": tz})))
+}
+#[derive(Deserialize)] pub struct TimezoneReq { pub timezone: String }
+pub async fn tenant_timezone_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<TimezoneReq>) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "settings.manage")?;
+    let tid = s.tenant_id.unwrap();
+    let tz = parse_tz(&b.timezone).ok_or_else(|| err(StatusCode::BAD_REQUEST, "fuso orario sconosciuto (es. Europe/Rome)"))?;
+    sqlx::query("UPDATE app.tenants SET timezone=$2 WHERE id=$1").bind(tid).bind(tz.name()).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, &s.email, "tenant_timezone_set", json!({"timezone": tz.name()})).await;
+    Ok(Json(json!({"ok":true,"timezone":tz.name()})))
 }
 
 // ============================ Fase 2 — Forza lavoro + turni ============================
@@ -5832,6 +5947,7 @@ pub fn etype_label(e: &str) -> &'static str {
         "perdita_alimentazione" => "Perdita alimentazione",
         "jamming" => "Jamming / disturbo del segnale",
         "perdita_contatto" => "Perdita contatto (badge silente)",
+        "ronda_mancata" => "Ronda mancata (orario pianificato non svolto)",
         // storico: prodotto dal vecchio collegamento a Traccar (dismesso, vedi mig 0127)
         "traccar_conn_down" => "Server di tracciamento esterno irraggiungibile (storico)",
         "batteria_critica" => "Batteria in esaurimento (critico)",
@@ -8107,7 +8223,7 @@ const IOT_MODS: &[&str] = &["iot"]; // funzioni riservate al modulo IoT
 /// La configurazione e la visibilità escalation (gruppi, routing, on-call, recapiti,
 /// override, maintenance, centrale allarmi) non devono sparire se "Sicurezza lavoratore"
 /// (loneworker) è spento ma resta attivo un altro modulo che genera allarmi.
-const ESCALATION_MODS: &[&str] = &["loneworker","iot","gps"]; // moduli nativi che producono allarmi (gps: SOS/caduta/silenzio badge anche senza Lone Worker)
+const ESCALATION_MODS: &[&str] = &["loneworker","iot","gps","giri"]; // moduli nativi che producono allarmi (gps: SOS/caduta/silenzio badge anche senza Lone Worker)
 
 // ================== Per-module tool configuration (schema-driven) ==================
 // Effective config for a tool = catalog default_config overlaid with the tenant's

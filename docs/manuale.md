@@ -133,6 +133,10 @@ Modulo **giri**: giri di controllo per guardie/manutentori.
   mano, automatica) e la distanza dal punto; il codice digitato e la punzonatura lontana dal punto
   diventano anomalie a fine ronda; un giro può accettare solo la scansione; punzona solo chi esegue
   la ronda; un tentativo fallito non cancella una punzonatura riuscita.
+- **Ronde pianificate**: gli orari sono nell'ora locale della sede (o dell'azienda: *Utenti e sedi →
+  🕒 fuso orario*). Se all'orario previsto nessuno avvia la ronda, si apre l'allarme **«Ronda
+  mancata»** in Centrale, con escalation ai reperibili; per questo il modulo Ronde include la
+  Centrale anche senza Sicurezza Lavoratore.
 - **Revisione** in console: esito per checkpoint, modo di punzonatura, tentativi. Vedi [ronde-manuale](ronde-manuale.md).
 
 ## 9. Consuntivi e turni

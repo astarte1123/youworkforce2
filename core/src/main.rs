@@ -255,6 +255,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/patrol-schedules", get(api::list_patrol_schedules).post(api::create_patrol_schedule))
         .route("/api/patrol-schedules/:id", delete(api::delete_patrol_schedule))
         .route("/api/patrol-dashboard", get(api::patrol_dashboard))
+        .route("/api/settings/timezone", get(api::tenant_timezone_get).put(api::tenant_timezone_set))
         .route("/api/devices", get(api::list_devices).post(api::create_device))
         .route("/api/devices/provision", post(api::provision_device))
         .route("/api/devices/onboarding-kit", post(api::device_onboarding_kit))

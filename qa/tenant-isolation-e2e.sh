@@ -17,6 +17,7 @@ echo "== Isolamento multi-tenant allarmi =="
 # superadmin: abilita loneworker su globex (per dargli allarmi reali)
 req POST /api/superadmin/login "$J/sa" '{"email":"admin@loneworker.eu","password":"admin"}' >/dev/null
 GID=$(req GET /api/superadmin/tenants "$J/sa" | python -c "import sys,json;print(next((t['id'] for t in json.load(sys.stdin) if t.get('slug')=='globex'),''))" 2>/dev/null)
+PREV_LW=$(docker exec -i ywdb psql -U postgres -d youworkforce -tAc "SELECT COALESCE((SELECT state FROM app.tenant_modules WHERE tenant_id='$GID' AND module_code='loneworker'),'non_abilitato')" | tr -d '[:space:]')
 req POST "/api/superadmin/tenants/$GID/modules" "$J/sa" '{"module_code":"loneworker","state":"attivo"}' >/dev/null
 
 # incidente APERTO su ACME
@@ -52,9 +53,9 @@ say "globex close singolo di incidente acme -> bloccato"
 c=$(curl -s -o /dev/null -w '%{http_code}' -b "$J/g" -H 'x-tenant-slug: globex' -H "x-csrf-token: $(csrfh "$J/g")" -X POST "$BASE/api/incidents/$AID/close" -H 'content-type: application/json' -d '{"outcome":"x"}')
 [ "$c" != "200" ] && [ "$(acme_open)" = "$A0" ] && ok || no "code=$c acme=$(acme_open)"
 
-# cleanup: chiudi acme + rimetti globex loneworker non_abilitato
+# cleanup: chiudi acme + rimetti globex loneworker com'era prima del test (non spegnerlo a prescindere)
 req POST /api/incidents/close-all "$J/a" '{"outcome":"cleanup","include_life_safety":true}' acme >/dev/null
-req POST "/api/superadmin/tenants/$GID/modules" "$J/sa" '{"module_code":"loneworker","state":"non_abilitato"}' >/dev/null
+req POST "/api/superadmin/tenants/$GID/modules" "$J/sa" "{\"module_code\":\"loneworker\",\"state\":\"${PREV_LW:-non_abilitato}\"}" >/dev/null
 
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" = 0 ]

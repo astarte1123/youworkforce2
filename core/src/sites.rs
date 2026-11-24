@@ -14,14 +14,26 @@ use crate::db;
 // --- Sedi ---
 // ---------------- Sedi ----------------
 #[derive(Deserialize)]
-pub struct SiteReq { pub name: String, #[serde(default)] pub address: Option<String>, #[serde(default)] pub lat: Option<f64>, #[serde(default)] pub lon: Option<f64>, #[serde(default)] pub access_notes: Option<String> }
+pub struct SiteReq { pub name: String, #[serde(default)] pub address: Option<String>, #[serde(default)] pub lat: Option<f64>, #[serde(default)] pub lon: Option<f64>, #[serde(default)] pub access_notes: Option<String>,
+    /// CA-16: fuso della sede (IANA). Assente = invariato; "" = come il tenant.
+    #[serde(default)] pub timezone: Option<String> }
+/// Valida il fuso: None = non toccare, Some(None) = azzera (come il tenant), Some(Some(tz)) = imposta.
+fn site_tz(b: &SiteReq) -> Result<Option<Option<String>>, (StatusCode, String)> {
+    match b.timezone.as_deref().map(|x| x.trim()) {
+        None => Ok(None),
+        Some("") => Ok(Some(None)),
+        Some(z) => crate::api::parse_tz(z).map(|t| Some(Some(t.name().to_string())))
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "fuso orario sconosciuto (es. Europe/Rome)")),
+    }
+}
 pub async fn create_site(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SiteReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let tz = site_tz(&b)?.flatten();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let row = sqlx::query("INSERT INTO app.sites(tenant_id,name,address,lat,lon,access_notes) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
-        .bind(tid).bind(b.name.trim()).bind(b.address.as_deref()).bind(b.lat).bind(b.lon).bind(b.access_notes.as_deref())
+    let row = sqlx::query("INSERT INTO app.sites(tenant_id,name,address,lat,lon,access_notes,timezone) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(b.address.as_deref()).bind(b.lat).bind(b.lon).bind(b.access_notes.as_deref()).bind(tz)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "create_site", json!({"name":b.name})).await;
@@ -30,12 +42,15 @@ pub async fn create_site(State(st): State<AppState>, h: HeaderMap, Json(b): Json
 pub async fn update_site(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<SiteReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
+    let tz = site_tz(&b)?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // COALESCE: aggiorna solo i campi passati; address/access_notes vuoti ("") azzerano.
     let n = sqlx::query("UPDATE app.sites SET name=$2,
-            address=COALESCE($3,address), lat=COALESCE($4,lat), lon=COALESCE($5,lon), access_notes=COALESCE($6,access_notes)
+            address=COALESCE($3,address), lat=COALESCE($4,lat), lon=COALESCE($5,lon), access_notes=COALESCE($6,access_notes),
+            timezone=CASE WHEN $7 THEN $8 ELSE timezone END
          WHERE id=$1")
         .bind(id).bind(b.name.trim()).bind(b.address.as_deref()).bind(b.lat).bind(b.lon).bind(b.access_notes.as_deref())
+        .bind(tz.is_some()).bind(tz.clone().flatten())
         .execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "sede inesistente")); }
@@ -111,7 +126,7 @@ pub async fn delete_asset(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
 pub async fn list_sites(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT id,name,address,lat,lon,access_notes FROM app.sites ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT id,name,address,lat,lon,access_notes,timezone FROM app.sites ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     // access_notes (indicazioni d'accesso) solo agli autorizzati (pianificatore/admin)
     let can_access = is_planner(&s);
@@ -119,6 +134,7 @@ pub async fn list_sites(State(st): State<AppState>, h: HeaderMap) -> R {
         "id":r.get::<Uuid,_>("id"), "name":r.get::<String,_>("name"),
         "address": r.try_get::<String,_>("address").ok(),
         "lat": r.try_get::<f64,_>("lat").ok(), "lon": r.try_get::<f64,_>("lon").ok(),
+        "timezone": r.try_get::<String,_>("timezone").ok(),
         "access_notes": if can_access { r.try_get::<String,_>("access_notes").ok() } else { None }
     })).collect();
     Ok(Json(json!(out)))

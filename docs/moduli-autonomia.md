@@ -70,13 +70,15 @@ oltre 4×. Il default resta 16 MB (`YW_WORKER_STACK_MB`) come margine.
 
 ## Prove
 
-`qa/module-autonomy-e2e.sh` — **18/18**. Tenant throwaway, tre scenari su un unico insieme
+`qa/module-autonomy-e2e.sh` — **20/20**. Tenant throwaway, tre scenari su un unico insieme
 utenti (gating per-richiesta, nessun re-login), teardown finale (non tocca globex):
 
 - **A · solo Sicurezza** (loneworker): check-in 200, incidenti 200; ordini/consuntivi/squadre 403;
   diario 403.
-- **B · solo Campo** (interventi/consuntivi/workforce/giri): check-in 403, incidenti 403; ordini/
-  consuntivi/squadre 200; diario 200.
+- **B · solo Campo** (interventi/consuntivi/workforce): check-in 403, incidenti 403; ordini/
+  consuntivi/squadre 200; diario 200. **Con Ronde** (`giri`) gli incidenti diventano 200: dal
+  24/11/2026 (CA-12) la ronda pianificata non svolta apre l'allarme «Ronda mancata», quindi il
+  modulo Ronde porta con sé Centrale ed escalation; il check-in resta 403.
 - **C · entrambi**: tutto 200 (coesistenza).
 
 In CORE di `qa/run-all.sh`.

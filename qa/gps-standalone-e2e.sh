@@ -23,11 +23,12 @@ GID=$(curl -s -b "$S" "$BASE/api/superadmin/tenants" | python -c "import sys,jso
 sm(){ curl -s -o /dev/null -w "%{http_code}" -b "$S" -H 'content-type: application/json' -H "x-csrf-token: $CS" \
   -X POST "$BASE/api/superadmin/tenants/$GID/modules" -d "{\"module_code\":\"$1\",\"state\":\"$2\"}"; }
 st(){ q "SELECT COALESCE((SELECT state FROM app.tenant_modules WHERE tenant_id='$GID' AND module_code='$1'),'non_abilitato')"; }
-PREV_LW=$(st loneworker); PREV_IOT=$(st iot); PREV_GPS=$(st gps)
+PREV_LW=$(st loneworker); PREV_IOT=$(st iot); PREV_GPS=$(st gps); PREV_GIRI=$(st giri)
 restore(){ docker exec -i ywdb psql -U postgres -d youworkforce -tAc "
   UPDATE app.tenant_modules SET state='$PREV_LW'  WHERE tenant_id='$GID' AND module_code='loneworker';
   UPDATE app.tenant_modules SET state='$PREV_IOT' WHERE tenant_id='$GID' AND module_code='iot';
-  UPDATE app.tenant_modules SET state='$PREV_GPS' WHERE tenant_id='$GID' AND module_code='gps';" >/dev/null; }
+  UPDATE app.tenant_modules SET state='$PREV_GPS' WHERE tenant_id='$GID' AND module_code='gps';
+  UPDATE app.tenant_modules SET state='$PREV_GIRI' WHERE tenant_id='$GID' AND module_code='giri';" >/dev/null; }
 trap restore EXIT
 
 echo "== SA-1: il superadmin attiva gps =="
@@ -46,8 +47,9 @@ C=$(g /api/groups);        [ "$C" = "200" ] && ok "escalation (/api/groups) con 
 C=$(g /api/checkins/list); [ "$C" = "403" ] && ok "check-in restano di Lone Worker -> 403" || no "checkins" "$C"
 
 echo "== nessun modulo che produce allarmi -> Centrale vietata =="
-docker exec -i ywdb psql -U postgres -d youworkforce -tAc "UPDATE app.tenant_modules SET state='non_abilitato' WHERE tenant_id='$GID' AND module_code='gps'" >/dev/null
-C=$(g /api/incidents); [ "$C" = "403" ] && ok "senza loneworker/gps/iot -> 403" || no "incidents gated" "$C"
+# anche giri: dal 24/11/2026 (CA-12) il modulo Ronde produce l'allarme «Ronda mancata»
+docker exec -i ywdb psql -U postgres -d youworkforce -tAc "UPDATE app.tenant_modules SET state='non_abilitato' WHERE tenant_id='$GID' AND module_code IN ('gps','giri')" >/dev/null
+C=$(g /api/incidents); [ "$C" = "403" ] && ok "senza loneworker/gps/iot/giri -> 403" || no "incidents gated" "$C"
 
 rm -f "$S" "$G"
 echo "gps-standalone: $PASS passed, $FAIL failed"
