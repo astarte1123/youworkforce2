@@ -412,7 +412,8 @@ function renderShell(){
   $('#nav').onclick=e=>{const a=e.target.closest('a[data-k]'); if(a){location.hash='#/'+a.dataset.k; toggleNav(false);}};
   api('/modules').then(M=>{ if((M||[]).some(m=>m.code==='assistant'&&m.state==='attivo')) $('#fab').classList.remove('hide'); }).catch(()=>{});
   window.onhashchange=route;
-  if(can(['operatore','tenant_admin','auditor'])) connectSSE();
+  // FE-1: anche reperibile e responsabile (gestiscono allarmi) ricevono gli aggiornamenti in tempo reale
+  if(can(['operatore','tenant_admin','auditor','reperibile','responsabile'],'incidents.handle')) connectSSE();
   route();
   startI18n();
   startExports();
@@ -608,6 +609,8 @@ function connectSSE(){
     // mappa allarmi = solo non gestiti: aggiorna live quando un incidente si apre/gestisce/chiude
     if(k==='mappa' && (d.type==='incident_opened'||d.type==='incident_ack'||d.type==='incident_closed'||d.type==='incident_updated')) route();
     if(k==='centrale'||k==='dashboard') route();
+    // FE-1: «I miei allarmi» si aggiorna da sola su apertura, presa in carico, chiusura
+    if(k==='miei-allarmi' && /^incident_/.test(d.type||'')) route();
     // Alert IoT (vista separata): notifica nativa live + refresh della vista
     if(d.type==='iot_alert'){ const a=d.alert||{}; const sev=a.severity==='critical'?'bad':(a.severity==='info'?'':'warn');
       toast('Alert IoT: '+(a.message||a.kind||''), sev==='bad'?'bad':'warn'); if(sev==='bad') alarmBeep(); }
@@ -948,18 +951,29 @@ async function aiCheckinAnomaly(btn){ const box=$('#aiCkOut'); if(!box)return; b
   catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad);padding:0 var(--s-16) var(--s-8)">${esc(e.message)}</div>`; } finally{ btn.disabled=false; } }
 // Vista reperibile/responsabile: gli incidenti aperti che devono prendere in carico.
 // Il reperibile riceve l'escalation (SMS/voce) e qui vede e gestisce l'allarme.
+// FE-1: «I miei allarmi» in tempo reale. Scheda «Miei» = assegnati a me o per cui sono stato avvisato;
+// «Tutti aperti» resta a portata (un reperibile non deve perdere un allarme se la notifica non gli è
+// arrivata). Scheda iniziale: «Miei» se ce ne sono, altrimenti «Tutti aperti».
+let MIEI_TAB=null;
 async function vMieiAllarmi(v){
   const [I,OC]=await Promise.all([api('/incidents').catch(()=>[]), api('/oncall-now-native').catch(()=>({available:false}))]);
   const aperti=I.filter(i=>i.state!=='chiuso');
+  const miei=aperti.filter(i=>i.assigned_to_me||i.notified_me);
+  const tab = MIEI_TAB || (miei.length?'miei':'tutti');
+  const list = tab==='miei'?miei:aperti;
   const onc = OC.available ? `<span class="chip s-attivo wrap" title="reperibili di turno">📞 di turno: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
-  v.innerHTML=`<div class="page-h"><div><h1>I miei allarmi</h1><div class="mut">${aperti.length} aperti · prendi in carico e chiudi</div></div><div>${onc}</div></div>
-  <div class="col" style="gap:var(--s-10)">${aperti.map(i=>`
+  v.innerHTML=`<div class="page-h"><div><h1>I miei allarmi</h1><div class="mut">${miei.length} miei · ${aperti.length} aperti in tutto · <span id="liveWrap"></span></div></div><div>${onc}</div></div>
+  <div class="seg" style="margin-bottom:var(--s-10)">
+    <button class="seg-btn ${tab==='miei'?'on':''}" onclick="MIEI_TAB='miei';route()">Miei <span class="seg-n">${miei.length}</span></button>
+    <button class="seg-btn ${tab==='tutti'?'on':''}" onclick="MIEI_TAB='tutti';route()">Tutti aperti <span class="seg-n">${aperti.length}</span></button></div>
+  <div class="col" style="gap:var(--s-10)">${list.map(i=>`
     <div class="card clk-card" data-inc="${i.id}" style="padding:var(--s-14);border-left:4px solid ${i.priority>=3?'var(--bad)':i.priority>=2?'#ea580c':'var(--line)'}">
       <div class="spread"><b>${esc(etLab(i.etype))}</b>${chip(i.state)}</div>
       <div class="small mut" style="margin-top:var(--s-4)">${i.worker?('👤 '+esc(i.worker)+' · '):''}${incLoc(i)}</div>
-      <div class="small mut" style="margin-top:var(--s-2)">${esc(i.site||'sede n/d')}${i.assignee?' · 🧑‍💼 '+esc(i.assignee):''}</div>
+      <div class="small mut" style="margin-top:var(--s-2)">${esc(i.site||'sede n/d')}${i.assignee?' · 🧑‍💼 '+esc(i.assignee):''}${i.assigned_to_me?' · <b>assegnato a te</b>':i.notified_me?' · <b>sei stato avvisato</b>':''}</div>
       <div class="small" style="margin-top:var(--s-6);color:var(--brand)">Tocca per gestire →</div>
-    </div>`).join('')||`<div class="card pad empty">${ICON.check}<div>Nessun allarme aperto. Tutto tranquillo.</div></div>`}</div>`;
+    </div>`).join('')||`<div class="card pad empty">${ICON.check}<div>${tab==='miei'?'Nessun allarme assegnato a te o per cui sei stato avvisato.':'Nessun allarme aperto. Tutto tranquillo.'}</div></div>`}</div>`;
+  if(SSE && SSE.readyState===1){ const w=$('#liveWrap'); if(w) w.innerHTML='<span class="live on">live</span>'; }
   bindRows(v);
 }
 async function openIncident(id){

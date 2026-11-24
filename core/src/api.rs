@@ -7310,8 +7310,15 @@ pub async fn list_incidents(State(st): State<AppState>, h: HeaderMap) -> R {
                 COALESCE(d.label, d.external_id) AS device,
                 e.indoor, e.beacon_uid, e.zone AS ev_zone, e.accuracy_m,
                 COALESCE(e.lat, b.lat) AS lat, COALESCE(e.lon, b.lon) AS lon,
-                b.zone_name, b.floor, b.floorplan_id, b.x AS fp_x, b.y AS fp_y, fp.name AS floorplan_name
+                b.zone_name, b.floor, b.floorplan_id, b.x AS fp_x, b.y AS fp_y, fp.name AS floorplan_name,
+                -- FE-1: l'utente corrente è stato avvisato per questo incidente (telefono, email o recapito)
+                EXISTS (SELECT 1 FROM app.esc_delivery_log l
+                         WHERE l.tenant_id=i.tenant_id AND l.incident_id=i.id
+                           AND (l.to_value = me.email OR l.to_value = me.phone
+                                OR l.to_value IN (SELECT cm.value FROM app.user_contact_methods cm
+                                                   WHERE cm.tenant_id=i.tenant_id AND cm.user_id=me.id))) AS notified_me
          FROM app.incidents i
+           LEFT JOIN app.users me ON me.id=$1 AND me.tenant_id=i.tenant_id
            LEFT JOIN app.sites s ON s.id=i.site_id
            LEFT JOIN app.users u ON u.id=i.assigned_user
            LEFT JOIN app.users w ON w.id=i.worker_user_id
@@ -7321,7 +7328,7 @@ pub async fn list_incidents(State(st): State<AppState>, h: HeaderMap) -> R {
            LEFT JOIN app.beacons b ON b.beacon_uid=e.beacon_uid AND b.tenant_id=i.tenant_id
            LEFT JOIN app.floorplans fp ON fp.id=b.floorplan_id
          ORDER BY i.state<>'chiuso' DESC, i.priority DESC, i.opened_at DESC")
-        .fetch_all(&mut *tx).await.map_err(ise)?;
+        .bind(s.user_id).fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = rows.iter()
         .filter(|r| site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok()))
@@ -7347,7 +7354,9 @@ pub async fn list_incidents(State(st): State<AppState>, h: HeaderMap) -> R {
         "accuracy_m": r.try_get::<f64,_>("accuracy_m").ok(),
         "attribution_uncertain": r.try_get::<bool,_>("attribution_uncertain").unwrap_or(false),
         "attribution_note": r.try_get::<String,_>("attribution_note").ok(),
-        "outcome": r.try_get::<String,_>("outcome").ok() })).collect();
+        "outcome": r.try_get::<String,_>("outcome").ok(),
+        "notified_me": r.try_get::<bool,_>("notified_me").unwrap_or(false),
+        "assigned_to_me": r.try_get::<Uuid,_>("assigned_user").ok() == Some(s.user_id) })).collect();
     Ok(Json(json!(out)))
 }
 

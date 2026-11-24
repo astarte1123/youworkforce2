@@ -60,6 +60,10 @@ Due pagine distinte (amministratore):
 - **Centrale allarmi**: elenco incidenti con **tab** Aperti/Chiusi/Tutti, ricerca full-text,
   paginazione. Gli incidenti ancora aperti lampeggiano; all'arrivo di un nuovo allarme da
   dispositivo scattano **popup + suono**. Presa in carico, chiusura, note.
+- **I miei allarmi** (reperibile, responsabile): si aggiorna **da sola** in tempo reale (apertura,
+  presa in carico, chiusura) con popup e suono per i nuovi allarmi. Scheda **Miei** = allarmi
+  assegnati a te o per cui sei stato avvisato; scheda **Tutti aperti** sempre disponibile, così un
+  allarme non si perde se la notifica non è arrivata. e2e: `qa/miei-allarmi-e2e.sh`.
 - **Mappa allarmi**: incidenti georeferenziati (indoor/outdoor); cliccando una riga la mappa si
   centra sul pin con tooltip.
 - **Trigger di sicurezza**: configurazione degli eventi che generano allarme.
