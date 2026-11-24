@@ -204,6 +204,11 @@ async fn read_loop(st: &AppState, tid: uuid::Uuid, did: uuid::Uuid, imei: &str, 
             tracing::warn!("teltonika: IMEI {imei} non più del tenant {tid}: connessione chiusa");
             return Ok(());
         }
+        // SA-5: tenant sospeso (o tutti i moduli dispositivi spenti) dopo l'handshake -> chiude.
+        if !crate::api::any_device_module(st, tid).await {
+            tracing::warn!("teltonika: tenant {tid} sospeso o senza moduli dispositivi: connessione chiusa");
+            return Ok(());
+        }
         match decode_avl(data) {
             Ok(records) => {
                 let n = records.len() as u32;

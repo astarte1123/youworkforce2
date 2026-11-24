@@ -25,6 +25,12 @@ tecnici di ogni area ci sono i manuali specifici, richiamati di volta in volta.
 ## 2. Accesso e profilo
 
 - Login con email + password sul dominio del tenant.
+- **Tentativi di accesso falliti** (tenant e superadmin): dopo **5** errori in 5 minuti dallo stesso
+  indirizzo l'accesso a quell'utenza da quell'indirizzo è bloccato per 5 minuti; dopo **20** errori in
+  5 minuti sulla stessa utenza, **da qualunque indirizzo**, l'utenza è bloccata per 5 minuti (anche con
+  la password giusta, risposta 429 con *Retry-After*). L'indirizzo del client è quello della
+  connessione; `X-Forwarded-For` vale solo se arriva da un proxy fidato (la console YW in locale, o gli
+  indirizzi in `YW_TRUSTED_PROXIES`) e se ne usa l'ultimo elemento. e2e: `qa/ratelimit-hardening.sh`.
 - L'app operatore (PWA «Oggi») è pensata per telefono: turni, ordini, ronde, check-in, diario vocale.
 - Il tema chiaro/scuro si cambia dalla topbar (🌙/☀️); la lingua IT/EN in alto a destra
   (vedi §12).
@@ -139,6 +145,14 @@ Licenze e branding (logo, palette), attivazione moduli e scenari per tenant, imp
 tenant per assistenza. Tutti i motori (escalation, dispositivi, IoT) sono nativi:
 non c'è nulla da collegare all'esterno.
 
+- **Logo**: solo PNG, JPEG o WebP fino a 512 KB; il tipo è riconosciuto dal contenuto del file (non
+  dal nome o dall'intestazione), SVG e HTML sono rifiutati perché potrebbero eseguire script nella
+  console. Il logo è servito con `nosniff` e CSP chiusa.
+- **Impersonazione**: si entra solo come un **amministratore reale** del tenant (se manca, `409`:
+  crearlo o reinviare l'invito); all'uscita la sessione superadmin torna con la propria identità.
+- **Cookie di sessione**: in staging/produzione (HTTPS) impostare `YW_COOKIE_SECURE=1` per
+  l'attributo `Secure`; in locale (http://localhost) resta spento.
+
 **Creazione tenant — onboarding admin sicuro.** Il form valida lo **slug** (normalizzato a
 `a-z0-9-`, con anteprima dell'indirizzo `slug.<host>`) e l'**email** admin. Per l'attivazione
 dell'amministratore ci sono due modalità:
@@ -162,12 +176,22 @@ Dopo la creazione, un riepilogo mostra l'URL del tenant e (in modalità invito) 
 e2e: `qa/tenant-invite-e2e.sh` (15/15: invito, validazioni, pacchetto, licenze, scenario+demo).
 
 **Governance tenant (Ondata 3).** Dalla card di ogni tenant:
-- **Sospendi / Riattiva** (`POST /api/superadmin/tenants/:id/status`): un tenant **sospeso** blocca il
-  login dei suoi utenti (403); l'impersonazione superadmin per assistenza resta. Stato in `tenants.status`
-  (mig 0120), mostrato come chip.
+- **Sospendi / Riattiva** (`POST /api/superadmin/tenants/:id/status`, mig 0120 + 0130). Un tenant
+  **sospeso** è fermo del tutto: **non riceve e non inoltra allarmi** (SOS, uomo a terra, perdita di
+  contatto, check-in, sensori), dispositivi e app sono ignorati (ingress `403`, connessioni Teltonika
+  chiuse), i watchdog e l'escalation lo saltano, gli utenti sono **disconnessi** e il login risponde
+  `403`. L'impersonazione superadmin per assistenza resta ammessa. Due modi:
+  - **Subito**: effetto immediato.
+  - **Alla data** (`at` futuro + `note`): fino ad allora il tenant resta attivo e l'**amministratore del
+    tenant vede un avviso** in console con data e motivo; alla data il worker applica la sospensione
+    (orologio unico, audit `tenant_status` con `programmata`). *Annulla sospensione programmata* o
+    *Riattiva* riportano il tenant attivo. Alla riattivazione l'escalation riprende per gli incidenti
+    rimasti aperti.
+  e2e: `qa/tenant-suspension-e2e.sh` (15/15).
 - **Elimina** (`DELETE /api/superadmin/tenants/:id`): rimozione **definitiva** con cascade su tutti i
   dati (106 FK `ON DELETE CASCADE`); richiede di **riscrivere lo slug** per conferma; audit globale
-  prima della cancellazione.
+  prima della cancellazione. Conferme e richiesta dello slug usano finestre interne alla pagina
+  (le finestre native del browser sono bloccate nella webview).
 - **Ricerca** nella lista tenant (per nome/slug) e **badge di prontezza** per tenant: «operativo»
   (moduli attivi + admin + sede), «da configurare», o «invito in sospeso».
 - **Audit** esteso ai cambi modulo (`set_module`) e licenze/branding.

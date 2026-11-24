@@ -41,6 +41,8 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     if n % 3 == 1 { if let Err(e) = Box::pin(api::iot_offline_watchdog(st)).await { tracing::warn!("iot watchdog: {e}"); } }
     // watchdog infrastrutturale (server/DB/worker): ~ogni 60s, apre alert + notifica superadmin
     if n % 30 == 13 { Box::pin(api::system_watchdog(st)).await; }
+    // SA-5: sospensioni programmate dal superadmin giunte a scadenza: ~ogni 60s
+    if n % 30 == 17 { Box::pin(api::tenant_suspension_scan(st)).await; }
     Ok(())
 }
 
@@ -68,6 +70,7 @@ pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
                 d.silence_armed_at, GREATEST(d.last_seen_at, d.silence_armed_at) AS silence_ref
          FROM app.devices d
          JOIN app.tenant_modules m ON m.tenant_id=d.tenant_id AND m.module_code='gps' AND m.state='attivo'
+         JOIN app.tenants tn ON tn.id=d.tenant_id AND tn.status<>'sospeso'
          WHERE d.source='gps' AND d.service_state='in_servizio' AND COALESCE(d.enabled,true)
            AND d.assigned_user IS NOT NULL AND d.silence_armed_at IS NOT NULL")
         .fetch_all(&st.owner_pool).await?;
@@ -182,8 +185,9 @@ async fn drain_outbox(st: &AppState) -> anyhow::Result<()> {
 async fn sweep_checkins(st: &AppState) -> anyhow::Result<()> {
     let now = st.clock.now();
     let rows = sqlx::query(
-        "UPDATE app.checkins SET state='scaduto'
+        "UPDATE app.checkins c SET state='scaduto'
          WHERE state='attivo' AND due_at <= $1
+           AND NOT EXISTS (SELECT 1 FROM app.tenants t WHERE t.id=c.tenant_id AND t.status='sospeso')
          RETURNING id, tenant_id, user_id, site_id")
         .bind(now).fetch_all(&st.owner_pool).await?;
 

@@ -493,13 +493,14 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/_test/iot-watchdog", post(api::test_iot_watchdog))
         .route("/api/_test/gps-silence-watchdog", post(api::test_gps_silence_watchdog))
         .layer(axum::middleware::from_fn(api::csrf_guard))
+        .layer(axum::middleware::from_fn(api::client_ip_mw)) // IP client dal peer TCP (anti-spoof XFF, SA-4)
         .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024)) // upload piantine indoor
         .with_state(st);
 
     let bind = env("YW_BIND", "0.0.0.0:8080");
     tracing::info!("core listening on {bind}");
     let listener = tokio::net::TcpListener::bind(&bind).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await?;
     Ok(())
 }
 

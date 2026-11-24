@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::state::AppState;
-use crate::api::{R, require_tenant, require_cap, ise, err, audit, CAPABILITIES, USER_ROLES, default_role_caps, effective_caps, cap_modules};
+use crate::api::{R, require_tenant, require_cap, require_grantable, ise, err, audit, CAPABILITIES, USER_ROLES, default_role_caps, effective_caps, cap_modules};
 use crate::db;
 
 /// Insieme dei moduli attivi del tenant (per annotare la rilevanza delle capability).
@@ -56,6 +56,10 @@ pub async fn set_capability(State(st): State<AppState>, h: HeaderMap, Json(b): J
     if b.role=="tenant_admin" && b.capability=="admin" && !b.granted {
         return Err(err(StatusCode::BAD_REQUEST, "non si puo' togliere 'admin' a tenant_admin"));
     }
+    // TA-1: si modifica la matrice solo per permessi che si possiedono, e mai quella dei ruoli che
+    // hanno più permessi di chi modifica (es. tenant_admin per un delegato senza admin)
+    require_grantable(&s, &[b.capability.clone()])?;
+    require_grantable(&s, &effective_caps(&st, tid, &b.role).await)?;
     // se granted coincide col default -> rimuovi l'override (torna al default)
     let is_def = default_role_caps(&b.role).contains(&b.capability.as_str());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -72,7 +76,8 @@ pub async fn set_capability(State(st): State<AppState>, h: HeaderMap, Json(b): J
     Ok(Json(json!({"ok":true})))
 }
 pub async fn reset_capabilities(State(st): State<AppState>, h: HeaderMap) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
+    // TA-1: il ripristino può ridare permessi a qualunque ruolo -> solo amministratore
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "admin")?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.role_capabilities WHERE tenant_id=$1").bind(tid).execute(&mut *tx).await.map_err(ise)?;
@@ -120,6 +125,7 @@ pub async fn create_custom_role(State(st): State<AppState>, h: HeaderMap, Json(b
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     validate_caps(&b.capabilities)?;
+    require_grantable(&s, &b.capabilities)?; // TA-1
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("INSERT INTO app.custom_roles(tenant_id,name,description) VALUES($1,$2,$3) RETURNING id")
         .bind(tid).bind(b.name.trim()).bind(b.description.as_deref())
@@ -134,12 +140,15 @@ pub async fn update_custom_role(State(st): State<AppState>, h: HeaderMap, Path(r
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     validate_caps(&b.capabilities)?;
+    require_grantable(&s, &b.capabilities)?;                       // TA-1: nuovi permessi
+    require_grantable(&s, &custom_role_caps(&st, tid, rid).await)?; // TA-1: e quelli che il ruolo ha già
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("UPDATE app.custom_roles SET name=$2, description=$3 WHERE id=$1")
         .bind(rid).bind(b.name.trim()).bind(b.description.as_deref()).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     if n==0 { let _=tx.rollback().await; return Err(err(StatusCode::NOT_FOUND, "ruolo inesistente")); }
     set_role_caps(&mut tx, tid, rid, &b.capabilities).await?;
     tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "update_custom_role", json!({"id":rid,"name":b.name,"caps":b.capabilities})).await;
     Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_custom_role(State(st): State<AppState>, h: HeaderMap, Path(rid): Path<Uuid>) -> R {
@@ -156,6 +165,10 @@ pub async fn delete_custom_role(State(st): State<AppState>, h: HeaderMap, Path(r
 pub async fn custom_role_assign_user(State(st): State<AppState>, h: HeaderMap, Path(rid): Path<Uuid>, Json(b): Json<AssignUserReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
+    require_grantable(&s, &custom_role_caps(&st, tid, rid).await)?; // TA-1
+    // TA-11: l'utente deve appartenere a questo tenant
+    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.users WHERE id=$1 AND tenant_id=$2").bind(b.user_id).bind(tid)
+        .fetch_optional(&st.owner_pool).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"utente inesistente")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.custom_roles WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"ruolo inesistente")); }
     sqlx::query("INSERT INTO app.user_custom_roles(tenant_id,user_id,role_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
@@ -175,6 +188,10 @@ pub async fn custom_role_unassign_user(State(st): State<AppState>, h: HeaderMap,
 pub async fn custom_role_assign_group(State(st): State<AppState>, h: HeaderMap, Path(rid): Path<Uuid>, Json(b): Json<AssignGroupReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
+    require_grantable(&s, &custom_role_caps(&st, tid, rid).await)?; // TA-1
+    // TA-11: il gruppo deve appartenere a questo tenant
+    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.user_groups WHERE id=$1 AND tenant_id=$2").bind(b.group_id).bind(tid)
+        .fetch_optional(&st.owner_pool).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"gruppo inesistente")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.custom_roles WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"ruolo inesistente")); }
     sqlx::query("INSERT INTO app.user_group_custom_roles(tenant_id,group_id,role_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
@@ -189,4 +206,10 @@ pub async fn custom_role_unassign_group(State(st): State<AppState>, h: HeaderMap
     sqlx::query("DELETE FROM app.user_group_custom_roles WHERE role_id=$1 AND group_id=$2").bind(rid).bind(gid).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
+}
+
+/// Permessi contenuti in un ruolo personalizzato (filtrati per tenant).
+async fn custom_role_caps(st: &AppState, tid: Uuid, rid: Uuid) -> Vec<String> {
+    sqlx::query_scalar("SELECT capability FROM app.custom_role_capabilities WHERE tenant_id=$1 AND role_id=$2")
+        .bind(tid).bind(rid).fetch_all(&st.owner_pool).await.unwrap_or_default()
 }

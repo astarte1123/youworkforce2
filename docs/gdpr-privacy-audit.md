@@ -23,18 +23,35 @@ righe) e restituisce un CSV (RFC4180) con colonne `email,ruolo,telefono,creato,s
 l'export stesso è tracciato (`gdpr_users_export`).
 
 ### Export (diritto d'accesso)
-`GET /api/gdpr/export/:uid` → JSON con i dati personali della persona nel tenant:
-profilo (email, ruolo, telefono, date, `anonymized_at`), check-in, diario, reperibilità
-(oncall) e incidenti assegnati (max 1000 per sezione). La console scarica il file
-`gdpr-<email>.json` (blob lato browser). Ogni export è tracciato in audit (`gdpr_export`).
+`GET /api/gdpr/export/:uid` → JSON con i dati personali della persona nel tenant: profilo (email,
+ruolo, telefono, date, `anonymized_at`), check-in, diario, reperibilità (oncall), incidenti
+assegnati e, in `altri_dati`, **tutte le categorie del catalogo unico** (`PII_EXPORT` in
+`core/src/privacy.rs`): recapiti, regole di notifica, gruppi di allarme, assegnazioni di escalation,
+profili di protezione, gruppi di persone, squadre, sedi visibili, dispositivi assegnati (storico),
+turni e piani turno, assenze, consuntivi, ronde e punzonature, presenze di cantiere, qualifiche,
+interventi assegnati, incidenti in cui è il lavoratore coinvolto (max 5000 righe per categoria).
+La console scarica il file `gdpr-<email>.json`. Ogni export è tracciato in audit (`gdpr_export`).
 
 ### Anonimizza (diritto all'oblio)
-`POST /api/gdpr/anonymize/:uid`. Non elimina la riga (preserva l'integrità storica degli
-incidenti): scrubba la PII e blocca il login. In pratica:
-- email → `anon-<8hex>@anonymized.invalid`, telefono → NULL,
-  password → token casuale (login impossibile), `anonymized_at` = ora;
-- corpo delle voci di diario → `[rimosso: anonimizzato]`;
-- sessioni attive dell'utente cancellate.
+`POST /api/gdpr/anonymize/:uid`. Non elimina la riga utente (preserva l'integrità storica di
+incidenti, consuntivi e punzonature, che restano legati a un identificativo pseudonimo). In una
+sola transazione, sempre filtrata per tenant:
+- **identità**: email → `anon-<8hex>@anonymized.invalid`, telefono e verifiche del telefono → NULL,
+  password → token casuale (login impossibile), `anonymized_at` = ora; sessioni cancellate;
+- **recapiti e accessi**: recapiti, regole di notifica, token dei calendari, inviti cancellati;
+- **allarmi**: la persona è tolta da gruppi di allarme, assegnazioni ed eccezioni di escalation,
+  passi di policy, profili di protezione, gruppi di persone, squadre, sedi visibili, ruoli
+  personalizzati; i **turni di reperibilità futuri o in corso** sono cancellati (lo storico passato
+  resta, pseudonimo). Non riceve più alcun avviso;
+- **dispositivi**: badge e app liberati (il badge torna *in attesa*, nessun falso allarme di
+  silenzio); le **posizioni dell'app personale** sono cancellate e l'etichetta non contiene più
+  l'email;
+- **tracce testuali**: email e telefono in chiaro sostituiti con `anonimizzato-<8hex>` nel registro
+  attività (attore e dettaglio), nei log di consegna degli avvisi e nei comandi ai dispositivi; corpo
+  delle voci di diario → `[rimosso: anonimizzato]`.
+
+Una seconda richiesta sullo stesso utente risponde `409` (già anonimizzato).
+e2e: `qa/gdpr-anonymize-full-e2e.sh`.
 
 Protezioni: non puoi anonimizzare **te stesso** (400), né **l'ultimo** `tenant_admin`
 attivo (400); se l'utente ha **incidenti aperti** assegnati → 409 (riassegnali/chiudili

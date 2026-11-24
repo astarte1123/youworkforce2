@@ -60,6 +60,39 @@ toccare il codice. Additivo e non distruttivo; i ruoli restano, le capability li
   `is_approver` → `approve`. Avendo cambiato solo il corpo degli helper, **tutti** gli endpoint
   esistenti onorano gli override senza modificarne i call site.
 - `GET /api/me` espone `caps` per usi lato UI (facoltativo; il backend resta l'autorità).
+- **Ruolo ed esistenza dell'utente** si rileggono a ogni richiesta (TA-2): un utente retrocesso ha
+  subito i nuovi permessi; eliminato, anonimizzato o di un tenant sospeso perde la sessione (`401`).
+
+## Regole di delega (TA-1, TA-3)
+
+**Non si concede ciò che non si possiede.** Chi ha `users.manage` senza `admin` (delegato):
+- assegna a utenti, ruoli personalizzati e matrice dei ruoli **solo permessi che ha già**; quindi non
+  si promuove, non crea amministratori, non crea né si assegna ruoli con `admin` o con permessi che
+  non ha (`403` con l'elenco leggibile dei permessi mancanti);
+- non modifica (ruolo, password, telefono) né elimina utenti che hanno permessi che lui non ha, ad
+  esempio un amministratore;
+- non tocca la riga della matrice di un ruolo che ha più permessi dei suoi; il **ripristino** della
+  matrice ai valori predefiniti è riservato all'amministratore.
+
+Un amministratore (`admin`) ha tutti i permessi e quindi può creare altri amministratori.
+
+**Mai senza amministratore**: retrocedere o eliminare un `tenant_admin` (sé stessi o un altro) è
+rifiutato (`409`) se non resta almeno un altro amministratore attivo.
+
+**Permessi, non nomi di ruolo (TA-4).** I controlli che prima richiedevano il ruolo `tenant_admin`
+ora richiedono un permesso, delegabile con un ruolo personalizzato:
+
+| Funzione | Permesso |
+|---|---|
+| funzioni AI del tenant, configurazione guidata, configurazione degli strumenti di modulo | `settings.manage` |
+| beacon, piantine, posizionamento di beacon e dispositivi sulla piantina | `devices.admin` |
+| suggerimento AI delle regole sensori | `iot.manage` |
+
+Con la matrice predefinita nulla cambia: questi permessi li ha solo l'amministratore. Restano legati
+al ruolo, da rivedere con i moduli, la visibilità «solo i propri» di lavoratore e reperibile
+(ordini, turni, diario) e la sede ammessa per i ruoli operativi.
+
+e2e: `qa/iam-guardrails-e2e.sh`.
 
 ## Override per-tenant (mig `0073_role_capabilities.sql`)
 

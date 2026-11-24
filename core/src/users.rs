@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::state::AppState;
-use crate::api::{R, require_tenant, require_cap, ise, err, audit, USER_ROLES, is_e164};
+use crate::api::{R, require_tenant, require_cap, require_grantable, user_caps, effective_caps, ise, err, audit, USER_ROLES, is_e164};
 use crate::{db, auth};
 
 pub async fn list_users(State(st): State<AppState>, h: HeaderMap) -> R {
@@ -53,6 +53,8 @@ pub async fn create_user(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     if !USER_ROLES.contains(&b.role.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "ruolo non valido")); }
+    // TA-1: il ruolo assegnato non può avere permessi che chi crea non ha
+    require_grantable(&s, &effective_caps(&st, tid, &b.role).await)?;
     if b.password.len() < 4 { return Err(err(StatusCode::BAD_REQUEST, "password troppo corta")); }
     if b.email.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "email richiesta")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -70,14 +72,15 @@ pub struct UpdateUser { pub role: Option<String>, pub password: Option<String>, 
 pub async fn update_user(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<UpdateUser>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
+    let (cur_role, cur_caps) = user_caps(&st, tid, id).await.ok_or_else(|| err(StatusCode::NOT_FOUND, "utente inesistente"))?;
+    // TA-1: chi ha più permessi di te (es. un amministratore) non si modifica: né ruolo, né password, né telefono
+    if id != s.user_id { require_grantable(&s, &cur_caps)?; }
     if let Some(r) = &b.role {
         if !USER_ROLES.contains(&r.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "ruolo non valido")); }
-        // non togliere l'ultimo admin
-        if id == s.user_id && r != "tenant_admin" {
-            let admins: i64 = sqlx::query_scalar("SELECT count(*) FROM app.users WHERE tenant_id=$1 AND role='tenant_admin'")
-                .bind(tid).fetch_one(&st.owner_pool).await.map_err(ise)?;
-            if admins <= 1 { return Err(err(StatusCode::CONFLICT, "non puoi rimuovere l'ultimo admin")); }
-        }
+        // TA-1: il nuovo ruolo non può dare permessi che chi modifica non ha (niente auto-promozione)
+        require_grantable(&s, &effective_caps(&st, tid, r).await)?;
+        // TA-3: mai lasciare il tenant senza amministratore (per sé o per altri)
+        if cur_role == "tenant_admin" && r != "tenant_admin" { ensure_other_admin(&st, tid, id).await?; }
     }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     if let Some(r) = &b.role {
@@ -105,6 +108,9 @@ pub async fn delete_user(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     if id == s.user_id { return Err(err(StatusCode::CONFLICT, "non puoi eliminare te stesso")); }
+    let (cur_role, cur_caps) = user_caps(&st, tid, id).await.ok_or_else(|| err(StatusCode::NOT_FOUND, "utente inesistente"))?;
+    require_grantable(&s, &cur_caps)?;                                   // TA-1
+    if cur_role == "tenant_admin" { ensure_other_admin(&st, tid, id).await?; } // TA-3
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.users WHERE id=$1").bind(id).execute(&mut *tx).await
         .map_err(|e| match e.as_database_error().and_then(|d| d.code()) {
@@ -115,4 +121,13 @@ pub async fn delete_user(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "utente inesistente")); }
     audit(&st, tid, &s.email, "delete_user", json!({"id":id})).await;
     Ok(Json(json!({"ok":true})))
+}
+
+/// TA-3: deve restare almeno un altro amministratore attivo (non anonimizzato) oltre a `except`.
+async fn ensure_other_admin(st: &AppState, tid: Uuid, except: Uuid) -> Result<(), (StatusCode, String)> {
+    let others: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM app.users WHERE tenant_id=$1 AND role='tenant_admin' AND anonymized_at IS NULL AND id<>$2")
+        .bind(tid).bind(except).fetch_one(&st.owner_pool).await.map_err(ise)?;
+    if others < 1 { return Err(err(StatusCode::CONFLICT, "è l'unico amministratore del tenant: nominane un altro prima")); }
+    Ok(())
 }

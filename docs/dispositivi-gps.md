@@ -4,6 +4,13 @@ Il modulo **Localizzazione GPS e badge** riceve dati da tracker personali, badge
 trasforma in posizioni e allarmi salva-vita. Tutta la decodifica è **nativa**: YouWorkforce non
 dipende da server esterni.
 
+**Attivazione e autonomia.** Il modulo si attiva dal superadmin sul singolo tenant (mig `0129`: prima
+la riga di catalogo ereditava "non disponibile" dal vecchio connettore e il modulo non si accendeva).
+È **autonomo**: non richiede *Lone Worker*. Un tenant con solo GPS (ronde, badge con SOS e caduta
+propri, es. GH-5200) vede e gestisce in **Centrale allarmi** gli incidenti dei suoi badge (SOS, uomo
+a terra, perdita di contatto) e configura escalation e reperibilità; i **check-in** restano di Lone
+Worker e la Centrale non li mostra. Con entrambi i moduli attivi i due perimetri si sommano.
+
 | Canale | Per chi | Come si identifica il dispositivo |
 |---|---|---|
 | **Teltonika TCP** (Codec8 / Codec8 Extended), porta `5027` | GH-5200, TMT250, FMB… | IMEI censito |

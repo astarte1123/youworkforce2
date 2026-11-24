@@ -124,8 +124,17 @@ async fn session_of(state: &AppState, h: &HeaderMap) -> Option<Session> {
     let tok = get_cookie(h, "yw_session")?;
     // persistent sessions: survive core restarts; expired rows are ignored.
     let r = sqlx::query(
-        "SELECT user_id, tenant_id, email, role, is_super, impersonator
-         FROM app.sessions WHERE token=$1 AND expires_at > now()")
+        // TA-2: per le sessioni di tenant ruolo ed esistenza dell'utente si rileggono a OGNI richiesta
+        // (prima il ruolo era copiato al login e valeva 12 h anche dopo retrocessione o eliminazione).
+        // Utente eliminato o anonimizzato -> sessione non valida. Impersonazione: ruolo tenant_admin.
+        "SELECT s.user_id, s.tenant_id, s.email, s.is_super, s.impersonator,
+                CASE WHEN s.tenant_id IS NULL OR s.impersonator IS NOT NULL THEN s.role ELSE u.role END AS role
+         FROM app.sessions s
+         LEFT JOIN app.tenants t ON t.id = s.tenant_id
+         LEFT JOIN app.users u ON u.id = s.user_id AND u.tenant_id = s.tenant_id
+         WHERE s.token=$1 AND s.expires_at > now()
+           AND (s.tenant_id IS NULL OR s.impersonator IS NOT NULL OR t.status IS DISTINCT FROM 'sospeso')
+           AND (s.tenant_id IS NULL OR (u.id IS NOT NULL AND u.anonymized_at IS NULL))")
         .bind(&tok).fetch_optional(&state.owner_pool).await.ok().flatten()?;
     let tenant_id = r.try_get::<Option<Uuid>, _>("tenant_id").ok().flatten();
     let role: String = r.get("role");
@@ -154,12 +163,22 @@ async fn persist_session(state: &AppState, tok: &str, s: &Session) {
 }
 
 /// Session cookie (HttpOnly) + CSRF cookie (readable by JS for the double-submit header).
+/// SA-9: attributo `Secure` sui cookie quando la console è servita in HTTPS (produzione/staging).
+/// `YW_COOKIE_SECURE=1` lo attiva; in locale (http://localhost) resta spento per i test e la webview.
+pub(crate) fn cookie_secure() -> &'static str {
+    static S: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    S.get_or_init(|| match std::env::var("YW_COOKIE_SECURE").ok().as_deref() {
+        Some("1") | Some("true") | Some("yes") => "; Secure",
+        _ => "",
+    })
+}
 fn set_cookie_header(tok: &str, csrf: &str) -> HeaderMap {
     let mut m = HeaderMap::new();
+    let sec = cookie_secure();
     m.append(header::SET_COOKIE,
-        format!("yw_session={tok}; Path=/; HttpOnly; SameSite=Lax").parse().unwrap());
+        format!("yw_session={tok}; Path=/; HttpOnly; SameSite=Lax{sec}").parse().unwrap());
     m.append(header::SET_COOKIE,
-        format!("yw_csrf={csrf}; Path=/; SameSite=Lax").parse().unwrap());
+        format!("yw_csrf={csrf}; Path=/; SameSite=Lax{sec}").parse().unwrap());
     m
 }
 
@@ -198,13 +217,60 @@ pub async fn csrf_guard(req: axum::extract::Request, next: axum::middleware::Nex
 
 // --------------------- login rate limiting (anti brute-force, shared store) ---------------------
 // State lives in app.login_throttle so the limit is enforced across all core instances.
-// Fixed window: 5 failures / 300s per key -> block 300s.
-fn rl_key(h: &HeaderMap, email: &str) -> String {
-    let ip = h.get("x-forwarded-for").and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next()).map(|s| s.trim().to_string())
-        .or_else(|| h.get("x-real-ip").and_then(|v| v.to_str().ok()).map(|s| s.to_string()))
-        .unwrap_or_default();
-    format!("{}|{}", email.to_lowercase(), ip)
+// Due chiavi per tentativo (SA-4):
+//   - account+IP  `[slug|]email|ip`  5 fallimenti / 300 s -> blocco 300 s (rallenta il singolo client);
+//   - account     `acct|[slug|]email` 20 fallimenti / 300 s -> blocco 300 s, INDIPENDENTE dall'IP:
+//     cambiare indirizzo (o falsificare X-Forwarded-For) non dà tentativi illimitati sulla stessa utenza.
+// L'IP non si legge MAI da intestazioni del client: lo calcola `client_ip_mw` dal peer TCP.
+const RL_IP_MAX: i32 = 5;
+const RL_ACCT_MAX: i32 = 20;
+/// Intestazione INTERNA con l'IP del client; quella eventualmente inviata dal client è scartata.
+pub const CLIENT_IP_HDR: &str = "x-yw-client-ip";
+
+/// IP del client: il peer TCP; solo se il peer è un proxy fidato (loopback = console YW, oppure
+/// `YW_TRUSTED_PROXIES`, elenco separato da virgole) si usa l'ULTIMO elemento di X-Forwarded-For,
+/// cioè quello aggiunto dal proxy stesso (gli elementi precedenti li scrive il client).
+pub(crate) fn resolve_client_ip(peer: Option<std::net::IpAddr>, h: &HeaderMap, trusted: &[std::net::IpAddr]) -> String {
+    let Some(p) = peer else { return String::new() };
+    if p.is_loopback() || trusted.contains(&p) {
+        let last = h.get_all("x-forwarded-for").iter().filter_map(|v| v.to_str().ok())
+            .flat_map(|s| s.split(',')).map(|s| s.trim()).filter(|s| !s.is_empty()).last();
+        if let Some(ip) = last.and_then(|s| s.parse::<std::net::IpAddr>().ok()) { return ip.to_string(); }
+    }
+    p.to_string()
+}
+fn trusted_proxies() -> &'static Vec<std::net::IpAddr> {
+    static T: std::sync::OnceLock<Vec<std::net::IpAddr>> = std::sync::OnceLock::new();
+    T.get_or_init(|| std::env::var("YW_TRUSTED_PROXIES").unwrap_or_default()
+        .split(',').filter_map(|s| s.trim().parse().ok()).collect())
+}
+pub async fn client_ip_mw(mut req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let peer = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip());
+    let ip = resolve_client_ip(peer, req.headers(), trusted_proxies());
+    req.headers_mut().remove(CLIENT_IP_HDR);
+    if let Ok(v) = axum::http::HeaderValue::from_str(&ip) { req.headers_mut().insert(CLIENT_IP_HDR, v); }
+    next.run(req).await
+}
+
+/// [chiave account+IP, chiave account]. `scope` = "" (superadmin) o "slug|" (tenant).
+fn rl_keys(h: &HeaderMap, scope: &str, email: &str) -> [String; 2] {
+    let e = email.trim().to_lowercase();
+    let ip = h.get(CLIENT_IP_HDR).and_then(|v| v.to_str().ok()).unwrap_or_default();
+    [format!("{scope}{e}|{ip}"), format!("acct|{scope}{e}")]
+}
+
+/// Some(retry_after_secs) se una delle chiavi è bloccata.
+async fn rl_check_all(st: &AppState, keys: &[String; 2]) -> Option<u64> {
+    let mut out: Option<u64> = None;
+    for k in keys { if let Some(r) = rl_check(st, k).await { out = Some(out.map_or(r, |o| o.max(r))); } }
+    out
+}
+async fn rl_fail_all(st: &AppState, keys: &[String; 2]) {
+    rl_fail(st, &keys[0], RL_IP_MAX).await;
+    rl_fail(st, &keys[1], RL_ACCT_MAX).await;
+}
+async fn rl_clear_all(st: &AppState, keys: &[String; 2]) {
+    for k in keys { rl_clear(st, k).await; }
 }
 
 /// Some(retry_after_secs) if the key is currently blocked.
@@ -221,17 +287,17 @@ async fn rl_check(st: &AppState, key: &str) -> Option<u64> {
     None
 }
 
-async fn rl_fail(st: &AppState, key: &str) {
+async fn rl_fail(st: &AppState, key: &str, max: i32) {
     let _ = sqlx::query(
         "INSERT INTO app.login_throttle(key,count,reset_at,blocked_until)
          VALUES($1, 1, now() + interval '300 seconds', NULL)
          ON CONFLICT(key) DO UPDATE SET
            count = CASE WHEN now() > login_throttle.reset_at THEN 1 ELSE login_throttle.count + 1 END,
            reset_at = CASE WHEN now() > login_throttle.reset_at THEN now() + interval '300 seconds' ELSE login_throttle.reset_at END,
-           blocked_until = CASE WHEN (CASE WHEN now() > login_throttle.reset_at THEN 1 ELSE login_throttle.count + 1 END) >= 5
+           blocked_until = CASE WHEN (CASE WHEN now() > login_throttle.reset_at THEN 1 ELSE login_throttle.count + 1 END) >= $2
                                 THEN now() + interval '300 seconds' ELSE login_throttle.blocked_until END,
            updated_at = now()")
-        .bind(key).execute(&st.owner_pool).await;
+        .bind(key).bind(max).execute(&st.owner_pool).await;
 }
 
 async fn rl_clear(st: &AppState, key: &str) {
@@ -269,8 +335,8 @@ async fn require_super(state: &AppState, h: &HeaderMap) -> Result<Session, (Stat
 pub struct LoginReq { pub email: String, pub password: String }
 
 pub async fn superadmin_login(State(st): State<AppState>, h: HeaderMap, Json(b): Json<LoginReq>) -> impl IntoResponse {
-    let key = rl_key(&h, &b.email);
-    if let Some(ra) = rl_check(&st, &key).await { return too_many(ra); }
+    let key = rl_keys(&h, "", &b.email);
+    if let Some(ra) = rl_check_all(&st, &key).await { return too_many(ra); }
     let row = sqlx::query("SELECT id, pass_hash FROM app.superadmins WHERE email=$1")
         .bind(&b.email).fetch_optional(&st.owner_pool).await;
     match row {
@@ -278,7 +344,7 @@ pub async fn superadmin_login(State(st): State<AppState>, h: HeaderMap, Json(b):
             let id: Uuid = r.get("id");
             let hash: String = r.get("pass_hash");
             if auth::verify_password(&b.password, &hash) {
-                rl_clear(&st, &key).await;
+                rl_clear_all(&st, &key).await;
                 if auth::needs_rehash(&hash) {
                     let _ = sqlx::query("UPDATE app.superadmins SET pass_hash=$1 WHERE id=$2")
                         .bind(auth::hash_password(&b.password)).bind(id).execute(&st.owner_pool).await;
@@ -290,12 +356,12 @@ pub async fn superadmin_login(State(st): State<AppState>, h: HeaderMap, Json(b):
                 persist_session(&st, &tok, &sess).await;
                 (StatusCode::OK, set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"role":"superadmin","csrf":csrf}))).into_response()
             } else {
-                rl_fail(&st, &key).await;
+                rl_fail_all(&st, &key).await;
                 (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad credentials"}))).into_response()
             }
         }
         _ => {
-            rl_fail(&st, &key).await;
+            rl_fail_all(&st, &key).await;
             (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad credentials"}))).into_response()
         }
     }
@@ -318,7 +384,7 @@ pub fn plan_catalog() -> Vec<Plan> { vec![
     Plan{ code:"sicurezza", name:"Sicurezza lavoratore", desc:"SOS / uomo a terra / reperibilità (Lone Worker).", modules:&["loneworker"] },
     Plan{ code:"campo", name:"Lavoro sul campo", desc:"Interventi, cantieri, ronde, consuntivi, turni.", modules:&["interventi","cantieri","giri","consuntivi","workforce"] },
     Plan{ code:"iot", name:"IoT", desc:"Sensori, telemetria, soglie→incidenti, cruscotti.", modules:&["iot"] },
-    Plan{ code:"full", name:"Completo", desc:"Tutti i moduli + assistente AI.", modules:&["loneworker","interventi","cantieri","giri","consuntivi","workforce","iot","assistant"] },
+    Plan{ code:"full", name:"Completo", desc:"Tutti i moduli + assistente AI.", modules:&["loneworker","gps","interventi","cantieri","giri","consuntivi","workforce","iot","assistant"] },
 ]}
 pub async fn super_plans_list(State(st): State<AppState>, h: HeaderMap) -> R {
     require_super(&st, &h).await?;
@@ -448,7 +514,7 @@ pub async fn list_tenants(State(st): State<AppState>, h: HeaderMap) -> R {
     require_super(&st, &h).await?;
     // seat app mobile = utenti che usano l'app (lavoratore/reperibile); IoT = dispositivi registrati.
     let rows = sqlx::query(
-        "SELECT t.id,t.slug,t.name,t.created_at,t.status,
+        "SELECT t.id,t.slug,t.name,t.created_at,t.status,t.suspend_at,t.suspend_note,
             t.mobile_app_licenses, t.iot_device_licenses,
             t.brand_primary,t.brand_ink,t.brand_soft,t.brand_accent,(t.logo IS NOT NULL) AS has_logo,
             (SELECT count(*) FROM app.users u WHERE u.tenant_id=t.id AND u.role IN ('lavoratore','reperibile')) AS mobile_used,
@@ -463,6 +529,8 @@ pub async fn list_tenants(State(st): State<AppState>, h: HeaderMap) -> R {
     let out: Vec<Value> = rows.iter().map(|r| json!({
         "id": r.get::<Uuid,_>("id"), "slug": r.get::<String,_>("slug"), "name": r.get::<String,_>("name"),
         "status": r.try_get::<String,_>("status").unwrap_or_else(|_| "attivo".into()),
+        "suspend_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("suspend_at").ok().flatten(),
+        "suspend_note": r.try_get::<Option<String>,_>("suspend_note").ok().flatten(),
         "mobile_app_licenses": r.try_get::<Option<i32>,_>("mobile_app_licenses").ok().flatten(),
         "iot_device_licenses": r.try_get::<Option<i32>,_>("iot_device_licenses").ok().flatten(),
         "mobile_used": r.get::<i64,_>("mobile_used"),
@@ -700,16 +768,61 @@ async fn system_alert_notify(st: &AppState, sev: &str, kind: &str, detail: &str)
     }}
     any
 }
-#[derive(Deserialize)] pub struct TenantStatusReq { pub status: String }
-/// Sospende/riattiva un tenant (sospeso = login utenti bloccato). Superadmin.
+#[derive(Deserialize)] pub struct TenantStatusReq {
+    pub status: String,
+    /// solo per 'sospeso': data/ora futura (RFC 3339) -> sospensione PROGRAMMATA con avviso all'admin.
+    pub at: Option<chrono::DateTime<chrono::Utc>>,
+    pub note: Option<String>,
+}
+/// Chiude le sessioni del tenant (non quelle d'impersonazione del superadmin per assistenza).
+async fn close_tenant_sessions(st: &AppState, tid: Uuid) -> u64 {
+    sqlx::query("DELETE FROM app.sessions WHERE tenant_id=$1 AND impersonator IS NULL")
+        .bind(tid).execute(&st.owner_pool).await.map(|r| r.rows_affected()).unwrap_or(0)
+}
+/// Sospende/riattiva un tenant. Superadmin. SA-5 (decisione PO): un tenant SOSPESO non riceve né
+/// scala allarmi (moduli spenti in `module_active`, worker ed escalation fermi), i suoi utenti sono
+/// disconnessi e non accedono. Con `at` nel futuro la sospensione è PROGRAMMATA: il tenant resta
+/// attivo, l'amministratore vede l'avviso con data e note, alla data il worker la applica.
+/// 'attivo' riattiva e annulla una sospensione programmata.
 pub async fn set_tenant_status(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<TenantStatusReq>) -> R {
     require_super(&st, &h).await?;
     if !["attivo","sospeso"].contains(&b.status.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "stato non valido")); }
-    let n = sqlx::query("UPDATE app.tenants SET status=$2 WHERE id=$1").bind(tid).bind(&b.status)
-        .execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+    let note = b.note.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| s.chars().take(500).collect::<String>());
+    let now = st.clock.now();
+    let scheduled = b.status == "sospeso" && b.at.map_or(false, |a| a > now);
+    let q = if b.status == "attivo" {
+        sqlx::query("UPDATE app.tenants SET status='attivo', suspend_at=NULL, suspend_note=NULL WHERE id=$1").bind(tid)
+    } else if scheduled {
+        sqlx::query("UPDATE app.tenants SET suspend_at=$2, suspend_note=$3 WHERE id=$1").bind(tid).bind(b.at).bind(note.clone())
+    } else {
+        sqlx::query("UPDATE app.tenants SET status='sospeso', suspend_at=NULL, suspend_note=COALESCE($2,suspend_note) WHERE id=$1").bind(tid).bind(note.clone())
+    };
+    let n = q.execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "tenant inesistente")); }
-    audit(&st, tid, "superadmin", "tenant_status", json!({"status":b.status})).await;
-    Ok(Json(json!({"ok":true,"status":b.status})))
+    let closed = if b.status == "sospeso" && !scheduled { close_tenant_sessions(&st, tid).await } else { 0 };
+    let eff = if scheduled { "sospensione_programmata" } else { b.status.as_str() };
+    let at = if scheduled { b.at } else { None };
+    audit(&st, tid, "superadmin", "tenant_status", json!({"status":eff,"at":at,"note":note,"sessions_closed":closed})).await;
+    Ok(Json(json!({"ok":true,"status": if scheduled {"attivo"} else {b.status.as_str()},
+        "suspend_at": at, "sessions_closed": closed})))
+}
+/// Worker (~60 s): applica le sospensioni programmate giunte a scadenza (orologio unico st.clock).
+pub async fn tenant_suspension_scan(st: &AppState) {
+    let now = st.clock.now();
+    let due: Vec<Uuid> = sqlx::query_scalar(
+        "UPDATE app.tenants SET status='sospeso', suspend_at=NULL
+          WHERE status='attivo' AND suspend_at IS NOT NULL AND suspend_at <= $1 RETURNING id")
+        .bind(now).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    for tid in due {
+        let closed = close_tenant_sessions(st, tid).await;
+        audit(st, tid, "system", "tenant_status", json!({"status":"sospeso","programmata":true,"sessions_closed":closed})).await;
+        tracing::warn!(tenant=%tid, "sospensione programmata applicata: allarmi e accessi fermi");
+    }
+}
+/// true se il tenant è sospeso: niente ricezione, niente escalation, niente accessi.
+pub async fn tenant_suspended(st: &AppState, tid: Uuid) -> bool {
+    sqlx::query_scalar::<_, bool>("SELECT status='sospeso' FROM app.tenants WHERE id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten().unwrap_or(false)
 }
 #[derive(Deserialize)] pub struct DeleteTenantReq { pub slug: String }
 /// Elimina DEFINITIVAMENTE un tenant e tutti i suoi dati (FK ON DELETE CASCADE). Richiede
@@ -761,13 +874,24 @@ pub async fn super_set_tenant_admin(State(st): State<AppState>, h: HeaderMap, Pa
 }
 
 // ---- superadmin: upload / serve logo del tenant ----
+/// SA-8: tipo del logo riconosciuto dai PRIMI BYTE, mai dall'intestazione del client: un SVG o un
+/// HTML servito come immagine potrebbe eseguire script sul dominio della console.
+pub(crate) fn logo_kind(b: &[u8]) -> Option<&'static str> {
+    if b.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) { return Some("image/png"); }
+    if b.starts_with(&[0xFF, 0xD8, 0xFF]) { return Some("image/jpeg"); }
+    if b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP" { return Some("image/webp"); }
+    None
+}
+const LOGO_MAX_BYTES: usize = 512 * 1024;
 pub async fn super_set_logo(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, body: axum::body::Bytes) -> R {
     require_super(&st, &h).await?;
-    let ct = h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("image/png").to_string();
     if body.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "file vuoto")); }
+    if body.len() > LOGO_MAX_BYTES { return Err(err(StatusCode::PAYLOAD_TOO_LARGE, "logo troppo grande: massimo 512 KB")); }
+    let ct = logo_kind(&body).ok_or_else(|| err(StatusCode::UNSUPPORTED_MEDIA_TYPE, "formato non ammesso: carica un'immagine PNG, JPEG o WebP"))?;
     sqlx::query("UPDATE app.tenants SET logo=$1, logo_ct=$2 WHERE id=$3")
-        .bind(body.as_ref()).bind(&ct).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
-    Ok(Json(json!({"ok":true})))
+        .bind(body.as_ref()).bind(ct).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, "superadmin", "tenant_logo", json!({"type":ct,"bytes":body.len()})).await;
+    Ok(Json(json!({"ok":true,"type":ct})))
 }
 pub async fn super_del_logo(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
     require_super(&st, &h).await?;
@@ -792,8 +916,13 @@ pub async fn branding(State(st): State<AppState>, h: HeaderMap) -> R {
 }
 async fn serve_logo(st: &AppState, tid: Uuid) -> Response {
     let r = sqlx::query("SELECT logo,logo_ct FROM app.tenants WHERE id=$1").bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
-    match r.and_then(|r| { let b: Option<Vec<u8>> = r.try_get("logo").ok(); b.map(|b| (b, r.try_get::<Option<String>,_>("logo_ct").ok().flatten().unwrap_or("image/png".into()))) }) {
-        Some((bytes, ct)) => ([(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, "no-cache".into())], bytes).into_response(),
+    let bytes: Option<Vec<u8>> = r.and_then(|r| r.try_get::<Option<Vec<u8>>,_>("logo").ok().flatten());
+    // SA-8: il tipo servito è quello riconosciuto dai byte (anche per i logo caricati prima della
+    // correzione); un logo non riconosciuto (es. SVG) non viene servito. nosniff + CSP chiusa.
+    match bytes.as_deref().and_then(|b| logo_kind(b).map(|k| (b.to_vec(), k))) {
+        Some((bytes, ct)) => ([(header::CONTENT_TYPE, ct.to_string()), (header::CACHE_CONTROL, "no-cache".into()),
+                               (header::X_CONTENT_TYPE_OPTIONS, "nosniff".into()),
+                               (header::CONTENT_SECURITY_POLICY, "default-src 'none'; sandbox".into())], bytes).into_response(),
         None => (StatusCode::NOT_FOUND, "no logo").into_response(),
     }
 }
@@ -807,15 +936,12 @@ pub async fn super_get_logo(State(st): State<AppState>, h: HeaderMap, Path(tid):
 // ---- impersonazione: il superadmin assume la sessione di un admin del tenant ----
 pub async fn super_impersonate(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> impl IntoResponse {
     let s = match require_super(&st, &h).await { Ok(s) => s, Err(e) => return e.into_response() };
-    // usa un admin reale del tenant (user_id valido per RLS/audit); fallback: primo utente
+    // SA-7: si impersona SOLO un amministratore reale del tenant. Prima, senza admin, si entrava come
+    // il primo utente qualunque ma con ruolo e permessi di amministratore (identità e audit falsati).
     let u = sqlx::query("SELECT id AS user_id,email FROM app.users WHERE tenant_id=$1 AND role='tenant_admin' ORDER BY created_at LIMIT 1")
         .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
-    let u = match u {
-        Some(u) => u,
-        None => match sqlx::query("SELECT id AS user_id,email FROM app.users WHERE tenant_id=$1 ORDER BY created_at LIMIT 1")
-            .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten() {
-            Some(u) => u, None => return err(StatusCode::BAD_REQUEST, "il tenant non ha utenti da impersonare").into_response(),
-        }
+    let Some(u) = u else {
+        return err(StatusCode::CONFLICT, "il tenant non ha un amministratore: crealo (o reinvia l'invito) prima di impersonarlo").into_response();
     };
     let sess = Session {
         user_id: u.get("user_id"), tenant_id: Some(tid), email: u.get("email"),
@@ -833,10 +959,11 @@ pub async fn impersonate_stop(State(st): State<AppState>, h: HeaderMap) -> impl 
     let s = match session_of(&st, &h).await { Some(s) => s, None => return err(StatusCode::UNAUTHORIZED, "no session").into_response() };
     let imp = match &s.impersonator { Some(e) => e.clone(), None => return err(StatusCode::BAD_REQUEST, "non sei in impersonazione").into_response() };
     // verifica che l'impersonator sia davvero un superadmin
-    let sa = sqlx::query("SELECT email FROM app.superadmins WHERE email=$1").bind(&imp).fetch_optional(&st.owner_pool).await.ok().flatten();
-    if sa.is_none() { return err(StatusCode::FORBIDDEN, "impersonator non valido").into_response(); }
+    let sa = sqlx::query("SELECT id FROM app.superadmins WHERE email=$1").bind(&imp).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let Some(sa) = sa else { return err(StatusCode::FORBIDDEN, "impersonator non valido").into_response(); };
     if let Some(t) = get_cookie(&h, "yw_session") { let _ = sqlx::query("DELETE FROM app.sessions WHERE token=$1").bind(&t).execute(&st.owner_pool).await; }
-    let sess = Session { user_id: s.user_id, tenant_id: None, email: imp.clone(), role: "superadmin".into(), is_super: true, impersonator: None, caps: vec![] };
+    // SA-7: la sessione superadmin ripristinata porta l'id del SUPERADMIN, non quello dell'utente impersonato.
+    let sess = Session { user_id: sa.get("id"), tenant_id: None, email: imp.clone(), role: "superadmin".into(), is_super: true, impersonator: None, caps: vec![] };
     let tok = auth::new_token(); let csrf = auth::new_token();
     persist_session(&st, &tok, &sess).await;
     if let Some(tid) = s.tenant_id {
@@ -1750,7 +1877,7 @@ pub async fn ai_features_get(State(st): State<AppState>, h: HeaderMap) -> R {
 pub struct SetAiFeature { pub feature: String, pub enabled: bool }
 pub async fn ai_features_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SetAiFeature>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo l'admin del tenant")); }
+    require_cap(&s, "settings.manage")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     if !AI_FEATURES.contains(&b.feature.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "feature AI sconosciuta")); }
     sqlx::query("INSERT INTO app.ai_features(tenant_id,feature,enabled) VALUES($1,$2,$3)
@@ -1787,8 +1914,8 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     if trow.try_get::<String,_>("status").ok().as_deref() == Some("sospeso") {
         return (StatusCode::FORBIDDEN, Json(json!({"error":"tenant sospeso — contatta l'assistenza"}))).into_response();
     }
-    let key = format!("{}|{}", slug, rl_key(&h, &b.email));
-    if let Some(ra) = rl_check(&st, &key).await { return too_many(ra); }
+    let key = rl_keys(&h, &format!("{slug}|"), &b.email);
+    if let Some(ra) = rl_check_all(&st, &key).await { return too_many(ra); }
     // user lookup under tenant context
     let mut tx = match db::begin_tenant(&st.rt_pool, tid).await { Ok(t)=>t, Err(_)=>return ise_resp() };
     let urow = sqlx::query("SELECT id,pass_hash,role FROM app.users WHERE email=$1")
@@ -1796,7 +1923,7 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     let _ = tx.commit().await;
     match urow {
         Some(r) if auth::verify_password(&b.password, &r.get::<String,_>("pass_hash")) => {
-            rl_clear(&st, &key).await;
+            rl_clear_all(&st, &key).await;
             let tok = auth::new_token();
             let uid: Uuid = r.get("id"); let role: String = r.get("role");
             if auth::needs_rehash(&r.get::<String,_>("pass_hash")) {
@@ -1812,7 +1939,7 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
             (StatusCode::OK, set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"role":role,"tenant":slug,"csrf":csrf}))).into_response()
         }
         _ => {
-            rl_fail(&st, &key).await;
+            rl_fail_all(&st, &key).await;
             (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad credentials"}))).into_response()
         }
     }
@@ -1820,7 +1947,16 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
 
 pub async fn me(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = session_of(&st, &h).await.ok_or_else(|| err(StatusCode::UNAUTHORIZED, "no session"))?;
-    Ok(Json(json!({"email":s.email,"role":s.role,"is_super":s.is_super,"tenant_id":s.tenant_id,"impersonator":s.impersonator,"caps":s.caps})))
+    // SA-5: sospensione programmata -> avviso all'amministratore (data + note del superadmin).
+    let mut notice = Value::Null;
+    if let (Some(tid), true) = (s.tenant_id, has_cap(&s, "admin") || s.impersonator.is_some()) {
+        if let Ok(Some(r)) = sqlx::query("SELECT suspend_at, suspend_note FROM app.tenants WHERE id=$1 AND status='attivo' AND suspend_at IS NOT NULL")
+            .bind(tid).fetch_optional(&st.owner_pool).await {
+            notice = json!({"suspend_at": r.get::<chrono::DateTime<chrono::Utc>,_>("suspend_at"),
+                            "note": r.try_get::<Option<String>,_>("suspend_note").ok().flatten()});
+        }
+    }
+    Ok(Json(json!({"email":s.email,"role":s.role,"is_super":s.is_super,"tenant_id":s.tenant_id,"impersonator":s.impersonator,"caps":s.caps,"suspension_notice":notice})))
 }
 
 pub async fn logout(State(st): State<AppState>, h: HeaderMap) -> impl IntoResponse {
@@ -1828,8 +1964,9 @@ pub async fn logout(State(st): State<AppState>, h: HeaderMap) -> impl IntoRespon
         let _ = sqlx::query("DELETE FROM app.sessions WHERE token=$1").bind(&tok).execute(&st.owner_pool).await;
     }
     let mut m = HeaderMap::new();
-    m.append(header::SET_COOKIE, "yw_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".parse().unwrap());
-    m.append(header::SET_COOKIE, "yw_csrf=; Path=/; SameSite=Lax; Max-Age=0".parse().unwrap());
+    let sec = cookie_secure();
+    m.append(header::SET_COOKIE, format!("yw_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{sec}").parse().unwrap());
+    m.append(header::SET_COOKIE, format!("yw_csrf=; Path=/; SameSite=Lax; Max-Age=0{sec}").parse().unwrap());
     (StatusCode::OK, m, Json(json!({"ok":true})))
 }
 
@@ -1887,8 +2024,8 @@ pub async fn alarm_group_import_members(State(st): State<AppState>, h: HeaderMap
 /// Serve alla UI permessi per mostrare solo i permessi dei moduli attivi + i core.
 pub fn cap_modules(cap: &str) -> &'static [&'static str] {
     match cap {
-        "incidents.view" | "incidents.handle" => &["loneworker"],
-        "escalation.manage"                    => &["loneworker"],
+        "incidents.view" | "incidents.handle" => &["loneworker","gps","iot"],
+        "escalation.manage"                    => &["loneworker","gps","iot"],
         "devices.manage" | "devices.admin"     => &["loneworker","gps","iot"],
         "iot.manage"                           => &["iot","gps"],
         "plan"                                 => &["interventi","cantieri","giri","workforce"],
@@ -1964,6 +2101,26 @@ pub(crate) fn has_cap(s: &Session, cap: &str) -> bool { s.caps.iter().any(|c| c 
 pub(crate) fn require_cap(s: &Session, cap: &str) -> Result<(), (StatusCode, String)> {
     if !has_cap(s, cap) { return Err(err(StatusCode::FORBIDDEN, &format!("permesso richiesto: {cap}"))); }
     Ok(())
+}
+/// TA-1: NON SI CONCEDE CIÒ CHE NON SI POSSIEDE. Chi gestisce utenti/permessi può assegnare (a un
+/// ruolo, a un ruolo personalizzato, a un utente) solo permessi che ha già. `admin` li copre tutti:
+/// solo un amministratore crea altri amministratori o tocca chi ha più permessi di lui.
+pub(crate) fn require_grantable(actor: &Session, caps: &[String]) -> Result<(), (StatusCode, String)> {
+    let missing: Vec<&str> = caps.iter().map(|c| c.as_str()).filter(|c| !has_cap(actor, c)).collect();
+    if missing.is_empty() { return Ok(()); }
+    let labels: Vec<String> = missing.iter().map(|c| cap_label(c)).collect();
+    Err(err(StatusCode::FORBIDDEN, &format!("non puoi concedere permessi che non hai: {}", labels.join(", "))))
+}
+/// Etichetta leggibile di una capability (mai il codice grezzo in UI/errori).
+pub(crate) fn cap_label(c: &str) -> String {
+    CAPABILITIES.iter().find(|(k,_)| *k == c).map(|(_,d)| d.to_string()).unwrap_or_else(|| c.to_string())
+}
+/// Permessi effettivi di un utente del tenant (ruolo + override + ruoli personalizzati).
+pub(crate) async fn user_caps(st: &AppState, tid: Uuid, uid: Uuid) -> Option<(String, Vec<String>)> {
+    let role: String = sqlx::query_scalar("SELECT role FROM app.users WHERE id=$1 AND tenant_id=$2")
+        .bind(uid).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten()?;
+    let caps = effective_caps_user(st, tid, &role, uid).await;
+    Some((role, caps))
 }
 
 /// Conservato per retrocompatibilità/estensioni; i call-site usano ora `require_cap` per-area (Tappa 2).
@@ -4820,6 +4977,8 @@ fn payload_origin_time(p: &Value) -> Option<chrono::DateTime<chrono::Utc>> {
 }
 
 pub async fn persist_ingest(st: &AppState, tid: Uuid, n: Normalized) -> R {
+    // SA-5: ultima barriera per ogni canale (HTTP, Teltonika, MQTT, worker): un tenant sospeso non riceve.
+    if tenant_suspended(st, tid).await { return Err(err(StatusCode::FORBIDDEN, "tenant sospeso")); }
     // policy "ignora": evento non significativo per questo tenant -> nessuna persistenza.
     if n.etype == "ignore" { return Ok(Json(json!({"ignored":true,"correlation":n.correlation}))); }
     let now = st.clock.now();
@@ -5676,7 +5835,7 @@ pub async fn list_beacons(State(st): State<AppState>, h: HeaderMap) -> R {
 }
 pub async fn save_beacon(State(st): State<AppState>, h: HeaderMap, Json(b): Json<BeaconReq>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
+    require_cap(&s, "devices.admin")?; // TA-4: permesso, non nome del ruolo
     if b.beacon_uid.trim().is_empty() || b.zone_name.trim().is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "beacon_uid e zona richiesti"));
     }
@@ -5701,7 +5860,7 @@ pub async fn save_beacon(State(st): State<AppState>, h: HeaderMap, Json(b): Json
 }
 pub async fn delete_beacon(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
+    require_cap(&s, "devices.admin")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.beacons WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
@@ -5736,7 +5895,7 @@ pub async fn create_floorplan(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>,
     body: axum::body::Bytes) -> R {
     let s = require_tenant(&st, &h).await?;
-    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
+    require_cap(&s, "devices.admin")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     let name = q.get("name").map(|x| x.trim().to_string()).filter(|x| !x.is_empty())
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "nome richiesto"))?;
@@ -5773,7 +5932,7 @@ pub struct FloorplanPatch { pub name: Option<String>, pub site_id: Option<Uuid> 
 /// Rinomina / riassegna sede di una piantina (l'immagine resta). tenant_admin.
 pub async fn update_floorplan(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<FloorplanPatch>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
+    require_cap(&s, "devices.admin")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     let name = b.name.map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -5785,7 +5944,7 @@ pub async fn update_floorplan(State(st): State<AppState>, h: HeaderMap, Path(id)
 }
 pub async fn delete_floorplan(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
+    require_cap(&s, "devices.admin")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.floorplans WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
@@ -5830,7 +5989,7 @@ pub struct BeaconPlace { pub floorplan_id: Option<Uuid>, pub x: Option<f64>, pub
 /// Non crea beacon: aggiorna solo la posizione di uno esistente del tenant. tenant_admin.
 pub async fn place_beacon(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<BeaconPlace>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
+    require_cap(&s, "devices.admin")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("UPDATE app.beacons SET floorplan_id=$2, x=$3, y=$4 WHERE id=$1")
@@ -5843,7 +6002,7 @@ pub async fn place_beacon(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
 // Posiziona (o rimuove: floorplan_id=null) un DISPOSITIVO del tenant su una piantina, in pixel.
 pub async fn place_device(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<BeaconPlace>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo tenant_admin")); }
+    require_cap(&s, "devices.admin")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("UPDATE app.devices SET floorplan_id=$2, fp_x=$3, fp_y=$4 WHERE id=$1")
@@ -6568,6 +6727,7 @@ pub async fn iot_offline_watchdog(st: &AppState) -> anyhow::Result<()> {
     let rows = sqlx::query(
         "SELECT d.id,d.tenant_id,d.offline_after_s,d.last_telemetry_at,COALESCE(d.label,d.external_id) AS name
          FROM app.devices d JOIN app.tenant_modules m ON m.tenant_id=d.tenant_id AND m.module_code='iot' AND m.state='attivo'
+         JOIN app.tenants tn ON tn.id=d.tenant_id AND tn.status<>'sospeso'
          WHERE d.offline_after_s IS NOT NULL AND d.offline_after_s>0 AND d.last_telemetry_at IS NOT NULL")
         .fetch_all(&st.owner_pool).await?;
     for r in rows {
@@ -7538,7 +7698,9 @@ pub(crate) fn is_planner(s: &Session) -> bool { has_cap(s, "plan") }
 pub(crate) fn is_approver(s: &Session) -> bool { has_cap(s, "approve") }
 
 pub async fn module_active(st: &AppState, tid: Uuid, code: &str) -> bool {
-    sqlx::query_scalar::<_, String>("SELECT state FROM app.tenant_modules WHERE tenant_id=$1 AND module_code=$2")
+    // SA-5: tenant sospeso => nessun modulo attivo (ingress, allarmi, funzioni di modulo fermi).
+    sqlx::query_scalar::<_, String>("SELECT m.state FROM app.tenant_modules m JOIN app.tenants t ON t.id=m.tenant_id
+        WHERE m.tenant_id=$1 AND m.module_code=$2 AND t.status<>'sospeso'")
         .bind(tid).bind(code).fetch_optional(&st.owner_pool).await.ok().flatten()
         .map(|s| s == "attivo").unwrap_or(false)
 }
@@ -7548,7 +7710,7 @@ pub async fn module_active(st: &AppState, tid: Uuid, code: &str) -> bool {
 /// avvio e per la checklist persistente. Solo tenant_admin.
 pub async fn setup_status(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
-    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo l'amministratore del tenant")); }
+    require_cap(&s, "settings.manage")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     let pool = st.owner_pool.clone();
     let cnt = |sql: &'static str| {
@@ -7663,7 +7825,7 @@ const IOT_MODS: &[&str] = &["iot"]; // funzioni riservate al modulo IoT
 /// La configurazione e la visibilità escalation (gruppi, routing, on-call, recapiti,
 /// override, maintenance, centrale allarmi) non devono sparire se "Sicurezza lavoratore"
 /// (loneworker) è spento ma resta attivo un altro modulo che genera allarmi.
-const ESCALATION_MODS: &[&str] = &["loneworker","iot"]; // moduli nativi che producono allarmi
+const ESCALATION_MODS: &[&str] = &["loneworker","iot","gps"]; // moduli nativi che producono allarmi (gps: SOS/caduta/silenzio badge anche senza Lone Worker)
 
 // ================== Per-module tool configuration (schema-driven) ==================
 // Effective config for a tool = catalog default_config overlaid with the tenant's
@@ -8084,8 +8246,9 @@ fn validate_config(schema: &Value, input: &Value) -> Result<Value, String> {
 // ---- tenant_admin: read tools of a module (schema + effective config) ----
 pub async fn list_module_tools(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !has_cap(&s,"config.view") {
-        return Err(err(StatusCode::FORBIDDEN, "configurazione moduli riservata all'admin del tenant"));
+    // TA-4: chi può modificare (settings.manage) deve anche poter leggere
+    if !has_cap(&s,"config.view") && !has_cap(&s,"settings.manage") {
+        return Err(err(StatusCode::FORBIDDEN, "permesso richiesto: lettura configurazione"));
     }
     let tid = s.tenant_id.unwrap();
     let rows = sqlx::query(
@@ -8102,7 +8265,7 @@ pub async fn list_module_tools(State(st): State<AppState>, h: HeaderMap, Path(co
             "description": r.get::<String,_>("description"),
             "schema": r.get::<Value,_>("config_schema"),
             "config": tool_config(&st, tid, &code, &tool).await,
-            "editable": s.role == "tenant_admin",
+            "editable": has_cap(&s, "settings.manage"),
         }));
     }
     Ok(Json(json!(out)))
@@ -8114,9 +8277,7 @@ pub struct SetToolConfig { pub config: Value }
 // ---- tenant_admin: save config for one tool ----
 pub async fn set_module_tool(State(st): State<AppState>, h: HeaderMap, Path((code, tool)): Path<(String, String)>, Json(b): Json<SetToolConfig>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if s.role != "tenant_admin" {
-        return Err(err(StatusCode::FORBIDDEN, "solo l'admin del tenant puo configurare"));
-    }
+    require_cap(&s, "settings.manage")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     let schema: Option<Value> = sqlx::query_scalar("SELECT config_schema FROM app.module_tools WHERE module_code=$1 AND tool_code=$2")
         .bind(&code).bind(&tool).fetch_optional(&st.owner_pool).await.map_err(ise)?;
@@ -9446,7 +9607,7 @@ pub async fn incident_ai_summary(State(st): State<AppState>, h: HeaderMap, Path(
 /// Proposta di regole sensori dai dati telemetrici recenti (NON applicata: l'admin la valuta).
 pub async fn sensor_rules_suggest(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
-    if s.role != "tenant_admin" { return Err(err(StatusCode::FORBIDDEN, "solo l'admin del tenant")); }
+    require_cap(&s, "iot.manage")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, &["iot"]).await?;
     let c = ai_gate(&st, tid, "sensor_suggest").await?;
@@ -11664,6 +11825,8 @@ async fn esc_process_incident(
 /// l'ack applica la transizione sull'incidente. Idempotenza su `esc_delivery_log`; i fallimenti si
 /// ritentano a oltranza sugli invii di sicurezza.
 pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i64) {
+    // SA-5: tenant sospeso -> nessuna consegna (riprende alla riattivazione per gli incidenti ancora aperti).
+    if tenant_suspended(st, tid).await { return (0, 0); }
     // MAINTENANCE nativo: finestra attiva -> sospendi le consegne (gli incidenti continuano a
     // essere creati; la ladder riparte a fine finestra). Indipendente da YWAlert.
     if maintenance_active(st, tid).await {
@@ -11773,7 +11936,8 @@ pub async fn slack_announce_scan(st: &AppState) {
     // wall-clock: annuncio verso Slack (sistema esterno) + cadenza giornaliera HH:MM e
     // slack_last_announce (SQL) sono su tempo reale; il TEST_CLOCK non deve spammare Slack.
     let now = chrono::Utc::now();
-    let groups = sqlx::query("SELECT id,tenant_id,name,slack_channel_id,slack_notify,slack_last_announce,oncall_mode,oncall_tz FROM app.alarm_groups WHERE slack_notify<>'off' AND slack_channel_id IS NOT NULL")
+    let groups = sqlx::query("SELECT id,tenant_id,name,slack_channel_id,slack_notify,slack_last_announce,oncall_mode,oncall_tz FROM app.alarm_groups g WHERE slack_notify<>'off' AND slack_channel_id IS NOT NULL
+        AND EXISTS (SELECT 1 FROM app.tenants t WHERE t.id=g.tenant_id AND t.status<>'sospeso')")
         .fetch_all(&st.owner_pool).await.unwrap_or_default();
     for g in &groups {
         let gid: Uuid = g.get("id");
@@ -11814,7 +11978,8 @@ pub async fn slack_announce_scan(st: &AppState) {
 /// incidenti aperti (qualunque modulo li produca: sicurezza/IoT/GPS).
 pub async fn escalation_delivery_scan(st: &AppState) {
     let tids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT DISTINCT tenant_id FROM app.incidents WHERE state <> 'chiuso'")
+        "SELECT DISTINCT i.tenant_id FROM app.incidents i JOIN app.tenants t ON t.id=i.tenant_id
+          WHERE i.state <> 'chiuso' AND t.status <> 'sospeso'")
         .fetch_all(&st.owner_pool).await.unwrap_or_default();
     // Per-tenant su task DEDICATO: il future (profondo) del tenant viene pollato dal runtime dalla
     // cima dello stack del task, non annidato nel frame dello scan -> isolamento di profondità.
@@ -11936,6 +12101,7 @@ pub async fn ingest_heartbeat(State(st): State<AppState>, Path(token): Path<Stri
         .bind(&token).fetch_optional(&st.owner_pool).await.ok().flatten();
     let Some(row) = row else { return (StatusCode::NOT_FOUND, "monitor inesistente").into_response(); };
     let id: Uuid = row.get("id"); let tid: Uuid = row.get("tenant_id");
+    if tenant_suspended(&st, tid).await { return (StatusCode::FORBIDDEN, "tenant sospeso").into_response(); }
     let state: String = row.get("state");
     let inc: Option<Uuid> = row.try_get("incident_id").ok().flatten();
     let _ = sqlx::query("UPDATE app.heartbeat_monitors SET last_ping_at=now(), state='ok', incident_id=NULL WHERE id=$1").bind(id).execute(&st.owner_pool).await;
@@ -11948,7 +12114,8 @@ pub async fn ingest_heartbeat(State(st): State<AppState>, Path(token): Path<Stri
 /// Watchdog heartbeat (dal worker): per ogni monitor scaduto e ancora 'ok' apre un incidente
 /// 'heartbeat_down' instradato (al suo gruppo o al routing/default). Idempotente sullo stato.
 pub async fn heartbeat_watchdog(st: &AppState) {
-    let rows = sqlx::query("SELECT id,tenant_id,name,timeout_s,group_id,last_ping_at FROM app.heartbeat_monitors WHERE state='ok'")
+    let rows = sqlx::query("SELECT id,tenant_id,name,timeout_s,group_id,last_ping_at FROM app.heartbeat_monitors hm WHERE state='ok'
+        AND EXISTS (SELECT 1 FROM app.tenants t WHERE t.id=hm.tenant_id AND t.status<>'sospeso')")
         .fetch_all(&st.owner_pool).await.unwrap_or_default();
     // wall-clock: last_ping_at e' scritto con now() SQL (wall); il timeout si misura sul wall.
     let now = chrono::Utc::now();
@@ -12023,6 +12190,7 @@ pub async fn ingest_email(State(st): State<AppState>, Json(b): Json<EmailIn>) ->
         .bind(&token).fetch_optional(&st.owner_pool).await.ok().flatten();
     let Some(row) = row else { return (StatusCode::NOT_FOUND, "inbox inesistente").into_response(); };
     let tid: Uuid = row.get("tenant_id"); let g: Option<Uuid> = row.try_get("group_id").ok().flatten();
+    if tenant_suspended(&st, tid).await { return (StatusCode::FORBIDDEN, "tenant sospeso").into_response(); }
     let subject = if b.subject.trim().is_empty() { "(senza oggetto)".to_string() } else { b.subject.trim().to_string() };
     // dedup (parità YWAlert email): chiave custom (+key) oppure firma STABILE dell'oggetto, così email
     // ripetute con lo stesso subject confluiscono sullo stesso incidente aperto (niente flood).
@@ -12311,5 +12479,54 @@ mod device_identity_tests {
     fn tool_form_first_save_without_existing_row() {
         let out = merge_tool_form(&schema(), None, &json!({"silence_after_s": 0}));
         assert_eq!(out, json!({"silence_after_s": 0}));
+    }
+}
+
+#[cfg(test)]
+mod client_ip_tests {
+    use super::*;
+    use std::net::IpAddr;
+    fn hx(xff: &str) -> HeaderMap { let mut h = HeaderMap::new(); h.insert("x-forwarded-for", xff.parse().unwrap()); h }
+    fn ip(s: &str) -> IpAddr { s.parse().unwrap() }
+
+    #[test]
+    fn untrusted_peer_ignores_forwarded_for() {
+        // client diretto: X-Forwarded-For falsificato non cambia l'IP usato dal rate limit
+        assert_eq!(resolve_client_ip(Some(ip("203.0.113.7")), &hx("1.2.3.4"), &[]), "203.0.113.7");
+    }
+    #[test]
+    fn trusted_proxy_uses_last_hop() {
+        // la console (loopback) APPENDE l'IP reale: il primo elemento è scritto dal client e va ignorato
+        assert_eq!(resolve_client_ip(Some(ip("127.0.0.1")), &hx("6.6.6.6, 198.51.100.9"), &[]), "198.51.100.9");
+        assert_eq!(resolve_client_ip(Some(ip("10.0.0.5")), &hx("198.51.100.9"), &[ip("10.0.0.5")]), "198.51.100.9");
+    }
+    #[test]
+    fn trusted_proxy_without_or_bad_header_uses_peer() {
+        assert_eq!(resolve_client_ip(Some(ip("127.0.0.1")), &HeaderMap::new(), &[]), "127.0.0.1");
+        assert_eq!(resolve_client_ip(Some(ip("127.0.0.1")), &hx("non-un-ip"), &[]), "127.0.0.1");
+        assert_eq!(resolve_client_ip(None, &hx("1.2.3.4"), &[]), "");
+    }
+    #[test]
+    fn account_key_is_ip_independent() {
+        let mut a = HeaderMap::new(); a.insert(CLIENT_IP_HDR, "1.1.1.1".parse().unwrap());
+        let mut b = HeaderMap::new(); b.insert(CLIENT_IP_HDR, "2.2.2.2".parse().unwrap());
+        let (ka, kb) = (rl_keys(&a, "acme|", " Mario@X.it"), rl_keys(&b, "acme|", "mario@x.it"));
+        assert_ne!(ka[0], kb[0]);
+        assert_eq!(ka[1], kb[1]);
+        assert_eq!(ka[1], "acct|acme|mario@x.it");
+    }
+}
+
+#[cfg(test)]
+mod logo_tests {
+    use super::*;
+    #[test]
+    fn logo_accepts_only_raster_images() {
+        assert_eq!(logo_kind(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0]), Some("image/png"));
+        assert_eq!(logo_kind(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+        assert_eq!(logo_kind(b"RIFF\x10\0\0\0WEBPVP8 "), Some("image/webp"));
+        assert_eq!(logo_kind(b"<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>"), None);
+        assert_eq!(logo_kind(b"<html><script>alert(1)</script></html>"), None);
+        assert_eq!(logo_kind(b""), None);
     }
 }

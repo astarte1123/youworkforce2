@@ -379,6 +379,11 @@ function renderShell(){
       ${ME.impersonator?`<div style="background:var(--warn-soft);color:#7a5a00;border-bottom:1px solid var(--line);padding:var(--s-8) var(--s-16);font-size:13px;display:flex;align-items:center;gap:var(--s-10)">
         <b>👤 Stai impersonando</b> ${brandName()} come <b>${esc(ME.email)}</b> · supporto superadmin (${esc(ME.impersonator)})
         <button class="btn ghost small" style="margin-left:auto" onclick="stopImpersonate()">Esci impersonazione</button></div>`:''}
+      ${ME.suspension_notice?`<div role="alert" style="background:var(--bad-soft);color:var(--fg);border-left:4px solid var(--bad);border-bottom:1px solid var(--line);padding:var(--s-8) var(--s-16);font-size:13px">
+        <b>⚠ Sospensione del servizio programmata il ${esc(new Date(ME.suspension_notice.suspend_at).toLocaleString(LANG==='en'?'en-GB':'it-IT',{dateStyle:'full',timeStyle:'short'}))}.</b>
+        Da quel momento ${brandName()} <b>non riceverà né inoltrerà più gli allarmi</b> (SOS, uomo a terra, perdita di contatto, check-in) e gli utenti non potranno accedere.
+        ${ME.suspension_notice.note?`<div style="margin-top:var(--s-4)">Motivo: ${esc(ME.suspension_notice.note)}</div>`:''}
+        <div class="small" style="margin-top:var(--s-4)">Per evitarla contatta l'assistenza.</div></div>`:''}
       <div class="content"><div id="view"></div></div>
     </div>
   </div>
@@ -823,7 +828,9 @@ async function iotAlertClose(id){ try{ await api('/iot/alerts/'+id+'/close',{met
 // ---------------- Centrale ----------------
 let CEN={all:[],tab:'aperti',q:'',page:1,size:25};
 async function vCentrale(v){
-  const [I,CK,OC]=await Promise.all([api('/incidents').catch(()=>[]), api('/checkins/list').catch(()=>[]), api('/oncall-now-native').catch(()=>({available:false}))]);
+  // check-in = solo Lone Worker: un tenant con solo GPS/IoT vede gli allarmi dei badge/sensori, non i check-in
+  const ckOn=ACTIVE_MODS.has('loneworker');
+  const [I,CK,OC]=await Promise.all([api('/incidents').catch(()=>[]), ckOn?api('/checkins/list').catch(()=>[]):Promise.resolve([]), api('/oncall-now-native').catch(()=>({available:false}))]);
   const scaduti=CK.filter(c=>c.state==='scaduto').length;
   const onc = OC.available ? `<span class="chip s-attivo wrap" title="reperibili ora (motore nativo)">📞 on-call: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
   const canBulk = ['operatore','tenant_admin'].includes(ME.role);
@@ -835,7 +842,7 @@ async function vCentrale(v){
   // export: dataset filtrato COMPLETO (tutte le pagine della vista corrente), non solo la pagina a schermo
   registerExport('centrale-allarmi', ()=>({ headers:['Tipo','Sede','Assegnato','Stato','Priorità','Correlazione'],
     rows: cenFiltered().map(i=>[ i.etype||'', i.site||'', i.assignee||'', i.state||'', (i.priority||0), i.correlation||'' ]) }));
-  v.innerHTML=`<div class="page-h"><div><h1>${t('cen_title','Centrale allarmi')}</h1><div class="mut">${I.length} ${t('cen_incidents','incidenti')} · ${CK.length} ${t('cen_checkins_n','check-in')} (${scaduti} ${t('cen_expired','scaduti')}) · ${t('cen_live','live')}</div></div><div class="row" style="gap:var(--s-8);align-items:center">${bulk}${onc}</div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('cen_title','Centrale allarmi')}</h1><div class="mut">${I.length} ${t('cen_incidents','incidenti')}${ckOn?` · ${CK.length} ${t('cen_checkins_n','check-in')} (${scaduti} ${t('cen_expired','scaduti')})`:''} · ${t('cen_live','live')}</div></div><div class="row" style="gap:var(--s-8);align-items:center">${bulk}${onc}</div></div>
   <div class="card" style="padding:var(--s-12)">
     <div class="row" style="gap:var(--s-12);align-items:center;flex-wrap:wrap">
       <div class="seg" id="cenTabs"></div>
@@ -846,13 +853,13 @@ async function vCentrale(v){
     <div id="incEmpty" class="empty" hidden style="padding:var(--s-28) var(--s-8)">${ICON.check}<div>${t('cen_empty','Nessun incidente in questa vista')}</div></div>
     <div id="incPager" class="row" style="justify-content:space-between;align-items:center;margin-top:var(--s-10);padding:0 var(--gutter);flex-wrap:wrap;gap:var(--s-8)"></div>
   </div>
-  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>${t('cen_checkins','Check-in attivi')}</h2>
+  ${ckOn?`<div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>${t('cen_checkins','Check-in attivi')}</h2>
     ${AI_FEAT.checkin_anomaly?`<button class="btn ghost small" onclick="aiCheckinAnomaly(this)">✦ Anomalie check-in (AI)</button>`:''}</div>
     <div id="aiCkOut"></div>
     <table class="table" data-export="centrale-check-in"><thead><tr><th>${t('col_worker','Lavoratore')}</th><th>${t('col_site','Sede')}</th><th>${t('col_due','Scadenza')}</th><th>${t('col_status','Stato')}</th></tr></thead>
     <tbody>${CK.map(c=>`<tr><td>${esc(c.email)}</td><td>${esc(c.site||'—')}</td>
       <td class="small mut">${new Date(c.due_at).toLocaleString(LANG==='en'?'en-GB':'it-IT')}</td><td>${chip(c.state)}</td></tr>`).join('')
-      ||`<tr><td colspan="4" class="empty">${t('ck_none','nessun check-in attivo')}</td></tr>`}</tbody></table></div>`;
+      ||`<tr><td colspan="4" class="empty">${t('ck_none','nessun check-in attivo')}</td></tr>`}</tbody></table></div>`:''}`;
   cenRender();
 }
 // Lista filtrata per tab (aperti = non chiusi) + ricerca full-text, ordinata (aperti per priorità desc).

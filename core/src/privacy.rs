@@ -31,9 +31,17 @@ pub async fn gdpr_export(State(st): State<AppState>, h: HeaderMap, Path(uid): Pa
         .bind(uid).bind(tid).fetch_all(&st.owner_pool).await.ok().unwrap_or_default();
     let incidents = sqlx::query("SELECT id,etype,state,opened_at,closed_at FROM app.incidents WHERE assigned_user=$1 AND tenant_id=$2 ORDER BY opened_at DESC LIMIT 1000")
         .bind(uid).bind(tid).fetch_all(&st.owner_pool).await.ok().unwrap_or_default();
+    // TA-9: tutte le altre categorie di dati personali dal catalogo unico (riga completa in JSON).
+    let mut extra = serde_json::Map::new();
+    for (key, table, col) in PII_EXPORT {
+        let sql = format!("SELECT to_jsonb(t) AS j FROM app.{table} t WHERE t.{col}=$1 AND t.tenant_id=$2 LIMIT 5000");
+        let rows: Vec<Value> = sqlx::query_scalar(&sql).bind(uid).bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+        extra.insert(key.to_string(), json!(rows));
+    }
     audit(&st, tid, &s.email, "gdpr_export", json!({"user":uid})).await;
     Ok(Json(json!({
         "profile": profile,
+        "altri_dati": extra,
         "checkins": jrows(checkins, &|r| json!({"id":r.get::<Uuid,_>("id"),"state":r.get::<String,_>("state"),
             "created_at":r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("created_at").ok().flatten(),
             "due_at":r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("due_at").ok().flatten()})),
@@ -51,31 +59,112 @@ pub async fn gdpr_export(State(st): State<AppState>, h: HeaderMap, Path(uid): Pa
     })))
 }
 
-/// Anonimizza un utente (diritto all'oblio). Non elimina la riga per non rompere
-/// l'integrità storica degli incidenti: scrubba la PII e blocca il login.
+/// CATALOGO UNICO dei dati personali per utente (TA-5/TA-9): (chiave export, tabella, colonna utente).
+/// Ogni tabella ha `tenant_id`. Usato dall'export; l'anonimizzazione agisce sulle stesse categorie.
+const PII_EXPORT: &[(&str, &str, &str)] = &[
+    ("recapiti", "user_contact_methods", "user_id"),
+    ("regole_notifica", "user_notif_rules", "user_id"),
+    ("gruppi_allarme", "alarm_group_members", "user_id"),
+    ("assegnazioni_escalation", "esc_assignment_members", "user_id"),
+    ("profili_protezione", "protection_profile_members", "user_id"),
+    ("gruppi_persone", "user_group_members", "user_id"),
+    ("squadre", "team_members", "user_id"),
+    ("sedi_visibili", "operator_sites", "user_id"),
+    ("dispositivi_assegnati", "device_assignments", "user_id"),
+    ("turni", "shifts", "user_id"),
+    ("piani_turno", "shift_plans", "user_id"),
+    ("assenze", "worker_absences", "user_id"),
+    ("consuntivi", "timesheets", "user_id"),
+    ("ronde", "patrol_rounds", "user_id"),
+    ("punzonature", "patrol_punches", "user_id"),
+    ("presenze_cantiere", "commessa_presenze", "user_id"),
+    ("qualifiche", "user_qualifications", "user_id"),
+    ("interventi_assegnati", "work_orders", "assigned_user"),
+    ("incidenti_come_lavoratore", "incidents", "worker_user_id"),
+];
+/// Tabelle da cui l'utente anonimizzato viene RIMOSSO: recapiti, token, inviti e soprattutto ogni
+/// instradamento degli allarmi (non deve più essere destinatario di avvisi né comparire in turni futuri).
+const PII_REMOVE: &[(&str, &str)] = &[
+    ("user_contact_methods", "user_id"), ("user_notif_rules", "user_id"),
+    ("calendar_ical_tokens", "user_id"), ("oncall_ical_tokens", "user_id"), ("user_invites", "user_id"),
+    ("alarm_group_members", "user_id"), ("esc_assignment_members", "user_id"),
+    ("esc_overrides", "add_user"), ("esc_overrides", "remove_user"), ("esc_policy_steps", "target_user_id"),
+    ("protection_profile_members", "user_id"), ("team_members", "user_id"), ("user_group_members", "user_id"),
+    ("operator_sites", "user_id"), ("user_custom_roles", "user_id"),
+];
+
+/// Anonimizza un utente (diritto all'oblio). Non elimina la riga utente per non rompere l'integrità
+/// storica di incidenti, consuntivi e punzonature (restano legati a un identificativo pseudonimo).
+/// TA-5: rimuove TUTTI i dati che identificano la persona: email/telefono/verifiche, recapiti,
+/// token di calendario, inviti, sessioni; la toglie da ogni instradamento degli allarmi e dai turni di
+/// reperibilità futuri; libera i dispositivi assegnati; cancella le posizioni dell'app personale;
+/// sostituisce email e telefono nell'audit, nei log di consegna e nei comandi ai dispositivi.
 pub async fn gdpr_anonymize(State(st): State<AppState>, h: HeaderMap, Path(uid): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "gdpr.manage")?;
     let tid = s.tenant_id.unwrap();
     if uid == s.user_id { return Err(err(StatusCode::BAD_REQUEST, "non puoi anonimizzare te stesso")); }
-    let role: Option<String> = sqlx::query_scalar("SELECT role FROM app.users WHERE id=$1 AND tenant_id=$2")
-        .bind(uid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
-    let role = role.ok_or_else(|| err(StatusCode::NOT_FOUND, "utente inesistente"))?;
+    let u = sqlx::query("SELECT role,email,phone,anonymized_at FROM app.users WHERE id=$1 AND tenant_id=$2")
+        .bind(uid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "utente inesistente"))?;
+    if u.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("anonymized_at").ok().flatten().is_some() {
+        return Err(err(StatusCode::CONFLICT, "utente già anonimizzato"));
+    }
+    let role: String = u.get("role");
+    let old_email: String = u.get("email");
+    let old_phone: Option<String> = u.try_get("phone").ok().flatten();
     if role == "tenant_admin" {
         let admins: i64 = sqlx::query_scalar("SELECT count(*) FROM app.users WHERE tenant_id=$1 AND role='tenant_admin' AND anonymized_at IS NULL")
             .bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
         if admins <= 1 { return Err(err(StatusCode::BAD_REQUEST, "non puoi anonimizzare l'ultimo admin")); }
     }
-    let open: i64 = sqlx::query_scalar("SELECT count(*) FROM app.incidents WHERE assigned_user=$1 AND state<>'chiuso'")
-        .bind(uid).fetch_one(&st.owner_pool).await.unwrap_or(0);
+    // TA-18: filtro di tenant esplicito (owner_pool scavalca la RLS)
+    let open: i64 = sqlx::query_scalar("SELECT count(*) FROM app.incidents WHERE assigned_user=$1 AND tenant_id=$2 AND state<>'chiuso'")
+        .bind(uid).bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
     if open > 0 { return Err(err(StatusCode::CONFLICT, "l'utente ha incidenti aperti assegnati: riassegnali o chiudili prima")); }
     let anon_email = format!("anon-{}@anonymized.invalid", &uid.to_string()[..8]);
+    let anon_label = format!("anonimizzato-{}", &uid.to_string()[..8]);
     let lock = auth::new_token();
-    sqlx::query("UPDATE app.users SET email=$2, phone=NULL, pass_hash=$3, anonymized_at=now() WHERE id=$1 AND tenant_id=$4")
-        .bind(uid).bind(&anon_email).bind(&lock).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
-    let _ = sqlx::query("UPDATE app.diary_entries SET body='[rimosso: anonimizzato]' WHERE user_id=$1 AND tenant_id=$2")
-        .bind(uid).bind(tid).execute(&st.owner_pool).await;
-    let _ = sqlx::query("DELETE FROM app.sessions WHERE user_id=$1").bind(uid).execute(&st.owner_pool).await;
-    audit(&st, tid, &s.email, "gdpr_anonymize", json!({"user":uid})).await;
+    let now = st.clock.now();
+    let mut tx = st.owner_pool.begin().await.map_err(ise)?;
+    sqlx::query("UPDATE app.users SET email=$2, phone=NULL, pass_hash=$3, phone_verified_at=NULL, phone_verify_code=NULL,
+                 phone_verify_expires=NULL, phone_opt_out_at=NULL, cal_color=NULL, anonymized_at=now() WHERE id=$1 AND tenant_id=$4")
+        .bind(uid).bind(&anon_email).bind(&lock).bind(tid).execute(&mut *tx).await.map_err(ise)?;
+    for (table, col) in PII_REMOVE {
+        sqlx::query(&format!("DELETE FROM app.{table} WHERE {col}=$1 AND tenant_id=$2"))
+            .bind(uid).bind(tid).execute(&mut *tx).await.map_err(ise)?;
+    }
+    // reperibilità: via i turni futuri e in corso (lo storico passato resta, pseudonimo)
+    sqlx::query("DELETE FROM app.oncall WHERE user_id=$1 AND tenant_id=$2 AND ends_at > $3")
+        .bind(uid).bind(tid).bind(now).execute(&mut *tx).await.map_err(ise)?;
+    // app personale: posizioni cancellate, etichetta senza email
+    sqlx::query("DELETE FROM app.device_positions p USING app.devices d
+                 WHERE p.device_id=d.id AND d.tenant_id=$2 AND p.tenant_id=$2 AND d.source='pwa' AND d.assigned_user=$1")
+        .bind(uid).bind(tid).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("UPDATE app.devices SET label=$3 WHERE tenant_id=$2 AND source='pwa' AND assigned_user=$1")
+        .bind(uid).bind(tid).bind(format!("App {anon_label}")).execute(&mut *tx).await.map_err(ise)?;
+    // badge e dispositivi: liberati (il trigger di servizio li porta in_attesa: niente falsi allarmi)
+    sqlx::query("UPDATE app.device_assignments SET unassigned_at=$3 WHERE user_id=$1 AND tenant_id=$2 AND unassigned_at IS NULL")
+        .bind(uid).bind(tid).bind(now).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("UPDATE app.devices SET assigned_user=NULL WHERE assigned_user=$1 AND tenant_id=$2")
+        .bind(uid).bind(tid).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("UPDATE app.diary_entries SET body='[rimosso: anonimizzato]' WHERE user_id=$1 AND tenant_id=$2")
+        .bind(uid).bind(tid).execute(&mut *tx).await.map_err(ise)?;
+    // email/telefono in chiaro in audit, log di consegna e comandi: sostituiti
+    let mut idents: Vec<String> = vec![old_email.clone()];
+    if let Some(p) = old_phone.clone().filter(|p| !p.is_empty()) { idents.push(p); }
+    for ident in &idents {
+        sqlx::query("UPDATE app.audit_log SET actor=CASE WHEN actor=$2 THEN $3 ELSE actor END,
+                     detail=CASE WHEN detail::text LIKE '%'||$2||'%' THEN replace(detail::text,$2,$3)::jsonb ELSE detail END
+                     WHERE tenant_id=$1 AND (actor=$2 OR detail::text LIKE '%'||$2||'%')")
+            .bind(tid).bind(ident).bind(&anon_label).execute(&mut *tx).await.map_err(ise)?;
+        sqlx::query("UPDATE app.esc_delivery_log SET to_value=$3 WHERE tenant_id=$1 AND to_value=$2")
+            .bind(tid).bind(ident).bind(&anon_label).execute(&mut *tx).await.map_err(ise)?;
+        sqlx::query("UPDATE app.device_commands SET actor=$3 WHERE tenant_id=$1 AND actor=$2")
+            .bind(tid).bind(ident).bind(&anon_label).execute(&mut *tx).await.map_err(ise)?;
+    }
+    sqlx::query("DELETE FROM app.sessions WHERE user_id=$1 AND tenant_id=$2").bind(uid).bind(tid).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "gdpr_anonymize", json!({"user":uid,"routing_rimosso":true})).await;
     Ok(Json(json!({"ok":true,"anonymized_email":anon_email})))
 }
 

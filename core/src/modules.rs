@@ -80,7 +80,7 @@ pub const REGISTRY: &[Manifest] = &[
     Manifest{ code:"prevenzione", name:"Prevenzione e checklist", kind:"product", requires:&[], provides:&["checklists"],
         capabilities:&[], widgets:&[],
         description:"Prevenzione, checklist, audit di sicurezza." },
-    Manifest{ code:"gps", name:"Localizzazione GPS e badge", kind:"product", requires:&["loneworker"], provides:&["gps","badge"],
+    Manifest{ code:"gps", name:"Localizzazione GPS e badge", kind:"product", requires:&[], provides:&["gps","badge"],
         capabilities:&["iot.manage","devices.admin"], widgets:&["incidents"],
         description:"Dispositivi GPS e badge (Teltonika, smartphone OsmAnd, JSON HTTP) con decodifica nativa: posizioni, SOS, caduta e silenzio del dispositivo diventano incidenti." },
     Manifest{ code:"iot", name:"Dispositivi e IoT industriale", kind:"product", requires:&[], provides:&["telemetry","iot"],
@@ -111,13 +111,14 @@ mod tests {
     fn set(v: &[&str]) -> HashSet<String> { v.iter().map(|s| s.to_string()).collect() }
 
     #[test]
-    fn gps_requires_loneworker() {
-        assert_eq!(missing_deps("gps", &set(&["iot"])), vec!["loneworker"]);
-        assert!(missing_deps("gps", &set(&["loneworker"])).is_empty());
+    fn gps_is_standalone() {
+        // GPS senza Lone Worker è valido (ronde, badge con SOS/caduta propri): nessuna dipendenza.
+        assert!(missing_deps("gps", &set(&[])).is_empty());
+        assert!(missing_deps("gps", &set(&["iot"])).is_empty());
     }
     #[test]
     fn standalone_modules_have_no_deps() {
-        for c in ["loneworker","iot","workforce","interventi","cantieri","consuntivi","assistant","qualifiche","prevenzione"] {
+        for c in ["loneworker","gps","iot","workforce","interventi","cantieri","consuntivi","assistant","qualifiche","prevenzione"] {
             assert!(missing_deps(c, &set(&[])).is_empty(), "{c} dovrebbe essere standalone");
         }
     }
@@ -128,10 +129,10 @@ mod tests {
         }
     }
     #[test]
-    fn dependents_warn_before_disable() {
+    fn disabling_loneworker_leaves_gps_alone() {
+        // gps non dipende più da loneworker: spegnere Lone Worker non lo segnala come dipendente.
         let act = set(&["loneworker","gps"]);
-        let mut d = dependents_active("loneworker", &act); d.sort();
-        assert_eq!(d, vec!["gps"]);
+        assert!(dependents_active("loneworker", &act).is_empty());
     }
     #[test]
     fn registry_covers_catalog() {

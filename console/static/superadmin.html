@@ -135,9 +135,9 @@ async function shell(){
       </div>
 
       <div class="ct-brand">
-        <div class="field"><label>Logo <span class="small mut">(PNG/SVG trasparente, consigliato 256×256px, max ~1&nbsp;MB)</span></label>
+        <div class="field"><label>Logo <span class="small mut">(PNG, JPEG o WebP; PNG trasparente consigliato, 256×256px, max 512&nbsp;KB)</span></label>
           <label class="dz" id="c_logo_dz">
-            <input id="c_logo" type="file" accept="image/png,image/svg+xml,image/jpeg,image/webp"
+            <input id="c_logo" type="file" accept="image/png,image/jpeg,image/webp"
               onchange="document.getElementById('c_logo_name').textContent=this.files[0]?this.files[0].name:''">
             <div class="dz-t">⬆ Trascina qui il logo, oppure clicca per sfogliare</div>
             <div class="dz-name" id="c_logo_name"></div>
@@ -299,7 +299,7 @@ async function doCreate(){
     const f=$('#c_logo').files&&$('#c_logo').files[0];
     if(f){ const res=await fetch('/api/superadmin/tenants/'+r.id+'/logo',{method:'POST',credentials:'include',
         headers:{'x-csrf-token':csrfToken(),'content-type':f.type||'image/png'}, body:f});
-      if(!res.ok) toast('Tenant creato, ma logo non caricato ('+res.status+')','bad'); }
+      if(!res.ok) toast('Tenant creato, ma logo non caricato: '+(await logoErr(res)),'bad'); }
     toast('Tenant creato','ok');
     showCreated(r);
     ['c_slug','c_name','c_email','c_lic_m','c_lic_i'].forEach(id=>$('#'+id).value=''); if($('#c_pw'))$('#c_pw').value='';
@@ -407,7 +407,38 @@ function modGroupsHtml(tid,mods){
   if(other.length) h+=`<div class="small mut" style="margin:8px 0 4px;text-transform:uppercase;letter-spacing:.5px">Altro</div><div class="grid g3">${other.map(m=>modTile(tid,m)).join('')}</div>`;
   return h||'<div class="small mut">nessun modulo disponibile</div>';
 }
-function statusChip(t){ return t.status==='sospeso' ? '<span class="chip" style="background:#fee2e2;color:#b91c1c">sospeso</span>' : ''; }
+function statusChip(t){
+  if(t.status==='sospeso') return '<span class="chip" style="background:#fee2e2;color:#b91c1c" title="allarmi, dispositivi e accessi fermi">sospeso</span>';
+  if(t.suspend_at) return `<span class="chip" style="background:#fef3c7;color:#92400e" title="${esc(t.suspend_note||'')}">sospensione il ${esc(fmtDT(t.suspend_at))}</span>`;
+  return ''; }
+function fmtDT(v){ try{ return new Date(v).toLocaleString('it-IT',{dateStyle:'short',timeStyle:'short'}); }catch(e){ return String(v); } }
+// SA-5: sospensione subito o programmata (con avviso all'amministratore del tenant). Ritorna {at,note} o null.
+function askSuspend(name){ return new Promise(res=>{
+  const m=document.createElement('div');
+  m.style.cssText='position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)';
+  const def=new Date(Date.now()+7*864e5); def.setMinutes(0,0,0);
+  const loc=new Date(def.getTime()-def.getTimezoneOffset()*6e4).toISOString().slice(0,16);
+  m.innerHTML=`<div class="card" style="padding:16px;max-width:480px;width:92%">
+    <h3 style="margin:0 0 8px">Sospendere «${esc(name)}»?</h3>
+    <div class="small" style="margin-bottom:10px">Da sospeso il tenant <b>non riceve e non inoltra più allarmi</b> (SOS, uomo a terra, perdita di contatto, check-in): dispositivi e app vengono ignorati, i reperibili non sono avvisati, gli utenti sono disconnessi e non possono accedere.</div>
+    <label class="row" style="gap:6px;align-items:center;margin:4px 0"><input type="radio" name="_sw" value="now"> Subito</label>
+    <label class="row" style="gap:6px;align-items:center;margin:4px 0"><input type="radio" name="_sw" value="at" checked> Alla data <input type="datetime-local" data-at value="${loc}" style="margin-left:6px"></label>
+    <div class="small mut" style="margin:2px 0 10px">Fino alla data l'amministratore del tenant vede un avviso con la data e le limitazioni.</div>
+    <label class="small">Motivo / limitazioni (mostrati all'amministratore)<textarea data-note style="width:100%;height:60px;margin-top:4px" maxlength="500"></textarea></label>
+    <div class="row" style="gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn ghost" data-no>Annulla</button><button class="btn" data-yes style="background:var(--bad)">Sospendi</button></div></div>`;
+  const done=v=>{ try{m.remove();}catch(e){} res(v); };
+  m.addEventListener('click',e=>{ if(e.target===m) done(null); });
+  m.querySelector('[data-no]').onclick=()=>done(null);
+  m.querySelector('[data-yes]').onclick=()=>{
+    const when=m.querySelector('input[name=_sw]:checked').value;
+    const note=m.querySelector('[data-note]').value.trim()||null;
+    if(when==='now') return done({at:null,note});
+    const v=m.querySelector('[data-at]').value; const d=v?new Date(v):null;
+    if(!d||isNaN(d)||d<=new Date()){ toast('Scegli una data futura, oppure «Subito»','bad'); return; }
+    done({at:d.toISOString(),note});
+  };
+  document.body.appendChild(m);
+}); }
 function readyChip(t){
   if(t.invite_pending) return '<span class="chip" style="background:#fef3c7;color:#92400e">invito in sospeso</span>';
   const ok = (t.mods_active>0) && (t.users_tot>0) && (t.sites_tot>0);
@@ -415,12 +446,15 @@ function readyChip(t){
             : `<span class="chip" title="moduli:${t.mods_active} · utenti:${t.users_tot} · sedi:${t.sites_tot}">da configurare</span>`;
 }
 async function setStatus(tid,status){
-  if(status==='sospeso' && !confirm('Sospendere il tenant? Gli utenti non potranno accedere.')) return;
-  try{ await api('/superadmin/tenants/'+tid+'/status',{method:'POST',body:JSON.stringify({status})});
-    toast(status==='sospeso'?'Tenant sospeso':'Tenant riattivato','ok'); load(); }catch(e){ toast(e.message,'bad'); }
+  // finestre interne: window.confirm/prompt sono bloccati nella webview (FE-3)
+  const t=tenantOf(tid)||{};
+  let body={status};
+  if(status==='sospeso'){ const r=await askSuspend(t.name||t.slug||''); if(!r) return; body={status,at:r.at,note:r.note}; }
+  try{ const r=await api('/superadmin/tenants/'+tid+'/status',{method:'POST',body:JSON.stringify(body)});
+    toast(r.suspend_at?('Sospensione programmata il '+fmtDT(r.suspend_at)):status==='sospeso'?'Tenant sospeso: allarmi e accessi fermi':'Tenant attivo','ok'); load(); }catch(e){ toast(e.message,'bad'); }
 }
 async function delTenant(tid,slug){
-  const c=prompt('ELIMINAZIONE DEFINITIVA di «'+slug+'» e di TUTTI i suoi dati.\nScrivi lo slug per confermare:');
+  const c=await askPrompt('ELIMINAZIONE DEFINITIVA di «'+slug+'» e di TUTTI i suoi dati.\nScrivi lo slug per confermare:','');
   if(c===null) return;
   if(c.trim()!==slug){ toast('slug non corrispondente: eliminazione annullata','bad'); return; }
   try{ await api('/superadmin/tenants/'+tid,{method:'DELETE',body:JSON.stringify({slug})});
@@ -440,6 +474,8 @@ function tenantDetailHtml(t,mods){
         <button class="btn ghost cfgbtn" onclick="mapVisOpen('${t.id}',this)">Visibilità mappe</button>
         ${t.status==='sospeso'
           ? `<button class="btn ghost" onclick="setStatus('${t.id}','attivo')">▶ Riattiva</button>`
+          : t.suspend_at
+          ? `<button class="btn ghost" onclick="setStatus('${t.id}','attivo')">✖ Annulla sospensione programmata</button>`
           : `<button class="btn ghost" onclick="setStatus('${t.id}','sospeso')">⏸ Sospendi</button>`}
         <button class="btn ghost" style="color:var(--bad)" onclick="delTenant('${t.id}','${esc(t.slug)}')">🗑 Elimina</button></div>
       <div class="small mut" style="margin:12px 0 5px;text-transform:uppercase;letter-spacing:.5px">Integrazioni</div>
@@ -484,7 +520,7 @@ async function openAdmin(tid,btn){
       <div><div class="small mut" style="margin-bottom:4px">Logo</div>
         <div style="width:64px;height:64px;border:1px solid var(--line);border-radius:12px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden">
           ${t.has_logo?`<img src="/api/superadmin/tenants/${tid}/logo?ts=${Date.now()}" style="width:100%;height:100%;object-fit:contain">`:'<span class="small faint">nessuno</span>'}</div>
-        <div class="row" style="gap:6px;margin-top:6px"><input id="logo_${tid}" type="file" accept="image/*" style="width:150px" class="small">
+        <div class="row" style="gap:6px;margin-top:6px"><input id="logo_${tid}" type="file" accept="image/png,image/jpeg,image/webp" style="width:150px" class="small">
           <button class="btn ghost small" onclick="logoUpload('${tid}')">Carica</button>${t.has_logo?`<button class="btn ghost small" onclick="logoDel('${tid}')">✕</button>`:''}</div></div>
       <div><div class="small mut" style="margin-bottom:4px">Colore primario (bottoni/icone)</div>${ci('cp',t.brand_primary)}
         <div class="small mut" style="margin:8px 0 4px">Colore hover/testo</div>${ci('ck',t.brand_ink)}
@@ -506,12 +542,14 @@ async function saveAdmin(tid){
   try{ await api('/superadmin/tenants/'+tid+'/admin',{method:'POST',body:JSON.stringify(body)}); toast('Amministrazione salvata','ok'); load(); }
   catch(e){ toast(e.message,'bad'); }
 }
+// messaggio leggibile dal server (formato non ammesso, troppo grande), mai il solo codice HTTP
+async function logoErr(res){ try{ const t=(await res.text()).trim(); if(t){ try{ const j=JSON.parse(t); if(j&&j.error) return j.error; }catch(e){} return t; } }catch(e){} return 'caricamento non riuscito'; }
 async function logoUpload(tid){
   const f=document.getElementById('logo_'+tid).files&&document.getElementById('logo_'+tid).files[0];
   if(!f){ toast('Scegli un file','bad'); return; }
   try{ const res=await fetch('/api/superadmin/tenants/'+tid+'/logo',{method:'POST',credentials:'include',
       headers:{'x-csrf-token':csrfToken(),'content-type':f.type||'image/png'}, body:f});
-    if(!res.ok) throw new Error('upload '+res.status); toast('Logo caricato','ok'); load();
+    if(!res.ok) throw new Error(await logoErr(res)); toast('Logo caricato','ok'); load();
   }catch(e){ toast(e.message,'bad'); }
 }
 async function logoDel(tid){ try{ await api('/superadmin/tenants/'+tid+'/logo',{method:'DELETE'}); toast('Logo rimosso','ok'); load(); }catch(e){ toast(e.message,'bad'); } }
@@ -525,6 +563,21 @@ function askConfirm(msg){ return new Promise(res=>{
   m.querySelector('[data-no]').onclick=()=>done(false);
   m.querySelector('[data-yes]').onclick=()=>done(true);
   document.body.appendChild(m); const y=m.querySelector('[data-yes]'); if(y)y.focus();
+}); }
+// Prompt non-bloccante (window.prompt è bloccato in alcune webview). Ritorna stringa o null.
+function askPrompt(msg,val){ return new Promise(res=>{
+  const m=document.createElement('div');
+  m.style.cssText='position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)';
+  m.innerHTML=`<div class="card" style="padding:16px;max-width:430px;width:92%"><div style="margin-bottom:10px;white-space:pre-line">${esc(msg)}</div>
+    <input data-in value="${esc(val||'')}" style="width:100%;margin-bottom:12px">
+    <div class="row" style="gap:8px;justify-content:flex-end"><button class="btn ghost" data-no>Annulla</button><button class="btn" data-yes>OK</button></div></div>`;
+  const done=v=>{ try{m.remove();}catch(e){} res(v); };
+  m.addEventListener('click',e=>{ if(e.target===m) done(null); });
+  m.querySelector('[data-no]').onclick=()=>done(null);
+  const inp=m.querySelector('[data-in]');
+  m.querySelector('[data-yes]').onclick=()=>done(inp.value);
+  inp.addEventListener('keydown',e=>{ if(e.key==='Enter')done(inp.value); if(e.key==='Escape')done(null); });
+  document.body.appendChild(m); inp.focus(); inp.select();
 }); }
 async function impersonate(tid){
   const t=tenantOf(tid);
