@@ -66,6 +66,16 @@ E=$(call D GET /api/modules/loneworker/tools | python -c "import sys,json;d=json
 [ "$E" = "True" ] && ok "strumenti di modulo modificabili con settings.manage" || no "tools rw" "$E"
 call A DELETE "/api/custom-roles/$RS/users/$DID" >/dev/null
 
+echo "== TA-6 widget della dashboard anche per delega =="
+PID1=$(call A POST /api/users "{\"email\":\"p@$SLUG.test\",\"role\":\"reperibile\",\"password\":\"RepPass99\"}" | jget "['id']")
+login P "p@$SLUG.test" RepPass99 >/dev/null
+W=$(call P GET /api/dashboard/layout | python -c "import sys,json;print('incidents' in [w['key'] for w in json.load(sys.stdin)['widgets']])")
+[ "$W" = "False" ] && ok "reperibile standard: nessun widget incidenti (come prima)" || no "widget default" "$W"
+RV=$(call A POST /api/custom-roles '{"name":"Lettura centrale","capabilities":["incidents.view"]}' | jget "['id']")
+call A POST "/api/custom-roles/$RV/users" "{\"user_id\":\"$PID1\"}" >/dev/null
+W=$(call P GET /api/dashboard/layout | python -c "import sys,json;print('incidents' in [w['key'] for w in json.load(sys.stdin)['widgets']])")
+[ "$W" = "True" ] && ok "con incidents.view delegato compare il widget incidenti" || no "widget delega" "$W"
+
 echo "== TA-2 sessioni sempre aggiornate =="
 login L "l@$SLUG.test" LavPass99 >/dev/null
 call A POST "/api/users/$LID" '{"role":"reperibile"}' >/dev/null

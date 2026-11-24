@@ -33,7 +33,8 @@
 <script src="/app.js"></script>
 <script>
 let ME=null, SSE=null, CACHE={}, ACTIVE_MODS=new Set(), UI_FEAT={map_outdoor:true,map_indoor:false}, AI_FEAT={};
-const can = r => ME && r.includes(ME.role);
+// can(ruoli, permesso?): pulsanti/azioni. Con il permesso, vale anche per chi lo ha per delega (TA-6).
+const can = (r, c) => !!ME && (r.includes(ME.role) || (!!c && hasCap(c)));
 // Empty-state GUIDATO per una tabella: icona + titolo + spiegazione + (opz.) azione per iniziare.
 // Uso: emptyRow(colspan, ICON.x, 'Nessuna commessa', 'Crea la prima per…', {fn:"comNew()",label:"+ Nuova"})
 // L'azione si passa solo se l'utente ha i permessi (il chiamante decide). Pattern unico per tutte le liste.
@@ -94,36 +95,36 @@ const NAV = [
   // Mappa dispositivi: i device (es. Teltonika GH-5200) generano allarmi E sono asset di campo.
   {k:'mappa-dispositivi', t:'Mappa dispositivi', ico:'map', roles:['operatore','tenant_admin','auditor'], mod:FIELD_MODS, feat:'map_outdoor', grp:'work'},
   {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','gps'], grp:'safety'},
-  {k:'dispositivi',t:'Dispositivi & App', ico:'shield', roles:['tenant_admin'], mod:DEVICE_MODS, grp:'safety'},
-  {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
-  {k:'profili',   t:'Profili di protezione', ico:'shield', roles:['tenant_admin'], mod:['loneworker'], grp:'safety'},
-  {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], mod:['loneworker','gps','iot'], grp:'safety'},
+  {k:'dispositivi',t:'Dispositivi & App', ico:'shield', roles:['tenant_admin'], cap:'devices.admin', mod:DEVICE_MODS, grp:'safety'},
+  {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], cap:'escalation.manage', mod:['loneworker'], grp:'safety'},
+  {k:'profili',   t:'Profili di protezione', ico:'shield', roles:['tenant_admin'], cap:'escalation.manage', mod:['loneworker'], grp:'safety'},
+  {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], cap:'escalation.manage', mod:['loneworker','gps','iot'], grp:'safety'},
   // --- IoT: monitoraggio flotta + alert di processo (soglia/offline/ripristino), VISTA SEPARATA ---
-  {k:'iot-monitor',t:'Monitoraggio IoT', ico:'home', roles:['operatore','tenant_admin','auditor'], mod:['iot'], grp:'iot'},
-  {k:'iot-alerts',t:'Alert IoT', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['iot'], grp:'iot'},
+  {k:'iot-monitor',t:'Monitoraggio IoT', ico:'home', roles:['operatore','tenant_admin','auditor'], cap:'iot.manage', mod:['iot'], grp:'iot'},
+  {k:'iot-alerts',t:'Alert IoT', ico:'alert', roles:['operatore','tenant_admin','auditor'], cap:'iot.manage', mod:['iot'], grp:'iot'},
   // --- Lavoro sul campo ---
-  {k:'ordini',    t:'Interventi', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['interventi'], grp:'work'},
-  {k:'clienti',   t:'Clienti', ico:'building', roles:['pianificatore','tenant_admin','auditor'], mod:['interventi'], grp:'work'},
-  {k:'listino',   t:'Listino', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], mod:['interventi'], grp:'work'},
-  {k:'dispatch',  t:'Agenda tecnici', ico:'calendar', roles:['pianificatore','tenant_admin'], mod:['interventi'], grp:'work'},
-  {k:'richieste', t:'Richieste', ico:'clipboard', roles:['pianificatore','tenant_admin','operatore','auditor'], mod:['interventi'], grp:'work'},
-  {k:'contratti', t:'Contratti', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], mod:['interventi'], grp:'work'},
-  {k:'cantieri',  t:'Cantieri', ico:'hardhat', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], grp:'work'},
-  {k:'mappa-cantieri', t:'Mappa cantieri', ico:'map', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['cantieri'], feat:'map_outdoor', grp:'work'},
+  {k:'ordini',    t:'Interventi', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
+  {k:'clienti',   t:'Clienti', ico:'building', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
+  {k:'listino',   t:'Listino', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
+  {k:'dispatch',  t:'Agenda tecnici', ico:'calendar', roles:['pianificatore','tenant_admin'], cap:'plan', mod:['interventi'], grp:'work'},
+  {k:'richieste', t:'Richieste', ico:'clipboard', roles:['pianificatore','tenant_admin','operatore','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
+  {k:'contratti', t:'Contratti', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
+  {k:'cantieri',  t:'Cantieri', ico:'hardhat', roles:['pianificatore','tenant_admin','lavoratore','auditor'], cap:'plan', mod:['cantieri'], grp:'work'},
+  {k:'mappa-cantieri', t:'Mappa cantieri', ico:'map', roles:['pianificatore','tenant_admin','lavoratore','auditor'], cap:'plan', mod:['cantieri'], feat:'map_outdoor', grp:'work'},
   {k:'calendario',t:'Calendario', ico:'calendar', roles:['pianificatore','tenant_admin','lavoratore','reperibile','responsabile','auditor'], mod:['workforce','interventi','giri','cantieri'], grp:'work'},
-  {k:'ronde',     t:'Ronde', ico:'route', roles:['pianificatore','tenant_admin','lavoratore','auditor'], mod:['giri'], grp:'work'},
-  {k:'vigilanza', t:'Cruscotto vigilanza', ico:'shield', roles:['pianificatore','tenant_admin','operatore','auditor'], mod:['giri'], grp:'work'},
-  {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], mod:['consuntivi'], grp:'work'},
-  {k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], mod:['workforce'], grp:'work'},
-  {k:'setup',     t:'Configurazione', ico:'check', roles:['tenant_admin'], grp:'cfg'},
+  {k:'ronde',     t:'Ronde', ico:'route', roles:['pianificatore','tenant_admin','lavoratore','auditor'], cap:'plan', mod:['giri'], grp:'work'},
+  {k:'vigilanza', t:'Cruscotto vigilanza', ico:'shield', roles:['pianificatore','tenant_admin','operatore','auditor'], cap:'plan', mod:['giri'], grp:'work'},
+  {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], cap:['approve','timesheets.view_all'], mod:['consuntivi'], grp:'work'},
+  {k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], cap:'plan', mod:['workforce'], grp:'work'},
+  {k:'setup',     t:'Configurazione', ico:'check', roles:['tenant_admin'], cap:'settings.manage', grp:'cfg'},
   {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'cfg'},
   // --- Configurazione generale (non specifica del perimetro sicurezza) ---
-  {k:'connettori',t:'Collegamento dispositivi', ico:'sliders', roles:['tenant_admin'], mod:['gps','iot','loneworker'], grp:'cfg'},
-  {k:'utenti-ruoli',t:'Utenti e ruoli', ico:'shield', roles:['tenant_admin'], grp:'cfg'},
-  {k:'anagrafiche',t:'Utenti e sedi', ico:'receipt', roles:['tenant_admin'], grp:'cfg'},
-  {k:'privacy-audit',t:'Privacy e audit', ico:'shield', roles:['tenant_admin'], grp:'cfg'},
-  {k:'ai',        t:'AI · youworker.ai', ico:'sliders', roles:['tenant_admin'], mod:['assistant'], grp:'cfg'},
-  {k:'moduli',    t:'Moduli', ico:'sliders', roles:['tenant_admin'], grp:'cfg'},
+  {k:'connettori',t:'Collegamento dispositivi', ico:'sliders', roles:['tenant_admin'], cap:'devices.admin', mod:['gps','iot','loneworker'], grp:'cfg'},
+  {k:'utenti-ruoli',t:'Utenti e ruoli', ico:'shield', roles:['tenant_admin'], cap:'users.manage', grp:'cfg'},
+  {k:'anagrafiche',t:'Utenti e sedi', ico:'receipt', roles:['tenant_admin'], cap:'users.manage', grp:'cfg'},
+  {k:'privacy-audit',t:'Privacy e audit', ico:'shield', roles:['tenant_admin'], cap:['gdpr.manage','audit.view'], grp:'cfg'},
+  {k:'ai',        t:'AI · youworker.ai', ico:'sliders', roles:['tenant_admin'], cap:'settings.manage', mod:['assistant'], grp:'cfg'},
+  {k:'moduli',    t:'Moduli', ico:'sliders', roles:['tenant_admin'], cap:'settings.manage', grp:'cfg'},
 ];
 const NAV_GROUPS=[['op','Operatività'],['safety','Sicurezza Lavoratore'],['iot','IoT Dashboard'],['work','Lavoro sul campo'],['cfg','Configurazione']];
 // Cruscotti IoT attivi (ambienti/casi d'uso applicati al tenant): voci di menu dinamiche sotto
@@ -268,7 +269,13 @@ function navHtml(){ const items=visibleNav(); let h='';
 const modOk = n => !n.mod || n.mod.some(m=>ACTIVE_MODS.has(m));
 const featOk = n => !n.feat || UI_FEAT[n.feat]!==false;
 const aiFeatOk = n => !n.aiFeat || AI_FEAT[n.aiFeat]===true;
-const visibleNav = ()=>allNav().filter(n=>(!n.roles||n.roles.includes(ME.role)) && modOk(n) && featOk(n) && aiFeatOk(n));
+// TA-6/FE-2: permessi effettivi (ruolo + ruoli personalizzati + override), non il solo nome del ruolo.
+// `admin` li implica tutti. Il backend resta l'autorità: qui si decide solo cosa mostrare.
+function hasCap(c){ const cs=(ME&&ME.caps)||[]; return cs.includes('admin')||cs.includes(c); }
+function capOk(n){ if(!n.cap) return false; return (Array.isArray(n.cap)?n.cap:[n.cap]).some(hasCap); }
+// voce visibile se il ruolo è tra quelli previsti OPPURE l'utente ha il permesso che la apre
+const roleOrCap = n => !n.roles || n.roles.includes(ME.role) || capOk(n);
+const visibleNav = ()=>allNav().filter(n=>roleOrCap(n) && modOk(n) && featOk(n) && aiFeatOk(n));
 // carica stato moduli + feature flag UI del tenant (voci menu Mappa/Piantine configurabili dall'admin)
 let BRANDING={};
 async function loadCtx(){
@@ -1181,7 +1188,7 @@ window.addEventListener('orientationchange',()=>setTimeout(invalidateMaps,300));
 // legenda mostra/nascondi, export CSV/PDF dei selezionati, genera turni (anche con suggerimenti AI).
 let _CAL=null, CAL_HIDDEN=new Set(), CAL_WORKERS={}, CAL_LAST=[];
 async function vCalendario(v){
-  const planner=can(['pianificatore','tenant_admin']);
+  const planner=can(['pianificatore','tenant_admin'],'plan');
   const tools=planner?`<button class="btn ghost small" onclick="genTurni()">✨ Genera turni</button>`:'';
   v.innerHTML=`<div class="page-h"><div><h1>Calendario</h1><div class="mut">turni, interventi programmati e ronde — un'unica agenda${planner?' · trascina per spostare':''}</div></div>
     <div class="row" style="gap:var(--s-8)">${tools}<button class="btn ghost small" onclick="calExport('csv')">⬇ CSV</button><button class="btn ghost small" onclick="calExport('pdf')">⬇ PDF</button><button class="btn ghost small" onclick="calMyIcal()">🔗 iCal</button></div></div>
@@ -1305,7 +1312,7 @@ async function genTurniRun(){
   toast('Generati '+ok+' turni'+(skip?' · '+skip+' saltati (conflitti/assenze)':''),'ok'); closeDrawer(); route();
 }
 async function vMappa(v){
-  const admin=can(['tenant_admin']);
+  const admin=can(['tenant_admin'],'devices.admin');
   v.innerHTML=`<div class="page-h"><div><h1>${t('map_alarms_title','Mappa allarmi')}</h1><div class="mut" id="mapSub">—</div></div></div>
     <div class="row" id="mapCtl" style="gap:var(--s-10);flex-wrap:wrap;align-items:flex-end;margin-bottom:var(--s-10)"></div>
     <div class="grid map-grid">
@@ -1317,7 +1324,7 @@ async function vMappa(v){
 // Mappa DISPOSITIVI (condivisa Sicurezza lavoratore + Lavoro sul campo): device live (es. Teltonika
 // GH-5200), geofence, presenza. Stessa resa di prima, senza toggle.
 async function vMappaDispositivi(v){
-  const admin=can(['tenant_admin']);
+  const admin=can(['tenant_admin'],'devices.admin');
   v.innerHTML=`<div class="page-h"><div><h1>${t('map_devices_title','Mappa dispositivi')}</h1><div class="mut" id="mapSub">—</div></div></div>
     <div class="row" id="mapCtl" style="gap:var(--s-10);flex-wrap:wrap;align-items:flex-end;margin-bottom:var(--s-10)"></div>
     <div class="grid map-grid">
@@ -1328,7 +1335,7 @@ async function vMappaDispositivi(v){
 }
 // PIANTINE (indoor): planimetrie con beacon posizionati, geofence indoor, allarmi/dispositivi indoor.
 async function vPiantine(v){
-  const admin=can(['tenant_admin']);
+  const admin=can(['tenant_admin'],'devices.admin');
   v.innerHTML=`<div class="page-h"><div><h1>Piantine</h1><div class="mut" id="mapSub">—</div></div></div>
     <div class="row" id="mapCtl" style="gap:var(--s-10);flex-wrap:nowrap;align-items:flex-end;margin-bottom:var(--s-10);overflow-x:auto"></div>
     <div class="grid map-grid">
@@ -1380,7 +1387,7 @@ function alarmTip(a){
     + (a.person?`<br>👤 ${esc(a.person)}`:'') + (a.device?`<br>📟 ${esc(a.device)}`:'');
 }
 async function renderAlarms(admin){
-  admin = admin!==undefined?admin:can(['tenant_admin']); window._mapAdmin=admin;
+  admin = admin!==undefined?admin:can(['tenant_admin'],'devices.admin'); window._mapAdmin=admin;
   // Geofence su Mappa allarmi: nascosto di default, attivabile dal tenant_admin (flag geofence_alarms).
   const gfOn = admin && UI_FEAT.geofence_alarms===true; window._alarmGfOn=gfOn;
   $('#mapSub').textContent='allarmi georeferenziati · indoor/outdoor';
@@ -1778,7 +1785,7 @@ async function configIndoor(){
 async function refreshPiantine(selectId){
   if((location.hash.replace('#/','')||'dashboard')!=='piantine') return;
   if(!$('#mapCtl')) return;
-  try{ await renderIndoor(can(['tenant_admin']), selectId); }catch(e){}
+  try{ await renderIndoor(can(['tenant_admin'],'devices.admin'), selectId); }catch(e){}
 }
 async function fpFormUpload(btn){
   const name=$('#fpName').value, site=$('#fpSite').value||null, file=$('#fpFile').files&&$('#fpFile').files[0];
@@ -2008,7 +2015,7 @@ const ANOM_LAB={saltato:'Tappa saltata',in_ritardo:'Tratta in ritardo',non_compl
 async function vRonde(v){
   const [routes,rounds]=await Promise.all([api('/patrol-routes').catch(()=>[]),api('/patrol-rounds').catch(()=>[])]);
   const sites=await api('/sites').catch(()=>[]);
-  const canCfg=can(['pianificatore','tenant_admin']);
+  const canCfg=can(['pianificatore','tenant_admin'],'plan');
   const stChip=s=>`<span class="chip ${s==='completato'?'ok':(s==='incompleto'?'bad':'')}">${esc(s)}</span>`;
   v.innerHTML=`<div class="page-h"><div><h1>${t('ronde_title','Ronde')}</h1><div class="mut">giri di controllo · checkpoint QR/NFC/beacon/GPS · punzonature</div></div>${canCfg?'<button class="btn" onclick="ronNew()">+ nuovo giro</button>':''}</div>
   <div class="grid g2">
@@ -2080,7 +2087,7 @@ async function ronView(id){ const r=await api('/patrol-rounds/'+id).catch(()=>nu
 const SLOT_LAB={svolta:'svolta',mancante:'MANCANTE',attesa:'attesa'};
 const DOW_V=['lun','mar','mer','gio','ven','sab','dom'];
 async function vVigilanza(v){
-  const planner=can(['pianificatore','tenant_admin']);
+  const planner=can(['pianificatore','tenant_admin'],'plan');
   const [d,routes,scheds]=await Promise.all([api('/patrol-dashboard').catch(()=>null), api('/patrol-routes').catch(()=>[]), planner?api('/patrol-schedules').catch(()=>[]):Promise.resolve([])]);
   v._vroutes=routes;
   const sm=(d&&d.summary)||{svolte:0,mancanti:0,attese:0,anomalie_oggi:0};
@@ -2134,7 +2141,7 @@ let ORD_CACHE=[]; let ORD_TAB='agenda';
 async function vOrdini(v){ ORD_CACHE=await api('/orders').catch(()=>[]); renderOrdini(v); }
 function ordTab(t){ ORD_TAB=t; renderOrdini($('#view')); }
 function renderOrdini(v){
-  const O=ORD_CACHE, canCreate=can(['pianificatore','tenant_admin']);
+  const O=ORD_CACHE, canCreate=can(['pianificatore','tenant_admin'],'plan');
   const sched=O.filter(o=>o.scheduled_start).slice().sort((a,b)=>new Date(a.scheduled_start)-new Date(b.scheduled_start));
   const unsched=O.filter(o=>!o.scheduled_start);
   const toAssign=sched.filter(o=>!o.assignee&&!o.group_name).length;
@@ -2174,7 +2181,7 @@ const COSTO_CAT={materiale:'Materiale',nolo:'Nolo',subappalto:'Subappalto',altro
 function progBar(pct){ pct=Math.max(0,Math.min(100,pct||0)); const col=pct>=100?'var(--ok,#16a34a)':pct>0?'var(--brand,#2563eb)':'var(--line)';
   return `<div style="background:var(--line);border-radius:6px;height:8px;overflow:hidden;min-width:90px"><div style="width:${pct}%;height:100%;background:${col}"></div></div>`; }
 async function vCantieri(v){
-  const planner=can(['pianificatore','tenant_admin']);
+  const planner=can(['pianificatore','tenant_admin'],'plan');
   const [C,sites,clients]=await Promise.all([api('/commesse').catch(()=>[]), planner?api('/sites').catch(()=>[]):Promise.resolve([]), planner?api('/clients').catch(()=>[]):Promise.resolve([])]);
   v._sites=sites; v._clients=clients;
   const row=c=>`<tr class="clk" data-com="${c.id}"><td><b>${esc(c.code)}</b><div class="small mut">${esc(c.name)}</div></td>
@@ -2238,7 +2245,7 @@ async function vMappaCantieri(v){
   const list=open.map(c=>`<div class="spread clk-card" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)" onclick='cantSide(${JSON.stringify(c).replace(/'/g,"&#39;")})'>
     <div><b class="small">${esc(c.code)}</b> <span class="small mut">${esc(c.name)}</span><div class="small mut">${esc(c.client_name||'—')} · ${c.progress}%</div></div>
     <span class="chip">${esc(COMM_STATI[c.status]||c.status)}</span></div>`).join('')||'<div class="small mut">Nessun cantiere aperto geolocalizzato.</div>';
-  const planner=can(['pianificatore','tenant_admin']);
+  const planner=can(['pianificatore','tenant_admin'],'plan');
   const noGeoList=noGeo.map(c=>`<div class="spread" style="border:1px dashed var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)">
     <div><b class="small">${esc(c.code)}</b> <span class="small mut">${esc(c.name)}</span></div>
     ${planner?`<button class="btn ghost small" onclick='comGeoForm("${c.id}",${JSON.stringify(c).replace(/'/g,"&#39;")})'>📍 posiziona</button>`:'<span class="small mut">senza posizione</span>'}</div>`).join('');
@@ -2349,7 +2356,7 @@ function comTab(k){
   document.querySelectorAll('#drawer .seg-btn[data-ct]').forEach(b=>b.classList.toggle('on', b.dataset.ct===k));
 }
 async function openCommessa(id){
-  const planner=can(['pianificatore','tenant_admin']);
+  const planner=can(['pianificatore','tenant_admin'],'plan');
   let c, allTeams=[]; try{ c=await api('/commesse/'+id); }catch(e){ toast(e.message,'bad'); return; }
   if(planner){ try{ allTeams=await api('/teams'); }catch(e){} }
   $('#view')._curCommessa=id; $('#view')._allTeams=allTeams;
@@ -2628,7 +2635,7 @@ async function salSave(cid){
 // ===== Assistenza A1: Clienti (anagrafica + referenti) =====
 async function vClienti(v){
   const C=await api('/clients').catch(()=>[]);
-  const canEdit=can(['pianificatore','tenant_admin']);
+  const canEdit=can(['pianificatore','tenant_admin'],'plan');
   const row=c=>`<tr class="clk" data-cli="${c.id}"><td><b>${esc(c.name)}</b>${c.vat?`<div class="small mut">${esc(c.vat)}</div>`:''}</td>
     <td class="small">${esc(c.phone||c.email||'—')}</td><td class="small">${esc(c.address||'—')}</td>
     <td class="small mut">${c.orders} interventi · ${c.contacts} referenti</td></tr>`;
@@ -2656,7 +2663,7 @@ function cliNew(){ drawer('Nuovo cliente',`${cliForm()}<button class="btn" oncli
 async function cliSave(){ const m=$('.cfg-msg'); const b=cliBody(); if(!b.name){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
   try{await api('/clients',{method:'POST',body:JSON.stringify(b)}); toast('Cliente creato','ok'); closeDrawer(); route();}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
 async function openClient(id){
-  const canEdit=can(['pianificatore','tenant_admin']);
+  const canEdit=can(['pianificatore','tenant_admin'],'plan');
   let c; try{ c=await api('/clients/'+id); }catch(e){ toast(e.message,'bad'); return; }
   $('#view')._curClient=id;
   const contacts=(c.contacts||[]).map(k=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8)">
@@ -2704,7 +2711,7 @@ async function interventiCSV(){ const O=await api('/orders').catch(()=>[]);
   downloadCSV('interventi.csv',[['Titolo','Cliente','Sede','Assegnatario','Quando','Priorità','Stato'],...O.map(o=>[o.title,o.client_name||'',o.site||'',o.assignee||o.group_name||'',o.scheduled_start?new Date(o.scheduled_start).toLocaleString('it-IT'):'',o.priority,o.state])]); toast('CSV interventi scaricato','ok'); }
 async function vListino(v){
   const P=await api('/price-items').catch(()=>[]);
-  const canEdit=can(['pianificatore','tenant_admin']);
+  const canEdit=can(['pianificatore','tenant_admin'],'plan');
   const row=p=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick='priceForm(${JSON.stringify(p).replace(/'/g,"&#39;")})'`:''}><td><b>${esc(p.name)}</b>${p.code?`<div class="small mut">${esc(p.code)}</div>`:''}</td>
     <td class="small">${esc(PRICE_CAT[p.category]||p.category)}</td><td class="small">${esc(p.unit)}</td>
     <td style="text-align:right">${eur(p.unit_price)}</td>
@@ -2825,7 +2832,7 @@ async function dispCSV(){ const O=await api('/orders').catch(()=>[]);
 const REQ_STATI={nuova:'Nuova',presa:'Presa in carico',convertita:'Convertita',chiusa:'Chiusa'};
 async function vRichieste(v){
   const [R,clients]=await Promise.all([api('/requests').catch(()=>[]),api('/clients').catch(()=>[])]);
-  v._clients=clients; v._reqs=R; const canEdit=can(['pianificatore','tenant_admin']);
+  v._clients=clients; v._reqs=R; const canEdit=can(['pianificatore','tenant_admin'],'plan');
   const row=r=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick="reqOpen('${r.id}')"`:''}><td><b class="small">${esc(r.title)}</b>${r.requester?`<div class="small mut">da ${esc(r.requester)}</div>`:''}</td>
     <td class="small">${esc(r.client_name||'—')}</td><td>${priBadge(r.priority)}</td><td><span class="chip">${esc(REQ_STATI[r.status]||r.status)}</span></td>
     <td style="text-align:right">${canEdit&&r.status!=='convertita'?`<button class="btn ghost small" onclick="event.stopPropagation();reqConvert('${r.id}')">→ intervento</button> `:''}${canEdit?`<button class="btn-ico btn ghost" onclick="event.stopPropagation();reqDel('${r.id}')">${ICON.x}</button>`:''}</td></tr>`;
@@ -2877,7 +2884,7 @@ async function reqDel(id){ if(!await askConfirm('Eliminare la richiesta?'))retur
 // ===== Interventi A4: Contratti/SLA + piani di manutenzione =====
 async function vContratti(v){
   const [C,P,clients,sites]=await Promise.all([api('/contracts').catch(()=>[]),api('/maintenance-plans').catch(()=>[]),api('/clients').catch(()=>[]),api('/sites').catch(()=>[])]);
-  v._clients=clients; v._sites=sites; const canEdit=can(['pianificatore','tenant_admin']);
+  v._clients=clients; v._sites=sites; const canEdit=can(['pianificatore','tenant_admin'],'plan');
   const crow=c=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick='contrForm(${JSON.stringify(c).replace(/'/g,"&#39;")})'`:''}><td><b class="small">${esc(c.name)}</b></td><td class="small">${esc(c.client_name||'—')}</td>
     <td class="small">${c.sla_hours!=null?c.sla_hours+'h':'—'}</td><td class="small">${c.hours_bundle!=null?c.hours_bundle+'h':'—'}</td>
     <td>${c.active?'<span class="chip s-attivo">attivo</span>':'<span class="chip">chiuso</span>'}</td>
@@ -2952,7 +2959,7 @@ async function newOrder(){
       toast('Intervento creato','ok'); closeDrawer(); route(); }catch(e){m.textContent=e.message;m.style.color='var(--bad)';} };
 }
 async function openOrder(id){
-  const planner=can(['pianificatore','tenant_admin']);
+  const planner=can(['pianificatore','tenant_admin'],'plan');
   const [O,users]=await Promise.all([api('/orders'), planner?api('/users').catch(()=>[]):Promise.resolve([])]);
   const o=O.find(x=>x.id===id)||{};
   const workers=(users||[]).filter(u=>u.role==='lavoratore');
@@ -3095,7 +3102,7 @@ async function newTS(){
 }
 async function openTimesheet(id){
   const d=await api('/timesheets/'+id);
-  const owner = d.owner===ME.email; const approver=can(['responsabile','tenant_admin']);
+  const owner = d.owner===ME.email; const approver=can(['responsabile','tenant_admin'],'approve');
   const editable = owner && ['bozza','da_correggere'].includes(d.state);
   const t=d.total;
   let lineForm = editable ? `
@@ -5549,7 +5556,7 @@ function toISO(localVal){ if(!localVal)return null; const d=new Date(localVal); 
 // ISO -> valore per <input type=datetime-local> in ora LOCALE (niente shift UTC).
 function dtInput(iso){ if(!iso)return''; const d=new Date(iso); if(isNaN(d))return''; const p=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes()); }
 async function vTurni(v){
-  const planner=can(['pianificatore','tenant_admin']);
+  const planner=can(['pianificatore','tenant_admin'],'plan');
   const hasInterventi=ACTIVE_MODS.has('interventi');
   const hasCantieri=ACTIVE_MODS.has('cantieri');
   const [P,OC,A,Q,CV,users,sites,O,CM]=await Promise.all([

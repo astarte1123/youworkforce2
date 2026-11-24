@@ -118,6 +118,28 @@ Guardie: ruolo/capability sconosciuti → 400; **anti-lockout**: non si può tog
 set/azzera override), un pallino segnala i valori modificati rispetto al default, pulsante
 «ripristina default». La casella `tenant_admin/admin` è bloccata (anti-lockout).
 
+**Menu, pulsanti e widget per permesso (TA-6/FE-2).** La console legge i permessi effettivi da
+`GET /api/me` (`caps`). Una voce di menu, un pulsante o un widget della dashboard compaiono se il
+ruolo è tra quelli previsti **oppure** l'utente ha il permesso che li apre (ad esempio con un ruolo
+personalizzato). I permessi sono scelti in modo che **i ruoli predefiniti vedano esattamente gli
+stessi elementi di prima**; cambia solo ciò che vede chi riceve un permesso per delega.
+
+| Elemento | Permesso che lo apre |
+|---|---|
+| Dispositivi & App, Collegamento dispositivi, modifica di mappe/geofence/piantine | `devices.admin` |
+| Trigger di sicurezza, Profili di protezione, Escalation e reperibilità | `escalation.manage` |
+| Configurazione, AI, Moduli | `settings.manage` |
+| Utenti e ruoli, Utenti e sedi | `users.manage` |
+| Privacy e audit | `gdpr.manage` o `audit.view` |
+| Monitoraggio IoT, Alert IoT | `iot.manage` |
+| pagine e pulsanti di pianificazione (interventi, clienti, listino, agenda, cantieri, ronde, turni…); widget ordini/ronde/turni | `plan` |
+| Consuntivi, approvazione; widget consuntivi | `approve` o `timesheets.view_all` |
+| widget incidenti | `incidents.view` |
+
+Restano legati al ruolo (per non cambiare i ruoli predefiniti): Centrale, mappe e report allarmi,
+presa in carico e operazioni in blocco, check-in. Il backend resta comunque l'autorità: un'azione non
+permessa risponde `403` con il permesso mancante in chiaro.
+
 ## Isolamento e compatibilità
 
 - **Tenant**: override isolati per RLS; un override su un tenant non tocca gli altri.
