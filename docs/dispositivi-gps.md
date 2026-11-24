@@ -106,6 +106,14 @@ protezione** del lavoratore.
 `gps_alarm_etype` accetta sia i nomi dei protocolli (`fallDown`, `accident`) sia l'etype già risolto
 (`man_down`, `immobilita`): la semantica salva-vita non degrada mai a `device_alarm`.
 
+**Ritrasmissioni e allarmi ripetuti (SL-4).** Se non riceve l'ACK il badge ritrasmette lo stesso
+record AVL: stesso IMEI, orario del record e allarme sono lo **stesso evento** e non aprono un secondo
+incidente. Più pressioni del SOS (o più segnali di caduta) mentre l'incidente dello stesso badge e dello
+stesso tipo è **ancora aperto** si annotano sulla sua cronologia («segnalazione ripetuta») invece di
+aprire un nuovo incidente: l'escalation prosegue senza raffiche di avvisi. Dopo la chiusura, un nuovo
+allarme apre un nuovo incidente. Vale anche per OsmAnd quando la richiesta porta l'orario del
+dispositivo. e2e: `qa/telt-retransmit-e2e.sh`.
+
 ### Silenzio del dispositivo → Perdita di contatto
 
 Un badge **in servizio** che non trasmette da più della soglia apre un incidente

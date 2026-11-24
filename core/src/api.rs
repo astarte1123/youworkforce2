@@ -6157,8 +6157,14 @@ pub async fn ingest_osmand(
     if let Some(al) = alarm.as_deref() {
         let amap = tool_config(&st, tid, "gps", "alarm_map").await;
         let etype = map_gps_etype(&amap, "", Some(al), battery);
-        let corr = format!("osmand-{}-{}", ext, &Uuid::new_v4().to_string()[..8]);
-        let src_evt = format!("osmand-evt-{}", Uuid::new_v4());
+        // SL-4: con l'orario del dispositivo la ritrasmissione è riconoscibile (stesso evento);
+        // senza orario non lo è e ogni richiesta resta un evento distinto. Correlazione stabile per
+        // dispositivo e tipo: le ripetizioni confluiscono nell'incidente ancora aperto.
+        let corr = format!("osmand-{ext}-{etype}");
+        let src_evt = match ts_rfc.as_deref() {
+            Some(ts) => format!("osmand-evt-{ext}-{ts}-{al}"),
+            None => format!("osmand-evt-{}", Uuid::new_v4()),
+        };
         let payload = json!({"channel":"osmand","alarm":al,"lat":lat,"lon":lon,"battery":battery,"occurred_at":ts_rfc});
         let r = persist_ingest(&st, tid, Normalized{
             source: dev_source.clone(), source_event: src_evt.clone(), idem: src_evt,
@@ -7023,8 +7029,11 @@ pub async fn teltonika_ingest_one(st: &AppState, tid: Uuid, ext: &str, source: &
     if let Some(al) = alarm {
         let amap = tool_config(st, tid, "gps", "alarm_map").await;
         let etype = map_gps_etype(&amap, "", Some(&al), battery);
-        let src_evt = format!("telt-evt-{}", Uuid::new_v4());
-        let corr = format!("telt-{}-{}", ext, &Uuid::new_v4().to_string()[..8]);
+        // SL-4: chiavi STABILI. Il badge ritrasmette lo stesso record AVL se non riceve l'ACK: stesso
+        // IMEI + orario del record + allarme = stesso evento (scartato). La correlazione per
+        // dispositivo e tipo fa confluire le pressioni ripetute nell'incidente ancora aperto.
+        let src_evt = format!("telt-evt-{ext}-{ts_rfc}-{al}");
+        let corr = format!("telt-{ext}-{etype}");
         let _ = persist_ingest(st, tid, Normalized{
             source: source.into(), source_event: src_evt.clone(), idem: src_evt, etype,
             device_external_id: Some(ext.into()), site_name: None,
