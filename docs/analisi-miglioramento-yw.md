@@ -435,3 +435,42 @@ glossario "vietato" in UI (controllo automatico in CI); onboarding GH-5200 → l
   `gps-native-e2e.sh` e `crypto-e2e.sh` (chiave AI cifrata); CI con unit test e senza job "motori".
 - Documentazione: README riscritto, manuale dispositivi `dispositivi-gps.md`, documenti storici
   spostati in `docs/archivio/`.
+
+**Step 1b — Correzioni dalla code review di b904493 (fatto, non ancora committato).**
+
+La review ha trovato 9 rilievi, tutti verificati (7 confermati, 2 parziali) più un difetto
+preesistente di isolamento. Correzioni:
+
+- **Isolamento tenant sul bridge Teltonika** (bloccante): l'IMEI identifica un solo device GPS in
+  tutto il sistema; un IMEI conteso tra tenant è rifiutato (mai `LIMIT 1`). Connessioni registrate
+  per (tenant, IMEI): i tre percorsi di invio (comandi rapidi, GPRS grezzo, RPC IoT) raggiungono
+  solo il socket del proprio tenant. Comandi serializzati per connessione. Testo libero e RPC verso
+  device GPS richiedono `devices.admin`. Trigger DB contro nuovi IMEI GPS duplicati tra tenant.
+- **Ingest JSON** accettato con qualunque modulo dispositivi (prima solo con `iot`).
+- **Presenza OsmAnd** registrata a ogni pacchetto autenticato, anche senza coordinate.
+- **Watchdog**: misura l'ultimo contatto da `GREATEST(last_seen_at, silence_armed_at)`; armamento
+  all'upgrade e a ogni assegnazione → niente allarmi a raffica all'upgrade o alla consegna.
+- **Migrazione 0127** (0125/0126 intatte): armamento, vincolo identità GPS, chiusura degli incidenti
+  `traccar_conn_down` aperti (escalation ferma), passaggio dal motore esterno: scala riavviata solo
+  dove nessuno era stato avvisato (consegne "in ombra" archiviate in timeline), stato intatto dove
+  la consegna era reale; gli incidenti accettati da GoAlert senza stato nativo sono annotati per
+  revisione. Gli incidenti `perdita_contatto` già aperti non si toccano.
+- **Configurazione strumenti**: il form possiede i campi dello schema (omesso → default; un campo
+  vuoto non diventa più `0`), le chiavi gestite altrove restano, la risposta è il valore salvato.
+- **Report**: oltre 50.000 posizioni il risultato è dichiarato parziale (header, campi, CSV, avviso
+  in console). **Scheda dispositivo**: "in linea" con la soglia reale del tenant.
+- Test: `gps-isolation-e2e.sh` (36), `upgrade-0127-check.sh` (21), 7 nuovi unit test.
+
+**Step 1c — Verifica finale e correzioni (fatto, non committato).**
+
+- **Stato di servizio esplicito dei badge** (mig 0128): l'assegnazione non vale più come messa in
+  servizio. Il conteggio del silenzio parte dalla *messa in servizio* (azione esplicita) e riparte
+  al passaggio di consegne; un badge in servizio mai collegato fa scattare l'allarme alla soglia.
+  In attesa / fuori servizio: visibili, nessun allarme. Chi era monitorato conserva il monitoraggio.
+- **Titolarità GPS** in `app.gps_identity` (chiave primaria): unicità valida con qualunque livello
+  di isolamento; rilascio alla cancellazione; contesi marcati.
+- **Bridge Teltonika**: ogni connessione ricorda il device; titolarità ricontrollata a ogni
+  pacchetto (chiusura se cambiata); gli invii usano solo la connessione del device corrente.
+- **Controlli in sola lettura** per gli ambienti di destinazione: `qa/sql/check-imei-contesi.sql`,
+  `qa/sql/check-escalation-0127.sql`, `qa/sql/check-badge-0128.sql` (stato dopo 0128 e azione per il
+  responsabile operativo). Scheda di collaudo staging: `docs/collaudo-staging-gps.md`.

@@ -146,7 +146,20 @@ pub fn summary(fixes: &[Fix], stops: &[Stop], trips: &[Trip]) -> Summary {
 // ------------------------------------------------------------------------------------------
 
 #[derive(Deserialize)]
-pub struct ReportQuery { pub from: String, pub to: String, pub csv: Option<bool> }
+pub struct ReportQuery { pub from: String, pub to: String, pub csv: Option<bool>,
+    /// `envelope=1`: risposta JSON sempre oggetto `{partial, covered_until, items|summary}` (usato dalla
+    /// console). Senza, la forma resta quella storica (array o oggetto) per compatibilità.
+    pub envelope: Option<u8> }
+
+/// Esito di un report: `partial` quando l'intervallo conteneva più di MAX_POINTS posizioni e i
+/// calcoli coprono solo fino a `covered_until`.
+pub struct ReportOut { pub csv: bool, pub body: String, pub partial: bool, pub covered_until: Option<DateTime<Utc>> }
+
+/// Taglia a `max` elementi e dice se c'era altro. Si legge `max + 1` righe: la riga in più prova il
+/// superamento senza un COUNT separato. Pura: testata in unità.
+pub fn cap_points<T>(mut rows: Vec<T>, max: usize) -> (Vec<T>, bool) {
+    if rows.len() > max { rows.truncate(max); (rows, true) } else { (rows, false) }
+}
 
 fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
     let s = s.trim();
@@ -158,14 +171,20 @@ fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
 pub async fn device_report(State(st): State<AppState>, h: HeaderMap, Path((id, kind)): Path<(Uuid, String)>,
     Query(q): Query<ReportQuery>) -> Response {
     match build_report(&st, &h, id, &kind, &q).await {
-        Ok((true, body)) => ([(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8")], body).into_response(),
-        Ok((false, body)) => ([(axum::http::header::CONTENT_TYPE, "application/json")], body).into_response(),
+        Ok(o) => {
+            let ct = if o.csv { "text/csv; charset=utf-8" } else { "application/json" };
+            let covered = o.covered_until.map(|t| t.to_rfc3339()).unwrap_or_default();
+            ([(axum::http::header::CONTENT_TYPE, ct.to_string()),
+              (axum::http::HeaderName::from_static("x-yw-report-partial"), if o.partial { "true".into() } else { "false".into() }),
+              (axum::http::HeaderName::from_static("x-yw-report-covered-until"), covered)],
+             o.body).into_response()
+        }
         Err(e) => e.into_response(),
     }
 }
 
 async fn build_report(st: &AppState, h: &HeaderMap, id: Uuid, kind: &str, q: &ReportQuery)
-    -> Result<(bool, String), (StatusCode, String)> {
+    -> Result<ReportOut, (StatusCode, String)> {
     let s = require_tenant(st, h).await?;
     if !has_cap(&s, "incidents.view") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::FORBIDDEN, "tenant richiesto"))?;
@@ -185,9 +204,12 @@ async fn build_report(st: &AppState, h: &HeaderMap, id: Uuid, kind: &str, q: &Re
     if exists.is_none() { return Err(err(StatusCode::NOT_FOUND, "dispositivo inesistente")); }
     let rows = sqlx::query("SELECT lat,lon,fixed_at FROM app.device_positions
          WHERE device_id=$1 AND fixed_at>=$2 AND fixed_at<=$3 ORDER BY fixed_at LIMIT $4")
-        .bind(id).bind(from).bind(to).bind(MAX_POINTS).fetch_all(&mut *tx).await.map_err(ise)?;
+        .bind(id).bind(from).bind(to).bind(MAX_POINTS + 1).fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    let fixes: Vec<Fix> = rows.iter().map(|r| Fix { lat: r.get("lat"), lon: r.get("lon"), at: r.get("fixed_at") }).collect();
+    let all: Vec<Fix> = rows.iter().map(|r| Fix { lat: r.get("lat"), lon: r.get("lon"), at: r.get("fixed_at") }).collect();
+    let (fixes, partial) = cap_points(all, MAX_POINTS as usize);
+    // con risultato parziale i calcoli coprono fino all'ultima posizione letta, non fino a `to`
+    let covered_until = if partial { fixes.last().map(|f| f.at) } else { Some(to) };
     let st_list = stops(&fixes);
     let tr_list = trips(&fixes, &st_list);
     let csv = q.csv.unwrap_or(false);
@@ -197,7 +219,9 @@ async fn build_report(st: &AppState, h: &HeaderMap, id: Uuid, kind: &str, q: &Re
             let s = summary(&fixes, &st_list, &tr_list);
             json!({"points":s.points,"distance_m":s.distance_m.round(),"moving_s":s.moving_s,
                    "max_kmh":s.max_kmh.round(),"avg_moving_kmh":s.avg_moving_kmh.round(),
-                   "stops":s.stops,"trips":s.trips,"from":fmt(&from),"to":fmt(&to)}).to_string()
+                   "stops":s.stops,"trips":s.trips,"from":fmt(&from),"to":fmt(&to),
+                   "partial":partial,"covered_until":covered_until.map(|t| fmt(&t)),
+                   "max_points":MAX_POINTS}).to_string()
         }
         ("summary", true) => {
             let s = summary(&fixes, &st_list, &tr_list);
@@ -225,7 +249,22 @@ async fn build_report(st: &AppState, h: &HeaderMap, id: Uuid, kind: &str, q: &Re
             o
         }
     };
-    Ok((csv, body))
+    let body = if csv && partial {
+        // avviso dentro il file: chi apre il CSV deve sapere che è incompleto
+        format!("{body}# ATTENZIONE: risultato PARZIALE. Oltre {MAX_POINTS} posizioni nell'intervallo: i dati coprono solo fino a {}. Riduci l'intervallo.
+",
+            covered_until.map(|t| fmt(&t)).unwrap_or_default())
+    } else if !csv && q.envelope.unwrap_or(0) == 1 {
+        let inner: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+        let key = if kind == "summary" { "summary" } else { "items" };
+        let mut env = serde_json::Map::new();
+        env.insert("partial".into(), json!(partial));
+        env.insert("covered_until".into(), json!(covered_until.map(|t| fmt(&t))));
+        env.insert("max_points".into(), json!(MAX_POINTS));
+        env.insert(key.into(), inner);
+        Value::Object(env).to_string()
+    } else { body };
+    Ok(ReportOut { csv, body, partial, covered_until })
 }
 
 #[cfg(test)]
@@ -236,6 +275,16 @@ mod tests {
     fn t(min: i64) -> DateTime<Utc> { Utc.with_ymd_and_hms(2026, 1, 1, 8, 0, 0).unwrap() + chrono::Duration::minutes(min) }
     /// ~111 m per 0.001° di latitudine.
     fn fix(lat_off_milli: f64, min: i64) -> Fix { Fix { lat: 45.0 + lat_off_milli / 1000.0, lon: 9.0, at: t(min) } }
+
+    #[test]
+    fn cap_points_detects_overflow_with_one_extra_row() {
+        let (v, p) = cap_points(vec![1, 2, 3], 3);
+        assert_eq!((v.len(), p), (3, false), "esattamente al limite: completo");
+        let (v, p) = cap_points(vec![1, 2, 3, 4], 3);
+        assert_eq!((v, p), (vec![1, 2, 3], true), "una riga in più: parziale, tagliato al limite");
+        let (v, p) = cap_points(Vec::<i32>::new(), 3);
+        assert_eq!((v.len(), p), (0, false));
+    }
 
     #[test]
     fn haversine_known_distance() {

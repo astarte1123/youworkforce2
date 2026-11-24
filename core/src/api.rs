@@ -2007,7 +2007,7 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
     let rows = sqlx::query(
         "SELECT d.id,d.external_id,d.source,d.label,d.enabled,d.config,d.site_id,d.assigned_user,
                 d.last_lat,d.last_lon,d.last_battery,d.last_pos_at,d.last_attributes,d.model_code,d.assigned_asset,
-                d.last_seen_at,d.floorplan_id,d.fp_x,d.fp_y,
+                d.last_seen_at,d.floorplan_id,d.fp_x,d.fp_y,d.service_state,d.silence_armed_at,
                 s.name AS site_name, u.email AS user_email, a.name AS asset_name,
                 m.manufacturer, m.model_name, m.category, m.capabilities,
                 pr.step AS prov_step,
@@ -2019,6 +2019,9 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
               LEFT JOIN app.device_provisioning pr ON pr.device_id=d.id
          ORDER BY d.source,d.external_id").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    // soglia di silenzio REALE del tenant (la stessa del watchdog): la scheda la usa per "in linea"
+    let silence_after_s = tool_config(&st, s.tenant_id.unwrap(), "gps", "alarm_map").await
+        .get("silence_after_s").and_then(|v| v.as_i64()).unwrap_or(600);
     let out: Vec<Value> = rows.iter()
         .filter(|r| site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok()))
         .map(|r| json!({
@@ -2042,6 +2045,9 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
         "last_seen_at": r.try_get::<chrono::DateTime<chrono::Utc>,_>("last_seen_at").ok(),
         "floorplan_id": r.try_get::<Uuid,_>("floorplan_id").ok(),
         "fp_x": r.try_get::<f64,_>("fp_x").ok(), "fp_y": r.try_get::<f64,_>("fp_y").ok(),
+        "silence_after_s": silence_after_s,
+        "service_state": r.try_get::<String,_>("service_state").ok(),
+        "silence_armed_at": r.try_get::<chrono::DateTime<chrono::Utc>,_>("silence_armed_at").ok(),
         "prov_step": r.try_get::<String,_>("prov_step").ok() })).collect();
     Ok(Json(json!(out)))
 }
@@ -2072,9 +2078,16 @@ pub async fn update_device(State(st): State<AppState>, h: HeaderMap, Path(id): P
     let old: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.devices WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.flatten();
     let n = sqlx::query(
         "UPDATE app.devices SET external_id=$2,source=$3,label=$4,site_id=$5,assigned_user=$6,
-            enabled=COALESCE($7,enabled),config=COALESCE($8,config),updated_at=now() WHERE id=$1")
+            enabled=COALESCE($7,enabled),config=COALESCE($8,config),updated_at=now(),
+            -- passaggio di consegne di un badge in servizio: il conteggio riparte (orologio app)
+            silence_armed_at=CASE WHEN assigned_user IS DISTINCT FROM $6 THEN $9 ELSE silence_armed_at END
+          WHERE id=$1")
         .bind(id).bind(b.external_id.trim()).bind(&b.source).bind(&b.label).bind(b.site_id).bind(b.assigned_user)
-        .bind(b.enabled).bind(b.config.clone()).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+        .bind(b.enabled).bind(b.config.clone()).bind(st.clock.now()).execute(&mut *tx).await
+        .map_err(|e| match e.as_database_error().and_then(|d| d.code()) {
+            Some(c) if c == "23505" => err(StatusCode::CONFLICT, "identificativo già registrato (anche in un altro tenant per i dispositivi GPS)"),
+            _ => ise(e),
+        })?.rows_affected();
     if n>0 { record_device_assignment(&mut tx, tid, id, old, b.assigned_user, st.clock.now()).await.map_err(ise)?; }
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "dispositivo inesistente")); }
@@ -2280,8 +2293,9 @@ pub async fn assign_device(State(st): State<AppState>, h: HeaderMap, Path(id): P
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let old: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.devices WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.flatten();
-    let n = sqlx::query("UPDATE app.devices SET assigned_user=$2, assigned_asset=$3, updated_at=now() WHERE id=$1")
-        .bind(id).bind(b.user_id).bind(b.asset_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    let n = sqlx::query("UPDATE app.devices SET assigned_user=$2, assigned_asset=$3, updated_at=now(),
+            silence_armed_at=CASE WHEN assigned_user IS DISTINCT FROM $2 THEN $4 ELSE silence_armed_at END WHERE id=$1")
+        .bind(id).bind(b.user_id).bind(b.asset_id).bind(st.clock.now()).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     if n>0 { record_device_assignment(&mut tx, tid, id, old, b.user_id, st.clock.now()).await.map_err(ise)?; }
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "device inesistente")); }
@@ -4937,8 +4951,9 @@ pub async fn ingest_gps_event(
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
     let tid = cred.tenant_id;
     let source = cred.source.clone();
-    if !module_active(&st, tid, "iot").await {
-        return Err(err(StatusCode::FORBIDDEN, "modulo IoT non abilitato"));
+    // canale ufficiale del modulo gps: basta un modulo dispositivi attivo (come OsmAnd/Teltonika)
+    if !any_device_module(&st, tid).await {
+        return Err(err(StatusCode::FORBIDDEN, "nessun modulo dispositivi attivo"));
     }
     let bound_ext = match cred.device_id { Some(did) => bound_device_external(&st, did).await, None => None };
 
@@ -5002,11 +5017,14 @@ const DEVICE_COMMANDS: &[(&str, &str, &str)] = &[
 /// l'esito nello storico. Il device deve essere collegato in quel momento.
 pub async fn device_command(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<DeviceCmd>) -> R {
     let s = require_tenant(&st, &h).await?;
-    if !has_cap(&s,"devices.manage") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let tid = s.tenant_id.unwrap();
-    let ext: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND tenant_id=$2")
-        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
-    let ext = ext.ok_or_else(|| err(StatusCode::NOT_FOUND, "dispositivo inesistente"))?;
+    require_any_module(&st, tid, DEVICE_MODS).await?;
+    if !has_cap(&s,"devices.manage") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
+    // testo libero = stesso livello del comando GPRS grezzo (può riconfigurare il device)
+    if b.kind == "personalizzato" && !has_cap(&s,"devices.admin") {
+        return Err(err(StatusCode::FORBIDDEN, "i comandi personalizzati richiedono l'amministrazione dispositivi"));
+    }
+    let ext = gps_device_external(&st, tid, id).await?;
     let text: String = if b.kind == "personalizzato" {
         b.data.as_deref().map(str::trim).filter(|t| !t.is_empty())
             .ok_or_else(|| err(StatusCode::BAD_REQUEST, "scrivi il comando da inviare"))?.to_string()
@@ -5014,7 +5032,7 @@ pub async fn device_command(State(st): State<AppState>, h: HeaderMap, Path(id): 
         DEVICE_COMMANDS.iter().find(|c| c.0 == b.kind).map(|c| c.2.to_string())
             .ok_or_else(|| err(StatusCode::BAD_REQUEST, "comando non disponibile per questo dispositivo"))?
     };
-    let (code, result, reply) = match crate::teltonika::send_command(&ext, &text).await {
+    let (code, result, reply) = match crate::teltonika::send_command(tid, id, &ext, &text).await {
         Ok(resp) => (200i32, "inviato".to_string(), Some(resp)),
         Err(e) => (502i32, format!("non inviato: {e}"), None),
     };
@@ -5023,6 +5041,54 @@ pub async fn device_command(State(st): State<AppState>, h: HeaderMap, Path(id): 
         .execute(&st.owner_pool).await.map_err(ise)?;
     audit(&st, tid, &s.email, "device_command", json!({"device":id,"type":b.kind,"status_code":code})).await;
     Ok(Json(json!({"ok": code==200, "status_code":code, "result":result, "response":reply})))
+}
+
+/// IMEI di un device del tenant servito dal bridge Teltonika (source='gps'). 404 se il device non
+/// esiste nel tenant, 400 se non è un dispositivo GPS (i comandi GPRS valgono solo per quelli).
+async fn gps_device_external(st: &AppState, tid: Uuid, id: Uuid) -> Result<String, (StatusCode, String)> {
+    let row: Option<(String, String)> = sqlx::query_as("SELECT external_id, source FROM app.devices WHERE id=$1 AND tenant_id=$2")
+        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let (ext, src) = row.ok_or_else(|| err(StatusCode::NOT_FOUND, "dispositivo inesistente"))?;
+    if src != "gps" { return Err(err(StatusCode::BAD_REQUEST, "i comandi valgono solo per i dispositivi GPS/badge")); }
+    Ok(ext)
+}
+
+/// Messa in servizio / fuori servizio di un badge GPS (mig 0128). È l'azione che AVVIA il
+/// conteggio del silenzio: da questo momento il watchdog protegge il lavoratore assegnato e, se il
+/// badge non trasmette entro la soglia (anche senza aver mai trasmesso), apre `perdita_contatto`.
+/// `in_servizio` richiede un lavoratore assegnato e il device abilitato.
+#[derive(Deserialize)] pub struct ServiceReq { pub state: String }
+pub async fn set_device_service(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<ServiceReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, DEVICE_MODS).await?;
+    require_cap(&s, "devices.manage")?;
+    if !matches!(b.state.as_str(), "in_servizio" | "in_attesa" | "fuori_servizio") {
+        return Err(err(StatusCode::BAD_REQUEST, "stato non valido (in_servizio, in_attesa, fuori_servizio)"));
+    }
+    let row = sqlx::query("SELECT source, assigned_user, COALESCE(enabled,true) AS enabled, service_state FROM app.devices WHERE id=$1 AND tenant_id=$2")
+        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "dispositivo inesistente"))?;
+    if row.get::<String,_>("source") != "gps" {
+        return Err(err(StatusCode::BAD_REQUEST, "la messa in servizio vale solo per i dispositivi GPS/badge"));
+    }
+    if b.state == "in_servizio" {
+        if row.try_get::<Option<Uuid>,_>("assigned_user").ok().flatten().is_none() {
+            return Err(err(StatusCode::BAD_REQUEST, "assegna prima il dispositivo a un lavoratore: un badge in servizio protegge chi lo porta"));
+        }
+        if !row.get::<bool,_>("enabled") {
+            return Err(err(StatusCode::BAD_REQUEST, "il dispositivo è disabilitato: abilitalo prima di metterlo in servizio"));
+        }
+    }
+    let prev: String = row.get("service_state");
+    // la messa in servizio arma il conteggio con l'orologio dell'applicazione (st.clock)
+    let out = sqlx::query("UPDATE app.devices SET service_state=$3, updated_at=now(),
+            silence_armed_at=CASE WHEN $3='in_servizio' AND service_state<>'in_servizio' THEN $4 ELSE silence_armed_at END
+          WHERE id=$1 AND tenant_id=$2 RETURNING service_state, silence_armed_at")
+        .bind(id).bind(tid).bind(&b.state).bind(st.clock.now()).fetch_one(&st.owner_pool).await.map_err(ise)?;
+    audit(&st, tid, &s.email, "device_service", json!({"device":id,"from":prev,"to":b.state})).await;
+    Ok(Json(json!({"ok":true,"service_state":out.get::<String,_>("service_state"),
+        "silence_armed_at":out.try_get::<chrono::DateTime<chrono::Utc>,_>("silence_armed_at").ok()})))
 }
 
 /// Comandi rapidi disponibili (per la UI).
@@ -5380,6 +5446,8 @@ pub fn etype_label(e: &str) -> &'static str {
         "perdita_alimentazione" => "Perdita alimentazione",
         "jamming" => "Jamming / disturbo del segnale",
         "perdita_contatto" => "Perdita contatto (badge silente)",
+        // storico: prodotto dal vecchio collegamento a Traccar (dismesso, vedi mig 0127)
+        "traccar_conn_down" => "Server di tracciamento esterno irraggiungibile (storico)",
         "batteria_critica" => "Batteria in esaurimento (critico)",
         "batteria_bassa" => "Batteria bassa",
         "geofence_ingresso" => "Ingresso in zona vietata (geofence)",
@@ -5828,10 +5896,10 @@ pub async fn ingest_gps_position(
     let cred = resolve_ingest_token(&st, &token).await
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "bad ingest token"))?;
     let tid = cred.tenant_id;
-    if !module_active(&st, tid, "iot").await {
-        return Err(err(StatusCode::FORBIDDEN, "modulo IoT non abilitato"));
+    if !any_device_module(&st, tid).await {
+        return Err(err(StatusCode::FORBIDDEN, "nessun modulo dispositivi attivo"));
     }
-    let pos = b.get("position").or(Some(&b)).unwrap();
+    let pos = b.get("position").or(Some(&b)).unwrap_or(&b);
     let dev = b.get("device");
     // Fase A: token device-bound -> external_id forzato (il payload non può spacciarsi per un altro device).
     let bound_ext = match cred.device_id { Some(did) => bound_device_external(&st, did).await, None => None };
@@ -5872,6 +5940,9 @@ pub async fn ingest_osmand(
         Some(did) => sqlx::query_scalar("SELECT source FROM app.devices WHERE id=$1").bind(did).fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_else(|| "gps".into()),
         None => "gps".into(),
     };
+    // presenza: il pacchetto è autenticato -> il device è vivo, con o senza fix GPS. Alimenta il
+    // watchdog del silenzio (che misura l'ultimo CONTATTO, non l'ultima posizione).
+    touch_device_seen(&st, tid, &dev_source, &ext).await;
     let getf = |keys: &[&str]| -> Option<f64> { for k in keys { if let Some(v)=q.get(*k){ if let Ok(x)=v.parse::<f64>(){ return Some(x); } } } None };
     let lat = getf(&["lat","latitude"]); let lon = getf(&["lon","longitude"]);
     let battery = getf(&["batt","battery","batteryLevel"]);
@@ -6302,13 +6373,18 @@ pub async fn iot_command_post(State(st): State<AppState>, h: HeaderMap, Path(dev
     let drow = sqlx::query("SELECT source,external_id FROM app.devices WHERE id=$1").bind(dev).fetch_optional(&mut *tx).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::NOT_FOUND,"device inesistente"))?;
     let (src, ext): (String, String) = (drow.get("source"), drow.try_get::<String,_>("external_id").unwrap_or_default());
+    // un device GPS riceve il metodo come comando GPRS grezzo: stesso permesso del comando libero
+    if src == "gps" && !has_cap(&s, "devices.admin") {
+        return Err(err(StatusCode::FORBIDDEN, "i comandi verso dispositivi GPS richiedono l'amministrazione dispositivi"));
+    }
     let id: Uuid = sqlx::query_scalar("INSERT INTO app.iot_commands(tenant_id,device_id,method,params,created_by) VALUES($1,$2,$3,$4,$5) RETURNING id")
         .bind(tid).bind(dev).bind(b.method.trim()).bind(&b.params).bind(s.user_id).fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    // consegna immediata se il device è su edge Teltonika; altrimenti resta in coda (il device fa pull)
+    // consegna immediata se il device è sul bridge Teltonika (source gps) di QUESTO tenant;
+    // altrimenti resta in coda (il device fa pull)
     let mut status="pending"; let mut result: Option<String> = None;
-    if src=="teltonika" && !ext.is_empty() {
-        match crate::teltonika::send_command(&ext, b.method.trim()).await {
+    if src=="gps" && !ext.is_empty() {
+        match crate::teltonika::send_command(tid, dev, &ext, b.method.trim()).await {
             Ok(r)=>{ status="done"; result=Some(r); }, Err(e)=>{ status="error"; result=Some(e); }
         }
         let mut tx2 = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -6665,11 +6741,10 @@ pub async fn iot_monitor(State(st): State<AppState>, h: HeaderMap) -> R {
 pub async fn device_gprs_command(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<GprsCmdReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
     let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, DEVICE_MODS).await?;
     if b.command.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "comando vuoto")); }
-    let imei: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1 AND tenant_id=$2")
-        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
-    let imei = imei.ok_or_else(|| err(StatusCode::NOT_FOUND, "device inesistente"))?;
-    match crate::teltonika::send_command(&imei, b.command.trim()).await {
+    let imei = gps_device_external(&st, tid, id).await?;
+    match crate::teltonika::send_command(tid, id, &imei, b.command.trim()).await {
         Ok(resp) => { audit(&st, tid, &s.email, "gprs_command", json!({"device":id,"command":b.command})).await;
                       Ok(Json(json!({"ok":true,"response":resp}))) }
         Err(e) => Err(err(StatusCode::BAD_GATEWAY, &e)),
@@ -6678,11 +6753,39 @@ pub async fn device_gprs_command(State(st): State<AppState>, h: HeaderMap, Path(
 
 // ---- Teltonika edge nativo (Codec8/8E su TCP): helper d'ingest riusabili ----
 /// Risolve device+tenant+source dall'IMEI (= external_id). owner_pool (bypassa RLS).
-pub async fn teltonika_resolve(st: &AppState, imei: &str) -> Option<(Uuid, Uuid, String)> {
-    let row = sqlx::query("SELECT id, tenant_id, source FROM app.devices WHERE external_id=$1 LIMIT 1")
-        .bind(imei).fetch_optional(&st.owner_pool).await.ok().flatten()?;
-    Some((row.get::<Uuid,_>("tenant_id"), row.get::<Uuid,_>("id"),
-          row.try_get::<String,_>("source").unwrap_or_else(|_| "gps".into())))
+/// Esito della risoluzione IMEI -> device del bridge Teltonika.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImeiMatch {
+    /// Nessun device `gps` con quell'IMEI.
+    None,
+    /// Esattamente un device: (tenant, device, source).
+    One(Uuid, Uuid, String),
+    /// Stesso IMEI censito in N tenant: identità contesa, non si associa automaticamente.
+    Ambiguous(usize),
+}
+/// Decide l'esito dai candidati (tenant, device) trovati per un IMEI. Pura: testata in unità.
+pub fn imei_match_from(rows: &[(Uuid, Uuid)]) -> ImeiMatch {
+    match rows {
+        [] => ImeiMatch::None,
+        [(t, d)] => ImeiMatch::One(*t, *d, "gps".into()),
+        many => {
+            let mut ts: Vec<Uuid> = many.iter().map(|r| r.0).collect();
+            ts.sort(); ts.dedup();
+            ImeiMatch::Ambiguous(ts.len())
+        }
+    }
+}
+/// Il bridge TCP Teltonika serve SOLO i dispositivi del modulo `gps` (source='gps'). L'IMEI deve
+/// identificare UN SOLO device in tutto il sistema: sconosciuto o conteso tra tenant = rifiuto.
+/// Mai `LIMIT 1`: con un IMEI duplicato i dati (SOS compresi) finirebbero in un tenant a caso.
+pub async fn teltonika_resolve(st: &AppState, imei: &str) -> ImeiMatch {
+    let rows: Vec<(Uuid, Uuid)> = match sqlx::query_as(
+        "SELECT tenant_id, id FROM app.devices WHERE external_id=$1 AND source='gps' LIMIT 10")
+        .bind(imei).fetch_all(&st.owner_pool).await {
+        Ok(r) => r,
+        Err(e) => { tracing::warn!("teltonika_resolve {imei}: {e}"); return ImeiMatch::None; }
+    };
+    imei_match_from(&rows)
 }
 /// Mappa IO->allarme EFFETTIVA per un device Teltonika: default del MODELLO
 /// (device_models.default_config.io_alarm_map) con OVERRIDE per-tenant
@@ -7928,6 +8031,20 @@ async fn tool_enabled(st: &AppState, tid: Uuid, module: &str, tool: &str) -> boo
 /// Validate an incoming config object against a tool's JSON schema.
 /// Rejects unknown keys and out-of-range/enum-violating values. Returns a
 /// cleaned object containing only schema-declared keys.
+/// Salvataggio del form di uno strumento: il form è PROPRIETARIO dei campi dichiarati nello schema
+/// (un campo omesso viene rimosso e torna al default). Le chiavi NON dichiarate nello schema sono
+/// gestite da altri endpoint (es. `events` della policy eventi GPS, i flag mappa) e si preservano.
+pub(crate) fn merge_tool_form(schema: &Value, existing: Option<&Value>, clean: &Value) -> Value {
+    let declared: std::collections::HashSet<&str> = schema.get("fields").and_then(|f| f.as_array())
+        .map(|a| a.iter().filter_map(|f| f.get("key").and_then(|k| k.as_str())).collect()).unwrap_or_default();
+    let mut out = serde_json::Map::new();
+    if let Some(Value::Object(prev)) = existing {
+        for (k, v) in prev { if !declared.contains(k.as_str()) { out.insert(k.clone(), v.clone()); } }
+    }
+    if let Value::Object(form) = clean { for (k, v) in form { out.insert(k.clone(), v.clone()); } }
+    Value::Object(out)
+}
+
 fn validate_config(schema: &Value, input: &Value) -> Result<Value, String> {
     let fields = schema.get("fields").and_then(|f| f.as_array()).cloned().unwrap_or_default();
     let inobj = input.as_object().ok_or_else(|| "config must be an object".to_string())?;
@@ -8009,19 +8126,22 @@ pub async fn set_module_tool(State(st): State<AppState>, h: HeaderMap, Path((cod
     }
     let clean = validate_config(&schema, &b.config).map_err(|m| err(StatusCode::BAD_REQUEST, &m))?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let existing: Option<Value> = sqlx::query_scalar(
+        "SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code=$2 AND tool_code=$3 FOR UPDATE")
+        .bind(tid).bind(&code).bind(&tool).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let stored = merge_tool_form(&schema, existing.as_ref(), &clean);
     sqlx::query(
         "INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by)
          VALUES($1,$2,$3,$4,$5)
          ON CONFLICT (tenant_id,module_code,tool_code)
-         -- merge: i campi del form sovrascrivono, le chiavi gestite altrove (es. la policy eventi
-         -- `events` del tool gps/alarm_map) restano intatte
-         DO UPDATE SET config=app.tenant_module_config.config || EXCLUDED.config, updated_by=EXCLUDED.updated_by, updated_at=now()")
-        .bind(tid).bind(&code).bind(&tool).bind(&clean).bind(s.user_id)
+         DO UPDATE SET config=EXCLUDED.config, updated_by=EXCLUDED.updated_by, updated_at=now()")
+        .bind(tid).bind(&code).bind(&tool).bind(&stored).bind(s.user_id)
         .execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES($1,$2,'set_tool_config',$3)")
         .bind(tid).bind(&s.email).bind(json!({"module":code,"tool":tool})).execute(&st.owner_pool).await.map_err(ise)?;
-    Ok(Json(json!({"ok":true,"config":clean})))
+    // si restituisce ciò che è stato davvero salvato
+    Ok(Json(json!({"ok":true,"config":stored})))
 }
 
 // ---- superadmin: list tool availability for a tenant ----
@@ -12143,4 +12263,53 @@ pub async fn twilio_ingress_voice(State(st): State<AppState>, h: HeaderMap, axum
         return twiml("<Response><Say language=\"it-IT\">Recapito disattivato. Riattivalo da YouWorkforce.</Say></Response>");
     }
     twiml("<Response><Say language=\"it-IT\">Tasto non valido.</Say></Response>")
+}
+
+#[cfg(test)]
+mod device_identity_tests {
+    use super::*;
+
+    fn u(n: u128) -> Uuid { Uuid::from_u128(n) }
+
+    #[test]
+    fn imei_unknown_is_none() {
+        assert_eq!(imei_match_from(&[]), ImeiMatch::None);
+    }
+
+    #[test]
+    fn imei_single_device_is_accepted() {
+        assert_eq!(imei_match_from(&[(u(1), u(10))]), ImeiMatch::One(u(1), u(10), "gps".into()));
+    }
+
+    #[test]
+    fn imei_in_two_tenants_is_ambiguous_never_first_row() {
+        // l'ordine delle righe non deve decidere a chi vanno dati e SOS
+        assert_eq!(imei_match_from(&[(u(1), u(10)), (u(2), u(20))]), ImeiMatch::Ambiguous(2));
+        assert_eq!(imei_match_from(&[(u(2), u(20)), (u(1), u(10))]), ImeiMatch::Ambiguous(2));
+        assert_eq!(imei_match_from(&[(u(1), u(10)), (u(2), u(20)), (u(2), u(21))]), ImeiMatch::Ambiguous(2));
+    }
+
+    fn schema() -> Value {
+        json!({"fields":[{"key":"silence_after_s","type":"int"},{"key":"sos_as","type":"enum"}]})
+    }
+
+    #[test]
+    fn tool_form_omitted_field_falls_back_to_default() {
+        let prev = json!({"silence_after_s": 120, "sos_as": "sos"});
+        let out = merge_tool_form(&schema(), Some(&prev), &json!({"sos_as": "man_down"}));
+        assert_eq!(out, json!({"sos_as": "man_down"}), "campo dello schema omesso = rimosso (torna al default)");
+    }
+
+    #[test]
+    fn tool_form_preserves_keys_managed_elsewhere() {
+        let prev = json!({"silence_after_s": 120, "events": {"deviceOverspeed": "critico"}, "view_mappa": "si"});
+        let out = merge_tool_form(&schema(), Some(&prev), &json!({"silence_after_s": 300}));
+        assert_eq!(out, json!({"silence_after_s": 300, "events": {"deviceOverspeed": "critico"}, "view_mappa": "si"}));
+    }
+
+    #[test]
+    fn tool_form_first_save_without_existing_row() {
+        let out = merge_tool_form(&schema(), None, &json!({"silence_after_s": 0}));
+        assert_eq!(out, json!({"silence_after_s": 0}));
+    }
 }

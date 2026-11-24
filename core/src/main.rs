@@ -400,6 +400,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/devices/:id/positions", get(api::list_device_positions))
         .route("/api/geocode/reverse", get(api::reverse_geocode))
         .route("/api/devices/:id/command", post(api::device_command))
+        .route("/api/devices/:id/service", post(api::set_device_service))
         .route("/api/devices/:id/commands", get(api::list_device_commands))
         .route("/api/devices/:id/command-types", get(api::device_command_types))
         .route("/api/geofences", get(api::list_geofences).post(api::create_geofence))

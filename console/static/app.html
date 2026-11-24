@@ -1035,7 +1035,7 @@ const ALARM_ETYPES=['sos','man_down','immobilita','mancato_checkin','sensore_cri
   'perdita_alimentazione','jamming','perdita_contatto','batteria_critica','batteria_bassa'];
 const ETYPE_LAB={sos:'SOS / richiesta soccorso',man_down:'Uomo a terra (man down)',immobilita:'Immobilità prolungata',
   mancato_checkin:'Check-in mancato',sensore_critico:'Sensore critico',manomissione_badge:'Manomissione / rimozione badge',
-  perdita_alimentazione:'Perdita alimentazione',jamming:'Jamming / disturbo segnale',perdita_contatto:'Perdita contatto (badge silente)',
+  perdita_alimentazione:'Perdita alimentazione',jamming:'Jamming / disturbo segnale',perdita_contatto:'Perdita contatto (badge silente)',traccar_conn_down:'Server di tracciamento esterno irraggiungibile (storico)',
   batteria_critica:'Batteria in esaurimento (critico)',batteria_bassa:'Batteria bassa',
   ingresso_sito:'Ingresso in sito',uscita_sito:'Uscita dal sito',
   geofence_ingresso:'Ingresso in zona vietata (geofence)',geofence_uscita:'Uscita da area sicura (geofence)',
@@ -3176,6 +3176,9 @@ async function saveToolConfig(code,tool,btn){
   const card=btn.closest('[data-tool]'); const cfg={};
   card.querySelectorAll('input,select').forEach(i=>{
     const key=i.id.split('_').slice(3).join('_');
+    // campo lasciato vuoto = omesso: torna al valore predefinito (mai 0 implicito: per alcune
+    // soglie 0 significa "disattivato")
+    if(String(i.value).trim()==='') return;
     cfg[key]= i.type==='number' ? Number(i.value) : i.value;
   });
   const msg=card.querySelector('.cfg-msg'); msg.textContent='…'; msg.style.color='var(--mut)';
@@ -3631,6 +3634,7 @@ function devEdit(d){
     <label class="row" style="gap:var(--s-8)"><input type="checkbox" id="dEn" ${d.enabled?'checked':''}> <span>Abilitato</span></label>
     <div class="row" style="gap:var(--s-8);margin-top:var(--s-8)"><button class="btn grow" onclick="devSave('${d.id||''}')">Salva</button>
       ${d.id?`<button class="btn ghost" onclick="devDel('${d.id}')">Elimina</button>`:''}</div>
+    ${(!isNew && d.source==='gps')?devServiceCard(d):''}
     ${(!isNew && d.source==='gps')?`<div class="card pad" style="margin-top:var(--s-8)">
        <div class="spread"><b class="small">Comandi al dispositivo</b>${devOnlineChip(d)}</div>
        <div class="small mut" style="margin-top:var(--s-4)">Il dispositivo deve essere collegato in questo momento.</div>
@@ -3734,11 +3738,43 @@ async function devTestSos(id){ if(!await askConfirm('Inviare un SOS di PROVA? Pe
   try{ const r=await api('/devices/'+id+'/test-sos',{method:'POST'}); toast('SOS di prova inviato ('+r.correlation+')','ok'); setTimeout(()=>devReadiness(id),800); }
   catch(e){ toast(e.message,'bad'); } }
 // Stato collegamento leggibile: in linea se l'ultimo contatto è recente (< 15 min).
+// Stato di servizio (mig 0128): è la MESSA IN SERVIZIO che avvia il controllo del silenzio.
+const SERVICE_LABELS={in_servizio:'In servizio',in_attesa:'In attesa di messa in servizio',fuori_servizio:'Fuori servizio'};
+function devServiceCard(d){
+  const st=d.service_state||'in_attesa', on=st==='in_servizio';
+  const lim=Number.isFinite(+d.silence_after_s)?+d.silence_after_s:600;
+  const expl=on
+    ? `Il badge protegge ${esc(d.user_email||'il lavoratore assegnato')}: se non trasmette per ${lim>0?Math.round(lim/60)+' minuti':'— (controllo disattivato)'} si apre l'allarme <b>Perdita di contatto</b>, anche se non si è mai collegato. Il conteggio è partito il ${d.silence_armed_at?new Date(d.silence_armed_at).toLocaleString('it-IT'):'—'} (messa in servizio o ultimo passaggio di consegne).`
+    : st==='fuori_servizio'
+      ? 'Ritirato (guasto, magazzino o disabilitato): resta visibile, ma non genera allarmi di silenzio.'
+      : 'Censito ma non ancora in servizio: resta visibile e non genera allarmi di silenzio. Mettilo in servizio quando lo consegni acceso al lavoratore: da quel momento parte il controllo.';
+  const btns=on
+    ? `<button class="btn ghost small" onclick="devService('${d.id}','fuori_servizio')">Metti fuori servizio</button>`
+    : `<button class="btn small" onclick="devService('${d.id}','in_servizio')" ${d.assigned_user?'':'disabled title="assegna prima un lavoratore"'}>Metti in servizio</button>
+       ${st!=='fuori_servizio'?`<button class="btn ghost small" onclick="devService('${d.id}','fuori_servizio')">Fuori servizio</button>`:''}`;
+  return `<div class="card pad" style="margin-top:var(--s-8)">
+    <div class="spread"><b class="small">Servizio e controllo del silenzio</b><span class="chip ${on?'s-attivo':''}">${SERVICE_LABELS[st]||esc(st)}</span></div>
+    <div class="small mut" style="margin-top:var(--s-4)">${expl}</div>
+    <div class="row" style="gap:var(--s-8);margin-top:var(--s-8);flex-wrap:wrap">${btns}</div></div>`;
+}
+async function devService(id,state){
+  const msg=state==='in_servizio'
+    ? 'Mettere in servizio il badge? Da adesso, se non trasmette entro la soglia, si apre un allarme Perdita di contatto con escalation.'
+    : 'Mettere il badge fuori servizio? Smette di generare allarmi di silenzio per il lavoratore assegnato.';
+  if(!await askConfirm(msg)) return;
+  try{ await api('/devices/'+id+'/service',{method:'POST',body:JSON.stringify({state})});
+    toast(SERVICE_LABELS[state],'ok'); closeDrawer(); route(); }catch(e){ toast(e.message,'bad'); } }
+// Stessa regola del watchdog del silenzio: soglia silence_after_s del tenant (0 = controllo spento).
 function devOnlineChip(d){
-  if(!d.last_seen_at) return '<span class="chip">mai collegato</span>';
-  const min=Math.round((Date.now()-new Date(d.last_seen_at).getTime())/60000);
-  return min<15 ? '<span class="chip s-attivo">in linea</span>'
-    : `<span class="chip s-critico" title="ultimo contatto ${new Date(d.last_seen_at).toLocaleString('it-IT')}">silenzioso da ${min<120?min+' min':Math.round(min/60)+' h'}</span>`; }
+  if(d.service_state&&d.service_state!=='in_servizio') return `<span class="chip" title="non monitorato">${SERVICE_LABELS[d.service_state]||esc(d.service_state)}</span>`;
+  if(!d.last_seen_at) return '<span class="chip s-critico" title="in servizio: allarme alla soglia se non si collega">in servizio · mai collegato</span>';
+  const secs=(Date.now()-new Date(d.last_seen_at).getTime())/1000;
+  const lim=Number.isFinite(+d.silence_after_s)?+d.silence_after_s:600;
+  const when=new Date(d.last_seen_at).toLocaleString('it-IT');
+  const min=Math.round(secs/60), dur=min<120?min+' min':Math.round(min/60)+' h';
+  if(lim<=0) return `<span class="chip" title="controllo del silenzio disattivato · ultimo contatto ${when}">ultimo contatto ${dur} fa</span>`;
+  return secs<=lim ? `<span class="chip s-attivo" title="ultimo contatto ${when}">in linea</span>`
+    : `<span class="chip s-critico" title="ultimo contatto ${when} · soglia ${Math.round(lim/60)} min">silenzioso da ${dur}</span>`; }
 async function devCmd(id,type){ const m=$('#cmdMsg'); if(m){m.textContent='invio…';m.style.color='var(--mut)';}
   try{ const r=await api('/devices/'+id+'/command',{method:'POST',body:JSON.stringify({type})});
     if(m){ m.textContent = r.ok ? 'Comando inviato'+(r.response?' · risposta: '+r.response:'') : r.result; m.style.color = r.ok?'var(--ok,green)':'var(--bad)'; }
@@ -3770,13 +3806,17 @@ function _repRange(){ const to=new Date(); const from=new Date(Date.now()-7*864e
   return {from:from.toISOString().slice(0,19)+'Z', to:to.toISOString().slice(0,19)+'Z'}; }
 async function devReport(id,kind){ const out=$('#devRepOut'); if(!out)return; out.innerHTML='<span class="mut">Carico…</span>';
   const r=_repRange();
-  try{ const d=await api('/devices/'+id+'/report/'+kind+'?from='+r.from+'&to='+r.to);
+  try{ const env=await api('/devices/'+id+'/report/'+kind+'?from='+r.from+'&to='+r.to+'&envelope=1');
+    // risultato parziale: troppe posizioni nell'intervallo, i calcoli si fermano a covered_until
+    const warn=env.partial?`<div class="card pad" style="border-color:var(--bad);margin-bottom:var(--s-8)"><b style="color:var(--bad)">⚠ Risultato parziale</b>
+      <div class="small">Nell'intervallo ci sono più di ${env.max_points} posizioni: i dati coprono solo fino a ${env.covered_until?new Date(env.covered_until).toLocaleString('it-IT'):'—'}. Distanze, tragitti e soste sono incompleti. Riduci l'intervallo.</div></div>`:'';
+    const d=kind==='summary'?(env.summary||{}):env.items;
     if(kind==='summary'){
       if(!d.points){ out.innerHTML='<span class="mut">Nessuna posizione negli ultimi 7 giorni.</span>'; return; }
-      out.innerHTML=`<div>Distanza: <b>${(d.distance_m/1000).toFixed(1)} km</b> · in movimento ${Math.round(d.moving_s/60)} min · velocità media ${d.avg_moving_kmh} km/h · massima ${d.max_kmh} km/h · ${d.trips} tragitti · ${d.stops} soste</div>`; return; }
+      out.innerHTML=warn+`<div>Distanza: <b>${(d.distance_m/1000).toFixed(1)} km</b> · in movimento ${Math.round(d.moving_s/60)} min · velocità media ${d.avg_moving_kmh} km/h · massima ${d.max_kmh} km/h · ${d.trips} tragitti · ${d.stops} soste</div>`; return; }
     const arr=Array.isArray(d)?d:[];
     if(!arr.length){ out.innerHTML='<span class="mut">Nessun dato negli ultimi 7 giorni.</span>'; return; }
-    out.innerHTML='<table class="table" data-export="report-'+kind+'"><thead><tr><th>Inizio</th><th>Fine</th><th>'+(kind==='trips'?'Distanza':'Durata')+'</th></tr></thead><tbody>'+
+    out.innerHTML=warn+'<table class="table" data-export="report-'+kind+'"><thead><tr><th>Inizio</th><th>Fine</th><th>'+(kind==='trips'?'Distanza':'Durata')+'</th></tr></thead><tbody>'+
       arr.slice(0,20).map(t=>`<tr><td>${new Date(t.start).toLocaleString('it-IT')}</td><td>${new Date(t.end).toLocaleString('it-IT')}</td><td>${kind==='trips'?((t.distance_m/1000).toFixed(1)+' km'):(Math.round((t.duration_s||0)/60)+' min')}</td></tr>`).join('')+'</tbody></table>';
   }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; } }
 function devReportCsv(id,kind){ const r=_repRange();
@@ -3836,14 +3876,19 @@ async function vConnettori(v){
   const silence=+(amap.silence_after_s??600);
   const gpsDev=(DV||[]).filter(d=>d.source==='gps');
   const assigned=gpsDev.filter(d=>d.assigned_user);
-  const silent=assigned.filter(d=>d.last_seen_at && (Date.now()-new Date(d.last_seen_at).getTime())/1000>silence);
+  // monitorati = in servizio; il silenzio si conta dall'ultimo contatto o dalla messa in servizio
+  const monitored=gpsDev.filter(d=>d.service_state==='in_servizio');
+  const ref=d=>Math.max(d.last_seen_at?new Date(d.last_seen_at).getTime():0, d.silence_armed_at?new Date(d.silence_armed_at).getTime():0);
+  const silent=silence>0?monitored.filter(d=>(Date.now()-ref(d))/1000>silence):[];
+  const waiting=assigned.filter(d=>d.service_state!=='in_servizio');
   v.innerHTML=`<div class="page-h"><div><h1>Collegamento dispositivi</h1><div class="mut">come i dispositivi inviano dati a YouWorkforce, quando un silenzio diventa allarme e le chiavi di collegamento</div></div></div>
   ${gpsOn?`<div class="card pad" style="margin-bottom:var(--s-14)">
     <div class="spread"><b>Dispositivi GPS e badge</b><span class="chip ${silent.length?'s-critico':'s-attivo'}">${silent.length?silent.length+' silenziosi':'tutti in contatto'}</span></div>
     <div class="row" style="gap:var(--s-18);margin-top:var(--s-10);flex-wrap:wrap">
-      <div><div class="small mut">Dispositivi assegnati</div><b>${assigned.length}</b></div>
+      <div><div class="small mut">In servizio (monitorati)</div><b>${monitored.length}</b></div>
+      <div><div class="small mut">Assegnati non in servizio</div><b>${waiting.length}</b></div>
       <div><div class="small mut">Allarme se silenzioso da</div><b>${silence>0?Math.round(silence/60)+' min':'disattivato'}</b></div></div>
-    <div class="small mut" style="margin-top:var(--s-8)">Un dispositivo assegnato a un lavoratore che smette di trasmettere (spento, scarico, senza copertura) apre un allarme <b>Perdita di contatto</b> con escalation.</div>
+    <div class="small mut" style="margin-top:var(--s-8)">Un badge <b>in servizio</b> che smette di trasmettere (spento, scarico, senza copertura) o che non si collega dopo la messa in servizio apre un allarme <b>Perdita di contatto</b> con escalation. I badge in attesa di messa in servizio o fuori servizio restano visibili ma non generano allarmi.</div>
     <div class="small" style="margin-top:var(--s-10)"><b>Come si collegano</b></div>
     <ul class="small mut" style="margin:var(--s-4) 0 0 var(--s-16)">
       <li>Teltonika (GH-5200, FMB, TMT…): server <span class="mono">${esc(host)}</span>, porta TCP <span class="mono">5027</span>. Il dispositivo si riconosce dall'IMEI, nessuna chiave da copiare.</li>

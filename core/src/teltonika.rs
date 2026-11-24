@@ -1,7 +1,7 @@
 // Edge nativo Teltonika — server TCP Codec8 / Codec8 Extended (0x08 / 0x8E).
 // Decode-edge nativo: il device parla il protocollo binario diretto con YouWorkforce.
-// Handshake IMEI -> accept (0x01) solo se l'IMEI = external_id di un device noto con un modulo
-// dispositivi attivo; poi decodifica i pacchetti AVL e li immette nella pipeline nativa
+// Handshake IMEI -> accept (0x01) solo se l'IMEI = external_id di UN SOLO device `gps` (in tutto
+// il sistema) con un modulo dispositivi attivo; IMEI ambiguo (in più tenant) = rifiutato; poi decodifica i pacchetti AVL e li immette nella pipeline nativa
 // (api::teltonika_ingest_one). Identità = IMEI (il protocollo non porta token): accettiamo solo
 // IMEI censiti. Rispondiamo con il numero di record accettati come da specifica.
 
@@ -13,10 +13,28 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{mpsc, oneshot};
 
 // ---- Registry connessioni attive (per inviare comandi GPRS codec12 al device) ----
-struct Conn { cmd: mpsc::UnboundedSender<Vec<u8>>, pending: Arc<Mutex<Option<oneshot::Sender<String>>>> }
-fn registry() -> &'static Mutex<HashMap<String, Conn>> {
-    static R: OnceLock<Mutex<HashMap<String, Conn>>> = OnceLock::new();
+// ISOLAMENTO TENANT: la chiave è (tenant, IMEI), mai il solo IMEI. Un comando parte solo verso la
+// connessione che l'handshake ha associato a QUEL tenant: un altro tenant che registra lo stesso
+// IMEI non può raggiungere il socket. `conn_id` distingue le riconnessioni (la chiusura di una
+// connessione vecchia non deve cancellare quella nuova). `send_lock` serializza i comandi sulla
+// stessa connessione, così una risposta non viene mai consegnata al chiamante sbagliato.
+type RegKey = (uuid::Uuid, String);
+struct Conn {
+    conn_id: u64,
+    /// device risolto all'handshake: un invio verso un device diverso (cancellato e ricreato,
+    /// spostato di tenant) non usa questa connessione
+    device_id: uuid::Uuid,
+    cmd: mpsc::UnboundedSender<Vec<u8>>,
+    pending: Arc<Mutex<Option<oneshot::Sender<String>>>>,
+    send_lock: Arc<tokio::sync::Mutex<()>>,
+}
+fn registry() -> &'static Mutex<HashMap<RegKey, Conn>> {
+    static R: OnceLock<Mutex<HashMap<RegKey, Conn>>> = OnceLock::new();
     R.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn next_conn_id() -> u64 {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// CRC-16/IBM (poly 0xA001) sul data field, come richiesto dal protocollo Teltonika.
@@ -38,18 +56,34 @@ fn encode_command(cmd: &str) -> Vec<u8> {
     pkt.extend_from_slice(&(crc16(&inner) as u32).to_be_bytes());
     pkt
 }
-/// Invia un comando GPRS a un device connesso (per IMEI) e attende la risposta (max 5s).
-pub async fn send_command(imei: &str, cmd: &str) -> Result<String, String> {
-    let (tx, rx) = oneshot::channel();
-    {
+/// Invia un comando GPRS al device `device_id` (tenant, IMEI) connesso e attende la risposta (max 5s).
+/// Titolarità CORRENTE: la connessione deve appartenere a quel tenant E a quel device (risolti
+/// all'handshake e ricontrollati a ogni pacchetto dal lettore); altrimenti "device non connesso".
+pub async fn send_command(tid: uuid::Uuid, device_id: uuid::Uuid, imei: &str, cmd: &str) -> Result<String, String> {
+    let key: RegKey = (tid, imei.to_string());
+    let (conn_id, tx_cmd, pending, lock) = {
         let reg = registry().lock().unwrap();
-        let conn = reg.get(imei).ok_or_else(|| "device non connesso".to_string())?;
-        *conn.pending.lock().unwrap() = Some(tx);
-        conn.cmd.send(encode_command(cmd)).map_err(|_| "connessione chiusa".to_string())?;
+        let conn = reg.get(&key).filter(|c| c.device_id == device_id)
+            .ok_or_else(|| "device non connesso".to_string())?;
+        (conn.conn_id, conn.cmd.clone(), conn.pending.clone(), conn.send_lock.clone())
+    };
+    // un comando alla volta per connessione: lo slot di risposta è unico
+    let _guard = match tokio::time::timeout(std::time::Duration::from_secs(10), lock.lock_owned()).await {
+        Ok(g) => g,
+        Err(_) => return Err("dispositivo occupato con un altro comando".to_string()),
+    };
+    // la connessione potrebbe essere cambiata mentre si attendeva il turno
+    let still = registry().lock().unwrap().get(&key).map(|c| c.conn_id) == Some(conn_id);
+    if !still { return Err("device non connesso".to_string()); }
+    let (tx, rx) = oneshot::channel();
+    *pending.lock().unwrap() = Some(tx);
+    if tx_cmd.send(encode_command(cmd)).is_err() {
+        *pending.lock().unwrap() = None;
+        return Err("connessione chiusa".to_string());
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
         Ok(Ok(resp)) => Ok(resp),
-        _ => Err("nessuna risposta dal device entro 5s".to_string()),
+        _ => { *pending.lock().unwrap() = None; Err("nessuna risposta dal device entro 5s".to_string()) }
     }
 }
 /// Parsa una risposta codec12 (type 0x06): ritorna il testo.
@@ -96,9 +130,15 @@ async fn handle(st: AppState, mut sock: TcpStream) -> std::io::Result<()> {
     sock.read_exact(&mut imei_buf).await?;
     let imei = String::from_utf8_lossy(&imei_buf).trim().to_string();
 
-    let resolved = crate::api::teltonika_resolve(&st, &imei).await;
-    let (tid, did, source) = match resolved {
-        Some(x) if crate::api::any_device_module(&st, x.0).await => x,
+    // Identità: IMEI -> UN SOLO device `gps` in tutto il sistema. Sconosciuto o AMBIGUO (stesso
+    // IMEI in più tenant) = rifiutato: non si associa mai automaticamente un'identità contesa.
+    let (tid, did, source) = match crate::api::teltonika_resolve(&st, &imei).await {
+        crate::api::ImeiMatch::One(t, d, s) if crate::api::any_device_module(&st, t).await => (t, d, s),
+        crate::api::ImeiMatch::Ambiguous(n) => {
+            let _ = sock.write_all(&[0x00]).await;
+            tracing::warn!("teltonika: IMEI {imei} RIFIUTATO: registrato in {n} tenant (identità ambigua)");
+            return Ok(());
+        }
         _ => { let _ = sock.write_all(&[0x00]).await; tracing::debug!("teltonika: IMEI {imei} rifiutato"); return Ok(()); }
     };
     // mappa IO->allarme del modello+tenant risolta UNA volta per connessione (salva-vita configurabile)
@@ -111,9 +151,12 @@ async fn handle(st: AppState, mut sock: TcpStream) -> std::io::Result<()> {
     let (mut rd, mut wr) = sock.into_split();
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let pending: Arc<Mutex<Option<oneshot::Sender<String>>>> = Arc::new(Mutex::new(None));
-    registry().lock().unwrap().insert(imei.clone(), Conn{ cmd: cmd_tx, pending: pending.clone() });
+    let conn_id = next_conn_id();
+    let key: RegKey = (tid, imei.clone());
+    registry().lock().unwrap().insert(key.clone(), Conn{ conn_id, device_id: did, cmd: cmd_tx.clone(), pending: pending.clone(),
+        send_lock: Arc::new(tokio::sync::Mutex::new(())) });
 
-    // writer task: scrive sul socket i comandi in coda
+    // writer task: scrive sul socket i comandi in coda e gli ACK dei record
     let writer = tokio::spawn(async move {
         while let Some(bytes) = cmd_rx.recv().await {
             if wr.write_all(&bytes).await.is_err() { break; }
@@ -121,15 +164,21 @@ async fn handle(st: AppState, mut sock: TcpStream) -> std::io::Result<()> {
     });
 
     // reader loop: AVL (ingest) + risposte comando (codec12 type 0x06 -> fulfill pending)
-    let res = read_loop(&st, tid, &imei, &source, &io_alarm_map, &pending, &mut rd).await;
-    registry().lock().unwrap().remove(&imei);
+    let res = read_loop(&st, tid, did, &imei, &source, &io_alarm_map, &pending, &cmd_tx, &mut rd).await;
+    {
+        // rimuove SOLO la propria voce: una riconnessione più recente resta registrata
+        let mut reg = registry().lock().unwrap();
+        if reg.get(&key).map(|c| c.conn_id) == Some(conn_id) { reg.remove(&key); }
+    }
     writer.abort();
     res
 }
 
-async fn read_loop(st: &AppState, tid: uuid::Uuid, imei: &str, source: &str,
+#[allow(clippy::too_many_arguments)]
+async fn read_loop(st: &AppState, tid: uuid::Uuid, did: uuid::Uuid, imei: &str, source: &str,
     io_alarm_map: &HashMap<i64,String>,
     pending: &Arc<Mutex<Option<oneshot::Sender<String>>>>,
+    ack_tx: &mpsc::UnboundedSender<Vec<u8>>,
     rd: &mut tokio::net::tcp::OwnedReadHalf) -> std::io::Result<()> {
     loop {
         let mut head = [0u8; 8];
@@ -146,6 +195,15 @@ async fn read_loop(st: &AppState, tid: uuid::Uuid, imei: &str, source: &str,
             }
             continue;
         }
+        // TITOLARITÀ CORRENTE prima di ingerire: se nel frattempo il device è stato cancellato,
+        // spostato in un altro tenant o l'IMEI è diventato conteso, la connessione chiude senza
+        // ACK. Il badge riconnette e l'handshake lo associa al titolare attuale (o lo rifiuta):
+        // posizioni e SOS non finiscono mai al titolare precedente.
+        if !matches!(crate::api::teltonika_resolve(st, imei).await,
+                     crate::api::ImeiMatch::One(t, d, _) if t == tid && d == did) {
+            tracing::warn!("teltonika: IMEI {imei} non più del tenant {tid}: connessione chiusa");
+            return Ok(());
+        }
         match decode_avl(data) {
             Ok(records) => {
                 let n = records.len() as u32;
@@ -159,17 +217,13 @@ async fn read_loop(st: &AppState, tid: uuid::Uuid, imei: &str, source: &str,
                     crate::api::teltonika_ingest_one(st, tid, imei, source, &ts_rfc,
                         r.lat, r.lon, r.speed, r.course, r.battery, alarm, io_attrs).await;
                 }
-                // writer non è qui: l'ack va scritto dal reader? separiamo: scriviamo l'ack via canale
-                // tramite registry (stesso writer task).
-                if let Some(conn) = registry().lock().unwrap().get(imei) {
-                    let _ = conn.cmd.send(n.to_be_bytes().to_vec());
-                }
+                // ACK = numero record accettati, sul canale del PROPRIO writer (mai via registry:
+                // la voce potrebbe appartenere a una connessione più recente).
+                let _ = ack_tx.send(n.to_be_bytes().to_vec());
             }
             Err(e) => {
                 tracing::debug!("teltonika: decode errore ({e})");
-                if let Some(conn) = registry().lock().unwrap().get(imei) {
-                    let _ = conn.cmd.send(0u32.to_be_bytes().to_vec());
-                }
+                let _ = ack_tx.send(0u32.to_be_bytes().to_vec());
             }
         }
     }

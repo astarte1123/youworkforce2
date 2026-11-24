@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Modularità per-tenant: un modulo spento rifiuta anche i NUOVI ingress (contratto),
 # e il superadmin lo accende/spegne per tenant SENZA deploy, con effetto immediato.
-# Usa globex (loneworker attivo; iot spento).
+# Usa globex (loneworker attivo; iot spento). Contratto ingest dispositivi (/api/ingress/gps): basta
+# UN modulo dispositivi attivo (loneworker, gps o iot); senza nessuno -> 403.
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"
 PASS=0; FAIL=0
@@ -12,15 +13,11 @@ code(){ curl -s -o /dev/null -w "%{http_code}" "$@"; }
 TBPAY='{"temperature":96}'
 TRPAY='{"event":{"id":1,"type":"alarm","attributes":{"alarm":"sos"}},"device":{"uniqueId":"X-1"},"position":{"latitude":45,"longitude":9}}'
 
-echo "== ingress rispetta i moduli spenti (globex: iot OFF) =="
-C=$(code -X POST "$BASE/api/ingress/gps?token=globex-ingest-token" -H 'content-type: application/json' -d "$TRPAY")
-[ "$C" = "403" ] && ok "ingress JSON dispositivi su modulo spento -> 403" || no "ingress gated" "$C"
 # loneworker è attivo per globex: /api/events deve funzionare
 C=$(code -X POST "$BASE/api/events" -H 'content-type: application/json' -H 'x-ingest-token: globex-ingest-token' \
   -d "{\"etype\":\"sos\",\"source_event\":\"mod-$(date +%s)\",\"correlation\":\"mod-$(date +%s)\"}")
 [ "$C" = "200" ] && ok "ingress loneworker (modulo attivo) -> 200" || no "loneworker ingress" "$C"
 
-echo "== superadmin accende 'iot' per globex SENZA deploy (ingress nativo) =="
 S=$(mktemp)
 curl -s -o /dev/null -c "$S" -X POST "$BASE/api/superadmin/login" -H 'content-type: application/json' \
   -d '{"email":"admin@loneworker.eu","password":"admin"}'
@@ -28,6 +25,15 @@ CS=$(awk '$6=="yw_csrf"{print $7}' "$S" 2>/dev/null | tail -1)
 GID=$(curl -s -b "$S" "$BASE/api/superadmin/tenants" | python -c "import sys,json;print([t['id'] for t in json.load(sys.stdin) if t['slug']=='globex'][0])")
 sm(){ curl -s -o /dev/null -w "%{http_code}" -b "$S" -H 'content-type: application/json' -H "x-csrf-token: $CS" \
   -X POST "$BASE/api/superadmin/tenants/$GID/modules" -d "{\"module_code\":\"$1\",\"state\":\"$2\"}"; }
+LW_PREV=$(docker exec -i ywdb psql -U postgres -d youworkforce -tAc "SELECT COALESCE((SELECT state FROM app.tenant_modules WHERE tenant_id='$GID' AND module_code='loneworker'),'non_abilitato')" | tr -d '[:space:]')
+echo "== ingress rispetta i moduli spenti (globex: nessun modulo dispositivi) =="
+# precondizione via SQL: il superadmin non può spegnere loneworker con incidenti aperti (regola di
+# prodotto) e la suite ne ha appena creato uno; qui interessa solo il contratto dell'ingress.
+docker exec -i ywdb psql -U postgres -d youworkforce -tAc "UPDATE app.tenant_modules SET state='non_abilitato' WHERE tenant_id='$GID' AND module_code IN ('loneworker','gps','iot')" >/dev/null
+C=$(code -X POST "$BASE/api/ingress/gps?token=globex-ingest-token" -H 'content-type: application/json' -d "$TRPAY")
+[ "$C" = "403" ] && ok "ingress JSON dispositivi senza moduli dispositivi -> 403" || no "ingress gated" "$C"
+
+echo "== superadmin accende 'iot' per globex SENZA deploy (ingress nativo) =="
 R=$(sm iot attivo); [ "$R" = "200" ] && ok "set_module iot=attivo (globex)" || no "enable" "$R"
 
 # ora lo stesso ingress NON è più 403 (modulo attivo) -> crea l'incidente
@@ -38,6 +44,8 @@ echo "== rispegne 'iot' per globex =="
 R=$(sm iot non_abilitato); [ "$R" = "200" ] && ok "set_module iot=non_abilitato" || no "disable" "$R"
 C=$(code -X POST "$BASE/api/ingress/gps?token=globex-ingest-token" -H 'content-type: application/json' -d "$TRPAY")
 [ "$C" = "403" ] && ok "ingress JSON dispositivi di nuovo bloccato -> 403" || no "re-gated" "$C"
+# ripristino: loneworker com'era prima della suite
+docker exec -i ywdb psql -U postgres -d youworkforce -tAc "UPDATE app.tenant_modules SET state='$LW_PREV' WHERE tenant_id='$GID' AND module_code='loneworker'" >/dev/null
 
 echo "== isolamento: globex non vede un incidente specifico di acme (RLS) =="
 ISO="iso-acme-$(date +%s)-$RANDOM"

@@ -86,13 +86,15 @@ A "$BASE/api/devices/$DID/commands" | grep -q '"status_code":502' && ok "esito c
   && ok "comando sconosciuto -> 400" || no "validazione comando"
 
 # --- 5) watchdog del silenzio ------------------------------------------------------------------
-sql "UPDATE app.devices SET last_seen_at='2000-01-01T00:00:00Z' WHERE id='$DID'" >/dev/null
+# silenzio "vecchio" sia come ultimo contatto sia come armamento (0127: il watchdog conta da
+# GREATEST(last_seen_at, silence_armed_at), così un upgrade o una consegna non generano allarmi)
+sql "UPDATE app.devices SET service_state='in_servizio', last_seen_at='2000-01-01T00:00:00Z', silence_armed_at='2000-01-01T00:00:00Z' WHERE id='$DID'" >/dev/null
 WC=$(code -X POST "$BASE/api/_test/gps-silence-watchdog")
 if [ "$WC" = "200" ]; then
   code -X POST "$BASE/api/_test/gps-silence-watchdog" >/dev/null
   N=$(one "SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE e.device_id='$DID' AND i.etype='perdita_contatto'")
   [ "$N" = "1" ] && ok "device muto -> UN incidente perdita_contatto (nessun duplicato)" || no "watchdog silenzio" "n=$N"
-  sql "UPDATE app.devices SET assigned_user=NULL, last_seen_at='2000-01-02T00:00:00Z' WHERE id='$DID'" >/dev/null
+  sql "UPDATE app.devices SET assigned_user=NULL, last_seen_at='2000-01-02T00:00:00Z', silence_armed_at='2000-01-02T00:00:00Z' WHERE id='$DID'" >/dev/null
   code -X POST "$BASE/api/_test/gps-silence-watchdog" >/dev/null
   N2=$(one "SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE e.device_id='$DID' AND i.etype='perdita_contatto'")
   [ "$N2" = "1" ] && ok "device non assegnato: nessun allarme di silenzio" || no "watchdog su device non assegnato" "n=$N2"

@@ -49,19 +49,27 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
 // Sicurezza: un badge/tracker che smette di trasmettere (spento, scarico, fuori copertura,
 // manomesso) non può più segnalare SOS o caduta. Oltre la soglia `silence_after_s` dello
 // strumento gps/alarm_map (default 600 s, 0 = disattivo) si apre un incidente `perdita_contatto`.
-// Vale per i dispositivi ASSEGNATI a un lavoratore: un device a magazzino non protegge nessuno e
-// non deve generare allarmi.
-// Un episodio di silenzio = un incidente: l'idem è legato all'ultimo contatto, quindi lo stesso
-// silenzio non si duplica e un nuovo silenzio dopo una ripresa ne apre uno nuovo.
+// Perimetro: SOLO i badge IN SERVIZIO (`service_state='in_servizio'`, mig 0128), cioè messi in
+// servizio esplicitamente e assegnati a un lavoratore. In attesa di messa in servizio o fuori
+// servizio = visibili in console, nessun allarme.
+// Riferimento del conteggio = GREATEST(ultimo contatto, `silence_armed_at`): l'armamento avviene
+// alla MESSA IN SERVIZIO e a ogni passaggio di consegne (trigger DB). Così un badge appena messo
+// in servizio che non ha MAI trasmesso fa scattare l'allarme alla soglia (proprio il caso del badge
+// consegnato spento), mentre upgrade e consegne non generano allarmi a raffica.
+// Il contatto è qualsiasi pacchetto autenticato, anche senza fix: mai l'ultima posizione.
+// Un episodio di silenzio = un incidente: l'idem è legato al riferimento del conteggio, quindi lo
+// stesso silenzio non si duplica e un nuovo silenzio (dopo un contatto o una nuova consegna) ne
+// apre uno nuovo.
 // ============================================================================
 pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
     let now = st.clock.now();
     let rows = sqlx::query(
-        "SELECT d.tenant_id, d.external_id, d.last_lat, d.last_lon, d.last_seen_at
+        "SELECT d.tenant_id, d.external_id, d.last_lat, d.last_lon, d.last_seen_at, d.last_pos_at,
+                d.silence_armed_at, GREATEST(d.last_seen_at, d.silence_armed_at) AS silence_ref
          FROM app.devices d
          JOIN app.tenant_modules m ON m.tenant_id=d.tenant_id AND m.module_code='gps' AND m.state='attivo'
-         WHERE d.source='gps' AND COALESCE(d.enabled,true) AND d.last_seen_at IS NOT NULL
-           AND d.assigned_user IS NOT NULL")
+         WHERE d.source='gps' AND d.service_state='in_servizio' AND COALESCE(d.enabled,true)
+           AND d.assigned_user IS NOT NULL AND d.silence_armed_at IS NOT NULL")
         .fetch_all(&st.owner_pool).await?;
     let mut threshold: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
     for r in rows {
@@ -76,11 +84,13 @@ pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
             }
         };
         if after <= 0 { continue; }
-        let last: DateTime<Utc> = r.get("last_seen_at");
-        let silent_for = (now - last).num_seconds();
-        if silent_for <= after { continue; }
+        let last: Option<DateTime<Utc>> = r.try_get("last_seen_at").ok().flatten();
+        let armed: DateTime<Utc> = r.get("silence_armed_at");
+        let reference: DateTime<Utc> = r.try_get("silence_ref").ok().unwrap_or(armed);
+        let Some(silent_for) = silence_exceeded(now, reference, after) else { continue; };
+        let last_pos: Option<DateTime<Utc>> = r.try_get("last_pos_at").ok().flatten();
         let ext: String = r.get("external_id");
-        let srcev = format!("gps-silence-{}-{}", ext, last.timestamp_millis());
+        let srcev = format!("gps-silence-{}-{}", ext, reference.timestamp_millis());
         // già segnalato questo episodio? (evita una scrittura per tick per ogni device silente)
         let seen: Option<i32> = sqlx::query_scalar("SELECT 1 FROM app.events WHERE tenant_id=$1 AND idem_key=$2")
             .bind(tid).bind(&srcev).fetch_optional(&st.owner_pool).await?;
@@ -94,12 +104,43 @@ pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
             site_name: None,
             lat: r.try_get("last_lat").ok(), lon: r.try_get("last_lon").ok(), accuracy_m: None,
             correlation: srcev,
-            payload: json!({"watchdog":"silenzio","last_seen_at":last,"silence_after_s":after,"silent_for_s":silent_for}),
+            payload: json!({"watchdog":"silenzio","last_seen_at":last,"last_pos_at":last_pos,
+                "armed_from":armed,"never_seen":last.is_none(),
+                "silence_after_s":after,"silent_for_s":silent_for}),
             indoor: false, beacon_uid: None, zone: None,
         }).await;
         if let Err(e) = res { tracing::error!("watchdog silenzio {ext} tenant {tid}: incidente non creato: {:?}", e); }
     }
     Ok(())
+}
+
+/// Silenzio oltre la soglia? Ritorna i secondi di silenzio solo se `> after` (alla soglia esatta
+/// non scatta). Pura: testata in unità.
+pub fn silence_exceeded(now: DateTime<Utc>, reference: DateTime<Utc>, after: i64) -> Option<i64> {
+    if after <= 0 { return None; }
+    let s = (now - reference).num_seconds();
+    if s > after { Some(s) } else { None }
+}
+
+#[cfg(test)]
+mod silence_tests {
+    use super::*;
+    use chrono::TimeZone;
+    fn t(s: i64) -> DateTime<Utc> { Utc.with_ymd_and_hms(2026, 1, 1, 8, 0, 0).unwrap() + chrono::Duration::seconds(s) }
+
+    #[test]
+    fn before_and_at_threshold_no_alarm() {
+        assert_eq!(silence_exceeded(t(599), t(0), 600), None);
+        assert_eq!(silence_exceeded(t(600), t(0), 600), None);
+    }
+    #[test]
+    fn after_threshold_alarm() {
+        assert_eq!(silence_exceeded(t(601), t(0), 600), Some(601));
+    }
+    #[test]
+    fn disabled_threshold_never_alarms() {
+        assert_eq!(silence_exceeded(t(100_000), t(0), 0), None);
+    }
 }
 
 

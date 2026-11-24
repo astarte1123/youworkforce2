@@ -13,9 +13,22 @@ dipende da server esterni.
 ## Teltonika TCP
 
 1. **Handshake IMEI**: il device apre il TCP e invia `[u16 lunghezza][IMEI ASCII]`. Il server
-   risponde **`0x01`** (accetta) se l'IMEI corrisponde all'`external_id` di un **device censito** su
-   un tenant con **almeno un modulo dispositivi attivo**; altrimenti **`0x00`** (rifiuta) e chiude.
-   L'identità è l'IMEI (il protocollo non porta token): si accettano solo IMEI noti.
+   risponde **`0x01`** (accetta) se l'IMEI corrisponde all'`external_id` di **un solo device GPS**
+   (`source='gps'`) **in tutto il sistema**, su un tenant con **almeno un modulo dispositivi attivo**;
+   altrimenti **`0x00`** (rifiuta) e chiude. L'identità è l'IMEI (il protocollo non porta token): si
+   accettano solo IMEI noti e **non contesi**. A **ogni pacchetto** il bridge ricontrolla la
+   titolarità: se il device è stato cancellato, spostato in un altro tenant o l'IMEI è diventato
+   conteso, la connessione si chiude senza ACK e il badge, riconnettendosi, viene associato al
+   titolare attuale. Un IMEI censito in più tenant viene **rifiutato**
+   (log `identità ambigua`): non si associa mai in automatico a uno dei tenant, perché posizioni e
+   SOS finirebbero al tenant sbagliato. Dalla migrazione 0127 il DB impedisce di registrare un IMEI
+   GPS già presente in un altro tenant (errore "identificativo dispositivo GPS già registrato" →
+   HTTP 409). Dalla 0128 la titolarità è la tabella `app.gps_identity` (chiave primaria
+   sull'IMEI): l'unicità regge anche con scritture concorrenti a qualunque livello di isolamento.
+   Cancellare il device libera l'IMEI; eventuali duplicati preesistenti sono marcati `contested`
+   e restano rifiutati dal bridge finché un operatore non elimina il doppione sbagliato.
+   Controllo in sola lettura: `qa/sql/check-imei-contesi.sql` (indica anche se il badge protegge
+   un lavoratore).
 2. **Pacchetti AVL**: `[preambolo 4B=0][lunghezza dati 4B][codec 1B][n record 1B] … [n record 1B][CRC16 4B]`.
    Supportati **Codec8 (`0x08`)** e **Codec8 Extended (`0x8E`)**. Per ogni record si decodificano
    timestamp (ms), GPS (lon/lat int32 /1e7, altitudine, angolo, satelliti, velocità) ed elementi IO
@@ -36,14 +49,28 @@ attendere la risposta (type `0x06`, max 5 s). Frame con CRC-16/IBM.
   (`getinfo`), *Versione firmware* (`getver`), *Riavvia* (`cpureset`). L'esito finisce nello
   **storico comandi** (`GET /api/devices/:id/commands`, `status_code` 200 inviato / 502 non
   inviato perché il device non è collegato).
-- **Comando libero** per tecnici: `POST /api/devices/:id/gprs-command {command}`.
+- **Comando libero** per tecnici: `POST /api/devices/:id/gprs-command {command}` oppure il tipo
+  `personalizzato` dei comandi rapidi. Richiede **Amministrazione dispositivi** (`devices.admin`):
+  un comando libero può riconfigurare il device (server, APN, parametri).
+- **RPC IoT** (`POST /api/iot/devices/:id/command`): verso un device GPS il metodo è consegnato come
+  comando GPRS grezzo, quindi richiede anch'esso `devices.admin`.
+- **Isolamento**: ogni connessione è registrata con la chiave **(tenant, IMEI)** e il device
+  risolti all'handshake; un invio verso un device diverso (ricreato o spostato) non la usa. Tutti i percorsi di invio partono solo verso la connessione del **proprio**
+  tenant; un altro tenant con lo stesso IMEI riceve "device non connesso". I comandi sulla stessa
+  connessione sono serializzati (la risposta va sempre a chi ha inviato il comando) e una
+  riconnessione sostituisce la precedente senza essere cancellata dalla chiusura di quella vecchia.
+  Valgono solo per device GPS (`400` altrimenti) e con almeno un modulo dispositivi attivo.
 
 ## Ingest e allarmi
 
 Ogni record, da qualsiasi canale, entra nella stessa pipeline:
 
-- **Ultimo contatto** → `devices.last_seen_at`, aggiornato a **ogni pacchetto**, anche senza fix GPS
-  (al chiuso il device resta "vivo").
+- **Ultimo contatto** → `devices.last_seen_at`, aggiornato a **ogni pacchetto autenticato**, anche
+  senza fix GPS (al chiuso il device resta "vivo"): Teltonika (handshake e ogni pacchetto), OsmAnd
+  (anche solo batteria o allarme, senza `lat/lon`), JSON HTTP.
+- **Moduli**: i canali di ingest (Teltonika, OsmAnd, JSON `/api/ingress/gps` e `/gps/position`)
+  accettano dati se il tenant ha **almeno un modulo dispositivi** attivo (`loneworker`, `gps` o
+  `iot`): un tenant con Lavoratore isolato + GPS e senza IoT riceve posizioni e SOS.
 - **Posizione** → `process_gps_position`: storico (`device_positions`), ultima posizione, presenza
   nelle aree (geofence), primo fix → attivo. Filtri anti-rumore per tenant: salto implausibile
   (`max_jump_kmh`) e spostamento minimo (`min_move_m`).
@@ -74,7 +101,7 @@ protezione** del lavoratore.
 
 ### Silenzio del dispositivo → Perdita di contatto
 
-Un dispositivo **assegnato a un lavoratore** che non trasmette da più della soglia apre un incidente
+Un badge **in servizio** che non trasmette da più della soglia apre un incidente
 critico **`perdita_contatto`** (spento, scarico, senza copertura, manomesso: in ogni caso il
 lavoratore non è più protetto). Lo controlla il worker ogni ~10 s (`worker::gps_silence_watchdog`).
 
@@ -82,7 +109,28 @@ lavoratore non è più protetto). Lo controlla il worker ogni ~10 s (`worker::gp
   **600 s**, `0` = disattivo). Si imposta da *Collegamento dispositivi → Soglie e allarmi*.
 - **Un silenzio = un incidente**: l'identificativo è legato all'ultimo contatto, quindi lo stesso
   silenzio non si duplica e uno nuovo, dopo una ripresa, apre un nuovo incidente.
-- I dispositivi non assegnati (a magazzino) non generano allarmi di silenzio.
+- **Stato di servizio** (`devices.service_state`, mig 0128), visibile nella scheda del dispositivo:
+  | Stato | Significato | Watchdog |
+  |---|---|---|
+  | `in_servizio` | il badge protegge il lavoratore assegnato | attivo |
+  | `in_attesa` | censito/assegnato, non ancora messo in servizio | nessun allarme |
+  | `fuori_servizio` | ritirato: guasto, magazzino, disabilitato | nessun allarme |
+- **Cosa avvia il conteggio**: la **messa in servizio** (pulsante *Metti in servizio* nella scheda,
+  `POST /api/devices/:id/service {state}`, permesso `devices.manage`, richiede lavoratore assegnato
+  e device abilitato). L'**assegnazione da sola non** mette in servizio. Il **passaggio di
+  consegne** di un badge in servizio a un altro lavoratore **riavvia** il conteggio. Senza
+  lavoratore il badge torna `in_attesa`; disabilitato passa `fuori_servizio` (trigger DB);
+  rimettere in servizio è sempre un'azione esplicita.
+- Il silenzio si misura da **GREATEST(ultimo contatto, messa in servizio/consegna)**
+  (`last_seen_at`, `silence_armed_at`): un badge al chiuso che invia solo heartbeat non è
+  silenzioso; un badge **messo in servizio che non si è mai collegato** fa scattare l'allarme alla
+  soglia (l'incidente riporta `never_seen: true`). L'incidente riporta anche le età di ultimo
+  contatto e ultima posizione.
+- **Upgrade 0128**: chi era già monitorato (assegnato, abilitato, con almeno un contatto) resta
+  `in_servizio` **con l'armamento di 0127 invariato**; un badge assegnato mai collegato diventa
+  `in_attesa` (va messo in servizio); disabilitato `fuori_servizio`; non assegnato `in_attesa`.
+  Prima del deploy `qa/sql/check-badge-0128.sql` (sola lettura) elenca per ogni badge lo stato
+  dopo la 0128 e l'azione per il responsabile operativo; collaudo: `docs/collaudo-staging-gps.md`.
 
 ### Policy eventi
 
@@ -100,6 +148,12 @@ Calcolati da YouWorkforce sullo storico posizioni (`core/src/track.rs`), uguali 
 - **Riepilogo**: distanza, tempo in movimento, velocità media e massima, numero di tragitti e soste.
 - Le velocità si ricavano da distanza/tempo tra posizioni consecutive (il campo velocità dei device
   usa unità diverse a seconda del protocollo); i salti oltre 300 km/h sono scartati.
+- **Risultato parziale**: oltre **50.000 posizioni** nell'intervallo si calcola sulle prime 50.000
+  (si legge una riga in più per accorgersene) e il risultato è dichiarato **parziale**: header
+  `x-yw-report-partial: true` e `x-yw-report-covered-until`, campi `partial`/`covered_until` nel
+  riepilogo, riga `# ATTENZIONE: risultato PARZIALE…` in fondo al CSV. Con `&envelope=1` la risposta
+  JSON è sempre `{partial, covered_until, max_points, items|summary}` (usato dalla console, che
+  mostra un avviso rosso); senza, la forma resta quella storica.
 
 ## Onboarding con scanner QR/barcode (console) + PWA
 
@@ -149,10 +203,29 @@ deployment pubblici usare rete/VPN o un reverse-proxy TCP con allowlist per la p
 - `qa/gps-native-e2e.sh` (23/23): nessun residuo dei vecchi connettori, ingest JSON di posizioni,
   report riepilogo/soste/tragitti/CSV, policy eventi, comandi nativi, watchdog del silenzio
   (un solo incidente, nessun allarme per device non assegnati).
-- `qa/osmand-ingest-e2e.sh`, `qa/gps-battery-policy-e2e.sh`, unit test `track::tests`.
+- `qa/gps-isolation-e2e.sh` (36/36): badge simulato sul bridge; SOS solo nel tenant giusto; IMEI
+  di un altro tenant non registrabile; con un duplicato storico nessuno dei tre percorsi di invio
+  del tenant B raggiunge il socket di A, mentre A li consegna tutti; IMEI conteso rifiutato; testo
+  libero/RPC senza `devices.admin` → 403; ingest JSON con iot spento; heartbeat OsmAnd senza fix vs
+  età della posizione; armamento all'assegnazione; config strumento; report parziale.
+- `qa/gps-service-watchdog-e2e.sh` (25/25): con orologio controllato, verifiche 5 s prima e 5 s
+  dopo un intero `silence_after_s`: badge monitorato (e continuità dopo un nuovo contatto), in
+  attesa e fuori servizio (visibili, nessun incidente), messo in servizio mai collegato (allarme),
+  assegnazione senza messa in servizio, passaggio di consegne, validazioni.
+- `qa/gps-isolation-e2e.sh` include titolarità corrente dopo spostamento tra tenant, riassegnazione
+  e device ricreato (simulatore `qa/lib/telt_sim.py`).
+- `qa/upgrade-0127-check.sh` (28/28, fuori da run-all): upgrade da un DB a versione 126 (dump);
+  confronta l'esito previsto da `qa/sql/check-escalation-0127.sql` con l'effetto reale e con le
+  notifiche simulate arrivate al ricevitore (`YW_ESC_SINK_LOG`).
+- `qa/upgrade-0128-check.sh` (19/19, fuori da run-all): upgrade da un DB a versione 127 con
+  orologio controllato; classificazione dei badge, watchdog dall'upgrade, titolarità GPS con
+  scritture concorrenti in READ COMMITTED e REPEATABLE READ.
+- `qa/osmand-ingest-e2e.sh`, `qa/gps-battery-policy-e2e.sh`, unit test `track::tests` e
+  `api::device_identity_tests`.
 
 ## Console
 
-Nel dettaglio di un dispositivo GPS: stato di collegamento (in linea / silenzioso da …), **comandi
+Nel dettaglio di un dispositivo GPS: stato di collegamento (in linea / silenzioso da …, con la
+**stessa soglia** `silence_after_s` del watchdog; "ultimo contatto … fa" se il controllo è spento), **comandi
 rapidi** con storico, **percorsi e soste** degli ultimi 7 giorni (con export CSV), **telemetria IO**
 dell'ultimo fix e **comando libero** per tecnici.
