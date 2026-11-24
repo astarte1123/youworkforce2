@@ -844,6 +844,121 @@ pub async fn license_overage(st: &AppState, tid: Uuid) -> Vec<Value> {
     check(&mut out, "iot", "dispositivi", r.get::<i64,_>("iu"), r.try_get::<Option<i32>,_>("il").ok().flatten());
     out
 }
+// ============================================================================
+// SL-2 — Rilevamento NATIVO dell'immobilità (mig 0133). Per i lavoratori di un profilo di protezione
+// con l'immobilità attiva: nessuno spostamento oltre la soglia del profilo (né movimento segnalato dal
+// sensore del badge, IO 240) per `immobility_after_s` -> incidente critico `immobilita`. Prima, a
+// `after_s - prewarn_s`, l'app mostra «Stai bene?»: toccando «Sto bene» il conteggio riparte.
+// Vale solo con dispositivo in servizio che sta trasmettendo e, se richiesto, durante il turno.
+// ============================================================================
+/// Registra una posizione/segnale: se è uno spostamento reale (oltre la soglia del profilo del
+/// lavoratore, default 15 m) o il badge segnala movimento, riparte il conteggio dell'immobilità.
+pub async fn immobility_note_movement(st: &AppState, tid: Uuid, dev_id: Uuid, lat: f64, lon: f64,
+    attrs: Option<&Value>, at: chrono::DateTime<chrono::Utc>) {
+    let r = sqlx::query(
+        "SELECT d.move_anchor_lat, d.move_anchor_lon,
+                (SELECT p.immobility_min_move_m FROM app.protection_profile_members m
+                   JOIN app.protection_profiles p ON p.id=m.profile_id AND p.enabled AND p.immobility_enabled
+                  WHERE m.tenant_id=d.tenant_id AND m.user_id=d.assigned_user ORDER BY p.immobility_min_move_m LIMIT 1) AS mm
+           FROM app.devices d WHERE d.id=$1 AND d.tenant_id=$2")
+        .bind(dev_id).bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let Some(r) = r else { return };
+    let min_move = r.try_get::<Option<i32>,_>("mm").ok().flatten().unwrap_or(15) as f64;
+    let sensor_moving = attrs.and_then(|a| a.get("movement")).and_then(|v| v.as_f64().or_else(|| v.as_bool().map(|b| if b {1.0} else {0.0})))
+        .map(|v| v >= 1.0).unwrap_or(false);
+    let moved = match (r.try_get::<Option<f64>,_>("move_anchor_lat").ok().flatten(), r.try_get::<Option<f64>,_>("move_anchor_lon").ok().flatten()) {
+        (Some(alat), Some(alon)) => sensor_moving || haversine_m(alat, alon, lat, lon) >= min_move,
+        _ => true, // primo fix: punto di riferimento e inizio del conteggio
+    };
+    if moved {
+        let _ = sqlx::query("UPDATE app.devices SET moved_at=$3, move_anchor_lat=$4, move_anchor_lon=$5
+                             WHERE id=$1 AND tenant_id=$2 AND (moved_at IS NULL OR moved_at <= $3)")
+            .bind(dev_id).bind(tid).bind(at).bind(lat).bind(lon).execute(&st.owner_pool).await;
+    }
+}
+
+/// Worker (~10 s): preavvisi e allarmi di immobilità. Orologio unico `st.clock`.
+pub async fn immobility_watchdog(st: &AppState) {
+    let now = st.clock.now();
+    let rows = sqlx::query(
+        "SELECT DISTINCT ON (d.id) d.id, d.tenant_id, d.external_id, d.source, d.assigned_user, d.moved_at,
+                d.last_lat, d.last_lon, d.imm_prewarn_for, d.imm_alarm_for,
+                p.immobility_after_s AS after_s, p.immobility_prewarn_s AS pre_s
+           FROM app.devices d
+           JOIN app.protection_profile_members m ON m.tenant_id=d.tenant_id AND m.user_id=d.assigned_user
+           JOIN app.protection_profiles p ON p.id=m.profile_id AND p.tenant_id=d.tenant_id AND p.enabled AND p.immobility_enabled
+           JOIN app.tenants t ON t.id=d.tenant_id AND t.status<>'sospeso'
+          WHERE d.assigned_user IS NOT NULL AND COALESCE(d.enabled,true) AND d.moved_at IS NOT NULL
+            AND d.source IN ('gps','pwa') AND (d.source<>'gps' OR d.service_state='in_servizio')
+            AND GREATEST(d.last_seen_at, d.last_pos_at) >= $1 - make_interval(secs => p.immobility_after_s)
+            AND (NOT p.immobility_shift_only OR EXISTS (SELECT 1 FROM app.shifts s
+                   WHERE s.tenant_id=d.tenant_id AND s.user_id=d.assigned_user AND s.state='in_corso'))
+            AND EXISTS (SELECT 1 FROM app.tenant_modules tm WHERE tm.tenant_id=d.tenant_id
+                          AND tm.module_code IN ('loneworker','gps') AND tm.state='attivo')
+          ORDER BY d.id, p.immobility_after_s ASC")
+        .bind(now).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    for r in rows {
+        let dev: Uuid = r.get("id"); let tid: Uuid = r.get("tenant_id");
+        let moved: chrono::DateTime<chrono::Utc> = r.get("moved_at");
+        let after_s = r.get::<i32,_>("after_s") as i64; let pre_s = r.get::<i32,_>("pre_s") as i64;
+        let elapsed = (now - moved).num_seconds();
+        let pre_for: Option<chrono::DateTime<chrono::Utc>> = r.try_get("imm_prewarn_for").ok().flatten();
+        let alarm_for: Option<chrono::DateTime<chrono::Utc>> = r.try_get("imm_alarm_for").ok().flatten();
+        let uid: Option<Uuid> = r.try_get("assigned_user").ok().flatten();
+        if pre_s > 0 && elapsed >= after_s - pre_s && elapsed < after_s && pre_for != Some(moved) && alarm_for != Some(moved) {
+            let _ = sqlx::query("UPDATE app.devices SET imm_prewarn_for=$2 WHERE id=$1").bind(dev).bind(moved).execute(&st.owner_pool).await;
+            publish_event(st, TenantEvent{tenant_id: tid, payload: json!({"type":"immobility_prewarn","user_id":uid,"device_id":dev,"alarm_in_s":after_s-elapsed})}).await;
+        }
+        if elapsed >= after_s && alarm_for != Some(moved) {
+            // presa atomica: un solo allarme per periodo di immobilità anche con più istanze
+            let claimed = sqlx::query("UPDATE app.devices SET imm_alarm_for=$2 WHERE id=$1 AND imm_alarm_for IS DISTINCT FROM $2 RETURNING id")
+                .bind(dev).bind(moved).fetch_optional(&st.owner_pool).await.ok().flatten();
+            if claimed.is_none() { continue; }
+            let ext: String = r.get("external_id"); let source: String = r.get("source");
+            let key = format!("imm-{dev}-{}", moved.timestamp());
+            let _ = persist_ingest(st, tid, Normalized{
+                source, source_event: key.clone(), idem: key.clone(), etype: "immobilita".into(),
+                device_external_id: Some(ext), site_name: None,
+                lat: r.try_get("last_lat").ok().flatten(), lon: r.try_get("last_lon").ok().flatten(), accuracy_m: None,
+                correlation: key, payload: json!({"immobile_da_s": elapsed, "soglia_s": after_s, "fermo_dal": moved}),
+                indoor: false, beacon_uid: None, zone: None }).await;
+        }
+    }
+}
+
+/// App del lavoratore: stato dell'immobilità (preavviso in corso? allarme già aperto?).
+pub async fn worker_immobility_status(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let now = st.clock.now();
+    let r = sqlx::query(
+        "SELECT d.moved_at, d.imm_prewarn_for, d.imm_alarm_for, p.immobility_after_s AS after_s
+           FROM app.devices d
+           JOIN app.protection_profile_members m ON m.tenant_id=d.tenant_id AND m.user_id=d.assigned_user
+           JOIN app.protection_profiles p ON p.id=m.profile_id AND p.enabled AND p.immobility_enabled
+          WHERE d.tenant_id=$1 AND d.assigned_user=$2 AND d.moved_at IS NOT NULL
+          ORDER BY (d.imm_prewarn_for = d.moved_at) DESC NULLS LAST, d.moved_at ASC LIMIT 1")
+        .bind(tid).bind(s.user_id).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let Some(r) = r else { return Ok(Json(json!({"state":"non_attivo"}))) };
+    let moved: chrono::DateTime<chrono::Utc> = r.get("moved_at");
+    let pre: Option<chrono::DateTime<chrono::Utc>> = r.try_get("imm_prewarn_for").ok().flatten();
+    let alarm: Option<chrono::DateTime<chrono::Utc>> = r.try_get("imm_alarm_for").ok().flatten();
+    let after_s = r.get::<i32,_>("after_s") as i64;
+    Ok(Json(if alarm == Some(moved) { json!({"state":"allarme"}) }
+        else if pre == Some(moved) { json!({"state":"preavviso","alarm_in_s": (after_s - (now - moved).num_seconds()).max(0)}) }
+        else { json!({"state":"ok"}) }))
+}
+/// «Sto bene»: il lavoratore conferma di stare bene, il conteggio riparte da adesso.
+pub async fn worker_immobility_ok(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    let now = st.clock.now();
+    let n = sqlx::query("UPDATE app.devices SET moved_at=$3, imm_prewarn_for=NULL WHERE tenant_id=$1 AND assigned_user=$2 AND moved_at IS NOT NULL")
+        .bind(tid).bind(s.user_id).bind(now).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+    audit(&st, tid, &s.email, "immobility_ok", json!({"dispositivi":n})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
 /// true se il tenant è sospeso: niente ricezione, niente escalation, niente accessi.
 pub async fn tenant_suspended(st: &AppState, tid: Uuid) -> bool {
     sqlx::query_scalar::<_, bool>("SELECT status='sospeso' FROM app.tenants WHERE id=$1")
@@ -7118,6 +7233,9 @@ pub async fn process_gps_position(st: &AppState, tid: Uuid, pos: &Value, ext: &s
         return Ok(json!({"ignored":"device non registrato","external_id":ext}));
     };
     let dev_id: Uuid = drow.get("id");
+    // SL-2: aggiorna lo stato di movimento PRIMA dei filtri (una posizione scartata perché troppo
+    // vicina è proprio il segnale che il lavoratore è fermo)
+    immobility_note_movement(st, tid, dev_id, lat, lon, pos.get("attributes"), fixed_at).await;
     // confronto con l'ultima posizione nota per scartare salti/duplicati
     if let (Some(plat), Some(plon), Some(pat)) = (drow.try_get::<f64,_>("last_lat").ok(), drow.try_get::<f64,_>("last_lon").ok(), drow.try_get::<chrono::DateTime<chrono::Utc>,_>("last_pos_at").ok()) {
         let dist = haversine_m(plat, plon, lat, lon);
@@ -7479,6 +7597,7 @@ pub async fn worker_position(State(st): State<AppState>, h: HeaderMap, Json(b): 
     let battery = b.get("battery").and_then(|v| v.as_f64());
     let now = st.clock.now();
     let (dev_id, _ext) = worker_app_device(&st, tid, s.user_id, &s.email).await?;
+    immobility_note_movement(&st, tid, dev_id, lat, lon, None, now).await; // SL-2
     let src_id = format!("pwa-{}", now.timestamp_millis());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query(
@@ -8088,7 +8207,8 @@ pub async fn protection_profiles_list(State(st): State<AppState>, h: HeaderMap) 
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
     require_module(&st, tid, "loneworker").await?;
     let rows = sqlx::query(
-        "SELECT p.id,p.name,p.descr,p.escalation_group_id,g.name AS group_name,p.triggers,p.checkin_minutes,p.enabled,p.updated_at
+        "SELECT p.id,p.name,p.descr,p.escalation_group_id,g.name AS group_name,p.triggers,p.checkin_minutes,p.enabled,p.updated_at,
+                p.immobility_enabled,p.immobility_after_s,p.immobility_prewarn_s,p.immobility_min_move_m,p.immobility_shift_only
            FROM app.protection_profiles p
            LEFT JOIN app.alarm_groups g ON g.id=p.escalation_group_id
           WHERE p.tenant_id=$1 ORDER BY p.name")
@@ -8117,6 +8237,9 @@ pub async fn protection_profiles_list(State(st): State<AppState>, h: HeaderMap) 
             "triggers": r.get::<Value,_>("triggers"),
             "checkin_minutes": r.get::<Option<i32>,_>("checkin_minutes"),
             "enabled": r.get::<bool,_>("enabled"),
+            "immobility": json!({"enabled": r.get::<bool,_>("immobility_enabled"), "after_s": r.get::<i32,_>("immobility_after_s"),
+                "prewarn_s": r.get::<i32,_>("immobility_prewarn_s"), "min_move_m": r.get::<i32,_>("immobility_min_move_m"),
+                "shift_only": r.get::<bool,_>("immobility_shift_only")}),
             "members": mem,
             "devices_covered": device_total,
         }));
@@ -8135,8 +8258,24 @@ pub async fn protection_profiles_list(State(st): State<AppState>, h: HeaderMap) 
     #[serde(default)] pub triggers: Option<Value>,
     #[serde(default)] pub checkin_minutes: Option<i32>,
     #[serde(default = "default_true")] pub enabled: bool,
+    // SL-2: immobilità (tutti i parametri configurabili; default: spenta, 5 min, preavviso 60 s, 15 m, solo in turno)
+    #[serde(default)] pub immobility_enabled: bool,
+    #[serde(default = "d_imm_after")] pub immobility_after_s: i32,
+    #[serde(default = "d_imm_pre")] pub immobility_prewarn_s: i32,
+    #[serde(default = "d_imm_move")] pub immobility_min_move_m: i32,
+    #[serde(default = "default_true")] pub immobility_shift_only: bool,
 }
 fn default_true() -> bool { true }
+fn d_imm_after() -> i32 { 300 }
+fn d_imm_pre() -> i32 { 60 }
+fn d_imm_move() -> i32 { 15 }
+fn validate_immobility(b: &ProfileReq) -> Result<(), (StatusCode, String)> {
+    if !(60..=7200).contains(&b.immobility_after_s) { return Err(err(StatusCode::BAD_REQUEST, "immobilità: soglia tra 1 e 120 minuti")); }
+    if !(0..=600).contains(&b.immobility_prewarn_s) || b.immobility_prewarn_s >= b.immobility_after_s {
+        return Err(err(StatusCode::BAD_REQUEST, "immobilità: preavviso tra 0 e 600 secondi e minore della soglia")); }
+    if !(2..=500).contains(&b.immobility_min_move_m) { return Err(err(StatusCode::BAD_REQUEST, "immobilità: spostamento minimo tra 2 e 500 metri")); }
+    Ok(())
+}
 
 /// Valida che un gruppo (se indicato) appartenga al tenant.
 async fn group_belongs(st: &AppState, tid: Uuid, gid: Option<Uuid>) -> Result<(), (StatusCode,String)> {
@@ -8155,12 +8294,15 @@ pub async fn protection_profile_create(State(st): State<AppState>, h: HeaderMap,
     let name = b.name.trim();
     if name.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome obbligatorio")); }
     group_belongs(&st, tid, b.escalation_group_id).await?;
+    validate_immobility(&b)?;
     let triggers = b.triggers.clone().unwrap_or_else(|| json!({"sos":true,"man_down":true,"immobilita":true,"mancato_checkin":true,"geofence":false}));
     let row = sqlx::query(
-        "INSERT INTO app.protection_profiles(tenant_id,name,descr,escalation_group_id,triggers,checkin_minutes,enabled)
-         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        "INSERT INTO app.protection_profiles(tenant_id,name,descr,escalation_group_id,triggers,checkin_minutes,enabled,
+            immobility_enabled,immobility_after_s,immobility_prewarn_s,immobility_min_move_m,immobility_shift_only)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id")
         .bind(tid).bind(name).bind(b.descr.trim()).bind(b.escalation_group_id).bind(&triggers)
         .bind(b.checkin_minutes).bind(b.enabled)
+        .bind(b.immobility_enabled).bind(b.immobility_after_s).bind(b.immobility_prewarn_s).bind(b.immobility_min_move_m).bind(b.immobility_shift_only)
         .fetch_optional(&st.owner_pool).await
         .map_err(|e| if e.to_string().contains("duplicate") { err(StatusCode::CONFLICT, "nome profilo già esistente") } else { ise(e) })?;
     let id: Uuid = row.ok_or_else(|| err(StatusCode::CONFLICT, "nome profilo già esistente"))?.get("id");
@@ -8175,12 +8317,15 @@ pub async fn protection_profile_update(State(st): State<AppState>, h: HeaderMap,
     let name = b.name.trim();
     if name.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome obbligatorio")); }
     group_belongs(&st, tid, b.escalation_group_id).await?;
+    validate_immobility(&b)?;
     let triggers = b.triggers.clone().unwrap_or_else(|| json!({"sos":true,"man_down":true,"immobilita":true,"mancato_checkin":true,"geofence":false}));
     let n = sqlx::query(
-        "UPDATE app.protection_profiles SET name=$3,descr=$4,escalation_group_id=$5,triggers=$6,checkin_minutes=$7,enabled=$8,updated_at=now()
+        "UPDATE app.protection_profiles SET name=$3,descr=$4,escalation_group_id=$5,triggers=$6,checkin_minutes=$7,enabled=$8,
+            immobility_enabled=$9,immobility_after_s=$10,immobility_prewarn_s=$11,immobility_min_move_m=$12,immobility_shift_only=$13,updated_at=now()
           WHERE id=$1 AND tenant_id=$2")
         .bind(id).bind(tid).bind(name).bind(b.descr.trim()).bind(b.escalation_group_id).bind(&triggers)
         .bind(b.checkin_minutes).bind(b.enabled)
+        .bind(b.immobility_enabled).bind(b.immobility_after_s).bind(b.immobility_prewarn_s).bind(b.immobility_min_move_m).bind(b.immobility_shift_only)
         .execute(&st.owner_pool).await
         .map_err(|e| if e.to_string().contains("duplicate") { err(StatusCode::CONFLICT, "nome profilo già esistente") } else { ise(e) })?
         .rows_affected();

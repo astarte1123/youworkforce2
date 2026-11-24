@@ -100,7 +100,7 @@ protezione** del lavoratore.
 
 - **IO 236** (pulsante SOS) → **`sos`** (critico → incidente + escalation).
 - **IO 242** (caduta / uomo a terra) → **`man_down`** (critico).
-- **IO 240** (movimento) → telemetria; l'immobilità prolungata può diventare allarme (`stopped_as_immobilita`).
+- **IO 240** (movimento) → telemetria e segnale di movimento per il rilevamento nativo dell'immobilità (vedi sotto).
 - **GPS** → posizione del lavoratore su mappa e piantina.
 
 `gps_alarm_etype` accetta sia i nomi dei protocolli (`fallDown`, `accident`) sia l'etype già risolto
@@ -244,3 +244,26 @@ Nel dettaglio di un dispositivo GPS: stato di collegamento (in linea / silenzios
 **stessa soglia** `silence_after_s` del watchdog; "ultimo contatto … fa" se il controllo è spento), **comandi
 rapidi** con storico, **percorsi e soste** degli ultimi 7 giorni (con export CSV), **telemetria IO**
 dell'ultimo fix e **comando libero** per tecnici.
+
+## Immobilità prolungata (rilevamento nativo, SL-2, mig 0133)
+
+Si configura nel **profilo di protezione** (Sicurezza Lavoratore → Profili di protezione → sezione
+«Rileva l'immobilità»). Tutti i parametri li sceglie chi configura:
+
+| Parametro | Default | Significato |
+|---|---|---|
+| Rileva l'immobilità | spento | attiva il controllo per i lavoratori del profilo |
+| Fermo per almeno | 5 minuti (1–120) | tempo senza movimento prima dell'allarme |
+| Preavviso sull'app | 60 s (0–600, minore della soglia) | quanto prima dell'allarme compare «Stai bene?» |
+| Spostamento minimo | 15 m (2–500) | uno spostamento più piccolo non conta come movimento |
+| Solo durante il turno | sì | vale solo con un turno in corso (richiede il modulo Forza lavoro e turni) |
+
+Come funziona: ogni posizione del badge o dell'app (anche quelle scartate perché troppo vicine) e il
+segnale di movimento del badge (IO 240) aggiornano l'ultimo movimento reale. Se il lavoratore resta
+fermo, a «soglia − preavviso» l'app mostra a tutto schermo **«Stai bene?»** con suono e vibrazione:
+**«Sto bene»** fa ripartire il conteggio. Alla soglia si apre **un** incidente critico *Immobilità
+prolungata* (salva-vita: escalation, rete di ultima istanza, mai sospeso dalla manutenzione); un nuovo
+movimento riarma il controllo. Vale solo per badge **in servizio** o app che **stanno trasmettendo**:
+un dispositivo silente è gestito dalla perdita di contatto. Sul badge non c'è preavviso.
+e2e: `qa/immobility-e2e.sh`.
+

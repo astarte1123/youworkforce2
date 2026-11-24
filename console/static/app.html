@@ -4490,6 +4490,21 @@ async function vProfili(v){
           <input data-f="checkin" type="number" min="1" max="1440" value="${p.checkin_minutes||''}" class="small"></label>
       </div>
       <div class="small mut" style="margin:var(--s-8) 0 var(--s-4)">Trigger abilitati</div><div>${trg}</div>
+      ${(()=>{ const im=p.immobility||{enabled:false,after_s:300,prewarn_s:60,min_move_m:15,shift_only:true}; return `
+      <div style="border-top:1px solid var(--line);margin-top:var(--s-10);padding-top:var(--s-8)">
+        <label class="row small" style="gap:var(--s-6);align-items:center"><input type="checkbox" data-im="enabled" ${im.enabled?'checked':''}> <b>Rileva l'immobilità</b></label>
+        <div class="small mut" style="margin:var(--s-4) 0 var(--s-6)">Se il lavoratore resta fermo oltre la soglia parte un allarme <b>Immobilità prolungata</b>.
+          Prima, sull'app, compare «Stai bene?»: toccando «Sto bene» il conteggio riparte. Vale con badge in servizio o app attiva che trasmettono.</div>
+        <div class="grid g2">
+          <label class="col small" style="gap:var(--s-4)">Fermo per almeno (minuti)
+            <input data-im="after_min" type="number" min="1" max="120" value="${Math.round((im.after_s||300)/60)}" class="small"></label>
+          <label class="col small" style="gap:var(--s-4)">Preavviso sull'app (secondi prima, 0 = nessuno)
+            <input data-im="prewarn_s" type="number" min="0" max="600" value="${im.prewarn_s??60}" class="small"></label>
+          <label class="col small" style="gap:var(--s-4)">Spostamento minimo che conta come movimento (metri)
+            <input data-im="min_move_m" type="number" min="2" max="500" value="${im.min_move_m||15}" class="small"></label>
+          <label class="row small" style="gap:var(--s-6);align-items:center;margin-top:var(--s-14)"><input type="checkbox" data-im="shift_only" ${im.shift_only!==false?'checked':''}> Solo durante il turno</label>
+        </div>
+        ${!ACTIVE_MODS.has('workforce')?`<div class="small" style="margin-top:var(--s-6);color:var(--bad)">Il modulo <b>Forza lavoro e turni</b> non è attivo: con «Solo durante il turno» l'immobilità non scatterà mai. Togli la spunta o chiedi di attivare il modulo.</div>`:''}</div>`; })()}
       <div style="border-top:1px solid var(--line);margin-top:var(--s-10);padding-top:var(--s-8)">
         <div class="spread"><b class="small">Lavoratori (${(p.members||[]).length}) · ${p.devices_covered} device coperti</b></div>
         ${mem}
@@ -4517,6 +4532,13 @@ async function profSave(id,btn){
   const body={ name:box.querySelector('[data-f="name"]').value.trim(), descr:box.querySelector('[data-f="descr"]').value.trim(),
     escalation_group_id:g||null, triggers, checkin_minutes:chk?parseInt(chk,10):null,
     enabled:box.querySelector('[data-f="enabled"]').checked };
+  // SL-2: parametri dell'immobilità (la UI chiede minuti, l'API secondi)
+  const im=k=>box.querySelector(`[data-im="${k}"]`);
+  if(im('enabled')){ Object.assign(body,{ immobility_enabled:im('enabled').checked,
+    immobility_after_s:Math.round(parseFloat(im('after_min').value||'5')*60),
+    immobility_prewarn_s:parseInt(im('prewarn_s').value||'0',10),
+    immobility_min_move_m:parseInt(im('min_move_m').value||'15',10),
+    immobility_shift_only:im('shift_only').checked }); }
   try{ await api('/safety/profiles/'+id,{method:'PUT',body:JSON.stringify(body)}); toast('Profilo salvato','ok'); if(m){m.textContent='Salvato';m.style.color='var(--ok)';} }
   catch(e){ toast(e.message,'bad'); if(m){m.textContent=e.message;m.style.color='var(--bad)';} }
 }

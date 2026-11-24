@@ -29,6 +29,8 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     let n = N.fetch_add(1, Ordering::Relaxed);
     // watchdog silenzio dispositivi personali (salva-vita): ~ogni 10s
     if n % 5 == 2 { if let Err(e) = Box::pin(gps_silence_watchdog(st)).await { tracing::warn!("gps silence watchdog: {e}"); } }
+    // SL-2: immobilità (preavviso «Stai bene?» + allarme): ~ogni 10s
+    if n % 5 == 4 { Box::pin(api::immobility_watchdog(st)).await; }
     // #7 ritenzione GDPR (opt-in YW_RETENTION_DAYS): ~ogni ora (1800 tick * 2s)
     if n % 1800 == 0 { Box::pin(privacy::purge_retention(st)).await; }
     // #4 escalation nativo FASE 2 (consegna in ombra): ~ogni 30s, verso sink di prova, idempotente

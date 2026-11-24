@@ -96,7 +96,7 @@ function app(){
     <div class="small mut center" style="margin-top:8px">Input manuale sempre disponibile. La dettatura usa il riconoscimento vocale del browser; se assente o negato, scrivi a mano.</div>
     <div id="diaryList" class="col" style="gap:8px;margin-top:10px"></div></div>`:''}
   </div>`;
-  if(safetyWorker()){ renderCheckin(); renderTracking(); restoreCI(); }
+  if(safetyWorker()){ renderCheckin(); renderTracking(); restoreCI(); immPoll(); }
   if(MODS.has('interventi')) loadOrders();
   if(MODS.has('workforce')){ renderShift(); loadPlans(); }
   if(fieldDiary()){ loadDiary(); flushNotes(); }
@@ -158,6 +158,31 @@ async function sos(){
   try{ const p=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{timeout:5000,enableHighAccuracy:true}));
     Object.assign(body,{lat:p.coords.latitude,lon:p.coords.longitude,accuracy:p.coords.accuracy}); sosSave({body,tries:1}); }catch(e){}
   sosSend();
+}
+// ---- Immobilità (SL-2): preavviso «Stai bene?» prima dell'allarme ----
+let IMM_TIMER=null, IMM_SHOWN=false;
+function immBeep(){ try{ const c=new (window.AudioContext||window.webkitAudioContext)(); const o=c.createOscillator(), g=c.createGain();
+  o.frequency.value=880; o.connect(g); g.connect(c.destination); g.gain.value=0.25; o.start(); o.stop(c.currentTime+0.4); }catch(e){} }
+function immShow(sec){
+  let m=document.getElementById('immModal');
+  if(!m){ m=document.createElement('div'); m.id='immModal'; m.setAttribute('role','alertdialog');
+    m.style.cssText='position:fixed;inset:0;z-index:60;background:rgba(216,30,54,.96);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center';
+    document.body.appendChild(m); }
+  m.innerHTML=`<div style="font-size:30px;font-weight:800;margin-bottom:10px">Stai bene?</div>
+    <div style="font-size:16px;margin-bottom:24px">Sei fermo da tempo. Se non rispondi, tra <b id="immSec">${sec}</b> secondi la centrale riceve un allarme.</div>
+    <button onclick="immOk()" style="width:100%;max-width:360px;padding:22px;border:none;border-radius:18px;background:#fff;color:#d81e36;font-size:22px;font-weight:800">Sto bene</button>`;
+  if(!IMM_SHOWN){ immBeep(); try{ navigator.vibrate&&navigator.vibrate([400,200,400,200,400]); }catch(e){} }
+  IMM_SHOWN=true;
+}
+function immHide(){ const m=document.getElementById('immModal'); if(m) m.remove(); IMM_SHOWN=false; }
+async function immOk(){ try{ await api('/worker/immobility/ok',{method:'POST'}); immHide(); toast('Grazie, conteggio azzerato','ok'); }catch(e){ toast('Errore: '+e.message,'bad'); } }
+async function immPoll(){
+  try{ const r=await api('/worker/immobility');
+    if(r.state==='preavviso'){ immShow(r.alarm_in_s); const s=document.getElementById('immSec'); if(s) s.textContent=r.alarm_in_s; }
+    else if(r.state==='allarme'){ immHide(); }
+    else immHide();
+  }catch(e){}
+  clearTimeout(IMM_TIMER); IMM_TIMER=setTimeout(immPoll, IMM_SHOWN?5000:15000);
 }
 // all'avvio: un SOS rimasto in coda (app chiusa, rete assente) riparte da solo
 window.addEventListener('load',()=>{ if(sosPending()){ sosBanner(sosPending()); setTimeout(sosSend,500); } });
