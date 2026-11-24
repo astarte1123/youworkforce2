@@ -3395,7 +3395,7 @@ pub async fn list_patrol_routes(State(st): State<AppState>, h: HeaderMap) -> R {
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // ACL per gruppo: il pianificatore vede tutti i giri; gli altri vedono i giri senza gruppo
     // (aperti, comportamento storico) + quelli assegnati a un gruppo di cui sono membri.
-    let base = "SELECT r.id,r.name,r.site_id,r.window_minutes,r.active,r.assigned_group,r.mode,r.grace_min,s.name as site_name,g.name as group_name \
+    let base = "SELECT r.id,r.name,r.site_id,r.window_minutes,r.active,r.assigned_group,r.mode,r.grace_min,r.manual_code_allowed,s.name as site_name,g.name as group_name \
         FROM app.patrol_routes r LEFT JOIN app.sites s ON s.id=r.site_id LEFT JOIN app.user_groups g ON g.id=r.assigned_group";
     let routes = if is_planner(&s) {
         sqlx::query(&format!("{base} ORDER BY r.name")).fetch_all(&mut *tx).await
@@ -3404,30 +3404,34 @@ pub async fn list_patrol_routes(State(st): State<AppState>, h: HeaderMap) -> R {
     }.map_err(ise)?;
     let cps = sqlx::query("SELECT id,route_id,name,position,kind,code,lat,lon,radius_m,expected_min,max_min,dwell_max_min FROM app.patrol_checkpoints ORDER BY position,name").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    // CA-2: il codice atteso resta a chi configura; alla guardia non arriva mai (altrimenti la
+    // punzonatura si potrebbe fare senza essere sul posto).
+    let show_code = is_planner(&s);
     let out: Vec<Value> = routes.iter().map(|r| {
         let rid: Uuid = r.get("id");
         let checkpoints: Vec<Value> = cps.iter().filter(|c| c.get::<Uuid,_>("route_id")==rid).map(|c| json!({
             "id":c.get::<Uuid,_>("id"),"name":c.get::<String,_>("name"),"position":c.get::<i32,_>("position"),
-            "kind":c.get::<String,_>("kind"),"code":c.try_get::<String,_>("code").ok(),
+            "kind":c.get::<String,_>("kind"),"code":if show_code { c.try_get::<String,_>("code").ok() } else { None },
             "lat":c.try_get::<f64,_>("lat").ok(),"lon":c.try_get::<f64,_>("lon").ok(),"radius_m":c.get::<i32,_>("radius_m"),
             "expected_min":c.try_get::<i32,_>("expected_min").ok(),"max_min":c.try_get::<i32,_>("max_min").ok(),"dwell_max_min":c.try_get::<i32,_>("dwell_max_min").ok()})).collect();
         json!({"id":rid,"name":r.get::<String,_>("name"),"site_id":r.try_get::<Uuid,_>("site_id").ok(),
             "site_name":r.try_get::<String,_>("site_name").ok(),"window_minutes":r.try_get::<i32,_>("window_minutes").ok(),
             "active":r.get::<bool,_>("active"),"assigned_group":r.try_get::<Uuid,_>("assigned_group").ok(),
             "mode":r.try_get::<String,_>("mode").ok(),"grace_min":r.try_get::<i32,_>("grace_min").ok(),
-            "group_name":r.try_get::<String,_>("group_name").ok(),"checkpoints":checkpoints})
+            "group_name":r.try_get::<String,_>("group_name").ok(),
+            "manual_code_allowed":r.try_get::<bool,_>("manual_code_allowed").unwrap_or(true),"checkpoints":checkpoints})
     }).collect();
     Ok(Json(json!(out)))
 }
-#[derive(Deserialize)] pub struct PatrolRouteReq { pub name: String, #[serde(default)] pub site_id: Option<Uuid>, #[serde(default)] pub window_minutes: Option<i32>, #[serde(default)] pub active: Option<bool>, #[serde(default)] pub assigned_group: Option<Uuid>, #[serde(default)] pub clear_group: Option<bool>, #[serde(default)] pub mode: Option<String>, #[serde(default)] pub grace_min: Option<i32> }
+#[derive(Deserialize)] pub struct PatrolRouteReq { pub name: String, #[serde(default)] pub site_id: Option<Uuid>, #[serde(default)] pub window_minutes: Option<i32>, #[serde(default)] pub active: Option<bool>, #[serde(default)] pub assigned_group: Option<Uuid>, #[serde(default)] pub clear_group: Option<bool>, #[serde(default)] pub mode: Option<String>, #[serde(default)] pub grace_min: Option<i32>, #[serde(default)] pub manual_code_allowed: Option<bool> }
 pub async fn create_patrol_route(State(st): State<AppState>, h: HeaderMap, Json(b): Json<PatrolRouteReq>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "giri").await?;
     if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let row = sqlx::query("INSERT INTO app.patrol_routes(tenant_id,name,site_id,window_minutes,assigned_group,mode,grace_min) VALUES($1,$2,$3,$4,$5,COALESCE($6,'piedi'),COALESCE($7,0)) RETURNING id")
-        .bind(tid).bind(b.name.trim()).bind(b.site_id).bind(b.window_minutes).bind(b.assigned_group).bind(&b.mode).bind(b.grace_min)
+    let row = sqlx::query("INSERT INTO app.patrol_routes(tenant_id,name,site_id,window_minutes,assigned_group,mode,grace_min,manual_code_allowed) VALUES($1,$2,$3,$4,$5,COALESCE($6,'piedi'),COALESCE($7,0),COALESCE($8,true)) RETURNING id")
+        .bind(tid).bind(b.name.trim()).bind(b.site_id).bind(b.window_minutes).bind(b.assigned_group).bind(&b.mode).bind(b.grace_min).bind(b.manual_code_allowed)
         .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "giro già esistente (nome)"))?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT,"già esistente"))?.get::<Uuid,_>("id");
     tx.commit().await.map_err(ise)?;
@@ -3440,8 +3444,8 @@ pub async fn update_patrol_route(State(st): State<AppState>, h: HeaderMap, Path(
     if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let clear_g = b.clear_group.unwrap_or(false);
-    let n = sqlx::query("UPDATE app.patrol_routes SET name=$2, site_id=$3, window_minutes=$4, active=COALESCE($5,active), assigned_group=CASE WHEN $6 THEN NULL ELSE COALESCE($7,assigned_group) END, mode=COALESCE($8,mode), grace_min=COALESCE($9,grace_min) WHERE id=$1")
-        .bind(id).bind(b.name.trim()).bind(b.site_id).bind(b.window_minutes).bind(b.active).bind(clear_g).bind(b.assigned_group).bind(&b.mode).bind(b.grace_min).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    let n = sqlx::query("UPDATE app.patrol_routes SET name=$2, site_id=$3, window_minutes=$4, active=COALESCE($5,active), assigned_group=CASE WHEN $6 THEN NULL ELSE COALESCE($7,assigned_group) END, mode=COALESCE($8,mode), grace_min=COALESCE($9,grace_min), manual_code_allowed=COALESCE($10,manual_code_allowed) WHERE id=$1")
+        .bind(id).bind(b.name.trim()).bind(b.site_id).bind(b.window_minutes).bind(b.active).bind(clear_g).bind(b.assigned_group).bind(&b.mode).bind(b.grace_min).bind(b.manual_code_allowed).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "giro inesistente")); }
     Ok(Json(json!({"ok":true})))
@@ -3464,18 +3468,24 @@ pub async fn create_checkpoint(State(st): State<AppState>, h: HeaderMap, Path(ri
     if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
     if !PATROL_KINDS.contains(&b.kind.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "tipo checkpoint sconosciuto (qr/nfc/beacon/gps)")); }
     if b.kind=="gps" && (b.lat.is_none()||b.lon.is_none()) { return Err(err(StatusCode::BAD_REQUEST, "checkpoint GPS richiede lat/lon")); }
-    if (b.kind=="qr"||b.kind=="nfc"||b.kind=="beacon") && b.code.as_deref().unwrap_or("").trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "checkpoint qr/nfc/beacon richiede un codice")); }
+    let given = b.code.as_deref().unwrap_or("").trim().to_string();
+    if b.kind=="beacon" && given.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "il checkpoint beacon richiede l'identificativo del beacon")); }
+    // CA-2: QR/NFC senza codice indicato -> codice casuale non indovinabile generato dal sistema.
+    let generated = (b.kind=="qr"||b.kind=="nfc") && given.is_empty();
+    let code: Option<String> = if b.kind=="gps" { None } else if generated { Some(patrol_code()) } else { Some(given.clone()) };
+    let weak = !generated && b.kind!="gps" && b.kind!="beacon" && given.chars().count() < 10;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.patrol_routes WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"giro inesistente")); }
     let pos = match b.position { Some(p) => p, None => {
         let m: i32 = sqlx::query_scalar("SELECT COALESCE(MAX(position),0)::int FROM app.patrol_checkpoints WHERE route_id=$1").bind(rid).fetch_one(&mut *tx).await.map_err(ise)?;
         m + 1 } };
     let row = sqlx::query("INSERT INTO app.patrol_checkpoints(tenant_id,route_id,name,position,kind,code,lat,lon,radius_m,expected_min,max_min,dwell_max_min) VALUES($1,$2,$3,$4,$5,$6,$7,$8,COALESCE($9,50),$10,$11,$12) RETURNING id")
-        .bind(tid).bind(rid).bind(b.name.trim()).bind(pos).bind(&b.kind).bind(b.code.as_deref()).bind(b.lat).bind(b.lon).bind(b.radius_m).bind(b.expected_min).bind(b.max_min).bind(b.dwell_max_min)
+        .bind(tid).bind(rid).bind(b.name.trim()).bind(pos).bind(&b.kind).bind(code.as_deref()).bind(b.lat).bind(b.lon).bind(b.radius_m).bind(b.expected_min).bind(b.max_min).bind(b.dwell_max_min)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     let id = row.get::<Uuid,_>("id");
     tx.commit().await.map_err(ise)?;
-    Ok(Json(json!({"id":id})))
+    let warning = if weak { Some("Codice corto o prevedibile: chi lo conosce può punzonare senza essere sul posto. Lascia il campo vuoto per farlo generare dal sistema.") } else { None };
+    Ok(Json(json!({"id":id,"code":code,"generated":generated,"warning":warning})))
 }
 pub async fn update_checkpoint(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<CheckpointReq>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
@@ -3483,7 +3493,7 @@ pub async fn update_checkpoint(State(st): State<AppState>, h: HeaderMap, Path(id
     if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
     if !PATROL_KINDS.contains(&b.kind.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "tipo checkpoint sconosciuto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.patrol_checkpoints SET name=$2, kind=$3, code=$4, lat=$5, lon=$6, radius_m=COALESCE($7,radius_m), position=COALESCE($8,position), expected_min=$9, max_min=$10, dwell_max_min=$11 WHERE id=$1")
+    let n = sqlx::query("UPDATE app.patrol_checkpoints SET name=$2, kind=$3, code=COALESCE(NULLIF(btrim($4),''),code), lat=$5, lon=$6, radius_m=COALESCE($7,radius_m), position=COALESCE($8,position), expected_min=$9, max_min=$10, dwell_max_min=$11 WHERE id=$1")
         .bind(id).bind(b.name.trim()).bind(&b.kind).bind(b.code.as_deref()).bind(b.lat).bind(b.lon).bind(b.radius_m).bind(b.position).bind(b.expected_min).bind(b.max_min).bind(b.dwell_max_min).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "checkpoint inesistente")); }
@@ -3523,19 +3533,33 @@ pub async fn import_checkpoint(State(st): State<AppState>, h: HeaderMap, Path(ri
 }
 
 // ---- Esecuzione (qualunque utente del tenant col modulo attivo) ----
-async fn round_view(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, rid: Uuid) -> Result<Value, (StatusCode,String)> {
-    let r = sqlx::query("SELECT ro.id,ro.route_id,ro.user_id,ro.started_at,ro.ended_at,ro.status,rt.name as route_name,rt.window_minutes FROM app.patrol_rounds ro JOIN app.patrol_routes rt ON rt.id=ro.route_id WHERE ro.id=$1")
+/// Codice casuale per un checkpoint QR/NFC (CA-2): 16 caratteri da un alfabeto senza simboli
+/// ambigui, ~80 bit: non si indovina e non si ricava dal nome del punto.
+fn patrol_code() -> String {
+    use rand::Rng;
+    const A: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let mut r = rand::thread_rng();
+    let body: String = (0..16).map(|_| A[r.gen_range(0..A.len())] as char).collect();
+    format!("YW-{body}")
+}
+/// `show_code`: il codice atteso del checkpoint solo a chi configura (CA-2).
+async fn round_view(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, rid: Uuid, show_code: bool) -> Result<Value, (StatusCode,String)> {
+    let r = sqlx::query("SELECT ro.id,ro.route_id,ro.user_id,ro.started_at,ro.ended_at,ro.status,rt.name as route_name,rt.window_minutes,rt.manual_code_allowed,u.email FROM app.patrol_rounds ro JOIN app.patrol_routes rt ON rt.id=ro.route_id LEFT JOIN app.users u ON u.id=ro.user_id WHERE ro.id=$1")
         .bind(rid).fetch_optional(&mut **tx).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND,"ronda inesistente"))?;
     let route_id: Uuid = r.get("route_id");
     let cps = sqlx::query("SELECT id,name,position,kind,code,lat,lon,radius_m,expected_min,max_min,dwell_max_min FROM app.patrol_checkpoints WHERE route_id=$1 ORDER BY position,name").bind(route_id).fetch_all(&mut **tx).await.map_err(ise)?;
-    let punches = sqlx::query("SELECT checkpoint_id,method,punched_at,ok,note FROM app.patrol_punches WHERE round_id=$1").bind(rid).fetch_all(&mut **tx).await.map_err(ise)?;
+    let punches = sqlx::query("SELECT checkpoint_id,method,entry,punched_at,ok,note,attempts,last_fail_at,last_fail_reason,distance_m FROM app.patrol_punches WHERE round_id=$1").bind(rid).fetch_all(&mut **tx).await.map_err(ise)?;
     let cpv: Vec<Value> = cps.iter().map(|c| {
         let cid: Uuid = c.get("id");
         let p = punches.iter().find(|p| p.get::<Uuid,_>("checkpoint_id")==cid);
         json!({"id":cid,"name":c.get::<String,_>("name"),"position":c.get::<i32,_>("position"),"kind":c.get::<String,_>("kind"),
-            "code":c.try_get::<String,_>("code").ok(),"lat":c.try_get::<f64,_>("lat").ok(),"lon":c.try_get::<f64,_>("lon").ok(),"radius_m":c.get::<i32,_>("radius_m"),
+            "code":if show_code { c.try_get::<String,_>("code").ok() } else { None },"lat":c.try_get::<f64,_>("lat").ok(),"lon":c.try_get::<f64,_>("lon").ok(),"radius_m":c.get::<i32,_>("radius_m"),
             "expected_min":c.try_get::<i32,_>("expected_min").ok(),"max_min":c.try_get::<i32,_>("max_min").ok(),"dwell_max_min":c.try_get::<i32,_>("dwell_max_min").ok(),
-            "punched": p.map(|p| json!({"method":p.get::<String,_>("method"),"at":p.get::<chrono::DateTime<chrono::Utc>,_>("punched_at").to_rfc3339(),"ok":p.get::<bool,_>("ok"),"note":p.try_get::<String,_>("note").ok()}))})
+            "punched": p.map(|p| json!({"method":p.get::<String,_>("method"),"entry":p.try_get::<String,_>("entry").ok(),
+                "at":p.get::<chrono::DateTime<chrono::Utc>,_>("punched_at").to_rfc3339(),"ok":p.get::<bool,_>("ok"),"note":p.try_get::<String,_>("note").ok(),
+                "attempts":p.try_get::<i32,_>("attempts").unwrap_or(1),
+                "last_fail_at":p.try_get::<chrono::DateTime<chrono::Utc>,_>("last_fail_at").ok().map(|d| d.to_rfc3339()),
+                "last_fail_reason":p.try_get::<String,_>("last_fail_reason").ok(),"distance_m":p.try_get::<i32,_>("distance_m").ok()}))})
     }).collect();
     let anoms = sqlx::query("SELECT kind,detail,checkpoint_id,created_at FROM app.patrol_anomalies WHERE round_id=$1 ORDER BY created_at").bind(rid).fetch_all(&mut **tx).await.map_err(ise)?;
     let anom_v: Vec<Value> = anoms.iter().map(|a| json!({"kind":a.get::<String,_>("kind"),"detail":a.try_get::<String,_>("detail").ok(),
@@ -3543,6 +3567,8 @@ async fn round_view(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, rid: Uuid) -
     let total = cps.len();
     let done = cpv.iter().filter(|c| c["punched"].get("ok").and_then(|v| v.as_bool())==Some(true)).count();
     Ok(json!({"id":rid,"route_id":route_id,"route_name":r.get::<String,_>("route_name"),"user_id":r.get::<Uuid,_>("user_id"),
+        "user_email":r.try_get::<String,_>("email").ok(),
+        "manual_code_allowed":r.try_get::<bool,_>("manual_code_allowed").unwrap_or(true),
         "started_at":r.get::<chrono::DateTime<chrono::Utc>,_>("started_at").to_rfc3339(),
         "ended_at":r.try_get::<chrono::DateTime<chrono::Utc>,_>("ended_at").ok().map(|d| d.to_rfc3339()),
         "status":r.get::<String,_>("status"),"window_minutes":r.try_get::<i32,_>("window_minutes").ok(),
@@ -3564,7 +3590,7 @@ pub async fn start_round(State(st): State<AppState>, h: HeaderMap, Path(rid): Pa
     let row = sqlx::query("INSERT INTO app.patrol_rounds(tenant_id,route_id,user_id) VALUES($1,$2,$3) RETURNING id")
         .bind(tid).bind(rid).bind(s.user_id).fetch_one(&mut *tx).await.map_err(ise)?;
     let round_id = row.get::<Uuid,_>("id");
-    let v = round_view(&mut tx, round_id).await?;
+    let v = round_view(&mut tx, round_id, false).await?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(v))
 }
@@ -3590,31 +3616,55 @@ pub async fn get_round(State(st): State<AppState>, h: HeaderMap, Path(id): Path<
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "giri").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let v = round_view(&mut tx, id).await?;
+    let v = round_view(&mut tx, id, is_planner(&s)).await?;
     if !is_planner(&s) && v["user_id"].as_str() != Some(&s.user_id.to_string()) { return Err(err(StatusCode::FORBIDDEN, "non è la tua ronda")); }
     tx.commit().await.map_err(ise)?;
     Ok(Json(v))
 }
-#[derive(Deserialize)] pub struct PunchReq { pub checkpoint_id: Uuid, #[serde(default)] pub code: Option<String>, #[serde(default)] pub lat: Option<f64>, #[serde(default)] pub lon: Option<f64>, #[serde(default)] pub note: Option<String> }
+/// `entry`: come l'app ha ottenuto il codice — "scansione" (fotocamera), "nfc" (tag avvicinato),
+/// "manuale" (digitato). Se manca vale "manuale": il server non può dare per verificato ciò che
+/// non sa (CA-2).
+#[derive(Deserialize)] pub struct PunchReq { pub checkpoint_id: Uuid, #[serde(default)] pub code: Option<String>, #[serde(default)] pub lat: Option<f64>, #[serde(default)] pub lon: Option<f64>, #[serde(default)] pub note: Option<String>, #[serde(default)] pub entry: Option<String> }
 pub async fn punch(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<PunchReq>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "giri").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let round = sqlx::query("SELECT user_id,route_id,status FROM app.patrol_rounds WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?
+    let round = sqlx::query("SELECT ro.user_id,ro.route_id,ro.status,rt.manual_code_allowed FROM app.patrol_rounds ro JOIN app.patrol_routes rt ON rt.id=ro.route_id WHERE ro.id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::NOT_FOUND,"ronda inesistente"))?;
-    if round.get::<Uuid,_>("user_id") != s.user_id && !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "non è la tua ronda")); }
+    // CA-2: punzona SOLO chi esegue la ronda. Il pianificatore la vede e la chiude, ma non può
+    // attestare il passaggio di un'altra persona.
+    if round.get::<Uuid,_>("user_id") != s.user_id { return Err(err(StatusCode::FORBIDDEN, "solo chi esegue la ronda può punzonare")); }
     if round.get::<String,_>("status") != "in_corso" { return Err(err(StatusCode::BAD_REQUEST, "ronda già chiusa")); }
     let route_id: Uuid = round.get("route_id");
+    let manual_allowed: bool = round.try_get::<bool,_>("manual_code_allowed").unwrap_or(true);
     let cp = sqlx::query("SELECT kind,code,lat,lon,radius_m FROM app.patrol_checkpoints WHERE id=$1 AND route_id=$2")
         .bind(b.checkpoint_id).bind(route_id).fetch_optional(&mut *tx).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::BAD_REQUEST,"checkpoint non appartiene al giro"))?;
     let kind: String = cp.get("kind");
+    // CA-2: come è stato ottenuto il codice. Assente o sconosciuto = manuale.
+    let entry: &str = match (kind.as_str(), b.entry.as_deref()) {
+        ("gps", _) => "gps",
+        ("qr", Some("scansione")) => "scansione",
+        ("nfc", Some("nfc")) => "nfc",
+        ("beacon", Some("scansione"|"beacon")) => "beacon",
+        _ => "manuale",
+    };
+    // distanza dal punto, se il checkpoint ha coordinate e l'app ha mandato la posizione: prova in più
+    let distance_m: Option<i32> = match (cp.try_get::<f64,_>("lat").ok(), cp.try_get::<f64,_>("lon").ok(), b.lat, b.lon) {
+        (Some(clat),Some(clon),Some(ulat),Some(ulon)) => Some(haversine_m(clat,clon,ulat,ulon).round() as i32),
+        _ => None };
     // verifica per tipo
     let (ok, method, reason) = match kind.as_str() {
         "qr"|"nfc"|"beacon" => {
             let exp = cp.try_get::<String,_>("code").ok().unwrap_or_default();
             let got = b.code.clone().unwrap_or_default();
-            (!exp.is_empty() && exp==got, kind.clone(), if exp==got {""} else {"codice non corrispondente"})
+            let got = got.trim();
+            let method = if entry == "manuale" { format!("{kind}_manuale") } else { kind.clone() };
+            if entry == "manuale" && !manual_allowed {
+                (false, method, "inserimento manuale non ammesso su questo giro: scansiona il codice o avvicina il tag")
+            } else {
+                (!exp.is_empty() && exp==got, method, if !exp.is_empty() && exp==got {""} else {"codice non corrispondente"})
+            }
         }
         "gps" => {
             match (cp.try_get::<f64,_>("lat").ok(), cp.try_get::<f64,_>("lon").ok(), b.lat, b.lon) {
@@ -3628,11 +3678,26 @@ pub async fn punch(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid
         }
         _ => (false, "manual".to_string(), "tipo ignoto")
     };
-    sqlx::query("INSERT INTO app.patrol_punches(tenant_id,round_id,checkpoint_id,user_id,method,lat,lon,ok,note) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
-                 ON CONFLICT (round_id,checkpoint_id) DO UPDATE SET method=EXCLUDED.method,lat=EXCLUDED.lat,lon=EXCLUDED.lon,ok=EXCLUDED.ok,note=EXCLUDED.note,punched_at=now()")
+    // CA-3: un tentativo fallito NON declassa una punzonatura già riuscita; ogni tentativo conta
+    // (attempts) e l'ultimo fallimento resta registrato con il motivo.
+    sqlx::query("INSERT INTO app.patrol_punches(tenant_id,round_id,checkpoint_id,user_id,method,lat,lon,ok,note,entry,distance_m,last_fail_at,last_fail_reason)
+                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $8 THEN NULL ELSE now() END,CASE WHEN $8 THEN NULL ELSE $12 END)
+                 ON CONFLICT (round_id,checkpoint_id) DO UPDATE SET
+                   attempts   = patrol_punches.attempts + 1,
+                   method     = CASE WHEN patrol_punches.ok THEN patrol_punches.method ELSE EXCLUDED.method END,
+                   entry      = CASE WHEN patrol_punches.ok THEN patrol_punches.entry ELSE EXCLUDED.entry END,
+                   lat        = CASE WHEN patrol_punches.ok THEN patrol_punches.lat ELSE EXCLUDED.lat END,
+                   lon        = CASE WHEN patrol_punches.ok THEN patrol_punches.lon ELSE EXCLUDED.lon END,
+                   distance_m = CASE WHEN patrol_punches.ok THEN patrol_punches.distance_m ELSE EXCLUDED.distance_m END,
+                   note       = CASE WHEN patrol_punches.ok THEN patrol_punches.note ELSE EXCLUDED.note END,
+                   punched_at = CASE WHEN patrol_punches.ok THEN patrol_punches.punched_at ELSE now() END,
+                   ok         = patrol_punches.ok OR EXCLUDED.ok,
+                   last_fail_at     = CASE WHEN EXCLUDED.ok THEN patrol_punches.last_fail_at ELSE now() END,
+                   last_fail_reason = CASE WHEN EXCLUDED.ok THEN patrol_punches.last_fail_reason ELSE EXCLUDED.last_fail_reason END")
         .bind(tid).bind(id).bind(b.checkpoint_id).bind(s.user_id).bind(&method).bind(b.lat).bind(b.lon).bind(ok).bind(b.note.as_deref())
+        .bind(entry).bind(distance_m).bind(reason)
         .execute(&mut *tx).await.map_err(ise)?;
-    let v = round_view(&mut tx, id).await?;
+    let v = round_view(&mut tx, id, false).await?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":ok,"reason":reason,"round":v})))
 }
@@ -3661,7 +3726,7 @@ pub async fn close_round(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
         .bind(id).bind(chrono::Utc::now()).bind(status).execute(&mut *tx).await.map_err(ise)?;
     // ---- V1 vigilanza: rileva anomalie (tappa saltata, tratta in ritardo, giro non completato) ----
     let grace: i32 = round.try_get::<i32,_>("grace_min").unwrap_or(0);
-    let cps = sqlx::query("SELECT c.id,c.name,c.position,c.max_min, p.punched_at, p.ok FROM app.patrol_checkpoints c
+    let cps = sqlx::query("SELECT c.id,c.name,c.position,c.max_min,c.radius_m, p.punched_at, p.ok, p.entry, p.distance_m FROM app.patrol_checkpoints c
                  LEFT JOIN app.patrol_punches p ON p.checkpoint_id=c.id AND p.round_id=$1
                  WHERE c.route_id=$2 ORDER BY c.position,c.name").bind(id).bind(route_id).fetch_all(&mut *tx).await.map_err(ise)?;
     // pulizia anomalie precedenti dello stesso round (idempotenza se richiuso)
@@ -3676,6 +3741,14 @@ pub async fn close_round(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
         if okp != Some(true) {
             anomalies.push((Some(cid), "saltato", format!("Tappa non punzonata: {name}")));
         } else {
+            // CA-2: le punzonature non verificate dal dispositivo restano valide ma vanno guardate
+            if c.try_get::<String,_>("entry").ok().as_deref() == Some("manuale") {
+                anomalies.push((Some(cid), "inserimento_manuale", format!("«{name}»: codice digitato a mano, non scansionato")));
+            }
+            if let Ok(d) = c.try_get::<i32,_>("distance_m") {
+                let rad: i32 = c.get("radius_m");
+                if d > rad { anomalies.push((Some(cid), "posizione_distante", format!("«{name}»: punzonato a {d} m dal punto (tolleranza {rad} m)"))); }
+            }
             if let (Some(mx), Some(pt), Some(cur)) = (c.try_get::<i32,_>("max_min").ok(), prev_time, at) {
                 let mins = (cur - pt).num_minutes();
                 if mins > (mx as i64 + grace as i64) {
@@ -3693,7 +3766,7 @@ pub async fn close_round(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
             .bind(tid).bind(id).bind(cid).bind(kind).bind(detail).execute(&mut *tx).await.map_err(ise)?;
     }
     let anom_count = anomalies.len();
-    let v = round_view(&mut tx, id).await?;
+    let v = round_view(&mut tx, id, is_planner(&s)).await?;
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "close_round", json!({"round":id,"status":status,"done":done,"total":total,"anomalies":anom_count})).await;
     Ok(Json(json!({"status":status,"in_window":in_window,"anomalies":anom_count,"round":v})))
@@ -7188,9 +7261,9 @@ pub async fn patrol_auto_punch(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, t
         let (clat, clon, rad): (f64,f64,i32) = (c.get("lat"), c.get("lon"), c.get("radius_m"));
         if haversine_m(clat, clon, lat, lon) <= rad as f64 {
             let cid: Uuid = c.get("id");
-            sqlx::query("INSERT INTO app.patrol_punches(tenant_id,round_id,checkpoint_id,user_id,method,lat,lon,ok,note) \
-                VALUES($1,$2,$3,$4,'gps',$5,$6,true,'auto da dispositivo') \
-                ON CONFLICT (round_id,checkpoint_id) DO UPDATE SET ok=true,method='gps',lat=EXCLUDED.lat,lon=EXCLUDED.lon,punched_at=now(),note='auto da dispositivo'")
+            sqlx::query("INSERT INTO app.patrol_punches(tenant_id,round_id,checkpoint_id,user_id,method,lat,lon,ok,note,entry) \
+                VALUES($1,$2,$3,$4,'gps',$5,$6,true,'auto da dispositivo','auto') \
+                ON CONFLICT (round_id,checkpoint_id) DO UPDATE SET ok=true,method='gps',lat=EXCLUDED.lat,lon=EXCLUDED.lon,punched_at=now(),note='auto da dispositivo',entry='auto',attempts=patrol_punches.attempts+1")
                 .bind(tid).bind(round_id).bind(cid).bind(uid).bind(lat).bind(lon).execute(&mut **tx).await?;
             n += 1;
         }
@@ -9140,6 +9213,8 @@ enum SetVal { Txt(String), Id(Uuid) }
 async fn order_transition(st: &AppState, s: &Session, iid: Uuid, b: &OrderAction,
     to: &str, set_col: Option<&str>, set_val: Option<SetVal>, from_states: &[&str]) -> R {
     let tid = s.tenant_id.unwrap();
+    // CA-21: nessuna transizione d'ordine con il modulo spento (anche assegna/annulla)
+    if !module_active(st, tid, "interventi").await { return Err(err(StatusCode::FORBIDDEN, "modulo interventi non abilitato")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // version/state check dentro l'UPDATE (concorrenza ottimistica). `to`/`from_states` sono
     // costanti interne; il valore utente (outcome/reason/assigned_user) è bindato come $3.
@@ -9180,12 +9255,8 @@ pub async fn order_assign_group(State(st): State<AppState>, h: HeaderMap, Path(i
 }
 pub async fn order_start(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
     let s = require_tenant(&st, &h).await?;
-    // only the assigned technician may start
-    let tid = s.tenant_id.unwrap();
-    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let owner: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.work_orders WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.flatten();
-    let _ = tx.commit().await;
-    if owner != Some(s.user_id) && !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "non assegnato a te")); }
+    // CA-7: avvia l'assegnatario, un membro del gruppo assegnato o il pianificatore (stessa regola ovunque)
+    let tid = order_edit_allowed(&st, &s, id).await?;
     let r = order_transition(&st, &s, id, &b, "in_corso", None, None, &["assegnato"]).await?;
     // avvio lavoro = timestamp dedicato (distinto dall'arrivo)
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -9195,8 +9266,13 @@ pub async fn order_start(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
 }
 pub async fn order_complete(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
     let s = require_tenant(&st, &h).await?;
+    // CA-1: prima chiunque nel tenant poteva completare qualunque ordine. Ora solo chi lo esegue
+    // (assegnatario o membro del gruppo assegnato) o il pianificatore.
+    let tid = order_edit_allowed(&st, &s, id).await?;
     let outcome = b.outcome.clone().unwrap_or_default();
-    order_transition(&st, &s, id, &b, "completato", Some("outcome"), Some(SetVal::Txt(outcome)), &["in_corso"]).await
+    let r = order_transition(&st, &s, id, &b, "completato", Some("outcome"), Some(SetVal::Txt(outcome)), &["in_corso"]).await?;
+    audit(&st, tid, &s.email, "order_complete", json!({"order":id})).await;
+    Ok(r)
 }
 pub async fn order_cancel(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
     let s = require_tenant(&st, &h).await?;
@@ -9294,9 +9370,11 @@ pub async fn order_attachment_get(State(st): State<AppState>, h: HeaderMap, Path
     -> Result<Response,(StatusCode,String)> {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
-    let row = sqlx::query("SELECT data,content_type FROM app.work_order_attachments WHERE id=$1 AND tenant_id=$2")
+    let row = sqlx::query("SELECT data,content_type,work_order_id FROM app.work_order_attachments WHERE id=$1 AND tenant_id=$2")
         .bind(aid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "allegato inesistente"))?;
+    // CA-1: foto, documenti e firme solo a chi può operare sull'ordine (come l'elenco allegati)
+    order_edit_allowed(&st, &s, row.get::<Uuid,_>("work_order_id")).await?;
     let data: Vec<u8> = row.get("data"); let ct: String = row.get("content_type");
     Ok(([(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, "private, max-age=3600".to_string())], data).into_response())
 }

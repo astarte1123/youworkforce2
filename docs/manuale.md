@@ -114,6 +114,8 @@ istruzioni, checklist, assegnatario.
 - **PWA «Oggi»**: il tecnico registra **arrivo** e **avvio**, spunta la **checklist**, scrive
   **report/ore/materiali**, carica **foto** (online), firma e invia; bozza testo offline in coda.
 - **Revisione** in console: esecuzione, report, allegati, firma.
+- **Chi opera sull'ordine**: avviano, completano e vedono gli allegati solo l'assegnatario, i
+  membri del gruppo assegnato e il pianificatore.
 - Indipendente da Consuntivi/Workforce. Vedi la sezione Campo in
   [console-ui-manuale](console-ui-manuale.md).
 
@@ -126,7 +128,12 @@ Modulo **giri**: giri di controllo per guardie/manutentori.
 - **Esecuzione** (PWA): avvio ronda, **punzonatura** di ogni checkpoint — scanner **QR/NFC nativo**
   (fotocamera/Web NFC) con fallback manuale, **GPS** per prossimità — progresso e chiusura con
   **compliance** (completato/incompleto).
-- **Revisione** in console: esito per checkpoint. Vedi [ronde-manuale](ronde-manuale.md).
+- **Punzonature affidabili**: la guardia non vede mai il codice atteso; per QR/NFC il codice lo
+  genera il sistema; ogni punzonatura registra come è stata fatta (scansione, tag NFC, digitata a
+  mano, automatica) e la distanza dal punto; il codice digitato e la punzonatura lontana dal punto
+  diventano anomalie a fine ronda; un giro può accettare solo la scansione; punzona solo chi esegue
+  la ronda; un tentativo fallito non cancella una punzonatura riuscita.
+- **Revisione** in console: esito per checkpoint, modo di punzonatura, tentativi. Vedi [ronde-manuale](ronde-manuale.md).
 
 ## 9. Consuntivi e turni
 

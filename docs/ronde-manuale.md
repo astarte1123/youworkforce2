@@ -14,6 +14,36 @@ interventi/consuntivi/workforce/loneworker, e viceversa. Additivo e non distrutt
 | `beacon` | idem (id beacon) |
 | `gps` | la posizione dell'operatore è entro `radius_m` dal punto (`lat`/`lon`), via haversine |
 
+## Integrità delle punzonature (mig `0134`, CA-2/CA-3)
+
+Una punzonatura deve provare che la guardia **era sul posto**. Regole:
+
+- **Il codice atteso non arriva mai alla guardia.** `GET /api/patrol-routes`, l'avvio ronda, la
+  punzonatura e il dettaglio ronda restituiscono `code` solo a chi ha la capability `plan`.
+- **Codici generati dal sistema.** Un checkpoint QR o NFC creato senza codice riceve un codice
+  casuale `YW-` + 16 caratteri (~80 bit): non si indovina e non si ricava dal nome. Va stampato
+  sull'etichetta QR o scritto sul tag NFC. Se il pianificatore inserisce un codice di meno di 10
+  caratteri la risposta contiene un `warning`. Per il beacon il codice è l'identificativo fisico e
+  resta obbligatorio. In modifica, un codice vuoto mantiene quello esistente.
+- **Metodo reale.** L'app dichiara come ha ottenuto il codice (`entry`): `scansione` (fotocamera),
+  `nfc` (tag avvicinato), `manuale` (digitato). Se manca vale `manuale`. Il digitato è salvato con
+  metodo `qr_manuale`/`nfc_manuale`, è valido ma a fine ronda genera l'anomalia
+  **«Codice digitato a mano»**. Le punzonature automatiche da dispositivo hanno `entry=auto`.
+- **Giro «solo scansione».** Con `manual_code_allowed=false` sul giro (casella *Consenti di digitare
+  il codice*) il codice digitato è rifiutato: «inserimento manuale non ammesso su questo giro».
+- **Solo chi esegue la ronda punzona.** Il pianificatore vede e chiude le ronde altrui ma non può
+  punzonare al posto di un'altra persona (403).
+- **Posizione come prova.** Se il checkpoint ha coordinate e l'app invia la posizione, la distanza
+  è salvata (`distance_m`); oltre `radius_m` a fine ronda c'è l'anomalia **«Punzonato lontano dal
+  punto»**. La punzonatura resta valida (il GPS al chiuso può essere impreciso).
+- **Un tentativo fallito non cancella un OK** (CA-3). Ogni tentativo incrementa `attempts`;
+  l'ultimo fallimento resta in `last_fail_at`/`last_fail_reason`. Il dettaglio ronda in console
+  mostra modo di punzonatura, distanza, numero di tentativi e motivo dell'ultimo fallito.
+
+Limite noto: un QR stampato fotografato una volta può essere riscansionato altrove. La distanza
+registrata e l'anomalia «lontano dal punto» lo rendono visibile; per i punti critici usare NFC o
+checkpoint GPS.
+
 ## Modello dati (mig `0075_patrols.sql`)
 
 - `patrol_routes(id, tenant_id, name, site_id?, window_minutes?, active, created_at)` —
@@ -21,8 +51,10 @@ interventi/consuntivi/workforce/loneworker, e viceversa. Additivo e non distrutt
 - `patrol_checkpoints(id, tenant_id, route_id, name, position, kind, code?, lat?, lon?, radius_m, geofence_id?)`.
 - `patrol_rounds(id, tenant_id, route_id, user_id, started_at, ended_at?, status)` —
   status `in_corso|completato|incompleto`.
-- `patrol_punches(id, tenant_id, round_id, checkpoint_id, user_id, punched_at, method, lat?, lon?, ok, note)` —
-  UNIQUE(round_id,checkpoint_id) (una punzonatura per checkpoint, l'ultima vince).
+- `patrol_punches(id, tenant_id, round_id, checkpoint_id, user_id, punched_at, method, lat?, lon?, ok, note,
+  entry, attempts, last_fail_at?, last_fail_reason?, distance_m?)` — UNIQUE(round_id,checkpoint_id): una
+  punzonatura per checkpoint; un esito OK non viene mai sovrascritto da un tentativo fallito (mig 0134).
+- `patrol_routes.manual_code_allowed` (default true, mig 0134): ammette il codice digitato.
 
 Tutte RLS `tenant_isolation` + GRANT app_rt; FK CASCADE. Il modulo è registrato in
 `modules_catalog` (code `giri`).
@@ -34,26 +66,27 @@ Configurazione (richiede modulo `giri` + capability `plan`/is_planner):
 | Metodo | Rotta | Azione |
 |---|---|---|
 | GET | `/api/patrol-routes` | giri + checkpoint |
-| POST | `/api/patrol-routes` | crea giro `{name, site_id?, window_minutes?}` |
-| POST | `/api/patrol-routes/:id` | aggiorna `{name, site_id?, window_minutes?, active?}` |
+| POST | `/api/patrol-routes` | crea giro `{name, site_id?, window_minutes?, manual_code_allowed?}` |
+| POST | `/api/patrol-routes/:id` | aggiorna `{name, site_id?, window_minutes?, active?, manual_code_allowed?}` |
 | DELETE | `/api/patrol-routes/:id` | elimina (cascade) |
-| POST | `/api/patrol-routes/:id/checkpoints` | aggiungi `{name, kind, code?/lat?/lon?/radius_m?}` |
+| POST | `/api/patrol-routes/:id/checkpoints` | aggiungi `{name, kind, code?/lat?/lon?/radius_m?}` → `{id, code, generated, warning?}` |
 | POST | `/api/patrol-routes/:id/checkpoints/import` | **riusa** un checkpoint esistente copiandolo `{source_checkpoint_id}` |
 | POST | `/api/patrol-checkpoints/:id` | aggiorna checkpoint |
 | DELETE | `/api/patrol-checkpoints/:id` | elimina checkpoint |
 
 Esecuzione (richiede modulo `giri`; qualunque utente del tenant; il pianificatore vede tutte le
-ronde, gli altri solo le proprie):
+ronde, gli altri solo le proprie; punzona solo chi esegue la ronda):
 
 | Metodo | Rotta | Azione |
 |---|---|---|
 | POST | `/api/patrol-routes/:id/rounds` | avvia una ronda (ritorna checkpoint + progresso) |
 | GET | `/api/patrol-rounds` | elenco ronde |
 | GET | `/api/patrol-rounds/:id` | dettaglio + punzonature + compliance (`done`/`total`) |
-| POST | `/api/patrol-rounds/:id/punch` | punzona `{checkpoint_id, code?/lat?/lon?, note?}` → `{ok, reason, round}` |
+| POST | `/api/patrol-rounds/:id/punch` | punzona `{checkpoint_id, code?, entry?, lat?, lon?, note?}` → `{ok, reason, round}` |
 | POST | `/api/patrol-rounds/:id/close` | chiudi → `completato` se tutti i punti OK entro la finestra, altrimenti `incompleto` |
 
-Validazione: tipo fuori catalogo → 400; gps senza coord → 400; qr/nfc/beacon senza codice → 400.
+Validazione: tipo fuori catalogo → 400; gps senza coord → 400; beacon senza identificativo → 400
+(QR/NFC senza codice: generato dal sistema).
 
 ## UI
 
@@ -67,8 +100,10 @@ Validazione: tipo fuori catalogo → 400; gps senza coord → 400; qr/nfc/beacon
   - **NFC**: lettura tag **nativa** (`NDEFReader`, Web NFC su Android/Chrome).
   - **beacon**: inserimento codice manuale.
   - **GPS**: geolocalizzazione del browser.
-  - Dove lo scanner non è supportato (browser/permessi), si ripiega automaticamente sull'input
-    manuale del codice. La verifica resta lato server (match codice / distanza GPS).
+  - Dove lo scanner non è supportato (browser/permessi), si ripiega sull'input manuale del codice
+    scritto sul punto, registrato come «codice digitato a mano»; sui giri «solo scansione»
+    l'app non lo propone. Con QR/NFC l'app invia anche la posizione se disponibile entro 4 s.
+    La verifica resta lato server (match codice / distanza GPS).
 
 ## Prove
 
@@ -76,6 +111,11 @@ Validazione: tipo fuori catalogo → 400; gps senza coord → 400; qr/nfc/beacon
 ronda, punch QR ok/ko, punch GPS dentro/fuori raggio, chiusura completato/incompleto, compliance
 2/2, isolamento tenant, gating modulo off → 403. Regressione verde (field-slice1 8, custom-roles
 16, loneworker 15).
+
+`qa/field-integrity-e2e.sh` **25/25** (mig 0134): codice mai inviato alla guardia, codice
+generato, avviso su codice corto, metodo reale, digitato = anomalia, giro solo scansione, tentativo
+fallito che non declassa l'OK, pianificatore che non punzona per altri, distanza dal punto; più
+la parte ordini (CA-1/CA-7, vedi `lavoro-campo-modalita.md`).
 
 ## Perimetro
 

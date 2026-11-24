@@ -18,7 +18,10 @@ sgancia soltanto (SET NULL).
   (e `clear_group` in edit). Un ordine con assegnatario (utente **o** gruppo) passa a `assegnato`.
 - **Assegna a gruppo**: `POST /orders/:id/assign-group {version, group_id}` (solo pianificatore).
 - **ACL esecuzione** (`order_edit_allowed`): consentita a pianificatore **o** assegnatario
-  **o** membro del gruppo assegnato. Vale per arrivo/avvio/rapporto/allegati.
+  **o** membro del gruppo assegnato. Vale per arrivo, **avvio, completamento** (CA-1/CA-7: prima
+  il completamento era aperto a chiunque nel tenant e l'avvio escludeva i membri del gruppo),
+  rapporto, elenco e **lettura** degli allegati. Ogni transizione d'ordine (anche assegna/annulla)
+  richiede il modulo `interventi` attivo. Test: `qa/field-integrity-e2e.sh`.
 - **Visibilità** (`GET /orders`): il `lavoratore` vede i propri ordini **e** quelli assegnati a
   un gruppo di cui è membro. Pianificatore/admin/auditor vedono tutto (come prima).
 - La risposta espone `assigned_group` e `group_name`.
