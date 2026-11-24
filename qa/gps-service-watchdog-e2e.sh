@@ -23,8 +23,8 @@ prev(){ one "SELECT COALESCE((SELECT state FROM app.tenant_modules WHERE tenant_
 setm(){ sql "INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES('$TID','$1','$2') ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='$2'" >/dev/null; }
 P_GPS=$(prev gps); P_LW=$(prev loneworker); setm gps attivo; setm loneworker attivo
 P_CFG=$(sql "SELECT config::text FROM app.tenant_module_config WHERE tenant_id='$TID' AND module_code='gps' AND tool_code='alarm_map'")
-sql "INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config) VALUES('$TID','gps','alarm_map','{\"silence_after_s\":600}')
-     ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config = app.tenant_module_config.config || '{\"silence_after_s\":600}'::jsonb" >/dev/null
+sql "INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config) VALUES('$TID','gps','alarm_map','{\"silence_after_s\":600,\"silence_shift_only\":\"no\"}')
+     ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config = app.tenant_module_config.config || '{\"silence_after_s\":600,\"silence_shift_only\":\"no\"}'::jsonb" >/dev/null
 J=$(mktemp); curl -s -o /dev/null -c "$J" -X POST "$BASE/api/login" -H 'content-type: application/json' -H "x-tenant-slug: $SLUG" -d '{"email":"admin@globex.loneworker.eu","password":"demo"}'
 CS=$(awk '$6=="yw_csrf"{print $7}' "$J"|tail -1)
 A(){ curl -s -b "$J" -H "x-tenant-slug: $SLUG" -H "x-csrf-token: $CS" -H 'content-type: application/json' "$@"; }

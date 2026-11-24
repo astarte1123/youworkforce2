@@ -70,41 +70,66 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
 // ============================================================================
 pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
     let now = st.clock.now();
+    // Q4 (PO 24/11/2026): silenzio sorvegliato solo durante il turno; vale anche per l'app.
+    // Turno = turno aperto nell'app, oppure (solo badge) un turno pianificato che copre adesso.
     let rows = sqlx::query(
-        "SELECT d.tenant_id, d.external_id, d.last_lat, d.last_lon, d.last_seen_at, d.last_pos_at,
-                d.silence_armed_at, GREATEST(d.last_seen_at, d.silence_armed_at) AS silence_ref
+        "SELECT d.tenant_id, d.source, d.external_id, d.last_lat, d.last_lon, d.last_seen_at, d.last_pos_at,
+                d.silence_armed_at, sh.since AS shift_since
          FROM app.devices d
-         JOIN app.tenant_modules m ON m.tenant_id=d.tenant_id AND m.module_code='gps' AND m.state='attivo'
          JOIN app.tenants tn ON tn.id=d.tenant_id AND tn.status<>'sospeso'
-         WHERE d.source='gps' AND d.service_state='in_servizio' AND COALESCE(d.enabled,true)
-           AND d.assigned_user IS NOT NULL AND d.silence_armed_at IS NOT NULL")
-        .fetch_all(&st.owner_pool).await?;
-    let mut threshold: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
+         LEFT JOIN LATERAL (SELECT min(x) AS since FROM (
+               SELECT s.started_at AS x FROM app.shifts s
+                WHERE s.tenant_id=d.tenant_id AND s.user_id=d.assigned_user AND s.state='in_corso'
+               UNION ALL
+               SELECT p.starts_at FROM app.shift_plans p
+                WHERE d.source='gps' AND p.tenant_id=d.tenant_id AND p.user_id=d.assigned_user
+                  AND p.state<>'annullato' AND p.starts_at <= $1 AND p.ends_at > $1) q) sh ON true
+         WHERE COALESCE(d.enabled,true) AND d.assigned_user IS NOT NULL AND (
+               (d.source='gps' AND d.service_state='in_servizio' AND d.silence_armed_at IS NOT NULL
+                AND EXISTS (SELECT 1 FROM app.tenant_modules m WHERE m.tenant_id=d.tenant_id AND m.module_code='gps' AND m.state='attivo'))
+            OR (d.source='pwa' AND sh.since IS NOT NULL
+                AND EXISTS (SELECT 1 FROM app.tenant_modules m WHERE m.tenant_id=d.tenant_id AND m.module_code='loneworker' AND m.state='attivo')
+                -- chi ha un badge in servizio è sorvegliato dal badge: l'app non raddoppia gli allarmi
+                AND NOT EXISTS (SELECT 1 FROM app.devices g WHERE g.tenant_id=d.tenant_id AND g.assigned_user=d.assigned_user
+                                  AND g.source='gps' AND g.service_state='in_servizio' AND COALESCE(g.enabled,true))))")
+        .bind(now).fetch_all(&st.owner_pool).await?;
+    let mut gcfg: std::collections::HashMap<Uuid, (i64, bool)> = std::collections::HashMap::new();
+    let mut acfg: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
     for r in rows {
         let tid: Uuid = r.get("tenant_id");
-        let after = match threshold.get(&tid) {
-            Some(v) => *v,
-            None => {
+        let source: String = r.get("source");
+        let app = source == "pwa";
+        let shift_since: Option<DateTime<Utc>> = r.try_get("shift_since").ok().flatten();
+        let last: Option<DateTime<Utc>> = r.try_get("last_seen_at").ok().flatten();
+        let last_pos: Option<DateTime<Utc>> = r.try_get("last_pos_at").ok().flatten();
+        let armed: Option<DateTime<Utc>> = r.try_get("silence_armed_at").ok().flatten();
+        let (after, reference) = if app {
+            let after = match acfg.get(&tid) { Some(v) => *v, None => {
+                let v = api::tool_config(st, tid, "loneworker", "app_silence").await
+                    .get("app_silence_after_s").and_then(|v| v.as_i64()).unwrap_or(900);
+                acfg.insert(tid, v); v } };
+            // l'app conta dall'ultimo segno di vita (battito o posizione) o dall'inizio del turno
+            (after, [last, last_pos, shift_since].into_iter().flatten().max())
+        } else {
+            let (after, shift_only) = match gcfg.get(&tid) { Some(v) => *v, None => {
                 let cfg = api::tool_config(st, tid, "gps", "alarm_map").await;
-                let v = cfg.get("silence_after_s").and_then(|v| v.as_i64()).unwrap_or(600);
-                threshold.insert(tid, v);
-                v
-            }
+                let v = (cfg.get("silence_after_s").and_then(|v| v.as_i64()).unwrap_or(600),
+                         cfg.get("silence_shift_only").and_then(|v| v.as_str()).map(|s| s != "no").unwrap_or(true));
+                gcfg.insert(tid, v); v } };
+            if shift_only && shift_since.is_none() { continue; } // fuori turno: non sorvegliato
+            (after, [last, armed, if shift_only { shift_since } else { None }].into_iter().flatten().max())
         };
         if after <= 0 { continue; }
-        let last: Option<DateTime<Utc>> = r.try_get("last_seen_at").ok().flatten();
-        let armed: DateTime<Utc> = r.get("silence_armed_at");
-        let reference: DateTime<Utc> = r.try_get("silence_ref").ok().unwrap_or(armed);
+        let Some(reference) = reference else { continue; };
         let Some(silent_for) = silence_exceeded(now, reference, after) else { continue; };
-        let last_pos: Option<DateTime<Utc>> = r.try_get("last_pos_at").ok().flatten();
         let ext: String = r.get("external_id");
-        let srcev = format!("gps-silence-{}-{}", ext, reference.timestamp_millis());
+        let srcev = format!("{}-silence-{}-{}", if app { "app" } else { "gps" }, ext, reference.timestamp_millis());
         // già segnalato questo episodio? (evita una scrittura per tick per ogni device silente)
         let seen: Option<i32> = sqlx::query_scalar("SELECT 1 FROM app.events WHERE tenant_id=$1 AND idem_key=$2")
             .bind(tid).bind(&srcev).fetch_optional(&st.owner_pool).await?;
         if seen.is_some() { continue; }
         let res = api::persist_ingest(st, tid, api::Normalized{
-            source: "gps".into(),
+            source: source.clone(),
             source_event: srcev.clone(),
             idem: srcev.clone(),
             etype: "perdita_contatto".into(),
@@ -112,8 +137,9 @@ pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
             site_name: None,
             lat: r.try_get("last_lat").ok(), lon: r.try_get("last_lon").ok(), accuracy_m: None,
             correlation: srcev,
-            payload: json!({"watchdog":"silenzio","last_seen_at":last,"last_pos_at":last_pos,
-                "armed_from":armed,"never_seen":last.is_none(),
+            payload: json!({"watchdog":"silenzio","channel": if app { "app" } else { "badge" },
+                "last_seen_at":last,"last_pos_at":last_pos,"shift_since":shift_since,
+                "armed_from":armed,"never_seen":last.is_none() && last_pos.is_none(),
                 "silence_after_s":after,"silent_for_s":silent_for}),
             indoor: false, beacon_uid: None, zone: None,
         }).await;

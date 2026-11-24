@@ -79,9 +79,8 @@ function app(){
 
     <div class="card"><div class="card-b" id="ciBox"></div></div>`:''}
 
-    ${MODS.has('workforce')?`<div><h3 style="margin:4px 2px 10px">Turno</h3><div class="card"><div class="card-b" id="shiftBox"></div></div></div>
-
-    <div><h3 style="margin:4px 2px 10px">Turni pianificati</h3><div id="plansBox" class="col"></div></div>`:''}
+    ${(MODS.has('workforce')||MODS.has('loneworker'))?`<div><h3 style="margin:4px 2px 10px">Turno</h3><div class="card"><div class="card-b" id="shiftBox"></div></div></div>`:''}
+    ${MODS.has('workforce')?`<div><h3 style="margin:4px 2px 10px">Turni pianificati</h3><div id="plansBox" class="col"></div></div>`:''}
 
     ${MODS.has('interventi')?`<div><h3 style="margin:4px 2px 10px">Oggi · ordini assegnati</h3><div id="orders" class="col"></div></div>`:''}
 
@@ -96,9 +95,9 @@ function app(){
     <div class="small mut center" style="margin-top:8px">Input manuale sempre disponibile. La dettatura usa il riconoscimento vocale del browser; se assente o negato, scrivi a mano.</div>
     <div id="diaryList" class="col" style="gap:8px;margin-top:10px"></div></div>`:''}
   </div>`;
-  if(safetyWorker()){ renderCheckin(); renderTracking(); restoreCI(); immPoll(); }
+  if(safetyWorker()){ renderCheckin(); renderTracking(); restoreCI(); immPoll(); hbTick(); }
   if(MODS.has('interventi')) loadOrders();
-  if(MODS.has('workforce')){ renderShift(); loadPlans(); }
+  if(MODS.has('workforce')||MODS.has('loneworker')) renderShift(); if(MODS.has('workforce')) loadPlans();
   if(fieldDiary()){ loadDiary(); flushNotes(); }
   loadPatrols();
   // ripristina la condivisione posizione se era attiva (solo se safety attivo)
@@ -176,6 +175,16 @@ function immShow(sec){
 }
 function immHide(){ const m=document.getElementById('immModal'); if(m) m.remove(); IMM_SHOWN=false; }
 async function immOk(){ try{ await api('/worker/immobility/ok',{method:'POST'}); immHide(); toast('Grazie, conteggio azzerato','ok'); }catch(e){ toast('Errore: '+e.message,'bad'); } }
+// Q4: battito dell'app (~ogni minuto). Durante il turno, se l'app tace oltre la soglia (telefono
+// spento/scarico/senza rete, app chiusa) si apre una Perdita di contatto; si chiude al ritorno.
+let HB_TIMER=null, HB_STATE=null;
+async function hbTick(){
+  try{ HB_STATE=await api('/worker/heartbeat',{method:'POST',body:'{}'}); }catch(e){ HB_STATE=null; }
+  const n=$('#hbNote'); if(n) n.innerHTML=hbNote();
+  clearTimeout(HB_TIMER); HB_TIMER=setTimeout(hbTick,60000);
+}
+function hbNote(){ const h=HB_STATE; if(!h||!h.monitored) return '';
+  return `<div class="small mut" style="margin-top:6px">🛡 Durante il turno l'app è sorvegliata: tienila aperta e il telefono acceso. Se tace per più di ${Math.round(h.silence_after_s/60)} min parte un allarme di perdita di contatto.</div>`; }
 async function immPoll(){
   try{ const r=await api('/worker/immobility');
     if(r.state==='preavviso'){ immShow(r.alarm_in_s); const s=document.getElementById('immSec'); if(s) s.textContent=r.alarm_in_s; }
@@ -448,7 +457,7 @@ async function renderShift(){
     const el=s.elapsed_minutes||0, h=Math.floor(el/60), m=el%60;
     const warn=s.over_max?`<div class="small" style="color:var(--bad,#c0392b);margin:6px 0 0">⚠ Oltre il massimo di ${s.max_hours}h — considera la chiusura</div>`:'';
     b.innerHTML=`<div class="spread"><b>Turno in corso</b><span class="chip ${s.over_max?'':'s-attivo'}">${s.over_max?'oltre soglia':'confermato dal server'}</span></div>
-      <div class="small mut" style="margin:6px 0 2px">Iniziato alle ${t} · ${h}h ${m}m (max ${s.max_hours}h)</div>${warn}
+      <div class="small mut" style="margin:6px 0 2px">Iniziato alle ${t} · ${h}h ${m}m (max ${s.max_hours}h)</div>${warn}<div id="hbNote">${hbNote()}</div>
       <button class="btn block" style="margin-top:12px" onclick="shiftEnd()">${ICON.stop} Termina turno</button>`;
   } else {
     b.innerHTML=`<div class="spread"><b>Turno</b><span class="chip">non iniziato</span></div>
@@ -457,7 +466,7 @@ async function renderShift(){
 }
 async function shiftStart(){ try{ const r=await api('/shifts/start',{method:'POST',body:'{}'});
   toast(r.reused?'Turno già in corso':'Turno iniziato (confermato dal server)','ok'); renderShift();
-  startTracking(true); }catch(e){toast(e.message,'bad');} }
+  startTracking(true); if(safetyWorker()) hbTick(); }catch(e){toast(e.message,'bad');} }
 async function shiftEnd(){ try{ await api('/shifts/end',{method:'POST'}); toast('Turno terminato (confermato dal server)','ok'); renderShift();
   stopTracking(true); }catch(e){toast(e.message,'bad');} }
 

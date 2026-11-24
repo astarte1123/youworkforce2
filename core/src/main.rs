@@ -94,6 +94,7 @@ fn extra_routes() -> Router<AppState> {
     Router::new()
         // #7 GDPR
         .route("/api/gdpr/export/:uid", get(privacy::gdpr_export))
+        .route("/api/worker/heartbeat", post(api::worker_heartbeat))
         .route("/api/gdpr/anonymize/:uid", post(privacy::gdpr_anonymize))
         .route("/api/dashboard/layout", get(dashboard::dashboard_layout_get).put(dashboard::dashboard_layout_set))
         .route("/api/gdpr/retention", get(privacy::gdpr_retention_info))

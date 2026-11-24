@@ -172,6 +172,38 @@ lavoratore non è più protetto). Lo controlla il worker ogni ~10 s (`worker::gp
   Prima del deploy `qa/sql/check-badge-0128.sql` (sola lettura) elenca per ogni badge lo stato
   dopo la 0128 e l'azione per il responsabile operativo; collaudo: `docs/collaudo-staging-gps.md`.
 
+#### Turno, chiusura automatica e app (Q4, mig `0137`, decisione PO 24/11/2026)
+
+- **Solo durante il turno.** Il silenzio di un badge in servizio è sorvegliato solo mentre il
+  lavoratore assegnato è **in turno**: turno aperto nell'app (`app.shifts` in corso) **oppure**
+  turno pianificato che copre l'istante attuale (`app.shift_plans`, non annullato). Impostazione
+  `silence_shift_only` dello strumento *gps / alarm_map* (default **`si`**; `no` = sorvegliato
+  sempre, comportamento precedente). Il conteggio parte da **GREATEST(ultimo contatto, messa in
+  servizio, inizio turno)**: a inizio turno un badge spento fa scattare l'allarme alla soglia.
+  La scheda del badge mostra **«fuori turno · silenzio non sorvegliato»** (`in_shift`,
+  `silence_shift_only` in `GET /api/devices`).
+  - Attenzione: con `si` un'azienda che non usa né i turni dell'app né la pianificazione **non
+    riceve allarmi di silenzio**. In quel caso impostare `no`.
+  - Il turno nell'app si apre con il modulo **Gestione turni** oppure **Lone Worker** (prima solo
+    Gestione turni).
+- **Chiusura automatica.** Quando il dispositivo torna in linea (qualunque pacchetto del badge, o
+  un segno di vita dell'app) gli incidenti `perdita_contatto` aperti dal watchdog per quel
+  dispositivo si chiudono da soli: esito *«rientrato: il dispositivo è di nuovo in linea»*, voce in
+  timeline `by: sistema, auto: true`, audit `incident_auto_close`, avviso di chiusura a chi era
+  coinvolto nell'escalation (`api::silence_auto_close`). Il controllo scatta solo se il contatto
+  precedente era più vecchio di 30 s (nessun costo per pacchetto).
+- **App del lavoratore.** Durante il turno l'app invia un battito ogni minuto
+  (`POST /api/worker/heartbeat`; anche ogni posizione conta come segno di vita). Se tace oltre
+  `app_silence_after_s` (strumento *loneworker / Silenzio dell'app*, default **900 s**, `0` =
+  disattivo) si apre `perdita_contatto` sul dispositivo app (`source='pwa'`, correlazione
+  `app-silence-…`); si chiude al battito successivo. Fuori turno l'app non è sorvegliata. Chi ha
+  un **badge in servizio** è sorvegliato dal badge: l'app non genera un secondo allarme. L'app
+  mostra durante il turno l'avviso «tienila aperta e il telefono acceso».
+  - Limite: un'app web su telefono bloccato o in background può essere sospesa dal sistema
+    operativo e smettere di inviare il battito; per questo la soglia dell'app è più lunga di
+    quella del badge. Per chi lavora da solo in aree a rischio resta consigliato il badge.
+- e2e `qa/silence-shift-e2e.sh` **17/17**.
+
 ### Policy eventi
 
 Per gli eventi diversi da SOS / caduta / immobilità / perdita di contatto (eccesso di velocità,

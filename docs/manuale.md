@@ -96,6 +96,20 @@ Pagina **Dispositivi & app**: censimento, assegnazione a lavoratore/asset/area, 
 - Un incidente **senza sede** è visibile a **tutti** gli operatori, anche a quelli ristretti per sede.
 e2e: `qa/checkin-sos-attribution-e2e.sh`.
 
+**Perdita di contatto: in turno, si chiude da sola, anche per l'app (Q4).**
+- Un badge in servizio che tace oltre la soglia apre l'allarme **Perdita di contatto** solo mentre
+  il lavoratore è **in turno** (turno aperto nell'app o pianificato). Fuori turno la scheda del
+  badge lo dice: «fuori turno · silenzio non sorvegliato». Chi non usa i turni può tornare al
+  controllo continuo in *Collegamento dispositivi → Soglie e allarmi*.
+- Quando il badge torna in linea l'allarme **si chiude da solo** (esito «rientrato») e chi era
+  stato avvisato riceve la chiusura.
+- Anche l'**app** è sorvegliata durante il turno (soglia di default 15 minuti, modulo Lone Worker →
+  «Silenzio dell'app»), salvo chi ha già un badge in servizio. Il turno nell'app si apre anche con
+  il solo modulo Lone Worker.
+- **Badge che non si collega**: nella scheda, riquadro **Collegamento** con «verifica ora»: dice se
+  il badge è collegato adesso o se viene rifiutato e perché. Il superadmin vede tutti i badge
+  rifiutati in *Sistema → Dispositivi rifiutati*.
+
 - **Device Onboarding Kit (DOK)**: crea in un colpo tutto ciò che serve per un dispositivo (o N
   dispositivi via CSV), per tipologia d'uso.
 - **Canali di ricezione dati**:

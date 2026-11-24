@@ -2344,6 +2344,14 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
             .map(|r| (r.get::<String,_>("identity"), (r.get::<String,_>("reason"), r.get::<chrono::DateTime<chrono::Utc>,_>("last_at"), r.get::<i32,_>("attempts"))))
             .collect() };
     let tid0 = s.tenant_id.unwrap();
+    // Q4: lavoratori in turno adesso (turno aperto o pianificato): la scheda dice se il silenzio è sorvegliato
+    let now0 = st.clock.now();
+    let on_shift: std::collections::HashSet<Uuid> = sqlx::query_scalar::<_, Uuid>(
+        "SELECT user_id FROM app.shifts WHERE tenant_id=$1 AND state='in_corso'
+         UNION SELECT user_id FROM app.shift_plans WHERE tenant_id=$1 AND state<>'annullato' AND starts_at <= $2 AND ends_at > $2")
+        .bind(tid0).bind(now0).fetch_all(&st.owner_pool).await.unwrap_or_default().into_iter().collect();
+    let shift_only = tool_config(&st, tid0, "gps", "alarm_map").await
+        .get("silence_shift_only").and_then(|v| v.as_str()).map(|s| s != "no").unwrap_or(true);
     let out: Vec<Value> = rows.iter()
         .filter(|r| site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok()))
         .map(|r| json!({
@@ -2370,7 +2378,10 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
         "silence_after_s": silence_after_s,
         "service_state": r.try_get::<String,_>("service_state").ok(),
         "silence_armed_at": r.try_get::<chrono::DateTime<chrono::Utc>,_>("silence_armed_at").ok(),
-        "prov_step": r.try_get::<String,_>("prov_step").ok() })).map(|mut v| { device_link_fields(&mut v, tid0, &rejected); v }).collect();
+        "prov_step": r.try_get::<String,_>("prov_step").ok() })).map(|mut v| { device_link_fields(&mut v, tid0, &rejected);
+            let on = v.get("assigned_user").and_then(|x| x.as_str()).and_then(|x| Uuid::parse_str(x).ok()).map(|u| on_shift.contains(&u)).unwrap_or(false);
+            if let Some(o) = v.as_object_mut() { o.insert("in_shift".into(), json!(on)); o.insert("silence_shift_only".into(), json!(shift_only)); }
+            v }).collect();
     Ok(Json(json!(out)))
 }
 #[derive(Deserialize)]
@@ -7466,10 +7477,70 @@ pub async fn patrol_auto_punch(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, t
 /// Registra l'ultimo contatto con un dispositivo (qualsiasi pacchetto, anche senza fix GPS).
 /// Alimenta il watchdog nativo del silenzio (`worker::gps_silence_watchdog`).
 pub async fn touch_device_seen(st: &AppState, tid: Uuid, source: &str, ext: &str) {
-    if let Err(e) = sqlx::query("UPDATE app.devices SET last_seen_at=$4 WHERE tenant_id=$1 AND source=$2 AND external_id=$3")
-        .bind(tid).bind(source).bind(ext).bind(st.clock.now()).execute(&st.owner_pool).await {
-        tracing::warn!("touch_device_seen {ext}: {e}");
+    let now = st.clock.now();
+    // ritorna il contatto PRECEDENTE: se il dispositivo era silente, chiude la perdita di contatto
+    let prev = sqlx::query_scalar::<_, Option<chrono::DateTime<chrono::Utc>>>(
+        "WITH o AS (SELECT id, last_seen_at AS old FROM app.devices WHERE tenant_id=$1 AND source=$2 AND external_id=$3 FOR UPDATE)
+         UPDATE app.devices d SET last_seen_at=$4 FROM o WHERE d.id=o.id RETURNING o.old")
+        .bind(tid).bind(source).bind(ext).bind(now).fetch_optional(&st.owner_pool).await;
+    match prev {
+        Err(e) => tracing::warn!("touch_device_seen {ext}: {e}"),
+        Ok(Some(old)) => if old.map(|o| (now - o).num_seconds() > 30).unwrap_or(true) {
+            // stesso prefisso di correlazione del watchdog (worker.rs): badge "gps-", app "app-"
+            let ch = if source == "pwa" { "app" } else { source };
+            silence_auto_close(st, tid, &format!("{ch}-silence-{ext}-")).await;
+        },
+        Ok(None) => {}
     }
+}
+/// Q4 (PO 24/11/2026): la perdita di contatto si chiude da sola quando il dispositivo torna in
+/// linea. Chiude gli incidenti `perdita_contatto` aperti dal watchdog per quel dispositivo
+/// (correlazione `<canale>-silence-<id>-…`), con traccia in timeline e avviso a chi era stato
+/// coinvolto. Sempre con tenant_id esplicito (owner_pool bypassa RLS).
+pub async fn silence_auto_close(st: &AppState, tid: Uuid, prefix: &str) {
+    let now = st.clock.now();
+    let outcome = "rientrato: il dispositivo è di nuovo in linea";
+    let rows = match sqlx::query(
+        "UPDATE app.incidents SET state='chiuso', outcome=$3, closed_at=$4, version=version+1
+          WHERE tenant_id=$1 AND etype='perdita_contatto' AND state<>'chiuso' AND left(correlation, length($2))=$2
+          RETURNING id, correlation")
+        .bind(tid).bind(prefix).bind(outcome).bind(now).fetch_all(&st.owner_pool).await {
+        Ok(r) => r, Err(e) => { tracing::warn!("silence_auto_close {prefix}: {e}"); return; } };
+    for r in rows {
+        let iid: Uuid = r.get("id"); let corr: String = r.get("correlation");
+        let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'transition',$3)")
+            .bind(tid).bind(iid).bind(json!({"to":"chiuso","outcome":outcome,"by":"sistema","auto":true,"back_at":now}))
+            .execute(&st.owner_pool).await;
+        let _ = sqlx::query("INSERT INTO app.outbox(tenant_id,kind,payload) VALUES($1,'close',$2)")
+            .bind(tid).bind(json!({"incident_id":iid,"summary":format!("close {corr}"),"dedup":corr,"etype":"perdita_contatto"}))
+            .execute(&st.owner_pool).await;
+        audit(st, tid, "sistema", "incident_auto_close", json!({"incident_id":iid,"motivo":"dispositivo di nuovo in linea"})).await;
+        publish_event(st, TenantEvent{tenant_id:tid,payload:json!({"type":"incident_closed","incident_id":iid,"auto":true})}).await;
+        esc_status_update_notify(st, tid, iid, None, "sistema (dispositivo di nuovo in linea)", "close").await;
+    }
+}
+/// Segno di vita dell'app del lavoratore: aggiorna l'ultimo contatto del SUO dispositivo app
+/// (mai di un badge, che ha la sua sorveglianza) e chiude un'eventuale perdita di contatto.
+async fn app_seen(st: &AppState, tid: Uuid, dev_id: Uuid) {
+    let ext: Option<String> = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE tenant_id=$1 AND id=$2 AND source='pwa'")
+        .bind(tid).bind(dev_id).fetch_optional(&st.owner_pool).await.ok().flatten();
+    if let Some(ext) = ext { touch_device_seen(st, tid, "pwa", &ext).await; }
+}
+/// App del lavoratore: battito (~ogni minuto). Dice anche se l'app è sorvegliata adesso.
+pub async fn worker_heartbeat(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "loneworker").await?;
+    let (dev_id, _ext) = worker_app_device(&st, tid, s.user_id, &s.email).await?;
+    app_seen(&st, tid, dev_id).await;
+    let in_shift: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app.shifts WHERE tenant_id=$1 AND user_id=$2 AND state='in_corso')")
+        .bind(tid).bind(s.user_id).fetch_one(&st.owner_pool).await.map_err(ise)?;
+    let badge: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app.devices WHERE tenant_id=$1 AND assigned_user=$2 AND source='gps' AND service_state='in_servizio' AND COALESCE(enabled,true))")
+        .bind(tid).bind(s.user_id).fetch_one(&st.owner_pool).await.map_err(ise)?;
+    let after = tool_config(&st, tid, "loneworker", "app_silence").await
+        .get("app_silence_after_s").and_then(|v| v.as_i64()).unwrap_or(900);
+    Ok(Json(json!({"ok":true, "monitored": in_shift && !badge && after > 0, "in_shift": in_shift,
+        "badge_in_service": badge, "silence_after_s": after})))
 }
 
 pub async fn process_gps_position(st: &AppState, tid: Uuid, pos: &Value, ext: &str) -> anyhow::Result<Value> {
@@ -7860,6 +7931,7 @@ pub async fn worker_position(State(st): State<AppState>, h: HeaderMap, Json(b): 
     let battery = b.get("battery").and_then(|v| v.as_f64());
     let now = st.clock.now();
     let (dev_id, _ext) = worker_app_device(&st, tid, s.user_id, &s.email).await?;
+    app_seen(&st, tid, dev_id).await; // Q4: segno di vita dell'app
     immobility_note_movement(&st, tid, dev_id, lat, lon, None, now).await; // SL-2
     let src_id = format!("pwa-{}", now.timestamp_millis());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -8016,7 +8088,10 @@ type Dt = chrono::DateTime<chrono::Utc>;
 pub async fn shift_start(State(st): State<AppState>, h: HeaderMap, Json(b): Json<serde_json::Value>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
-    if !module_active(&st, tid, "workforce").await { return Err(err(StatusCode::FORBIDDEN, "modulo workforce non abilitato")); }
+    // Q4: il turno serve anche alla sicurezza (silenzio e immobilità si sorvegliano in turno):
+    // si apre con Gestione turni OPPURE con Lone Worker attivo.
+    if !module_active(&st, tid, "workforce").await && !module_active(&st, tid, "loneworker").await {
+        return Err(err(StatusCode::FORBIDDEN, "turni non disponibili: serve il modulo Gestione turni o Lone Worker")); }
     let note = b.get("note").and_then(|v| v.as_str());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // idempotent: an already-open shift is returned instead of erroring (double-tap safe)

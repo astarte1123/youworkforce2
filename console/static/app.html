@@ -3843,6 +3843,7 @@ async function devLinkCheck(id){ const box=$('#devLink'); if(box) box.innerHTML=
 // Stessa regola del watchdog del silenzio: soglia silence_after_s del tenant (0 = controllo spento).
 function devOnlineChip(d){
   if(d.service_state&&d.service_state!=='in_servizio') return `<span class="chip" title="non monitorato">${SERVICE_LABELS[d.service_state]||esc(d.service_state)}</span>`;
+  if(d.silence_shift_only && d.assigned_user && !d.in_shift) return '<span class="chip" title="Il silenzio del badge è sorvegliato solo durante il turno del lavoratore (turno aperto nell'app o pianificato). Ora il lavoratore non è in turno: nessun allarme di perdita di contatto.">fuori turno · silenzio non sorvegliato</span>';
   if(!d.last_seen_at) return '<span class="chip s-critico" title="in servizio: allarme alla soglia se non si collega">in servizio · mai collegato</span>';
   const secs=(Date.now()-new Date(d.last_seen_at).getTime())/1000;
   const lim=Number.isFinite(+d.silence_after_s)?+d.silence_after_s:600;
@@ -3964,7 +3965,7 @@ async function vConnettori(v){
       <div><div class="small mut">In servizio (monitorati)</div><b>${monitored.length}</b></div>
       <div><div class="small mut">Assegnati non in servizio</div><b>${waiting.length}</b></div>
       <div><div class="small mut">Allarme se silenzioso da</div><b>${silence>0?Math.round(silence/60)+' min':'disattivato'}</b></div></div>
-    <div class="small mut" style="margin-top:var(--s-8)">Un badge <b>in servizio</b> che smette di trasmettere (spento, scarico, senza copertura) o che non si collega dopo la messa in servizio apre un allarme <b>Perdita di contatto</b> con escalation. I badge in attesa di messa in servizio o fuori servizio restano visibili ma non generano allarmi.</div>
+    <div class="small mut" style="margin-top:var(--s-8)">Un badge <b>in servizio</b> che, <b>durante il turno</b> del lavoratore (turno aperto nell'app o pianificato; disattivabile in «Soglie e allarmi»), smette di trasmettere (spento, scarico, senza copertura) o non si collega dopo la messa in servizio apre un allarme <b>Perdita di contatto</b> con escalation. L'allarme <b>si chiude da solo</b> quando il badge torna in linea. Lo stesso vale per l'app del lavoratore durante il turno (soglia nel modulo Lone Worker → «Silenzio dell'app»). I badge in attesa di messa in servizio o fuori servizio restano visibili ma non generano allarmi.</div>
     <div class="small" style="margin-top:var(--s-10)"><b>Come si collegano</b></div>
     <ul class="small mut" style="margin:var(--s-4) 0 0 var(--s-16)">
       <li>Teltonika (GH-5200, FMB, TMT…): server <span class="mono">${esc(host)}</span>, porta TCP <span class="mono">5027</span>. Il dispositivo si riconosce dall'IMEI, nessuna chiave da copiare.</li>
