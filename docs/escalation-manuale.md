@@ -78,10 +78,26 @@ per-tipo → gruppo di default**.
 
 ### 2.3 Copertura · handoff · Slack (menu ⚙ sul gruppo)
 - **Copertura**: *24/7* oppure *solo fasce orarie* (es. 20:00–08:00) nei giorni scelti. Fuori fascia
-  gli allarmi vengono registrati ma non inoltrati a questo gruppo.
+  il gruppo non ha reperibili: un allarme **critico** va alla **rete di ultima istanza** (§2.3b) e in
+  cronologia compare «nessun destinatario per questo gradino».
 - **Handoff turno** (a turni): ora e giorno di passaggio al turno successivo.
 - **Canale Slack** + **Avviso on-call Slack**: *off* / *a ogni cambio turno* / *orario giornaliero*
   — pubblica su Slack chi è di turno (richiede il token Slack configurato).
+
+### 2.3b Rete di ultima istanza (card in «Escalation e reperibilità»)
+Lista di contatti **email e/o SMS** del tenant (fino a 50), con un nome facoltativo. Interviene per un
+allarme **critico** (SOS, uomo a terra, perdita di contatto, check-in mancato…) quando:
+- il gradino non ha destinatari (fuori fascia di copertura, gruppo senza recapiti);
+- l'incidente non ha alcun gruppo di escalation (né profilo, né routing, né gruppo di default);
+- tutti i gradini sono passati e nessuno l'ha preso in carico.
+
+Modo **Tutti insieme** (parallelo) o **Uno dopo l'altro** (seriale, intervallo 30–3600 s, default
+120). **La prima presa in carico ferma la catena**: i contatti non ancora avvisati non lo saranno.
+Messaggio: «ALLARME <tipo> senza reperibile disponibile – <sede> (incidente <codice>)». In cronologia:
+«rete di ultima istanza» con il motivo e ogni invio. Se la lista è vuota il problema è segnalato nei
+log del server e in pagina compare l'avviso che questi allarmi non arrivano a nessuno: **configurarla
+è necessario**. API `GET/PUT /api/escalation/fallback` (permesso `escalation.manage`), mig 0131.
+e2e: `qa/escalation-fallback-e2e.sh`.
 
 ### 2.4 Policy di escalation multi-step (⛓ sulla scheda gruppo)
 Definisci una **sequenza di step** personalizzata (parità con i motori professionali):
@@ -171,6 +187,8 @@ utile per iscriversi al calendario di un team specifico.
 
 - **Catena allarme**: allarme → incidente in Centrale → escalation secondo la policy del gruppo
   (step/canali/attese/repeat) espansa nelle regole di notifica di ogni persona.
+- **Ordine**: a ogni giro il motore serve prima gli incidenti a **priorità più alta** (SOS prima
+  degli altri critici), poi i più vecchi; con molti allarmi aperti un SOS non resta in coda.
 - **Dedup**: un secondo allarme con la **stessa chiave** (correlation) di un incidente ancora aperto
   non ne apre un altro (viene annotato sull'esistente).
 - **Ack/chiusura**: se il reperibile prende in carico o chiude via SMS (rispondendo `OK`/`CHIUDI`),

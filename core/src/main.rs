@@ -269,6 +269,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/assets", get(sites::list_assets).post(sites::create_asset))
         .route("/api/assets/:id", post(sites::update_asset).delete(sites::delete_asset))
         .route("/api/groups", get(api::list_groups).post(api::create_group))
+        .route("/api/escalation/fallback", get(api::escalation_fallback_get).put(api::escalation_fallback_set))
         .route("/api/groups/:id", axum::routing::delete(api::delete_group))
         .route("/api/groups/:id/members", post(api::add_group_member))
         .route("/api/groups/:id/members/import", post(api::alarm_group_import_members))

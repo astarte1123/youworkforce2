@@ -11798,6 +11798,10 @@ async fn esc_process_incident(
     match action {
         EscAction::Stop | EscAction::Exhausted => {
             let new_status = if matches!(action, EscAction::Stop) { if istate=="chiuso" {"closed"} else {"ack"} } else { "exhausted" };
+            // SL-12: gradini finiti e nessuno ha preso in carico un allarme critico -> ultima rete
+            if new_status == "exhausted" && CRITICAL.contains(&etype.as_str()) {
+                esc_fallback_start(st, tid, iid, "escalation_esaurita", now).await;
+            }
             let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,repeat_count,status) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (tenant_id,incident_id) DO UPDATE SET status=$6,updated_at=now()")
                 .bind(tid).bind(iid).bind(cur_step).bind(fired_at).bind(rc).bind(new_status).execute(&st.owner_pool).await;
         }
@@ -11822,6 +11826,14 @@ async fn esc_process_incident(
             let (oncall, slack_ch) = esc_step_recipients(st, tid, gid, &spec, ga_opt, now).await;
             let sstr = iid.to_string(); let short = &sstr[..8];
             let text = format!("Allarme {etype} (incidente {short})");
+            // SL-1: nessun destinatario per questo gradino (fuori fascia di copertura, gruppo vuoto,
+            // nessun recapito): lo si dichiara in cronologia e parte la rete di ultima istanza.
+            if oncall.is_empty() && slack_ch.is_none() && CRITICAL.contains(&etype.as_str()) {
+                let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_nessun_destinatario',$3)")
+                    .bind(tid).bind(iid).bind(json!({"step":idx,"motivo":"nessun reperibile raggiungibile per questo gradino (fuori fascia o gruppo senza recapiti)"}))
+                    .execute(&st.owner_pool).await;
+                esc_fallback_start(st, tid, iid, "fuori_copertura", now).await;
+            }
             // rung per-utente (regole di notifica o fallback al canale dello step), ritardi inclusi.
             delivered += esc_deliver_step_rungs(st, tid, iid, idx as i32, now, attempt, spec.channel, &oncall, now, &text, tr).await;
             // step con target Slack: posta sul canale dello step.
@@ -11919,8 +11931,8 @@ pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i
     // producono più lavoro: lasciarli nel set li farebbe rileggere+ticcare a ogni giro per sempre
     // (crescita O(incidenti-aperti-totali) → la vera causa di esplosione sotto accumulo). Restano
     // inclusi i nuovi (nessuno stato = 'new') e quelli ancora in corso (`unack`). Ordine per PRIORITÀ
-    // (priority ASC = più urgente prima) poi opened_at: un SOS fresco non attende mai dietro allarmi
-    // meno urgenti. La pagina (LIMIT) bounda memoria/lavoro per tick; l'eccedenza va al giro dopo.
+    // DECRESCENTE (SL-3: valore più alto = più urgente, SOS 3 / altri critici 2, come in Centrale) poi
+    // opened_at: un SOS fresco non attende mai dietro allarmi meno urgenti. La pagina (LIMIT) bounda memoria/lavoro per tick; l'eccedenza va al giro dopo.
     let incs = sqlx::query(
         "SELECT i.id, i.etype, i.state, i.opened_at,
                 COALESCE(i.forced_group_id, pp.escalation_group_id, r.group_id, oc.default_group_id) AS group_id
@@ -11936,7 +11948,7 @@ pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i
           WHERE i.tenant_id=$1 AND i.state <> 'chiuso'
             AND COALESCE(eas.status,'new') NOT IN ('exhausted','ack','closed')
             AND COALESCE(i.forced_group_id, pp.escalation_group_id, r.group_id, oc.default_group_id) IS NOT NULL
-          ORDER BY i.priority ASC, i.opened_at ASC
+          ORDER BY i.priority DESC, i.opened_at ASC
           LIMIT $2")
         .bind(tid).bind(ESC_INCIDENTS_PER_TICK).fetch_all(&st.owner_pool).await.unwrap_or_default();
     let tr = EscTransport{ from:&from, sink:&sink, relay:&relay, slack_token:&slack_token, public_base:&public_base, live_on, live_cfg: live_cfg.as_ref() };
@@ -11950,7 +11962,151 @@ pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i
             st, tid, inc, voice_on, voice_min, repeat, &engine, live_on, ga_opt, now, &tr,
         )).await;
     }
+    delivered += Box::pin(esc_fallback_run(st, tid, now, &tr)).await;
     (seen, delivered)
+}
+
+// ============================================================================
+// Rete di ultima istanza (SL-1 + SL-12, mig 0131). Decisione PO: un allarme critico che non trova
+// reperibili (fuori fascia, nessun gruppo, escalation esaurita senza presa in carico) va comunque a
+// una lista di contatti email e/o SMS del tenant, in parallelo o in serie. La prima presa in carico
+// (risposta all'SMS, link, Centrale) ferma la catena: le rung non ancora dovute non partono più.
+// ============================================================================
+/// Passo fittizio della rete nei log di consegna (gli step reali partono da 0).
+const ESC_FALLBACK_STEP: i32 = -1;
+
+/// Avvia la rete per un incidente (idempotente: la data di partenza resta quella della prima volta).
+async fn esc_fallback_start(st: &AppState, tid: Uuid, iid: Uuid, reason: &str, now: chrono::DateTime<chrono::Utc>) {
+    let started = sqlx::query("INSERT INTO app.esc_fallback_state(tenant_id,incident_id,started_at,reason) VALUES($1,$2,$3,$4)
+                               ON CONFLICT (tenant_id,incident_id) DO NOTHING RETURNING incident_id")
+        .bind(tid).bind(iid).bind(now).bind(reason).fetch_optional(&st.owner_pool).await.ok().flatten();
+    if started.is_some() {
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM app.esc_fallback_contacts WHERE tenant_id=$1")
+            .bind(tid).fetch_one(&st.owner_pool).await.unwrap_or(0);
+        let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_rete_ultima_istanza',$3)")
+            .bind(tid).bind(iid).bind(json!({"motivo":reason,"contatti":n})).execute(&st.owner_pool).await;
+        if n == 0 {
+            // nessuna rete configurata: l'allarme resterebbe senza destinatari -> alert di sistema
+            tracing::warn!(tenant=%tid, incident=%iid, reason, "allarme critico senza destinatari e senza rete di ultima istanza");
+        }
+    }
+}
+
+/// Consegna le rung dovute della rete per gli incidenti aperti e non presi in carico.
+async fn esc_fallback_run(st: &AppState, tid: Uuid, now: chrono::DateTime<chrono::Utc>, tr: &EscTransport<'_>) -> i64 {
+    use crate::delivery::Channel;
+    // incidenti critici aperti SENZA alcun gruppo instradato: prima non li vedeva nessuno (SL-12)
+    let orphans: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT i.id FROM app.incidents i
+           LEFT JOIN app.alarm_routing r ON r.tenant_id=i.tenant_id AND r.etype=i.etype
+           LEFT JOIN app.events ev ON ev.id=i.event_id
+           LEFT JOIN app.devices d ON d.id=ev.device_id
+           LEFT JOIN app.protection_profile_members m ON m.tenant_id=i.tenant_id AND m.user_id=COALESCE(i.assigned_user, d.assigned_user)
+           LEFT JOIN app.protection_profiles pp ON pp.id=m.profile_id AND pp.enabled=true
+           LEFT JOIN app.tenant_oncall_cfg oc ON oc.tenant_id=i.tenant_id
+          WHERE i.tenant_id=$1 AND i.state NOT IN ('chiuso','preso_in_carico','intervento') AND i.etype = ANY($2)
+            AND COALESCE(i.forced_group_id, pp.escalation_group_id, r.group_id, oc.default_group_id) IS NULL
+            AND NOT EXISTS (SELECT 1 FROM app.esc_fallback_state f WHERE f.tenant_id=i.tenant_id AND f.incident_id=i.id)
+          LIMIT 500")
+        .bind(tid).bind(CRITICAL).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    for iid in orphans { esc_fallback_start(st, tid, iid, "nessun_gruppo", now).await; }
+
+    let contacts = sqlx::query("SELECT channel,value FROM app.esc_fallback_contacts WHERE tenant_id=$1 ORDER BY position, created_at")
+        .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    if contacts.is_empty() { return 0; }
+    let cfg = sqlx::query("SELECT fallback_mode, fallback_interval_s FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let (serial, interval) = cfg.map(|r| (r.get::<String,_>("fallback_mode") == "seriale", r.get::<i32,_>("fallback_interval_s") as i64))
+        .unwrap_or((false, 120));
+    let active = sqlx::query(
+        "SELECT f.incident_id, f.started_at, i.etype, s.name AS site
+           FROM app.esc_fallback_state f JOIN app.incidents i ON i.id=f.incident_id AND i.tenant_id=f.tenant_id
+           LEFT JOIN app.sites s ON s.id=i.site_id
+          WHERE f.tenant_id=$1 AND i.state NOT IN ('chiuso','preso_in_carico','intervento')
+          ORDER BY i.priority DESC, f.started_at LIMIT 500")
+        .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let mut delivered = 0i64;
+    for a in &active {
+        let iid: Uuid = a.get("incident_id");
+        let started: chrono::DateTime<chrono::Utc> = a.get("started_at");
+        let etype: String = a.get("etype");
+        let site: Option<String> = a.try_get("site").ok().flatten();
+        let short = iid.to_string()[..8].to_string();
+        let text = format!("ALLARME {} senza reperibile disponibile{} (incidente {short}). Rispondi OK per prenderlo in carico.",
+            etype_label(&etype), site.map(|s| format!(" - {s}")).unwrap_or_default());
+        for (i, c) in contacts.iter().enumerate() {
+            let due = if serial { started + chrono::Duration::seconds(interval * i as i64) } else { started };
+            if due > now { continue; }
+            let chname: String = c.get("channel");
+            let to: String = c.get("value");
+            let chn = if chname == "email" { Channel::Email } else { Channel::Sms };
+            if esc_is_opted_out(st, &to).await { continue; }
+            let claimed = sqlx::query("INSERT INTO app.esc_delivery_log(tenant_id,incident_id,step,channel,to_value,attempt,state) VALUES($1,$2,$3,$4,$5,0,'queued') ON CONFLICT (tenant_id,incident_id,step,channel,to_value,attempt) DO NOTHING RETURNING id")
+                .bind(tid).bind(iid).bind(ESC_FALLBACK_STEP).bind(chn.as_str()).bind(&to).fetch_optional(&st.owner_pool).await.ok().flatten();
+            let Some(logrow) = claimed else { continue };
+            let log_id: i64 = logrow.get("id");
+            let body = crate::delivery::request_body(chn, tr.from, &to, &text, &iid.to_string(), ESC_FALLBACK_STEP as i64);
+            let res = Box::pin(esc_dispatch(st, chn, &to, &text, &body, tr.live_on, tr.live_cfg, tr.slack_token, tr.relay, tr.sink, tr.public_base)).await;
+            esc_persist_delivery(st, tid, iid, log_id, chn.as_str(), &res).await;
+            let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_delivery',$3)")
+                .bind(tid).bind(iid).bind(json!({"rete_ultima_istanza":true,"channel":chn.as_str(),"ordine":i+1,"modo":if serial {"seriale"} else {"parallelo"}}))
+                .execute(&st.owner_pool).await;
+            delivered += 1;
+        }
+    }
+    delivered
+}
+
+// ---- API: configurazione della rete di ultima istanza (escalation.manage) ----
+#[derive(Deserialize)] pub struct FallbackContact { pub channel: String, pub value: String, #[serde(default)] pub label: Option<String> }
+#[derive(Deserialize)] pub struct FallbackCfg { pub mode: String, #[serde(default)] pub interval_s: Option<i32>, pub contacts: Vec<FallbackContact> }
+pub async fn escalation_fallback_get(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let cfg = sqlx::query("SELECT fallback_mode, fallback_interval_s FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
+        .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let contacts = sqlx::query("SELECT channel,value,label FROM app.esc_fallback_contacts WHERE tenant_id=$1 ORDER BY position, created_at")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({
+        "mode": cfg.as_ref().map(|r| r.get::<String,_>("fallback_mode")).unwrap_or_else(|| "parallelo".into()),
+        "interval_s": cfg.as_ref().map(|r| r.get::<i32,_>("fallback_interval_s")).unwrap_or(120),
+        "contacts": contacts.iter().map(|r| json!({"channel":r.get::<String,_>("channel"),"value":r.get::<String,_>("value"),
+            "label":r.try_get::<Option<String>,_>("label").ok().flatten()})).collect::<Vec<_>>(),
+    })))
+}
+pub async fn escalation_fallback_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<FallbackCfg>) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    if b.mode != "parallelo" && b.mode != "seriale" { return Err(err(StatusCode::BAD_REQUEST, "modo: 'parallelo' (tutti insieme) o 'seriale' (uno dopo l'altro)")); }
+    let interval = b.interval_s.unwrap_or(120);
+    if !(30..=3600).contains(&interval) { return Err(err(StatusCode::BAD_REQUEST, "intervallo tra un contatto e il successivo: da 30 a 3600 secondi")); }
+    if b.contacts.len() > 50 { return Err(err(StatusCode::BAD_REQUEST, "al massimo 50 contatti")); }
+    for c in &b.contacts {
+        let v = c.value.trim();
+        match c.channel.as_str() {
+            "email" if v.contains('@') && v.len() <= 254 && !v.contains(' ') => {}
+            "sms" if is_e164(v) => {}
+            "email" => return Err(err(StatusCode::BAD_REQUEST, &format!("email non valida: {v}"))),
+            "sms" => return Err(err(StatusCode::BAD_REQUEST, &format!("telefono non valido (formato +39…): {v}"))),
+            _ => return Err(err(StatusCode::BAD_REQUEST, "canale: 'email' o 'sms'")),
+        }
+    }
+    let mut tx = st.owner_pool.begin().await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.tenant_oncall_cfg(tenant_id,fallback_mode,fallback_interval_s) VALUES($1,$2,$3)
+                 ON CONFLICT (tenant_id) DO UPDATE SET fallback_mode=$2, fallback_interval_s=$3, updated_at=now()")
+        .bind(tid).bind(&b.mode).bind(interval).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.esc_fallback_contacts WHERE tenant_id=$1").bind(tid).execute(&mut *tx).await.map_err(ise)?;
+    for (i, c) in b.contacts.iter().enumerate() {
+        sqlx::query("INSERT INTO app.esc_fallback_contacts(tenant_id,channel,value,label,position) VALUES($1,$2,$3,$4,$5)
+                     ON CONFLICT (tenant_id,channel,value) DO NOTHING")
+            .bind(tid).bind(&c.channel).bind(c.value.trim()).bind(c.label.as_deref().map(str::trim).filter(|x| !x.is_empty())).bind(i as i32)
+            .execute(&mut *tx).await.map_err(ise)?;
+    }
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "escalation_fallback_set", json!({"mode":b.mode,"interval_s":interval,"contatti":b.contacts.len()})).await;
+    Ok(Json(json!({"ok":true})))
 }
 
 /// F3 — Annunci Slack dell'on-call (parità YWAlert "On-Call Notifications"): per ogni gruppo con

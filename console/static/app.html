@@ -4521,6 +4521,38 @@ async function defaultGroupSave(btn){
   try{ await api('/oncall-settings',{method:'POST',body:JSON.stringify(body)}); toast('Gruppo di default salvato','ok'); if(m){m.textContent='Salvato';m.style.color='var(--ok)';} }
   catch(e){ toast(e.message,'bad'); if(m){m.textContent=e.message;m.style.color='var(--bad)';} }
 }
+// SL-1/SL-12: rete di ultima istanza. Contatti email/SMS avvisati quando un allarme critico non trova
+// reperibili (fuori fascia, nessun gruppo, escalation esaurita). Parallelo o seriale; la prima presa
+// in carico ferma la catena.
+let FB={mode:'parallelo',interval_s:120,contacts:[]};
+async function fbLoad(){ const c=$('#fbCard'); if(!c) return;
+  try{ FB=await api('/escalation/fallback'); }catch(e){ c.innerHTML=`<div class="small mut">${esc(e.message)}</div>`; return; }
+  fbRender(); }
+function fbRender(){ const c=$('#fbCard'); if(!c) return;
+  c.innerHTML=`<h2 style="margin-bottom:var(--s-4)">Rete di ultima istanza</h2>
+    <div class="small mut" style="margin-bottom:var(--s-8)">Chi avvisare quando un <b>allarme critico non trova nessun reperibile</b>: fuori dalla fascia di copertura,
+      senza gruppo di escalation, oppure quando tutti i gradini sono passati senza che nessuno lo prenda in carico.
+      <b>La prima presa in carico ferma la catena.</b> ${FB.contacts.length?'':'<b style="color:var(--bad)">Nessun contatto: oggi questi allarmi non arrivano a nessuno.</b>'}</div>
+    <div class="row" style="gap:var(--s-12);align-items:center;flex-wrap:wrap;margin-bottom:var(--s-8)">
+      <label class="row small" style="gap:var(--s-6);align-items:center"><input type="radio" name="fbMode" value="parallelo" ${FB.mode!=='seriale'?'checked':''} onchange="FB.mode='parallelo';fbRender()"> Tutti insieme</label>
+      <label class="row small" style="gap:var(--s-6);align-items:center"><input type="radio" name="fbMode" value="seriale" ${FB.mode==='seriale'?'checked':''} onchange="FB.mode='seriale';fbRender()"> Uno dopo l'altro</label>
+      ${FB.mode==='seriale'?`<label class="row small" style="gap:var(--s-6);align-items:center">ogni <input id="fbInt" type="number" min="30" max="3600" value="${FB.interval_s||120}" style="width:72px" onchange="FB.interval_s=+this.value"> secondi</label>`:''}
+    </div>
+    ${FB.contacts.map((ct,i)=>`<div class="row" style="gap:var(--s-6);align-items:center;margin-bottom:var(--s-6)">
+      <span class="small mut" style="width:22px">${i+1}.</span>
+      <select class="small" onchange="FB.contacts[${i}].channel=this.value"><option value="email" ${ct.channel==='email'?'selected':''}>Email</option><option value="sms" ${ct.channel==='sms'?'selected':''}>SMS</option></select>
+      <input class="grow small" value="${esc(ct.value||'')}" placeholder="${ct.channel==='sms'?'+393331234567':'nome@azienda.it'}" oninput="FB.contacts[${i}].value=this.value">
+      <input class="small" style="width:160px" value="${esc(ct.label||'')}" placeholder="Chi è (facoltativo)" oninput="FB.contacts[${i}].label=this.value">
+      <button class="btn-ico btn ghost" title="Togli" onclick="FB.contacts.splice(${i},1);fbRender()">${ICON.x}</button></div>`).join('')}
+    <div class="row" style="gap:var(--s-8);margin-top:var(--s-6)">
+      <button class="btn ghost small" onclick="FB.contacts.push({channel:'email',value:'',label:''});fbRender()">+ email</button>
+      <button class="btn ghost small" onclick="FB.contacts.push({channel:'sms',value:'',label:''});fbRender()">+ SMS</button>
+      <button class="btn small" onclick="fbSave(this)">Salva rete</button></div>`; }
+async function fbSave(btn){
+  const contacts=FB.contacts.map(c=>({channel:c.channel,value:(c.value||'').trim(),label:(c.label||'').trim()||null})).filter(c=>c.value);
+  const iv=$('#fbInt'); if(iv) FB.interval_s=+iv.value||120;
+  try{ await api('/escalation/fallback',{method:'PUT',body:JSON.stringify({mode:FB.mode,interval_s:FB.interval_s,contacts})});
+    toast('Rete di ultima istanza salvata','ok'); fbLoad(); }catch(e){ toast(e.message,'bad'); } }
 async function vGruppi(v){
   const [G,users,ocs]=await Promise.all([api('/groups').catch(()=>({groups:[],routing:[]})),api('/users').catch(()=>[]),
     api('/oncall-settings').catch(()=>({voice_fallback_on:true,voice_fallback_min:5,status_updates_on:true}))]);
@@ -4553,6 +4585,7 @@ async function vGruppi(v){
         ${G.groups.map(g=>`<option value="${g.id}" ${g.id===ocs.default_group_id?'selected':''}>${esc(g.name)}</option>`).join('')}</select>
       <button class="btn" onclick="defaultGroupSave(this)">Salva default</button>
       <span class="defgrp-msg small"></span></div></div>
+  <div class="card pad" style="margin-bottom:var(--s-12)" id="fbCard"><div class="small mut">Caricamento rete di ultima istanza…</div></div>
     <div class="card pad"><h2 style="margin-bottom:var(--s-10)">Gruppi</h2>
       ${G.groups.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10);margin-bottom:var(--s-8)">
         <div class="spread"><b>${esc(g.name)}</b><button class="btn-ico btn ghost" onclick="grpDel('${g.id}')">${ICON.x}</button></div>
@@ -4708,6 +4741,7 @@ async function vGruppi(v){
       <div id="inbOut" style="margin-top:var(--s-8)"></div>
     </div>
   </div>`;
+  fbLoad();
 }
 // Tab della pagina Escalation: mostra un pannello per volta (handler/ID invariati).
 function escTab(k){
