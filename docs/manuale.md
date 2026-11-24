@@ -170,6 +170,12 @@ Dopo la creazione, un riepilogo mostra l'URL del tenant e (in modalità invito) 
   Catalogo lato server `GET /api/superadmin/plans` (definito nel codice, consumato dall'UI);
   `create_tenant` espande il pacchetto e attiva i soli moduli disponibili.
 - **Licenze** (app mobile / IoT) impostabili subito (vuoto = illimitato).
+  Le licenze sono **solo indicative** (SA-6, decisione PO): oltre il limite nulla viene bloccato.
+  Il superadmin vede l'uso rispetto alla licenza (chip rossa se superata); l'amministratore del
+  tenant vede un avviso in console e, creando un utente oltre il limite, un messaggio di attenzione.
+  Conteggio: **app mobile** = utenti con ruolo lavoratore o reperibile non anonimizzati (i ruoli
+  personalizzati non contano come utenti); **dispositivi** = dispositivi censiti esclusa l'app
+  personale del lavoratore. e2e: `qa/license-advisory-e2e.sh`.
 - **Scenario / caso d'uso** opzionale con «dati demo»: applica alla creazione uno degli ambienti IoT
   (riusa il motore scenari — attiva i moduli dello scenario + regole sensori + eventuale demo).
 

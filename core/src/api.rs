@@ -517,8 +517,8 @@ pub async fn list_tenants(State(st): State<AppState>, h: HeaderMap) -> R {
         "SELECT t.id,t.slug,t.name,t.created_at,t.status,t.suspend_at,t.suspend_note,
             t.mobile_app_licenses, t.iot_device_licenses,
             t.brand_primary,t.brand_ink,t.brand_soft,t.brand_accent,(t.logo IS NOT NULL) AS has_logo,
-            (SELECT count(*) FROM app.users u WHERE u.tenant_id=t.id AND u.role IN ('lavoratore','reperibile')) AS mobile_used,
-            (SELECT count(*) FROM app.devices d WHERE d.tenant_id=t.id) AS iot_used,
+            (SELECT count(*) FROM app.users u WHERE u.tenant_id=t.id AND u.role IN ('lavoratore','reperibile') AND u.anonymized_at IS NULL) AS mobile_used,
+            (SELECT count(*) FROM app.devices d WHERE d.tenant_id=t.id AND d.source<>'pwa') AS iot_used,
             (SELECT count(*) FROM app.tenant_modules m WHERE m.tenant_id=t.id AND m.state='attivo') AS mods_active,
             (SELECT count(*) FROM app.users u WHERE u.tenant_id=t.id) AS users_tot,
             (SELECT count(*) FROM app.sites s WHERE s.tenant_id=t.id) AS sites_tot,
@@ -818,6 +818,28 @@ pub async fn tenant_suspension_scan(st: &AppState) {
         audit(st, tid, "system", "tenant_status", json!({"status":"sospeso","programmata":true,"sessions_closed":closed})).await;
         tracing::warn!(tenant=%tid, "sospensione programmata applicata: allarmi e accessi fermi");
     }
+}
+/// SA-6 (decisione PO 24/11/2026): le licenze sono SOLO INDICATIVE, mai bloccanti. Uso:
+/// - app mobile = utenti con ruolo lavoratore o reperibile non anonimizzati (i ruoli personalizzati
+///   NON contano come utenti: aggiungono permessi a un utente, non un posto);
+/// - dispositivi = dispositivi censiti esclusa l'app personale del lavoratore (`pwa`).
+/// Ritorna l'elenco dei superamenti (vuoto se tutto entro i limiti o limiti assenti).
+pub async fn license_overage(st: &AppState, tid: Uuid) -> Vec<Value> {
+    let r = sqlx::query(
+        "SELECT t.mobile_app_licenses AS ml, t.iot_device_licenses AS il,
+           (SELECT count(*) FROM app.users u WHERE u.tenant_id=t.id AND u.role IN ('lavoratore','reperibile') AND u.anonymized_at IS NULL) AS mu,
+           (SELECT count(*) FROM app.devices d WHERE d.tenant_id=t.id AND d.source<>'pwa') AS iu
+         FROM app.tenants t WHERE t.id=$1").bind(tid).fetch_optional(&st.owner_pool).await.ok().flatten();
+    let Some(r) = r else { return vec![] };
+    let mut out = vec![];
+    let check = |out: &mut Vec<Value>, kind: &str, label: &str, used: i64, lim: Option<i32>| {
+        if let Some(l) = lim { if used > l as i64 {
+            out.push(json!({"kind":kind,"label":label,"used":used,"limit":l}));
+        } }
+    };
+    check(&mut out, "mobile", "utenti dell'app (lavoratori e reperibili)", r.get::<i64,_>("mu"), r.try_get::<Option<i32>,_>("ml").ok().flatten());
+    check(&mut out, "iot", "dispositivi", r.get::<i64,_>("iu"), r.try_get::<Option<i32>,_>("il").ok().flatten());
+    out
 }
 /// true se il tenant è sospeso: niente ricezione, niente escalation, niente accessi.
 pub async fn tenant_suspended(st: &AppState, tid: Uuid) -> bool {
@@ -1956,7 +1978,12 @@ pub async fn me(State(st): State<AppState>, h: HeaderMap) -> R {
                             "note": r.try_get::<Option<String>,_>("suspend_note").ok().flatten()});
         }
     }
-    Ok(Json(json!({"email":s.email,"role":s.role,"is_super":s.is_super,"tenant_id":s.tenant_id,"impersonator":s.impersonator,"caps":s.caps,"suspension_notice":notice})))
+    // SA-6: avviso (mai blocco) se il tenant supera le licenze; solo a chi amministra
+    let license_notice = match s.tenant_id {
+        Some(tid) if has_cap(&s, "admin") || s.impersonator.is_some() => json!(license_overage(&st, tid).await),
+        _ => json!([]),
+    };
+    Ok(Json(json!({"email":s.email,"role":s.role,"is_super":s.is_super,"tenant_id":s.tenant_id,"impersonator":s.impersonator,"caps":s.caps,"suspension_notice":notice,"license_notice":license_notice})))
 }
 
 pub async fn logout(State(st): State<AppState>, h: HeaderMap) -> impl IntoResponse {

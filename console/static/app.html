@@ -391,6 +391,9 @@ function renderShell(){
         Da quel momento ${brandName()} <b>non riceverà né inoltrerà più gli allarmi</b> (SOS, uomo a terra, perdita di contatto, check-in) e gli utenti non potranno accedere.
         ${ME.suspension_notice.note?`<div style="margin-top:var(--s-4)">Motivo: ${esc(ME.suspension_notice.note)}</div>`:''}
         <div class="small" style="margin-top:var(--s-4)">Per evitarla contatta l'assistenza.</div></div>`:''}
+      ${(ME.license_notice||[]).length?`<div role="status" style="background:var(--warn-soft);color:var(--fg);border-left:4px solid var(--warn);border-bottom:1px solid var(--line);padding:var(--s-8) var(--s-16);font-size:13px">
+        <b>Licenze superate:</b> ${ME.license_notice.map(l=>`${esc(l.label)} ${l.used} su ${l.limit}`).join(' · ')}.
+        Il servizio continua a funzionare normalmente; contatta l'assistenza per adeguare le licenze.</div>`:''}
       <div class="content"><div id="view"></div></div>
     </div>
   </div>
@@ -5469,7 +5472,7 @@ function userNew(){
 async function userCreate(){
   const b={email:$('#uEm').value.trim(),role:$('#uRo').value,password:$('#uPw').value};
   const m=$('.cfg-msg');
-  try{await api('/users',{method:'POST',body:JSON.stringify(b)}); toast('Utente creato','ok'); closeDrawer(); route();}
+  try{const r=await api('/users',{method:'POST',body:JSON.stringify(b)}); const w=(r&&r.license_warnings)||[]; toast(w.length?('Utente creato. Attenzione, licenze superate: '+w.map(l=>l.label+' '+l.used+' su '+l.limit).join(', ')):'Utente creato', w.length?'warn':'ok'); closeDrawer(); route();}
   catch(e){m.textContent=e.message;m.style.color='var(--bad)';}
 }
 async function userEdit(u){

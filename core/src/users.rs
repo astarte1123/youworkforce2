@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::state::AppState;
-use crate::api::{R, require_tenant, require_cap, require_grantable, user_caps, effective_caps, ise, err, audit, USER_ROLES, is_e164};
+use crate::api::{R, require_tenant, require_cap, require_grantable, user_caps, effective_caps, license_overage, ise, err, audit, USER_ROLES, is_e164};
 use crate::{db, auth};
 
 pub async fn list_users(State(st): State<AppState>, h: HeaderMap) -> R {
@@ -64,7 +64,8 @@ pub async fn create_user(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     tx.commit().await.map_err(ise)?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT, "email gia' presente"))?.get::<Uuid,_>("id");
     audit(&st, tid, &s.email, "create_user", json!({"email":b.email,"role":b.role})).await;
-    Ok(Json(json!({"id":id})))
+    // SA-6: licenze indicative -> l'utente è creato comunque, la risposta riporta l'eventuale superamento
+    Ok(Json(json!({"id":id, "license_warnings": license_overage(&st, tid).await})))
 }
 
 #[derive(Deserialize)]
