@@ -35,6 +35,7 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     if n % 15 == 13 { Box::pin(api::patrol_missed_watchdog(st)).await; }
     // #7 ritenzione GDPR (opt-in YW_RETENTION_DAYS): ~ogni ora (1800 tick * 2s)
     if n % 1800 == 0 { Box::pin(privacy::purge_retention(st)).await; }
+    if n % 1800 == 900 { api::purge_connect_attempts(st).await; }
     // #4 escalation nativo FASE 2 (consegna in ombra): ~ogni 30s, verso sink di prova, idempotente
     if n % 15 == 7 { Box::pin(api::escalation_delivery_scan(st)).await; }
     // F3 annunci Slack on-call (onchange/schedulati): ~ogni minuto, best-effort

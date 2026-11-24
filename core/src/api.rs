@@ -2335,6 +2335,15 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
     // soglia di silenzio REALE del tenant (la stessa del watchdog): la scheda la usa per "in linea"
     let silence_after_s = tool_config(&st, s.tenant_id.unwrap(), "gps", "alarm_map").await
         .get("silence_after_s").and_then(|v| v.as_i64()).unwrap_or(600);
+    // tentativi rifiutati dei badge DI QUESTO tenant (solo i suoi IMEI: niente fuga di dati altrui)
+    let gps_ids: Vec<String> = rows.iter().filter(|r| r.get::<String,_>("source") == "gps")
+        .map(|r| r.get::<String,_>("external_id")).collect();
+    let rejected: std::collections::HashMap<String,(String,chrono::DateTime<chrono::Utc>,i32)> = if gps_ids.is_empty() { Default::default() } else {
+        sqlx::query("SELECT identity,reason,last_at,attempts FROM app.device_connect_attempts WHERE protocol='teltonika' AND identity = ANY($1)")
+            .bind(&gps_ids).fetch_all(&st.owner_pool).await.unwrap_or_default().iter()
+            .map(|r| (r.get::<String,_>("identity"), (r.get::<String,_>("reason"), r.get::<chrono::DateTime<chrono::Utc>,_>("last_at"), r.get::<i32,_>("attempts"))))
+            .collect() };
+    let tid0 = s.tenant_id.unwrap();
     let out: Vec<Value> = rows.iter()
         .filter(|r| site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok()))
         .map(|r| json!({
@@ -2361,7 +2370,7 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
         "silence_after_s": silence_after_s,
         "service_state": r.try_get::<String,_>("service_state").ok(),
         "silence_armed_at": r.try_get::<chrono::DateTime<chrono::Utc>,_>("silence_armed_at").ok(),
-        "prov_step": r.try_get::<String,_>("prov_step").ok() })).collect();
+        "prov_step": r.try_get::<String,_>("prov_step").ok() })).map(|mut v| { device_link_fields(&mut v, tid0, &rejected); v }).collect();
     Ok(Json(json!(out)))
 }
 #[derive(Deserialize)]
@@ -7323,6 +7332,71 @@ pub async fn teltonika_io_alarm_map(st: &AppState, tid: Uuid, did: Uuid) -> std:
     // 2) override per-tenant (vince)
     ingest(&mut out, &tool_config(st, tid, "teltonika", "io_alarm_map").await);
     out
+}
+/// Registro dei tentativi di collegamento RIFIUTATI (mig 0136). Una riga per identità con
+/// contatore; al massimo ~2000 righe (oltre si aggiornano solo quelle già presenti, così un
+/// flusso di IMEI casuali non gonfia la tabella). L'identità è troncata e ripulita.
+pub async fn record_connect_attempt(st: &AppState, protocol: &str, identity: &str, reason: &str, peer: &str) {
+    let ident: String = identity.chars().filter(|c| c.is_ascii_graphic()).take(32).collect();
+    if ident.is_empty() { return; }
+    let now = st.clock.now();
+    let upd = sqlx::query("UPDATE app.device_connect_attempts SET reason=$3, peer=$4, last_at=$5, attempts=attempts+1 \
+                           WHERE protocol=$1 AND identity=$2")
+        .bind(protocol).bind(&ident).bind(reason).bind(peer).bind(now).execute(&st.owner_pool).await;
+    if matches!(upd, Ok(ref r) if r.rows_affected() > 0) { return; }
+    if let Err(e) = sqlx::query("INSERT INTO app.device_connect_attempts(protocol,identity,reason,peer,first_at,last_at) \
+            SELECT $1,$2,$3,$4,$5,$5 WHERE (SELECT count(*) FROM app.device_connect_attempts) < 2000 \
+            ON CONFLICT (protocol,identity) DO UPDATE SET reason=EXCLUDED.reason, peer=EXCLUDED.peer, \
+              last_at=EXCLUDED.last_at, attempts=app.device_connect_attempts.attempts+1")
+        .bind(protocol).bind(&ident).bind(reason).bind(peer).bind(now).execute(&st.owner_pool).await {
+        tracing::warn!("record_connect_attempt {ident}: {e}");
+    }
+}
+/// L'identità è stata accettata: il tentativo rifiutato non è più attuale.
+pub async fn clear_connect_attempt(st: &AppState, protocol: &str, identity: &str) {
+    let _ = sqlx::query("DELETE FROM app.device_connect_attempts WHERE protocol=$1 AND identity=$2")
+        .bind(protocol).bind(identity).execute(&st.owner_pool).await;
+}
+/// Pulizia: tentativi fermi da più di 30 giorni (worker).
+pub async fn purge_connect_attempts(st: &AppState) {
+    let _ = sqlx::query("DELETE FROM app.device_connect_attempts WHERE last_at < $1 - interval '30 days'")
+        .bind(st.clock.now()).execute(&st.owner_pool).await;
+}
+/// Superadmin: dispositivi che provano a collegarsi e vengono rifiutati, con il tenant in cui
+/// l'IMEI risulta censito (se c'è) per capire subito cosa sistemare.
+pub async fn super_device_attempts(State(st): State<AppState>, h: HeaderMap) -> R {
+    require_super(&st, &h).await?;
+    let rows = sqlx::query(
+        "SELECT a.protocol,a.identity,a.reason,a.peer,a.first_at,a.last_at,a.attempts,
+                (SELECT string_agg(t.name, ', ' ORDER BY t.name) FROM app.devices d JOIN app.tenants t ON t.id=d.tenant_id
+                  WHERE d.external_id=a.identity AND d.source='gps') AS tenants
+           FROM app.device_connect_attempts a ORDER BY a.last_at DESC LIMIT 200")
+        .fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let out: Vec<Value> = rows.iter().map(|r| json!({
+        "protocol": r.get::<String,_>("protocol"), "identity": r.get::<String,_>("identity"),
+        "reason": r.get::<String,_>("reason"), "reason_label": connect_reason_label(&r.get::<String,_>("reason")),
+        "peer": r.try_get::<String,_>("peer").ok(),
+        "first_at": r.get::<chrono::DateTime<chrono::Utc>,_>("first_at").to_rfc3339(),
+        "last_at": r.get::<chrono::DateTime<chrono::Utc>,_>("last_at").to_rfc3339(),
+        "attempts": r.get::<i32,_>("attempts"), "tenants": r.try_get::<String,_>("tenants").ok() })).collect();
+    Ok(Json(json!(out)))
+}
+/// Campi di collegamento della scheda dispositivo (fuori dal json! grande: evita la ricorsione del macro).
+fn device_link_fields(v: &mut Value, tid: Uuid, rejected: &std::collections::HashMap<String,(String,chrono::DateTime<chrono::Utc>,i32)>) {
+    let gps = v.get("source").and_then(|x| x.as_str()) == Some("gps");
+    let ext = v.get("external_id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let since = if gps { crate::teltonika::connected_since(tid, &ext).map(|d| d.to_rfc3339()) } else { None };
+    let rej = if gps { rejected.get(&ext).map(|(why, at, n)|
+        json!({"reason": why, "reason_label": connect_reason_label(why), "last_at": at.to_rfc3339(), "attempts": n})) } else { None };
+    if let Some(o) = v.as_object_mut() { o.insert("connected_since".into(), json!(since)); o.insert("rejected".into(), json!(rej)); }
+}
+pub fn connect_reason_label(r: &str) -> &'static str {
+    match r {
+        "sconosciuto" => "IMEI non censito in nessuna azienda",
+        "conteso" => "IMEI censito in più aziende: identità contesa",
+        "modulo_spento" => "azienda senza modulo dispositivi attivo",
+        _ => "rifiutato",
+    }
 }
 /// Almeno un modulo dispositivi attivo sul tenant?
 pub async fn any_device_module(st: &AppState, tid: Uuid) -> bool {

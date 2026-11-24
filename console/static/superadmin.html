@@ -175,6 +175,10 @@ async function shell(){
             <button class="btn" onclick="sysSettingsSave()">Salva configurazione</button></div>
           <div id="ss_msg" class="small" style="margin-top:6px"></div>
         </div></div>
+      <div class="card" style="margin-bottom:16px"><div class="card-h"><h2>Dispositivi rifiutati</h2>
+        <button class="btn ghost small" onclick="loadAttempts()">↻ aggiorna</button></div>
+        <div class="card-b"><div class="small mut" style="margin-bottom:8px">Badge che provano a collegarsi (Teltonika, porta TCP) e vengono rifiutati: IMEI non censito, censito in più aziende, o azienda senza modulo dispositivi. Il badge riprova da solo: quando il problema è risolto la riga sparisce al collegamento successivo. Righe ferme da 30 giorni vengono cancellate.</div>
+        <div id="sysAttempts"><div class="small mut">—</div></div></div></div>
       <div class="card"><div class="card-h"><h2>Storico alert</h2></div>
         <div class="card-b" id="sysAlerts"><div class="small mut">—</div></div></div>
     </div>
@@ -200,7 +204,15 @@ async function loadSystem(){
   let al=[]; try{ al=await api('/superadmin/system/alerts'); }catch(e){}
   renderSysAlerts(al);
   loadSysSettings();
+  loadAttempts();
 }
+async function loadAttempts(){ const box=$('#sysAttempts'); if(!box) return;
+  let rows=[]; try{ rows=await api('/superadmin/device-attempts'); }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; return; }
+  if(!rows.length){ box.innerHTML='<div class="small mut">Nessun tentativo rifiutato.</div>'; return; }
+  const fmt=t=>new Date(t).toLocaleString('it-IT');
+  box.innerHTML=`<table class="table"><thead><tr><th>IMEI</th><th>Motivo</th><th>Aziende in cui è censito</th><th>Tentativi</th><th>Ultimo</th><th>Da</th></tr></thead><tbody>${
+    rows.map(r=>`<tr><td class="mono">${esc(r.identity)}</td><td>${esc(r.reason_label)}</td><td>${esc(r.tenants||'—')}</td><td>${r.attempts}</td>
+      <td class="small">${esc(fmt(r.last_at))}<div class="mut">primo ${esc(fmt(r.first_at))}</div></td><td class="small mono">${esc(r.peer||'—')}</td></tr>`).join('')}</tbody></table>`; }
 async function loadSysSettings(){
   let d; try{ d=await api('/superadmin/system/settings'); }catch(e){ return; }
   const st=d.stored||{}, df=d.defaults||{};

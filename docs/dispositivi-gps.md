@@ -46,6 +46,31 @@ Configurazione: `YW_TELTONIKA_PORT` (default **5027**; `off`/`0` disabilita). Il
 core e logga `teltonika edge TCP in ascolto su 0.0.0.0:<porta>`. Sul tracker (Teltonika
 Configurator o SMS) si imposta come server l'indirizzo di YouWorkforce e la porta TCP.
 
+### Badge rifiutati e verifica del collegamento (mig `0136`)
+
+Un badge rifiutato riprova da solo all'infinito e prima nessuno lo sapeva. Ora ogni rifiuto
+all'handshake è registrato in `app.device_connect_attempts` (una riga per IMEI, con contatore,
+primo/ultimo tentativo e indirizzo di provenienza). Motivi:
+
+| motivo | significato | cosa fare |
+|---|---|---|
+| `sconosciuto` | IMEI non censito in nessuna azienda | censire il badge con l'IMEI esatto |
+| `conteso` | IMEI censito in più aziende (dato storico) | eliminare il doppione sbagliato |
+| `modulo_spento` | azienda senza modulo dispositivi attivo | attivare il modulo `gps` |
+
+- **Superadmin** (*Sistema → Dispositivi rifiutati*, `GET /api/superadmin/device-attempts`):
+  elenco con motivo leggibile e aziende in cui l'IMEI risulta censito.
+- **Admin del tenant**: nella scheda del badge, riquadro **Collegamento**, vede il rifiuto **solo dei
+  propri IMEI** (mai quelli altrui) con motivo e indicazione.
+- Quando l'IMEI viene accettato la riga sparisce. Righe ferme da 30 giorni vengono cancellate dal
+  worker; la tabella è limitata a ~2000 righe (oltre si aggiornano solo quelle presenti, così un
+  flusso di IMEI casuali non la gonfia). Tabella di sistema senza tenant: la legge solo il
+  superadmin.
+- **Collegato adesso**: `GET /api/devices` restituisce `connected_since` (connessione TCP aperta
+  in questo momento, da quando) e `rejected` per i badge GPS. Il riquadro **Collegamento** della
+  scheda mostra *Collegato adesso / Non collegato (ultimo contatto) / Mai collegato / Rifiutato* con
+  il pulsante **verifica ora**: utile durante la prima installazione, senza aspettare un fix GPS.
+
 ### Comandi al dispositivo (codec12)
 
 Sulla connessione aperta YouWorkforce può **inviare comandi** al device (codec12, type `0x05`) e
@@ -213,6 +238,9 @@ deployment pubblici usare rete/VPN o un reverse-proxy TCP con allowlist per la p
 
 - `qa/teltonika-e2e.sh` (8/8): IMEI sconosciuto rifiutato, IMEI censito accettato + ACK, posizione e
   telemetria IO, Codec8 Extended, evento IO → incidente.
+- `qa/device-attempts-e2e.sh` (15/15): IMEI non censito registrato con contatore, visibile solo al
+  superadmin; accettazione che ripulisce il registro; «collegato adesso» a connessione aperta e non
+  più dopo la chiusura; IMEI conteso (dato storico) e azienda senza modulo, motivo sul proprio badge.
 - `qa/gh5200-lifesafety-e2e.sh` (8/8): IO 242 → `man_down`, IO 236 → `sos`, posizione, eliminazione
   completa del device.
 - `qa/gps-native-e2e.sh` (23/23): nessun residuo dei vecchi connettori, ingest JSON di posizioni,
@@ -240,7 +268,8 @@ deployment pubblici usare rete/VPN o un reverse-proxy TCP con allowlist per la p
 
 ## Console
 
-Nel dettaglio di un dispositivo GPS: stato di collegamento (in linea / silenzioso da …, con la
+Nel dettaglio di un dispositivo GPS: riquadro **Collegamento** (collegato adesso, rifiutato e
+perché, ultimo contatto, «verifica ora»), stato di collegamento (in linea / silenzioso da …, con la
 **stessa soglia** `silence_after_s` del watchdog; "ultimo contatto … fa" se il controllo è spento), **comandi
 rapidi** con storico, **percorsi e soste** degli ultimi 7 giorni (con export CSV), **telemetria IO**
 dell'ultimo fix e **comando libero** per tecnici.

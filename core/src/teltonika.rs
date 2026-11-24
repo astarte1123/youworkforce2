@@ -21,6 +21,8 @@ use tokio::sync::{mpsc, oneshot};
 type RegKey = (uuid::Uuid, String);
 struct Conn {
     conn_id: u64,
+    /// istante dell'handshake accettato (orologio dell'app): "collegato ora da …" nella scheda
+    since: chrono::DateTime<chrono::Utc>,
     /// device risolto all'handshake: un invio verso un device diverso (cancellato e ricreato,
     /// spostato di tenant) non usa questa connessione
     device_id: uuid::Uuid,
@@ -31,6 +33,11 @@ struct Conn {
 fn registry() -> &'static Mutex<HashMap<RegKey, Conn>> {
     static R: OnceLock<Mutex<HashMap<RegKey, Conn>>> = OnceLock::new();
     R.get_or_init(|| Mutex::new(HashMap::new()))
+}
+/// Il badge (tenant, IMEI) ha ADESSO una connessione TCP aperta? Ritorna da quando.
+/// Serve alla scheda dispositivo per confermare il collegamento senza aspettare un fix GPS.
+pub fn connected_since(tid: uuid::Uuid, imei: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    registry().lock().unwrap().get(&(tid, imei.to_string())).map(|c| c.since)
 }
 fn next_conn_id() -> u64 {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -110,7 +117,7 @@ pub async fn serve(st: AppState) {
             Ok((sock, peer)) => {
                 let st = st.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle(st, sock).await {
+                    if let Err(e) = handle(st, sock, peer.to_string()).await {
                         tracing::debug!("teltonika[{peer}]: chiusa ({e})");
                     }
                 });
@@ -120,7 +127,7 @@ pub async fn serve(st: AppState) {
     }
 }
 
-async fn handle(st: AppState, mut sock: TcpStream) -> std::io::Result<()> {
+async fn handle(st: AppState, mut sock: TcpStream, peer: String) -> std::io::Result<()> {
     // 1) handshake IMEI: [u16 len][ascii imei]
     let mut lenb = [0u8; 2];
     sock.read_exact(&mut lenb).await?;
@@ -137,10 +144,23 @@ async fn handle(st: AppState, mut sock: TcpStream) -> std::io::Result<()> {
         crate::api::ImeiMatch::Ambiguous(n) => {
             let _ = sock.write_all(&[0x00]).await;
             tracing::warn!("teltonika: IMEI {imei} RIFIUTATO: registrato in {n} tenant (identità ambigua)");
+            crate::api::record_connect_attempt(&st, "teltonika", &imei, "conteso", &peer).await;
             return Ok(());
         }
-        _ => { let _ = sock.write_all(&[0x00]).await; tracing::debug!("teltonika: IMEI {imei} rifiutato"); return Ok(()); }
+        crate::api::ImeiMatch::One(..) => {
+            let _ = sock.write_all(&[0x00]).await;
+            tracing::info!("teltonika: IMEI {imei} rifiutato: nessun modulo dispositivi attivo sul tenant");
+            crate::api::record_connect_attempt(&st, "teltonika", &imei, "modulo_spento", &peer).await;
+            return Ok(());
+        }
+        crate::api::ImeiMatch::None => {
+            let _ = sock.write_all(&[0x00]).await;
+            tracing::info!("teltonika: IMEI {imei} rifiutato: non censito");
+            crate::api::record_connect_attempt(&st, "teltonika", &imei, "sconosciuto", &peer).await;
+            return Ok(());
+        }
     };
+    crate::api::clear_connect_attempt(&st, "teltonika", &imei).await;
     // mappa IO->allarme del modello+tenant risolta UNA volta per connessione (salva-vita configurabile)
     let io_alarm_map = crate::api::teltonika_io_alarm_map(&st, tid, did).await;
     sock.write_all(&[0x01]).await?; // accept
@@ -153,7 +173,7 @@ async fn handle(st: AppState, mut sock: TcpStream) -> std::io::Result<()> {
     let pending: Arc<Mutex<Option<oneshot::Sender<String>>>> = Arc::new(Mutex::new(None));
     let conn_id = next_conn_id();
     let key: RegKey = (tid, imei.clone());
-    registry().lock().unwrap().insert(key.clone(), Conn{ conn_id, device_id: did, cmd: cmd_tx.clone(), pending: pending.clone(),
+    registry().lock().unwrap().insert(key.clone(), Conn{ conn_id, since: st.clock.now(), device_id: did, cmd: cmd_tx.clone(), pending: pending.clone(),
         send_lock: Arc::new(tokio::sync::Mutex::new(())) });
 
     // writer task: scrive sul socket i comandi in coda e gli ACK dei record

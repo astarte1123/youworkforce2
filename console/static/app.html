@@ -3688,6 +3688,7 @@ function devEdit(d){
     <label class="row" style="gap:var(--s-8)"><input type="checkbox" id="dEn" ${d.enabled?'checked':''}> <span>Abilitato</span></label>
     <div class="row" style="gap:var(--s-8);margin-top:var(--s-8)"><button class="btn grow" onclick="devSave('${d.id||''}')">Salva</button>
       ${d.id?`<button class="btn ghost" onclick="devDel('${d.id}')">Elimina</button>`:''}</div>
+    ${(!isNew && d.source==='gps')?devLinkCard(d):''}
     ${(!isNew && d.source==='gps')?devServiceCard(d):''}
     ${(!isNew && d.source==='gps')?`<div class="card pad" style="margin-top:var(--s-8)">
        <div class="spread"><b class="small">Comandi al dispositivo</b>${devOnlineChip(d)}</div>
@@ -3818,6 +3819,27 @@ async function devService(id,state){
   if(!await askConfirm(msg)) return;
   try{ await api('/devices/'+id+'/service',{method:'POST',body:JSON.stringify({state})});
     toast(SERVICE_LABELS[state],'ok'); closeDrawer(); route(); }catch(e){ toast(e.message,'bad'); } }
+// Collegamento del badge: connesso adesso (TCP aperto), ultimo contatto, oppure rifiutato e perché.
+function devLinkBody(d){
+  const fmt=t=>new Date(t).toLocaleString('it-IT');
+  if(d.connected_since) return `<div style="color:var(--ok,green)">✓ <b>Collegato adesso</b> · da ${esc(fmt(d.connected_since))}</div>
+    <div class="small mut">Il badge è in linea con YouWorkforce. Posizioni e allarmi arrivano in tempo reale.</div>`;
+  if(d.rejected) return `<div style="color:var(--bad)">✕ <b>Il badge prova a collegarsi ma viene rifiutato</b></div>
+    <div class="small">Motivo: ${esc(d.rejected.reason_label||'rifiutato')} · ultimo tentativo ${esc(fmt(d.rejected.last_at))} · ${d.rejected.attempts} tentativi</div>
+    <div class="small mut">${d.rejected.reason==='conteso'?'Lo stesso IMEI risulta registrato anche in un\'altra azienda: contatta l\'assistenza per risolvere.'
+      :d.rejected.reason==='modulo_spento'?'Nessun modulo dispositivi attivo per la tua azienda: chiedi all\'amministratore di sistema di attivarlo.'
+      :'Controlla che l\'IMEI inserito sia esattamente quello del badge.'}</div>`;
+  if(d.last_seen_at) return `<div><b>Non collegato in questo momento</b> · ultimo contatto ${esc(fmt(d.last_seen_at))}</div>
+    <div class="small mut">I badge si collegano a intervalli (dipende dalla configurazione del dispositivo): è normale vederlo scollegato tra un invio e l'altro.</div>`;
+  return `<div><b>Mai collegato</b></div>
+    <div class="small mut">Configura sul badge l'indirizzo e la porta di YouWorkforce (Teltonika: porta TCP 5027) e accendilo. Quando si collega lo vedi qui: premi «verifica ora».</div>`; }
+function devLinkCard(d){ return `<div class="card pad" style="margin-top:var(--s-8)">
+  <div class="spread"><b class="small">Collegamento</b><button class="btn ghost small" onclick="devLinkCheck('${d.id}')">verifica ora</button></div>
+  <div id="devLink" style="margin-top:var(--s-6)">${devLinkBody(d)}</div></div>`; }
+async function devLinkCheck(id){ const box=$('#devLink'); if(box) box.innerHTML='<span class="small mut">verifico…</span>';
+  try{ const all=await api('/devices'); const d=(all||[]).find(x=>x.id===id);
+    if(box) box.innerHTML=d?devLinkBody(d):'<span class="small mut">dispositivo non trovato</span>'; }
+  catch(e){ if(box) box.innerHTML=`<span class="small" style="color:var(--bad)">${esc(e.message)}</span>`; } }
 // Stessa regola del watchdog del silenzio: soglia silence_after_s del tenant (0 = controllo spento).
 function devOnlineChip(d){
   if(d.service_state&&d.service_state!=='in_servizio') return `<span class="chip" title="non monitorato">${SERVICE_LABELS[d.service_state]||esc(d.service_state)}</span>`;
