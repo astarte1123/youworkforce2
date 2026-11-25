@@ -22,18 +22,21 @@ use uuid::Uuid;
 use sqlx::Row;
 use state::{AppState, TenantEvent};
 
-/// Cifra a riposo i segreti ancora in chiaro (percorso di migrazione idempotente: salta ciò
-/// che è già cifrato). L'unico segreto esterno è la chiave del provider AI. Richiede YW_SECRET_KEY.
-async fn crypto_migrate(st: &AppState) -> anyhow::Result<()> {
-    // IO-13: plaintext legacy e formato v1 (chiave senza KDF) -> v2 (Argon2id)
-    let rows = sqlx::query("SELECT tenant_id,api_key FROM app.ai_connections WHERE api_key<>'' AND api_key NOT LIKE 'enc:v2:%'")
-        .fetch_all(&st.owner_pool).await?;
+/// Ricifra con la chiave ATTIVA ogni segreto in un altro formato (chiaro, v1/v2 della vecchia
+/// YW_SECRET_KEY, v3 di una chiave precedente). Idempotente. L'unico segreto è la chiave AI.
+/// Usata da API (sblocco, rotazione) per ricifrare i segreti con la chiave attiva.
+pub async fn crypto_migrate_hook(st: &AppState) -> Result<(), String> { crypto_migrate(st).await.map_err(|e| e.to_string()) }
+pub async fn crypto_migrate(st: &AppState) -> anyhow::Result<()> {
+    let Some(kid) = st.secrets.active_id() else { return Ok(()) };
+    if !st.secrets.enabled() { return Ok(()); }
+    let prefix = format!("enc:v3:{kid}:%");
+    let rows = sqlx::query("SELECT tenant_id,api_key FROM app.ai_connections WHERE api_key<>'' AND api_key NOT LIKE $1")
+        .bind(&prefix).fetch_all(&st.owner_pool).await?;
     for r in rows {
         let tid: Uuid = r.get("tenant_id");
         let plain = st.secrets.decrypt(&r.get::<String,_>("api_key"));
-        if plain.starts_with("enc:") { continue; } // non decifrabile con questa chiave: lascia com'è
-        let enc = st.secrets.encrypt(&plain);
-        if !enc.starts_with("enc:v2:") { continue; }   // YW_SECRET_KEY assente: resta in chiaro
+        if plain.starts_with("enc:") { tracing::warn!("segreto del tenant {tid} non decifrabile: lasciato com'è"); continue; }
+        let Ok(enc) = st.secrets.encrypt(&plain) else { continue };
         sqlx::query("UPDATE app.ai_connections SET api_key=$2 WHERE tenant_id=$1")
             .bind(tid).bind(enc).execute(&st.owner_pool).await?;
     }
@@ -78,6 +81,10 @@ fn superadmin_routes() -> Router<AppState> {
         .route("/api/superadmin/plans", get(api::super_plans_list))
         .route("/api/superadmin/system", get(api::super_system))
         .route("/api/superadmin/system/alerts", get(api::super_system_alerts))
+        .route("/api/superadmin/secrets", get(api::super_secrets_get))
+        .route("/api/superadmin/secrets/recovery", post(api::super_secrets_recovery))
+        .route("/api/superadmin/secrets/unlock", post(api::super_secrets_unlock))
+        .route("/api/superadmin/secrets/rotate", post(api::super_secrets_rotate))
         .route("/api/superadmin/device-attempts", get(api::super_device_attempts))
         .route("/api/superadmin/system/settings", get(api::super_system_settings_get).post(api::super_system_settings_set))
         .route("/api/superadmin/scenarios", get(api::super_scenarios_list))
@@ -173,13 +180,6 @@ async fn run() -> anyhow::Result<()> {
         .connect(&rt_url).await?;
 
     let (bus, _) = broadcast::channel(256);
-    // IO-13: senza chiave i segreti (chiavi dei provider AI) finirebbero in chiaro nel DB.
-    // Avvio rifiutato, salvo deroga esplicita per sviluppo (YW_ALLOW_PLAINTEXT_SECRETS=1).
-    let sk = std::env::var("YW_SECRET_KEY").unwrap_or_default();
-    if sk.len() < crypto::MIN_KEY_LEN && env("YW_ALLOW_PLAINTEXT_SECRETS", "0") != "1" {
-        anyhow::bail!("YW_SECRET_KEY mancante o più corta di {} caratteri: imposta una chiave lunga e segreta \
-            (o YW_ALLOW_PLAINTEXT_SECRETS=1 solo in sviluppo)", crypto::MIN_KEY_LEN);
-    }
     let st = AppState {
         owner_pool, rt_pool,
         // SICUREZZA: test clock OFF di default. /api/_test/advance (CSRF-exempt, non autenticato)
@@ -189,18 +189,19 @@ async fn run() -> anyhow::Result<()> {
         http: reqwest::Client::new(),
         control_host: env("YW_CONTROL_HOST", "tenants.loneworker.eu"),
         base_domain: env("YW_BASE_DOMAIN", "loneworker.eu"),
-        secrets: Arc::new(crypto::Secrets::from_env()),
+        secrets: Arc::new(crypto::Secrets::new()),
         started: std::time::Instant::now(),
         worker_heartbeat: Arc::new(std::sync::atomic::AtomicI64::new(0)),
     };
     // IO-4: scenari IoT predefiniti nel catalogo DB (inserisce solo i mancanti)
     api::seed_scenarios(&st).await;
-    // P3: se la chiave e' presente, cifra a riposo i segreti ancora in chiaro.
+    // Chiave dei segreti dal DB (sigillata dal server); prima volta: generata. Poi migrazione.
+    api::secrets_init(&st).await;
     if st.secrets.enabled() {
         if let Err(e) = crypto_migrate(&st).await { tracing::warn!("crypto migrate: {e}"); }
-        tracing::info!("encryption-at-rest attiva (YW_SECRET_KEY)");
+        tracing::info!("cifratura dei segreti attiva (chiave {:?}, {})", st.secrets.active_id(), crypto::seal_method());
     } else {
-        tracing::warn!("YW_SECRET_KEY non impostata: segreti upstream in chiaro nel DB");
+        tracing::warn!("cifratura dei segreti BLOCCATA: questo server non apre la chiave; sbloccala con la passphrase di recupero (superadmin, scheda Sistema)");
     }
 
     tokio::spawn(worker::run(st.clone()));

@@ -352,10 +352,29 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
 - **Registro attività (TA-13).** Ci finiscono anche membri dei gruppi, ruoli personalizzati
   assegnati, sedi e asset, sempre con l'utente reale. Per le azioni del superadmin l'attore è
   `superadmin:<email>`, non più la sola parola «superadmin».
-- **Chiave dei segreti (IO-13).** Il core **non parte** senza `YW_SECRET_KEY` di almeno 16
-  caratteri. In sviluppo si può aggirare con `YW_ALLOW_PLAINTEXT_SECRETS=1`. Le chiavi dei
-  provider AI sono cifrate con una chiave derivata con **Argon2id** (formato `enc:v2`). I valori
-  nel vecchio formato `enc:v1` o in chiaro vengono ricifrati all'avvio.
+- **Chiave dei segreti, gestita dal superadmin (decisione PO 25/11/2026, mig `0146`).** Niente
+  più chiave in un file di testo o in una variabile d'ambiente: la genera YouWorkforce al primo
+  avvio. La chiave protegge le chiavi dei provider AI (formato `enc:v3:<n>`) e sta nel database
+  (`app.secret_keys`) solo in due forme sigillate:
+  - **dal server**: su Windows con DPAPI (chiave di macchina); su Linux con una chiave di
+    macchina che il core crea in `YW_KEYSTORE_DIR` (default `/var/lib/youworkforce`, file 0600,
+    mai da scrivere a mano). Una copia del database da sola non basta per leggere i segreti;
+  - **con la passphrase di recupero** del superadmin (Argon2id, almeno 12 caratteri). Serve per
+    sbloccare la chiave su un altro server, dopo un ripristino o una migrazione.
+    YouWorkforce non può recuperarla: va conservata in un posto sicuro.
+- **Scheda Sistema → «Cifratura dei segreti»** (solo superadmin): stato, chiave e server su cui
+  è sigillata, passphrase impostata sì o no, numero di segreti. Da qui si imposta o cambia la
+  passphrase (per cambiarla serve quella attuale), si sblocca la chiave su un nuovo server e si
+  ruota la chiave (segreti ricifrati, vecchia chiave eliminata).
+  - Il controllo di sistema `secrets` è **rosso** se la chiave è bloccata: le funzioni AI restano
+    senza chiavi, gli allarmi funzionano comunque.
+  - È **giallo** finché la passphrase non è impostata.
+  - API: `GET /api/superadmin/secrets` e `POST /api/superadmin/secrets/{recovery,unlock,rotate}`.
+- La vecchia `YW_SECRET_KEY` non è più richiesta. Se è ancora impostata serve solo a convertire
+  i segreti nei formati `enc:v1` e `enc:v2` (e quelli in chiaro), che all'avvio vengono ricifrati
+  con la chiave gestita. Dopo la conversione si può togliere.
+- e2e `qa/secret-key-e2e.sh` 14/14; unit test `crypto::tests` (3), compreso il sigillo DPAPI.
+  Il test imposta sul database di sviluppo la passphrase di prova `e2e-passphrase-di-recupero`.
 
 ## 13-bis. Privacy e audit (GDPR + registro attività)
 

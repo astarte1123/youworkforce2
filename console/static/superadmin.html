@@ -176,6 +176,10 @@ async function shell(){
             <button class="btn" onclick="sysSettingsSave()">Salva configurazione</button></div>
           <div id="ss_msg" class="small" style="margin-top:6px"></div>
         </div></div>
+      <div class="card" style="margin-bottom:16px"><div class="card-h"><h2>Cifratura dei segreti</h2>
+        <button class="btn ghost small" onclick="loadSecrets()">↻ aggiorna</button></div>
+        <div class="card-b"><div class="small mut" style="margin-bottom:8px">La chiave che protegge i segreti (chiavi dei provider AI) è generata e custodita da YouWorkforce: nel database solo sigillata dal server e con la tua <b>passphrase di recupero</b>. Una copia del database da sola non basta per leggerli. La passphrase serve per sbloccare la chiave su un altro server (ripristino, migrazione): <b>conservala in un posto sicuro</b>, YouWorkforce non può recuperarla.</div>
+        <div id="secBox"><div class="small mut">—</div></div></div></div>
       <div class="card" style="margin-bottom:16px"><div class="card-h"><h2>Dispositivi rifiutati</h2>
         <button class="btn ghost small" onclick="loadAttempts()">↻ aggiorna</button></div>
         <div class="card-b"><div class="small mut" style="margin-bottom:8px">Badge che provano a collegarsi (Teltonika, porta TCP) e vengono rifiutati: IMEI non censito, censito in più aziende, o azienda senza modulo dispositivi. Il badge riprova da solo: quando il problema è risolto la riga sparisce al collegamento successivo. Righe ferme da 30 giorni vengono cancellate.</div>
@@ -282,7 +286,46 @@ async function loadSystem(){
   renderSysAlerts(al);
   loadSysSettings();
   loadAttempts();
+  loadSecrets();
 }
+// ===== Chiave dei segreti (decisione PO 25/11/2026) =====
+async function loadSecrets(){ const box=$('#secBox'); if(!box) return;
+  let d; try{ d=await api('/superadmin/secrets'); }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; return; }
+  const fmt=t=>t?new Date(t).toLocaleString('it-IT'):'—';
+  const locked=d.state!=='attiva';
+  box.innerHTML=`<div class="srow"><span class="k">Stato</span><span class="v">${locked?'<span class="dot bad"></span>bloccata: questo server non apre la chiave':'<span class="dot ok"></span>attiva'}</span></div>
+    <div class="srow"><span class="k">Chiave</span><span class="v">n. ${esc(String(d.key_id??'—'))} · creata ${esc(fmt(d.created_at))}${d.server?' · sigillata su '+esc(d.server):''}</span></div>
+    <div class="srow"><span class="k">Sigillo del server</span><span class="v">${esc(d.seal_method)}</span></div>
+    <div class="srow"><span class="k">Passphrase di recupero</span><span class="v">${d.recovery_set?'<span class="dot ok"></span>impostata il '+esc(fmt(d.recovery_set_at)):'<span class="dot warn"></span>non impostata'}</span></div>
+    <div class="srow"><span class="k">Segreti protetti</span><span class="v">${d.secrets}${d.not_migrated?` (${d.not_migrated} ancora da convertire)`:''}</span></div>
+    ${d.legacy_env_key?'<div class="small mut" style="margin-top:6px">La vecchia YW_SECRET_KEY è ancora impostata: serve solo a convertire i segreti precedenti e si può togliere.</div>':''}
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px">
+      ${locked?`<button class="btn" onclick="secUnlock()">Sblocca con la passphrase</button>`:`<button class="btn ${d.recovery_set?'ghost':''}" onclick="secRecovery(${d.recovery_set})">${d.recovery_set?'Cambia passphrase di recupero':'Imposta passphrase di recupero'}</button>
+      <button class="btn ghost" onclick="secRotate(${d.recovery_set})">Ruota la chiave</button>`}</div>`; }
+function secAsk(title, fields, note){ return new Promise(res=>{
+  const m=document.createElement('div');
+  m.style.cssText='position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)';
+  m.innerHTML=`<div class="card" style="padding:16px;max-width:440px;width:92%"><h3 style="margin:0 0 8px">${esc(title)}</h3>
+    ${note?`<div class="small mut" style="margin-bottom:8px">${note}</div>`:''}
+    ${fields.map((f,i)=>`<label class="small" style="display:block;margin:6px 0">${esc(f)}<input type="password" data-i="${i}" style="width:100%;margin-top:4px" autocomplete="new-password"></label>`).join('')}
+    <div class="row" style="gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn ghost" data-no>Annulla</button><button class="btn" data-yes>Conferma</button></div></div>`;
+  const done=v=>{ try{m.remove();}catch(e){} res(v); };
+  m.querySelector('[data-no]').onclick=()=>done(null);
+  m.querySelector('[data-yes]').onclick=()=>done([...m.querySelectorAll('input')].map(x=>x.value));
+  document.body.appendChild(m); m.querySelector('input').focus(); }); }
+async function secRecovery(change){
+  const f=change?['Passphrase attuale','Nuova passphrase (almeno 12 caratteri)','Ripeti la nuova passphrase']:['Passphrase (almeno 12 caratteri)','Ripeti la passphrase'];
+  const v=await secAsk(change?'Cambia passphrase di recupero':'Imposta passphrase di recupero', f, 'Conservala fuori da YouWorkforce (es. gestore di password o cassaforte): senza di essa, se il server cambia, i segreti non sono recuperabili.');
+  if(!v) return; const [cur,np,np2]=change?v:[null,v[0],v[1]];
+  if(np!==np2) return toast('Le due passphrase non coincidono','bad');
+  try{ await api('/superadmin/secrets/recovery',{method:'POST',body:JSON.stringify({passphrase:np,current:cur})}); toast('Passphrase di recupero salvata','ok'); loadSecrets(); }catch(e){ toast(e.message,'bad'); } }
+async function secUnlock(){ const v=await secAsk('Sblocca la chiave dei segreti',['Passphrase di recupero'],'La chiave viene sbloccata e sigillata per questo server.'); if(!v) return;
+  try{ await api('/superadmin/secrets/unlock',{method:'POST',body:JSON.stringify({passphrase:v[0]})}); toast('Chiave sbloccata','ok'); loadSecrets(); loadSystem(); }catch(e){ toast(e.message,'bad'); } }
+async function secRotate(rec){
+  if(!rec){ if(!await askConfirm('Ruotare la chiave dei segreti? Verrà generata una nuova chiave e tutti i segreti saranno ricifrati.')) return;
+    try{ await api('/superadmin/secrets/rotate',{method:'POST',body:JSON.stringify({passphrase:''})}); toast('Chiave ruotata','ok'); loadSecrets(); }catch(e){ toast(e.message,'bad'); } return; }
+  const v=await secAsk('Ruota la chiave dei segreti',['Passphrase di recupero'],'Serve per proteggere anche la nuova chiave. Tutti i segreti vengono ricifrati.'); if(!v) return;
+  try{ await api('/superadmin/secrets/rotate',{method:'POST',body:JSON.stringify({passphrase:v[0]})}); toast('Chiave ruotata','ok'); loadSecrets(); }catch(e){ toast(e.message,'bad'); } }
 async function loadAttempts(){ const box=$('#sysAttempts'); if(!box) return;
   let rows=[]; try{ rows=await api('/superadmin/device-attempts'); }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; return; }
   if(!rows.length){ box.innerHTML='<div class="small mut">Nessun tentativo rifiutato.</div>'; return; }

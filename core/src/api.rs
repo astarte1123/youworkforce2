@@ -651,6 +651,14 @@ pub async fn system_snapshot(st: &AppState) -> Value {
         add("esc_backlog", if esc_active_max>=esc_bad {"bad"} else {"warn"},
             format!("{} incidenti in escalation attiva su un tenant (coda consegna)", esc_active_max));
     }
+    // Chiave dei segreti: bloccata = rosso (AI senza chiavi); senza passphrase di recupero = giallo
+    if !st.secrets.enabled() { add("secrets", "bad", "cifratura dei segreti bloccata: sbloccala con la passphrase di recupero".to_string()); }
+    else {
+        let rec: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app.secret_keys WHERE active AND recovery_wrapped IS NOT NULL)")
+            .fetch_one(&st.owner_pool).await.unwrap_or(true);
+        if rec { add("secrets", "ok", "cifratura dei segreti attiva".to_string()); }
+        else { add("secrets", "warn", "imposta una passphrase di recupero per la chiave dei segreti (serve per ripristini e migrazioni)".to_string()); }
+    }
     // SA-3: consegna degli allarmi reale, di prova o simulata. In produzione (orologio reale)
     // «simulata» è critico; il check «ok» quando reale chiude l'alert aperto.
     let delivery = crate::delivery::delivery_status();
@@ -682,6 +690,146 @@ pub async fn delivery_status_get(State(st): State<AppState>, h: HeaderMap) -> R 
         return Err(err(StatusCode::FORBIDDEN, "permesso richiesto: vedere gli allarmi"));
     }
     Ok(Json(crate::delivery::delivery_status()))
+}
+// ---- Chiave dei segreti gestita dal superadmin (decisione PO 25/11/2026, mig 0146) ----
+fn host_name() -> String { std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| "server".into()) }
+/// Avvio: carica le chiavi dal DB aprendo il sigillo del server; se non ce n'è nessuna la genera
+/// (sigillata subito). Se la chiave attiva non si apre (DB spostato su un altro server) la
+/// cifratura resta BLOCCATA finché il superadmin non la sblocca con la passphrase di recupero.
+pub async fn secrets_init(st: &AppState) {
+    let rows = sqlx::query("SELECT key_id, sealed_server, active FROM app.secret_keys ORDER BY key_id")
+        .fetch_all(&st.owner_pool).await.unwrap_or_default();
+    if rows.is_empty() {
+        let dek = crate::crypto::random_key();
+        match crate::crypto::seal_server(&dek) {
+            Ok(sealed) => {
+                let ok = sqlx::query("INSERT INTO app.secret_keys(key_id,sealed_server,server_name,active) VALUES(1,$1,$2,true) ON CONFLICT DO NOTHING")
+                    .bind(&sealed).bind(host_name()).execute(&st.owner_pool).await.map(|r| r.rows_affected() > 0).unwrap_or(false);
+                if ok { st.secrets.load_key(1, &dek, true); tracing::info!("chiave dei segreti generata e sigillata ({})", crate::crypto::seal_method()); }
+                else { Box::pin(secrets_init_existing(st)).await; } // creata nel frattempo da un'altra istanza
+            }
+            Err(e) => { tracing::error!("chiave dei segreti: sigillo del server non disponibile ({e})"); st.secrets.set_locked(true); }
+        }
+        return;
+    }
+    secrets_init_existing(st).await;
+}
+async fn secrets_init_existing(st: &AppState) {
+    let rows = sqlx::query("SELECT key_id, sealed_server, active FROM app.secret_keys ORDER BY key_id")
+        .fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let mut active_ok = false;
+    for r in &rows {
+        let (kid, active): (i32, bool) = (r.get("key_id"), r.get("active"));
+        let sealed: Option<Vec<u8>> = r.try_get("sealed_server").ok().flatten();
+        match sealed.map(|b| crate::crypto::open_server(&b)) {
+            Some(Ok(dek)) => { st.secrets.load_key(kid, &dek, active); if active { active_ok = true; } }
+            _ => if active { tracing::warn!("chiave dei segreti {kid}: il sigillo non si apre su questo server"); },
+        }
+    }
+    if !active_ok { st.secrets.set_locked(true); }
+}
+async fn secrets_status(st: &AppState) -> Result<Value, (StatusCode,String)> {
+    let r = sqlx::query("SELECT key_id, server_name, created_at, created_by, recovery_set_at, recovery_wrapped IS NOT NULL AS rec
+            FROM app.secret_keys WHERE active").fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM app.ai_connections WHERE api_key<>''").fetch_one(&st.owner_pool).await.map_err(ise)?;
+    let legacy: i64 = sqlx::query_scalar("SELECT count(*) FROM app.ai_connections WHERE api_key<>'' AND api_key NOT LIKE 'enc:v3:%'")
+        .fetch_one(&st.owner_pool).await.map_err(ise)?;
+    Ok(json!({
+        "state": if st.secrets.enabled() { "attiva" } else { "bloccata" },
+        "key_id": r.as_ref().map(|x| x.get::<i32,_>("key_id")),
+        "server": r.as_ref().and_then(|x| x.try_get::<String,_>("server_name").ok()),
+        "created_at": r.as_ref().map(|x| x.get::<Dt,_>("created_at").to_rfc3339()),
+        "recovery_set": r.as_ref().map(|x| x.get::<bool,_>("rec")).unwrap_or(false),
+        "recovery_set_at": r.as_ref().and_then(|x| x.try_get::<Dt,_>("recovery_set_at").ok()).map(|d| d.to_rfc3339()),
+        "seal_method": crate::crypto::seal_method(), "secrets": n, "not_migrated": legacy,
+        "legacy_env_key": st.secrets.has_legacy(),
+    }))
+}
+pub async fn super_secrets_get(State(st): State<AppState>, h: HeaderMap) -> R {
+    require_super(&st, &h).await?;
+    Ok(Json(secrets_status(&st).await?))
+}
+#[derive(Deserialize)] pub struct PassReq { pub passphrase: String, #[serde(default)] pub current: Option<String> }
+fn pass_ok(p: &str) -> Result<(), (StatusCode,String)> {
+    if p.chars().count() < crate::crypto::MIN_PASSPHRASE {
+        return Err(err(StatusCode::BAD_REQUEST, &format!("passphrase di almeno {} caratteri", crate::crypto::MIN_PASSPHRASE))); }
+    Ok(())
+}
+/// Imposta o cambia la passphrase di recupero della chiave attiva (serve la chiave aperta; per
+/// cambiarla serve anche quella attuale).
+pub async fn super_secrets_recovery(State(st): State<AppState>, h: HeaderMap, Json(b): Json<PassReq>) -> R {
+    let sa = require_super(&st, &h).await?;
+    pass_ok(&b.passphrase)?;
+    let r = sqlx::query("SELECT key_id, recovery_salt, recovery_wrapped FROM app.secret_keys WHERE active").fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::CONFLICT, "nessuna chiave attiva"))?;
+    let kid: i32 = r.get("key_id");
+    let (salt, wrapped): (Option<Vec<u8>>, Option<Vec<u8>>) = (r.try_get("recovery_salt").ok().flatten(), r.try_get("recovery_wrapped").ok().flatten());
+    // la chiave si ricava dal sigillo del server (o, se impostata, dalla passphrase attuale)
+    let dek: Vec<u8> = if let (Some(s), Some(w)) = (&salt, &wrapped) {
+        let cur = b.current.as_deref().ok_or_else(|| err(StatusCode::BAD_REQUEST, "indica la passphrase attuale"))?;
+        crate::crypto::unwrap_recovery(s, w, cur).map_err(|_| err(StatusCode::FORBIDDEN, "passphrase attuale errata"))?
+    } else {
+        let sealed: Vec<u8> = sqlx::query_scalar("SELECT sealed_server FROM app.secret_keys WHERE key_id=$1").bind(kid)
+            .fetch_one(&st.owner_pool).await.map_err(ise)?;
+        crate::crypto::open_server(&sealed).map_err(|e| err(StatusCode::CONFLICT, &e))?
+    };
+    let (ns, nw) = crate::crypto::wrap_recovery(&dek, &b.passphrase).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    sqlx::query("UPDATE app.secret_keys SET recovery_salt=$2, recovery_wrapped=$3, recovery_set_at=now() WHERE key_id=$1")
+        .bind(kid).bind(&ns).bind(&nw).execute(&st.owner_pool).await.map_err(ise)?;
+    let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES(NULL,$1,'secrets_recovery_set',$2)")
+        .bind(format!("superadmin:{}", sa.email)).bind(json!({"key_id":kid,"changed":wrapped.is_some()})).execute(&st.owner_pool).await;
+    Ok(Json(secrets_status(&st).await?))
+}
+/// Sblocca la chiave su QUESTO server con la passphrase di recupero e la risigilla qui.
+pub async fn super_secrets_unlock(State(st): State<AppState>, h: HeaderMap, Json(b): Json<PassReq>) -> R {
+    let sa = require_super(&st, &h).await?;
+    let r = sqlx::query("SELECT key_id, recovery_salt, recovery_wrapped FROM app.secret_keys WHERE active").fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::CONFLICT, "nessuna chiave attiva"))?;
+    let kid: i32 = r.get("key_id");
+    let (Some(salt), Some(w)) = (r.try_get::<Option<Vec<u8>>,_>("recovery_salt").ok().flatten(), r.try_get::<Option<Vec<u8>>,_>("recovery_wrapped").ok().flatten())
+        else { return Err(err(StatusCode::CONFLICT, "nessuna passphrase di recupero impostata per questa chiave")); };
+    let dek = crate::crypto::unwrap_recovery(&salt, &w, &b.passphrase).map_err(|_| err(StatusCode::FORBIDDEN, "passphrase errata"))?;
+    let sealed = crate::crypto::seal_server(&dek).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    sqlx::query("UPDATE app.secret_keys SET sealed_server=$2, server_name=$3 WHERE key_id=$1").bind(kid).bind(&sealed).bind(host_name())
+        .execute(&st.owner_pool).await.map_err(ise)?;
+    st.secrets.load_key(kid, &dek, true);
+    let _ = crate::crypto_migrate_hook(&st).await;
+    let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES(NULL,$1,'secrets_unlock',$2)")
+        .bind(format!("superadmin:{}", sa.email)).bind(json!({"key_id":kid,"server":host_name()})).execute(&st.owner_pool).await;
+    Ok(Json(secrets_status(&st).await?))
+}
+/// Ruota la chiave: nuova chiave sigillata dal server, segreti ricifrati, vecchia chiave eliminata.
+/// Se c'è una passphrase di recupero, serve per proteggere anche la nuova chiave.
+pub async fn super_secrets_rotate(State(st): State<AppState>, h: HeaderMap, Json(b): Json<PassReq>) -> R {
+    let sa = require_super(&st, &h).await?;
+    if !st.secrets.enabled() { return Err(err(StatusCode::CONFLICT, "cifratura bloccata: sbloccala prima di ruotare la chiave")); }
+    let cur = sqlx::query("SELECT key_id, recovery_salt, recovery_wrapped FROM app.secret_keys WHERE active").fetch_one(&st.owner_pool).await.map_err(ise)?;
+    let old: i32 = cur.get("key_id");
+    let rec = match (cur.try_get::<Option<Vec<u8>>,_>("recovery_salt").ok().flatten(), cur.try_get::<Option<Vec<u8>>,_>("recovery_wrapped").ok().flatten()) {
+        (Some(s), Some(w)) => {
+            crate::crypto::unwrap_recovery(&s, &w, &b.passphrase).map_err(|_| err(StatusCode::FORBIDDEN, "passphrase di recupero errata"))?;
+            true }
+        _ => false,
+    };
+    let dek = crate::crypto::random_key();
+    let sealed = crate::crypto::seal_server(&dek).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    let (rs, rw) = if rec { let (s, w) = crate::crypto::wrap_recovery(&dek, &b.passphrase).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e))?; (Some(s), Some(w)) } else { (None, None) };
+    let new = old + 1;
+    let mut tx = st.owner_pool.begin().await.map_err(ise)?;
+    sqlx::query("UPDATE app.secret_keys SET active=false WHERE key_id=$1").bind(old).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.secret_keys(key_id,sealed_server,server_name,recovery_salt,recovery_wrapped,recovery_set_at,active,created_by)
+            VALUES($1,$2,$3,$4,$5,CASE WHEN $4::bytea IS NULL THEN NULL ELSE now() END,true,$6)")
+        .bind(new).bind(&sealed).bind(host_name()).bind(&rs).bind(&rw).bind(format!("superadmin:{}", sa.email)).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    st.secrets.load_key(new, &dek, true);
+    crate::crypto_migrate_hook(&st).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    // la vecchia chiave si elimina solo se nessun segreto la usa più
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM app.ai_connections WHERE api_key LIKE $1").bind(format!("enc:v3:{old}:%"))
+        .fetch_one(&st.owner_pool).await.map_err(ise)?;
+    if left == 0 { let _ = sqlx::query("DELETE FROM app.secret_keys WHERE key_id=$1").bind(old).execute(&st.owner_pool).await; st.secrets.forget_key(old); }
+    let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES(NULL,$1,'secrets_rotate',$2)")
+        .bind(format!("superadmin:{}", sa.email)).bind(json!({"from":old,"to":new})).execute(&st.owner_pool).await;
+    Ok(Json(secrets_status(&st).await?))
 }
 pub async fn super_system(State(st): State<AppState>, h: HeaderMap) -> R {
     require_super(&st, &h).await?;
@@ -2166,7 +2314,7 @@ pub async fn super_set_ai(State(st): State<AppState>, h: HeaderMap, Path(tid): P
             .bind(tid).bind(&provider).bind(&base).bind(&model).bind(&chat).bind(&stt).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
         if n == 0 { return Err(err(StatusCode::BAD_REQUEST, "API key richiesta per la prima configurazione")); }
     } else {
-        let enc = st.secrets.encrypt(&key);
+        let enc = st.secrets.encrypt(&key).map_err(|e| err(StatusCode::CONFLICT, &e))?;
         sqlx::query("INSERT INTO app.ai_connections(tenant_id,provider,base_url,api_key,model,chat_path,stt_path) VALUES($1,$2,$3,$4,$5,$6,$7)
             ON CONFLICT (tenant_id) DO UPDATE SET provider=EXCLUDED.provider,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,model=EXCLUDED.model,chat_path=EXCLUDED.chat_path,stt_path=EXCLUDED.stt_path,updated_at=now()")
             .bind(tid).bind(&provider).bind(&base).bind(&enc).bind(&model).bind(&chat).bind(&stt).execute(&st.owner_pool).await.map_err(ise)?;
