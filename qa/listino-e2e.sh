@@ -48,10 +48,10 @@ curl -s $H -X DELETE $BASE/api/order-lines/$LID -o /dev/null
 TOT=$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/orders/$OID/lines | jq1 "print(json.load(sys.stdin)['total'])")
 [ "$TOT" = "15.5" ] && ok || no "total=$TOT"
 
-say "7 modulo interventi OFF -> 403 sul listino"
+say "7 interventi OFF ma consuntivi attivo -> listino resta (200)"
 curl -s -b "$J/sa" -H "x-csrf-token: $SC" -H 'content-type: application/json' -X POST $BASE/api/superadmin/tenants/$AID/modules -d '{"module_code":"interventi","state":"non_abilitato"}' -o /dev/null
 c=$(curl -s -o /dev/null -w '%{http_code}' -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/price-items)
-[ "$c" = "403" ] && ok || no "got $c"
+[ "$c" = "200" ] && ok || no "got $c"  # il listino serve anche alle tariffe dei consuntivi
 curl -s -b "$J/sa" -H "x-csrf-token: $SC" -H 'content-type: application/json' -X POST $BASE/api/superadmin/tenants/$AID/modules -d '{"module_code":"interventi","state":"attivo"}' -o /dev/null
 
 echo "== $PASS passed, $FAIL failed =="

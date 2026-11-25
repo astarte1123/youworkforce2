@@ -47,9 +47,10 @@ rate(){ local ts; ts=$(call "$1" POST /api/timesheets '{}' | py "d['id']")
 [ "$(rate G)" = "3000" ] && ok "senza qualifica: tariffa di manodopera per tutti (30 €)" || no "rate gen" "$(rate G)"
 [ "$(q "SELECT app.yw_labor_rate_cents('$TID','$UE','$YEST')")" = "4000" ] && ok "ieri valeva la tariffa precedente (40 €): validità nel tempo" || no "storico" "$(q "SELECT app.yw_labor_rate_cents('$TID','$UE','$YEST')")"
 
-# costi di commessa: 2 ore di presenza dell'elettricista valorizzate con la sua tariffa
+# costi di commessa: 2 ore di presenza dell'elettricista (oggi 8-10 ora italiana: la tariffa vale per il
+# giorno LOCALE della presenza, quindi niente now()-2h che dopo mezzanotte cade nel giorno prima)
 CM=$(call A POST /api/commesse "{\"code\":\"C-$R\",\"name\":\"Cantiere $R\"}" | py "d['id']")
-docker exec -i ywdb psql -U postgres -d youworkforce -qc "INSERT INTO app.commessa_presenze(tenant_id,commessa_id,user_id,clock_in,clock_out) VALUES('$TID','$CM','$UE',now()-interval '2 hours',now())"
+docker exec -i ywdb psql -U postgres -d youworkforce -qc "INSERT INTO app.commessa_presenze(tenant_id,commessa_id,user_id,clock_in,clock_out) VALUES('$TID','$CM','$UE',('$TODAY 08:00'::timestamp AT TIME ZONE 'Europe/Rome'),('$TODAY 10:00'::timestamp AT TIME ZONE 'Europe/Rome'))"
 call A GET "/api/commesse/$CM" | py "d['cost']['labor_cost']" | grep -q "^90.2$" && ok "costo di commessa: 2 h × 45,10 € = 90,20 € dalla qualifica" || no "commessa" "$(call A GET "/api/commesse/$CM" | py "d['cost']")"
 echo "listino-qualifica: $PASS passed, $FAIL failed"
 [ "$FAIL" = "0" ]

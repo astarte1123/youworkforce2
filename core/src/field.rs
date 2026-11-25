@@ -124,9 +124,11 @@ pub(crate) fn opt_field<T>(v: &Option<String>, parse: impl Fn(&str) -> Option<T>
         Some(x) => parse(x).map(|p| Some(Some(p))).ok_or_else(|| err(StatusCode::BAD_REQUEST, &format!("{what} non valido"))),
     }
 }
+/// Il listino serve agli interventi e ai consuntivi (tariffa delle righe): basta uno dei due moduli.
+pub(crate) const PRICE_MODS: &[&str] = &["interventi", "consuntivi"];
 pub async fn list_price_items(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "interventi").await?;
+    require_any_module(&st, tid, PRICE_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let rows = sqlx::query("SELECT i.id,i.code,i.name,i.category,i.unit,i.price_cents,i.active,i.qualification_id,q.name AS qualification,i.valid_from,i.valid_to
             FROM app.price_list_items i LEFT JOIN app.qualifications q ON q.id=i.qualification_id ORDER BY i.active DESC,i.category,i.name,q.name NULLS FIRST").fetch_all(&mut *tx).await.map_err(ise)?;
@@ -143,7 +145,7 @@ pub async fn list_price_items(State(st): State<AppState>, h: HeaderMap) -> R {
 }
 pub async fn create_price_item(State(st): State<AppState>, h: HeaderMap, Json(b): Json<PriceItemReq>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    require_any_module(&st, tid, PRICE_MODS).await?; require_cap(&s, "plan")?;
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let cents = eur_to_cents(b.unit_price)?;
     let q = opt_field(&b.qualification_id, |x| Uuid::parse_str(x).ok(), "qualifica")?.flatten();
@@ -160,7 +162,7 @@ pub async fn create_price_item(State(st): State<AppState>, h: HeaderMap, Json(b)
 }
 pub async fn update_price_item(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<PriceItemReq>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    require_any_module(&st, tid, PRICE_MODS).await?; require_cap(&s, "plan")?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let cents = eur_to_cents(b.unit_price)?;
     let q = opt_field(&b.qualification_id, |x| Uuid::parse_str(x).ok(), "qualifica")?;
@@ -179,7 +181,7 @@ pub async fn update_price_item(State(st): State<AppState>, h: HeaderMap, Path(id
 }
 pub async fn delete_price_item(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    require_any_module(&st, tid, PRICE_MODS).await?; require_cap(&s, "plan")?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.price_list_items WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
@@ -430,7 +432,19 @@ pub(crate) async fn plan_generate_one(tx: &mut sqlx::PgConnection, tid: Uuid, pl
     sqlx::query("UPDATE app.maintenance_plans SET next_date=$2,last_order=$3,last_generated_at=now() WHERE id=$1").bind(plan_id).bind(next).bind(oid).execute(&mut *tx).await.map_err(ise)?;
     Ok(Some((oid, next)))
 }
-async fn tenant_tz(st: &AppState, tid: Uuid) -> chrono_tz::Tz {
+/// Mezzanotte locale di un giorno nel fuso dato, in UTC (al cambio d'ora vale la prima occorrenza).
+pub(crate) fn local_midnight_utc(tz: chrono_tz::Tz, d: chrono::NaiveDate) -> chrono::DateTime<chrono::Utc> {
+    use chrono::TimeZone as _;
+    tz.from_local_datetime(&d.and_hms_opt(0,0,0).unwrap()).earliest().map(|x| x.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|| d.and_hms_opt(0,0,0).unwrap().and_utc())
+}
+/// Fuso del percorso di ronda: quello della sua sede, altrimenti dell'azienda.
+pub(crate) async fn route_tz(st: &AppState, tid: Uuid, route_id: Uuid) -> chrono_tz::Tz {
+    sqlx::query_scalar::<_,String>("SELECT COALESCE(si.timezone,t.timezone) FROM app.patrol_routes r JOIN app.tenants t ON t.id=r.tenant_id
+            LEFT JOIN app.sites si ON si.id=r.site_id WHERE r.id=$1 AND r.tenant_id=$2").bind(route_id).bind(tid)
+        .fetch_optional(&st.owner_pool).await.ok().flatten().and_then(|z| parse_tz(&z)).unwrap_or(chrono_tz::Europe::Rome)
+}
+pub(crate) async fn tenant_tz(st: &AppState, tid: Uuid) -> chrono_tz::Tz {
     sqlx::query_scalar::<_,String>("SELECT timezone FROM app.tenants WHERE id=$1").bind(tid)
         .fetch_optional(&st.owner_pool).await.ok().flatten().and_then(|z| parse_tz(&z)).unwrap_or(chrono_tz::Europe::Rome)
 }
@@ -1072,13 +1086,15 @@ pub async fn work_hours_report(State(st): State<AppState>, h: HeaderMap,
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, &["consuntivi","workforce","cantieri","giri","interventi"]).await?;
     let day = |k: &str| q.get(k).and_then(|v| chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d").ok());
-    let today = st.clock.now().date_naive();
+    // giorni nell'ORA LOCALE dell'azienda (prima UTC: un turno 00:30 ora italiana finiva nel giorno prima)
+    let tz = tenant_tz(&st, tid).await;
+    let today = st.clock.now().with_timezone(&tz).date_naive();
     let to = day("to").unwrap_or(today);
     let from = day("from").unwrap_or(to - chrono::Duration::days(6));
     if from > to || (to - from).num_days() > 62 { return Err(err(StatusCode::BAD_REQUEST, "periodo non valido (al massimo 62 giorni)")); }
     let all = is_approver(&s) || is_planner(&s) || has_cap(&s, "timesheets.view_all");
     let who: Option<Uuid> = if all { q.get("user_id").and_then(|v| Uuid::parse_str(v).ok()) } else { Some(s.user_id) };
-    let (t0, t1) = (from.and_hms_opt(0,0,0).unwrap().and_utc(), (to + chrono::Duration::days(1)).and_hms_opt(0,0,0).unwrap().and_utc());
+    let (t0, t1) = (local_midnight_utc(tz, from), local_midnight_utc(tz, to + chrono::Duration::days(1)));
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let rows = sqlx::query("SELECT w.kind,w.prio,w.source_id,w.user_id,u.email,w.started_at,w.ended_at,w.billable,w.work_order_id,w.commessa_id,w.label
             FROM app.work_hours w JOIN app.users u ON u.id=w.user_id
@@ -1114,7 +1130,7 @@ pub async fn work_hours_report(State(st): State<AppState>, h: HeaderMap,
         let eff = (minutes - overlap).max(0.0);
         let started: Dt = r.get("started_at");
         let email: String = r.get("email"); let billable: bool = r.get("billable");
-        let e = by_day.entry((email.clone(), started.date_naive())).or_default();
+        let e = by_day.entry((email.clone(), started.with_timezone(&tz).date_naive())).or_default();
         e.0 += eff; if billable { e.1 += eff; } e.2 += overlap.min(minutes);
         json!({"kind": r.get::<String,_>("kind"), "source_id": r.get::<Uuid,_>("source_id"), "user_id": r.get::<Uuid,_>("user_id"),
                "email": email, "started_at": started.to_rfc3339(), "ended_at": r.get::<Dt,_>("ended_at").to_rfc3339(),
@@ -1134,7 +1150,7 @@ pub async fn work_hours_report(State(st): State<AppState>, h: HeaderMap,
                "late_min": first.map(|f| (f - starts).num_minutes().max(0)),
                "missing": first.is_none()})
     }).collect();
-    Ok(Json(json!({"from": from, "to": to, "all": all, "entries": entries, "days": days, "plans": plan_out,
+    Ok(Json(json!({"from": from, "to": to, "timezone": tz.name(), "all": all, "entries": entries, "days": days, "plans": plan_out,
         "rules": "intervento > ronda > presenza > turno; ronde e turni non fatturabili"})))
 }
 
@@ -1395,6 +1411,7 @@ pub async fn update_patrol_route(State(st): State<AppState>, h: HeaderMap, Path(
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "giri").await?;
     if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
+    if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome del percorso richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let clear_g = b.clear_group.unwrap_or(false);
     let n = sqlx::query("UPDATE app.patrol_routes SET name=$2, site_id=$3, window_minutes=$4, active=COALESCE($5,active), assigned_group=CASE WHEN $6 THEN NULL ELSE COALESCE($7,assigned_group) END, mode=COALESCE($8,mode), grace_min=COALESCE($9,grace_min), manual_code_allowed=COALESCE($10,manual_code_allowed) WHERE id=$1")
@@ -1549,8 +1566,9 @@ pub async fn start_round(State(st): State<AppState>, h: HeaderMap, Path(rid): Pa
     let Some(row) = row else {
         let who = sqlx::query("SELECT u.email, ro.started_at FROM app.patrol_rounds ro JOIN app.users u ON u.id=ro.user_id WHERE ro.route_id=$1 AND ro.status='in_corso' LIMIT 1")
             .bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?;
+        let tz = route_tz(&st, tid, rid).await;
         let msg = match who { Some(w) => format!("ronda già in corso su questo percorso: avviata da {} alle {}", w.get::<String,_>("email"),
-                w.get::<chrono::DateTime<chrono::Utc>,_>("started_at").format("%H:%M UTC")), None => "ronda già in corso su questo percorso".into() };
+                w.get::<chrono::DateTime<chrono::Utc>,_>("started_at").with_timezone(&tz).format("%H:%M")), None => "ronda già in corso su questo percorso".into() };
         return Err(err(StatusCode::CONFLICT, &msg));
     };
     let round_id = row.get::<Uuid,_>("id");
@@ -2702,8 +2720,9 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     // CA-6: ogni presenza valorizzata con la tariffa della persona (listino per qualifica, valida quel
     // giorno); se il listino non ce l'ha, col costo orario della commessa. In centesimi.
     let labor_cost_cents: i64 = sqlx::query_scalar("SELECT COALESCE(round(sum(EXTRACT(EPOCH FROM (p.clock_out-p.clock_in))/3600.0
-            * COALESCE(app.yw_labor_rate_cents(p.tenant_id,p.user_id,p.clock_in::date), round(COALESCE(c.labor_cost_hour,0)*100)))),0)::bigint
-          FROM app.commessa_presenze p JOIN app.commesse c ON c.id=p.commessa_id WHERE p.commessa_id=$1 AND p.clock_out IS NOT NULL AND NOT p.auto_closed")
+            * COALESCE(app.yw_labor_rate_cents(p.tenant_id,p.user_id,(p.clock_in AT TIME ZONE COALESCE(tt.timezone,'Europe/Rome'))::date), round(COALESCE(c.labor_cost_hour,0)*100)))),0)::bigint
+          FROM app.commessa_presenze p JOIN app.commesse c ON c.id=p.commessa_id JOIN app.tenants tt ON tt.id=p.tenant_id
+         WHERE p.commessa_id=$1 AND p.clock_out IS NOT NULL AND NOT p.auto_closed")
         .bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
     let materials_cost: f64 = sqlx::query_scalar("SELECT COALESCE(sum(amount),0)::float8 FROM app.commessa_costi WHERE commessa_id=$1").bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
     // CA-20: un solo diario (app.diary_entries); qui le note legate al cantiere

@@ -1562,13 +1562,14 @@ pub async fn stale_open_watchdog(st: &AppState) {
           WHERE rt.id=ro.route_id AND ro.status='in_corso'
             AND ro.started_at < now() - make_interval(mins => CASE WHEN rt.window_minutes IS NULL THEN 480
                                                                ELSE rt.window_minutes + COALESCE(rt.grace_min,0) + 60 END)
-          RETURNING ro.id, ro.tenant_id, ro.started_at")
+          RETURNING ro.id, ro.tenant_id, ro.started_at, ro.route_id")
         .fetch_all(&st.owner_pool).await.unwrap_or_default();
     for r in rounds {
         let (rid, tid): (Uuid, Uuid) = (r.get("id"), r.get("tenant_id"));
         let started: chrono::DateTime<chrono::Utc> = r.get("started_at");
+        let tz = crate::field::route_tz(st, tid, r.get("route_id")).await; // ora della sede, non UTC
         let _ = sqlx::query("INSERT INTO app.patrol_anomalies(tenant_id,round_id,kind,detail) VALUES($1,$2,'abbandonata',$3)")
-            .bind(tid).bind(rid).bind(format!("Ronda avviata alle {} e mai chiusa: chiusa automaticamente", started.format("%H:%M UTC")))
+            .bind(tid).bind(rid).bind(format!("Ronda avviata alle {} e mai chiusa: chiusa automaticamente", started.with_timezone(&tz).format("%H:%M")))
             .execute(&st.owner_pool).await;
         audit(st, tid, "sistema", "round_auto_close", json!({"round_id":rid})).await;
     }

@@ -22,7 +22,7 @@ CORE="console-syntax.sh handler-guards.sh glossary-check.sh owner-pool-audit.sh 
  auth-hardening.sh csrf-hardening.sh ratelimit-hardening.sh session-hardening.sh \
  module-gating-e2e.sh modularity-e2e.sh module-config-e2e.sh config-consumers-e2e.sh \
  geofence-e2e.sh floorplans-e2e.sh alarms-indoor-e2e.sh geofence-alarm-e2e.sh geocode-e2e.sh posfilter-e2e.sh \
- device-attrs-e2e.sh device-onboarding-e2e.sh device-onboarding-kit-e2e.sh sensor-rules-e2e.sh sensor-rule-scope-e2e.sh scenario-catalog-e2e.sh users-privacy-e2e.sh cross-tenant-refs-e2e.sh secret-key-e2e.sh presence-checks-e2e.sh feature-gating-e2e.sh delivery-channels-e2e.sh superadmin-mfa-e2e.sh listino-qualifica-e2e.sh work-hours-e2e.sh user-invite-e2e.sh member-sources-e2e.sh catalogs-e2e.sh diary-maintenance-e2e.sh scenario-pipeline-e2e.sh dashboard-caps-e2e.sh escalation-personal-delay-e2e.sh hardening-audit-devices-e2e.sh scenarios-e2e.sh \
+ device-attrs-e2e.sh device-onboarding-e2e.sh device-onboarding-kit-e2e.sh sensor-rules-e2e.sh sensor-rule-scope-e2e.sh scenario-catalog-e2e.sh users-privacy-e2e.sh cross-tenant-refs-e2e.sh secret-key-e2e.sh presence-checks-e2e.sh feature-gating-e2e.sh delivery-channels-e2e.sh superadmin-mfa-e2e.sh listino-qualifica-e2e.sh work-hours-e2e.sh user-invite-e2e.sh member-sources-e2e.sh catalogs-e2e.sh diary-maintenance-e2e.sh scenario-pipeline-e2e.sh dashboard-caps-e2e.sh escalation-personal-delay-e2e.sh field-local-time-e2e.sh hardening-audit-devices-e2e.sh scenarios-e2e.sh \
  ai-e2e.sh ai-agent-e2e.sh reports-e2e.sh workforce-e2e.sh interventi-e2e.sh \
  iot-mgmt-e2e.sh mgmt-e2e.sh prompt8-e2e.sh sse-scale.sh \
  field-intervention-e2e.sh field-intervention-slice1-e2e.sh patrols-e2e.sh field-integrity-e2e.sh patrol-missed-e2e.sh \

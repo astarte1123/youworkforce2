@@ -911,8 +911,8 @@ checklist, materiali, esito, report e allegati (foto, documenti, firma). Un inte
 <a id="cap6-listino"></a>
 ### Listino
 
-Menu **Lavoro sul campo → Listino**. È l'**unico catalogo dei prezzi** (manodopera, materiali,
-trasferta). Interventi, consuntivi e costi dei cantieri leggono il prezzo da qui e lo copiano sulla
+Menu **Lavoro sul campo → Listino** (con il modulo Interventi o con il modulo Consuntivi). È
+l'**unico catalogo dei prezzi** (manodopera, materiali, trasferta). Interventi, consuntivi e costi dei cantieri leggono il prezzo da qui e lo copiano sulla
 riga: se poi il listino cambia, il prezzo storico resta.
 
 - Prezzi **al centesimo**.

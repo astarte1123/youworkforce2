@@ -580,6 +580,13 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   successivo (`oncall::esc_deliver_earlier_rungs`; orario di ogni step dalla cronologia
   `esc_delivery`; idempotenza di `esc_delivery_log`). Prima una «chiamata dopo 5 minuti» veniva
   saltata se lo step aspettava meno. e2e `qa/escalation-personal-delay-e2e.sh`.
+- **Ora locale e piccole correzioni del Campo (26/11/2026).** Registro ore (`/api/work-hours`):
+  periodo e giorni nel fuso dell'azienda, non in UTC (`field::local_midnight_utc`). Costo di
+  manodopera del cantiere: tariffa del giorno locale della presenza. Messaggio «ronda già in
+  corso» e nota della ronda abbandonata con l'ora della sede (`field::route_tz`). Listino
+  disponibile con Interventi **o** Consuntivi (`PRICE_MODS`; anche la voce di menu). Modifica di un
+  percorso di ronda: nome vuoto rifiutato (400). e2e `qa/field-local-time-e2e.sh`;
+  `listino-qualifica-e2e` non dipende più dall'ora in cui gira.
 - **Glossario unico (AR-7).** [glossario](glossario.md): gruppo di persone / gruppo di escalation;
   turno pianificato / in servizio / di reperibilità; percorso di ronda e ronda (mai «giro»);
   reperibile (non «on-call»), sostituzione (non «override»). Solo testi di console, messaggi del

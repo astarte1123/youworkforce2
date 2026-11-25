@@ -94,7 +94,7 @@ richiede anche `interventi`.
 - **Listino.** `app.price_list_items` con prezzo in centesimi (`price_cents`, fonte unica;
   `unit_price` in euro è una colonna calcolata a 2 decimali), `qualification_id`, `valid_from`,
   `valid_to`. API `GET/POST /api/price-items`, `POST/DELETE /api/price-items/:id` (modulo
-  `interventi`, modifica con `plan`); in console *Lavoro sul campo → Listino*. La tariffa viene
+  `interventi` oppure `consuntivi`, modifica con `plan`); in console *Lavoro sul campo → Listino*. La tariffa viene
   copiata sulla riga: se il listino cambia, il consuntivo già scritto non cambia.
 - Lo stesso calcolo valorizza le ore di presenza nei costi di commessa (senza voce nel listino, il
   costo orario della commessa). Dettaglio: [proposte-campo-ca4-ca5-ca6](proposte-campo-ca4-ca5-ca6.md).
@@ -116,6 +116,10 @@ richiede anche `interventi`.
   dalle fonti con priorità più alta; la sovrapposizione resta visibile.
 - **Ronde e turni** contano come ore di servizio, **non** come righe di consuntivo. Il consuntivo
   nasce dagli interventi (fatturabili); i costi di commessa dalle presenze.
+- **Giorni nell'ora locale.** Periodo, «oggi» e totali per giorno seguono il fuso dell'azienda
+  (`tenants.timezone`, risposta `timezone`): una presenza dalle 00:30 ora italiana conta in quel
+  giorno, non in quello prima (prima il calcolo era in UTC). Anche il costo di manodopera del
+  cantiere sceglie la tariffa per il giorno locale della presenza.
 - **API.** `GET /api/work-hours?from&to[&user_id]` (al massimo 62 giorni, default ultimi 7) con
   uno dei moduli `consuntivi`, `workforce`, `cantieri`, `giri`, `interventi`. Restituisce le
   registrazioni (`minutes`, `effective_min`, `overlap_min`, `billable`), i totali per persona e
