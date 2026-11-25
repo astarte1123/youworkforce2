@@ -35,6 +35,9 @@ setmod gps attivo
 C=$(code T POST /api/sos '{"client_key":"fg-2"}'); [ "$C" = "200" ] && ok "con GPS (Centrale disponibile): SOS accettato" || no "sos gps" "$C"
 setmod gps non_abilitato
 C=$(code T POST /api/worker/heartbeat '{}'); [ "$C" = "403" ] && ok "battito dell'app solo con Lone Worker" || no "heartbeat" "$C"
+setmod loneworker attivo
+C=$(code T POST /api/shifts/start '{}'); [ "$C" = "403" ] && ok "turno nell'app solo con Gestione turni (anche con Lone Worker attivo)" || no "app shift" "$C"
+setmod loneworker non_abilitato
 
 echo "== CA-21 squadre e turni =="
 C=$(code A POST /api/teams '{"name":"Squadra"}'); [ "$C" = "403" ] && ok "squadre senza turni né cantieri: 403" || no "teams off" "$C"

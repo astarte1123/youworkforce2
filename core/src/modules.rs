@@ -101,7 +101,8 @@ pub const REGISTRY: &[Manifest] = &[
 pub const FEATURE_MODULES: &[(&str, &[&str])] = &[
     ("app_sos",       &["loneworker", "gps", "iot", "giri"]),
     ("app_checkin",   &["loneworker"]),
-    ("app_silence",   &["loneworker"]),
+    ("app_silence",   &["loneworker"]),   // conta solo durante il turno nell'app (serve anche app_shift)
+    ("app_shift",     &["workforce"]),    // PO 25/11 sera: turno nell'app solo con Gestione turni
     ("app_heartbeat", &["loneworker"]),
     ("badge_silence", &["gps"]),
     ("immobility",    &["loneworker", "gps"]),

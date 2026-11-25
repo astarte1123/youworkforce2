@@ -25,7 +25,7 @@ curl -s -o /dev/null -c "$J/sa" -X POST "$BASE/api/superadmin/login" -H 'content
 SC=$(awk '$6=="yw_csrf"{print $7}' "$J/sa" | tail -1)
 R=$(python -c 'import random;print(random.randint(100000,999999))'); SLUG="ss$R"
 TID=$(curl -s -b "$J/sa" -H "x-csrf-token: $SC" -H 'content-type: application/json' -X POST "$BASE/api/superadmin/tenants" \
-  -d "{\"slug\":\"$SLUG\",\"name\":\"Ss $R\",\"admin_email\":\"a@$SLUG.test\",\"admin_password\":\"DirectPass9\",\"modules\":[\"gps\",\"loneworker\"]}" | py "d.get('id','')")
+  -d "{\"slug\":\"$SLUG\",\"name\":\"Ss $R\",\"admin_email\":\"a@$SLUG.test\",\"admin_password\":\"DirectPass9\",\"modules\":[\"gps\",\"loneworker\",\"workforce\"]}" | py "d.get('id','')")
 # l'orologio di test torna indietro a fine prova (adv gira anche in subshell: totale su file)
 trap 'curl -s -o /dev/null -X POST "$BASE/api/_test/advance" -H "content-type: application/json" -d "{\"seconds\":-$(cat "$ADVF" 2>/dev/null || echo 0)}"; curl -s -o /dev/null -b "$J/sa" -H "x-csrf-token: $SC" -H "content-type: application/json" -X DELETE "$BASE/api/superadmin/tenants/$TID" -d "{\"slug\":\"$SLUG\"}"; rm -rf "$J"' EXIT
 [ -n "$TID" ] || { echo "FAIL crea tenant"; exit 1; }
@@ -54,7 +54,14 @@ s.sendall(struct.pack(">H",len(imei))+imei); r=s.recv(1); print(r.hex() if r els
 PY
 }
 
-echo "== badge, lavoratore fuori turno =="
+echo "== default (PO 25/11 sera): silenzio sorvegliato sempre =="
+call A GET /api/devices | py "[x['silence_shift_only'] for x in d if x['id']=='$D1'][0]" | grep -q False \
+  && ok "di default «solo in turno» è spento: il badge in servizio è sempre sorvegliato" || no "default" "-"
+# da qui si prova l'opzione «solo durante il turno» (scelta esplicita del tenant)
+qq "INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config) VALUES('$TID','gps','alarm_map','{\"silence_shift_only\":\"si\"}')
+    ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config = app.tenant_module_config.config || '{\"silence_shift_only\":\"si\"}'::jsonb"
+
+echo "== opzione «solo in turno»: badge, lavoratore fuori turno =="
 ref "$D1"; adv 1300 >/dev/null; WD
 [ "$(NI "$D1")" = "0" ] && ok "fuori turno: oltre due soglie nessun allarme" || no "fuori turno" "$(NI "$D1")"
 call A GET /api/devices | py "[(x['in_shift'],x['silence_shift_only']) for x in d if x['id']=='$D1'][0]" | grep -q "(False, True)" \
@@ -101,6 +108,14 @@ call W3 POST /api/worker/heartbeat '{}' >/dev/null
 echo "== app di chi ha un badge in servizio =="
 H=$(call W1 POST /api/worker/heartbeat '{}')
 echo "$H" | py "(not d['monitored']) and d['badge_in_service']" | grep -q True && ok "badge in servizio: l'app non è sorvegliata (niente doppioni)" || no "badge+app" "$H"
+
+
+echo "== senza l'opzione: badge fuori turno sorvegliato =="
+qq "UPDATE app.tenant_module_config SET config = config || '{\"silence_shift_only\":\"no\"}'::jsonb WHERE tenant_id='$TID' AND module_code='gps' AND tool_code='alarm_map'"
+U4=$(mk w4); IMEI4=$(python -c "import random;print('354'+str(random.randint(10**11,10**12-1)))")
+D4=$(badge "$IMEI4" "Badge w4" "$U4"); call A POST "/api/devices/$D4/service" '{"state":"in_servizio"}' >/dev/null
+ref "$D4"; adv 605 >/dev/null; WD
+[ "$(NI "$D4")" = "1" ] && ok "senza «solo in turno»: badge fuori turno silenzioso -> allarme" || no "sempre" "$(NI "$D4")"
 
 echo "silence-shift: $PASS passed, $FAIL failed"
 [ "$FAIL" = "0" ]

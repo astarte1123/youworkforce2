@@ -127,7 +127,8 @@ pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
             let (after, shift_only) = match gcfg.get(&tid) { Some(v) => *v, None => {
                 let cfg = api::tool_config(st, tid, "gps", "alarm_map").await;
                 let v = (cfg.get("silence_after_s").and_then(|v| v.as_i64()).unwrap_or(600),
-                         cfg.get("silence_shift_only").and_then(|v| v.as_str()).map(|s| s != "no").unwrap_or(true));
+                         // PO 25/11 sera: «solo in turno» è opt-in, il default è sorvegliare sempre
+                         cfg.get("silence_shift_only").and_then(|v| v.as_str()).map(|s| s == "si").unwrap_or(false));
                 gcfg.insert(tid, v); v } };
             if shift_only && shift_since.is_none() { continue; } // fuori turno: non sorvegliato
             (after, [last, armed, if shift_only { shift_since } else { None }].into_iter().flatten().max())

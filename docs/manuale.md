@@ -108,8 +108,11 @@ e2e: `qa/checkin-sos-attribution-e2e.sh`.
 - Quando il badge torna in linea l'allarme **si chiude da solo** (esito «rientrato») e chi era
   stato avvisato riceve la chiusura.
 - Anche l'**app** è sorvegliata durante il turno (soglia di default 15 minuti, modulo Lone Worker →
-  «Silenzio dell'app»), salvo chi ha già un badge in servizio. Il turno nell'app si apre anche con
-  il solo modulo Lone Worker.
+  «Silenzio dell'app»), salvo chi ha già un badge in servizio. Il **turno nell'app** esiste solo
+  con il modulo Gestione turni (decisione PO 25/11 sera): con il solo Lone Worker l'app non apre
+  turni e quindi il suo silenzio non è sorvegliato; restano check-in, SOS e immobilità.
+- **Badge: silenzio sorvegliato sempre** (default, mig `0150`); «solo durante il turno» è una
+  scelta del tenant. Vedi [Dispositivi GPS e badge](dispositivi-gps.md).
 - **Badge che non si collega**: nella scheda, riquadro **Collegamento** con «verifica ora»: dice se
   il badge è collegato adesso o se viene rifiutato e perché. Il superadmin vede tutti i badge
   rifiutati in *Sistema → Dispositivi rifiutati*.

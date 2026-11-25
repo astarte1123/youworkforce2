@@ -2770,7 +2770,7 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
          UNION SELECT user_id FROM app.shift_plans WHERE tenant_id=$1 AND state<>'annullato' AND starts_at <= $2 AND ends_at > $2")
         .bind(tid0).bind(now0).fetch_all(&st.owner_pool).await.unwrap_or_default().into_iter().collect();
     let shift_only = tool_config(&st, tid0, "gps", "alarm_map").await
-        .get("silence_shift_only").and_then(|v| v.as_str()).map(|s| s != "no").unwrap_or(true);
+        .get("silence_shift_only").and_then(|v| v.as_str()).map(|s| s == "si").unwrap_or(false); // PO 25/11: opt-in
     let sup = is_supervisor(&s); // CA-11: posizioni dei colleghi solo a chi supervisiona
     let out: Vec<Value> = rows.iter()
         .filter(|r| site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok()))
@@ -8835,10 +8835,9 @@ type Dt = chrono::DateTime<chrono::Utc>;
 pub async fn shift_start(State(st): State<AppState>, h: HeaderMap, Json(b): Json<serde_json::Value>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
-    // Q4: il turno serve anche alla sicurezza (silenzio e immobilità si sorvegliano in turno):
-    // si apre con Gestione turni OPPURE con Lone Worker attivo.
-    if !module_active(&st, tid, "workforce").await && !module_active(&st, tid, "loneworker").await {
-        return Err(err(StatusCode::FORBIDDEN, "turni non disponibili: serve il modulo Gestione turni o Lone Worker")); }
+    // Decisione PO 25/11 sera: il turno nell'app esiste solo con Gestione turni (matrice SL-20)
+    if !any_module_active(&st, tid, crate::modules::feature_modules("app_shift")).await {
+        return Err(err(StatusCode::FORBIDDEN, "turni non disponibili: serve il modulo Gestione turni")); }
     let note = b.get("note").and_then(|v| v.as_str());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // idempotent: an already-open shift is returned instead of erroring (double-tap safe)

@@ -192,16 +192,18 @@ lavoratore non è più protetto). Lo controlla il worker ogni ~10 s (`worker::gp
 
 #### Turno, chiusura automatica e app (Q4, mig `0137`, decisione PO 24/11/2026)
 
-- **Solo durante il turno.** Il silenzio di un badge in servizio è sorvegliato solo mentre il
+- **Sempre, oppure solo durante il turno (scelta del tenant).** Di default il silenzio di un badge
+  in servizio è sorvegliato **sempre** (decisione PO 25/11/2026 sera, mig `0150`: prima il
+  default era «solo in turno» e chi non usava i turni non riceveva più allarmi di silenzio).
+  Con `silence_shift_only` = `si` (strumento *gps / alarm_map*) lo si sorveglia solo mentre il
   lavoratore assegnato è **in turno**: turno aperto nell'app (`app.shifts` in corso) **oppure**
-  turno pianificato che copre l'istante attuale (`app.shift_plans`, non annullato). Impostazione
-  `silence_shift_only` dello strumento *gps / alarm_map* (default **`si`**; `no` = sorvegliato
-  sempre, comportamento precedente). Il conteggio parte da **GREATEST(ultimo contatto, messa in
+  turno pianificato che copre l'istante attuale (`app.shift_plans`, non annullato). I tenant che
+  avevano il vecchio default sono tornati a `no`. Il conteggio parte da **GREATEST(ultimo contatto, messa in
   servizio, inizio turno)**: a inizio turno un badge spento fa scattare l'allarme alla soglia.
   La scheda del badge mostra **«fuori turno · silenzio non sorvegliato»** (`in_shift`,
   `silence_shift_only` in `GET /api/devices`).
   - Attenzione: con `si` un'azienda che non usa né i turni dell'app né la pianificazione **non
-    riceve allarmi di silenzio**. In quel caso impostare `no`.
+    riceve allarmi di silenzio**.
   - Il turno nell'app si apre con il modulo **Gestione turni** oppure **Lone Worker** (prima solo
     Gestione turni).
 - **Chiusura automatica.** Quando il dispositivo torna in linea (qualunque pacchetto del badge, o
