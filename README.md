@@ -31,7 +31,8 @@ Un dispositivo assegnato che smette di trasmettere apre un incidente **Perdita d
 (soglia configurabile per tenant, default 10 minuti).
 
 ## Documentazione
-- [`docs/manuale.md`](docs/manuale.md) — manuale utente (indice operativo)
+- [`docs/manuale-utente.md`](docs/manuale-utente.md) — manuale utente completo (per ruolo, compiti quotidiani, superadmin)
+- [`docs/manuale.md`](docs/manuale.md) — registro dettagliato delle funzioni e delle modifiche (sviluppatori)
 - [`docs/console-ui-manuale.md`](docs/console-ui-manuale.md) — console: ricerca, filtri, mappe, Centrale, allarme live
 - [`docs/escalation-manuale.md`](docs/escalation-manuale.md) — reperibilità e notifiche (motore nativo)
 - [`docs/dispositivi-gps.md`](docs/dispositivi-gps.md) — dispositivi GPS e badge: Teltonika TCP, OsmAnd, JSON HTTP, onboarding con scanner, report

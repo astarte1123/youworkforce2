@@ -28,8 +28,19 @@ async function api(path, opts={}){
   if(ct.includes('json')) body = await r.json().catch(()=>null);
   else body = await r.text().catch(()=>null);
   if(!r.ok){ const msg=(body&&body.error)||(typeof body==='string'&&body)||('HTTP '+r.status);
-    const e=new Error(msg); e.status=r.status; e.body=body; throw e; }
+    const e=new Error(msg); e.status=r.status; e.body=body;
+    if(r.status===401) sessionExpired(path);
+    throw e; }
   return body;
+}
+// Sessione scaduta durante l'uso (401 su una chiamata normale): avviso e ritorno alla pagina di
+// accesso, una volta sola. Escluse le chiamate di accesso/verifica, che rispondono 401 per scelta.
+let _sessExp=false;
+function sessionExpired(path){
+  if(_sessExp || /^\/(login|me|logout|superadmin\/login|superadmin\/mfa|invite\/)/.test(path||'')) return;
+  _sessExp=true;
+  try{ toast('Sessione scaduta: accedi di nuovo','bad'); }catch(e){}
+  setTimeout(()=>{ try{ location.reload(); }catch(e){} }, 1500);
 }
 const $  = (s,r=document)=>r.querySelector(s);
 const $$ = (s,r=document)=>[...r.querySelectorAll(s)];

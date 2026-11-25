@@ -204,8 +204,8 @@ lavoratore non è più protetto). Lo controlla il worker ogni ~10 s (`worker::gp
   `silence_shift_only` in `GET /api/devices`).
   - Attenzione: con `si` un'azienda che non usa né i turni dell'app né la pianificazione **non
     riceve allarmi di silenzio**.
-  - Il turno nell'app si apre con il modulo **Gestione turni** oppure **Lone Worker** (prima solo
-    Gestione turni).
+  - Il turno nell'app si apre solo con il modulo **Forza lavoro e turni** (decisione PO 25/11/2026
+    sera): con il solo Lone Worker l'app non apre turni e il suo silenzio non è sorvegliato.
 - **Chiusura automatica.** Quando il dispositivo torna in linea (qualunque pacchetto del badge, o
   un segno di vita dell'app) gli incidenti `perdita_contatto` aperti dal watchdog per quel
   dispositivo si chiudono da soli: esito *«rientrato: il dispositivo è di nuovo in linea»*, voce in

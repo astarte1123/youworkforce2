@@ -1,5 +1,7 @@
 # YouWorkforce — Manuale utente
 
+> **Manuale per chi usa YW ogni giorno: [manuale-utente.md](manuale-utente.md).** Questo file resta il registro dettagliato delle funzioni e delle modifiche, per gli sviluppatori.
+
 Guida unica alle funzionalità della piattaforma. Pubblico: **amministratori di tenant**, **operatori
 di centrale**, **pianificatori**, **responsabili**, **tecnici/guardie sul campo**. Per i dettagli
 tecnici di ogni area ci sono i manuali specifici, richiamati di volta in volta.
