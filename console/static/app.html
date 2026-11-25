@@ -145,7 +145,7 @@ const NAV = [
   // --- Configurazione generale (non specifica del perimetro sicurezza) ---
   {k:'connettori',t:'Collegamento dispositivi', ico:'sliders', roles:['tenant_admin'], cap:'devices.admin', mod:['gps','iot','loneworker'], grp:'cfg'},
   {k:'utenti-ruoli',t:'Persone e permessi', ico:'shield', roles:['tenant_admin'], cap:'users.manage', grp:'cfg'},
-  {k:'anagrafiche',t:'Sedi e asset', ico:'receipt', roles:['tenant_admin'], cap:'users.manage', grp:'cfg'},
+  {k:'anagrafiche',t:'Sedi e asset', ico:'receipt', roles:['tenant_admin','pianificatore'], cap:['sites.manage','users.manage'], grp:'cfg'},
   {k:'privacy-audit',t:'Privacy e audit', ico:'shield', roles:['tenant_admin'], cap:['gdpr.manage','audit.view'], grp:'cfg'},
   {hidden:true, k:'ai',        t:'AI · youworker.ai', ico:'sliders', roles:['tenant_admin'], cap:'settings.manage', mod:['assistant'], grp:'cfg'},
   {hidden:true, k:'moduli-base',    t:'Moduli', ico:'sliders', roles:['tenant_admin'], cap:'settings.manage', grp:'cfg'},
@@ -239,30 +239,30 @@ const I18N_PH = {
   "Stato":"Status","attivo":"active","anonimizzato":"anonymized","disattivata":"disabled",
   "tutte le azioni":"all actions","Quando":"When","Attore":"Actor","Azione":"Action","Dettaglio":"Detail","filtra":"filter","azzera":"clear","⬇ esporta CSV":"⬇ export CSV","🔎 cerca (attore/azione/dettaglio)":"🔎 search (actor/action/detail)","attore (contiene)":"actor (contains)",
   // campo: assegnazione a gruppo
-  "Assegna a (persona)":"Assign to (person)","Assegna a (gruppo di persone)":"Assign to (people group)","Nuovo giro":"New patrol","Crea giro":"Create patrol","Assegna a gruppo di persone (opz.)":"Assign to people group (opt.)",
+  "Assegna a (persona)":"Assign to (person)","Assegna a (gruppo di persone)":"Assign to (people group)","Nuovo percorso di ronda":"New patrol route","Crea percorso":"Create route","Assegna a gruppo di persone (opz.)":"Assign to people group (opt.)",
   // intestazioni / sezioni
   "anagrafiche del tenant":"tenant directory","Utenti":"Users","Sedi":"Sites","Squadre":"Teams","Asset / mezzi":"Assets / vehicles",
   "Gruppi di persone":"People groups","Gruppi di persone (condivisi)":"People groups (shared)","Permessi (capability)":"Permissions (capabilities)",
-  "Ruoli personalizzati":"Custom roles","Utenti e ruoli":"Users & roles","identità, gruppi condivisi, permessi e ruoli del tenant":"tenant identity, shared groups, permissions and roles","Giri configurati":"Configured patrols","Ronde eseguite":"Completed patrols","Checkpoint":"Checkpoints",
+  "Ruoli personalizzati":"Custom roles","Utenti e ruoli":"Users & roles","identità, gruppi condivisi, permessi e ruoli del tenant":"tenant identity, shared groups, permissions and roles","Percorsi di ronda configurati":"Configured patrol routes","Ronde eseguite":"Completed patrols","Checkpoint":"Checkpoints",
   "Telemetria IO (ultimo fix)":"IO telemetry (last fix)","Comando GPRS diretto (Teltonika)":"Direct GPRS command (Teltonika)",
   "Report tracciamento":"Tracking report","Contatori (odometro / ore)":"Counters (odometer / hours)",
   // azioni / bottoni / link
   "salva":"save","Salva":"Save","elimina":"delete","Elimina":"Delete","gestisci":"manage","modifica":"edit","rinomina":"rename",
-  "+ invita":"+ invite","+ nuova squadra":"+ new team","+ nuovo gruppo":"+ new group","+ nuovo ruolo":"+ new role","+ nuovo giro":"+ new patrol",
+  "+ invita":"+ invite","+ nuova squadra":"+ new team","+ nuovo gruppo":"+ new group","+ nuovo ruolo":"+ new role","+ nuovo percorso":"+ new route",
   "+ aggiungi":"+ add","+ nuovo asset":"+ new asset","+ membro":"+ member","+ utente":"+ user","+ gruppo":"+ group","+ aggiungi checkpoint":"+ add checkpoint",
   "mostra":"show","invia":"send","importa":"import","↳ importa":"↳ import","azzera":"reset","↺ ripristina default":"↺ reset to default",
   "ripristina default":"reset to default","+ membro":"+ member","+ nuovo ordine":"+ new order","+ nuovo":"+ new","Nuovo ordine":"New order",
-  "→ importa in gruppo allarme":"→ import into alarm group","checkpoint":"checkpoints","Annulla":"Cancel","Chiudi":"Close","Conferma":"Confirm","Avvia ronda":"Start patrol",
-  "Riusa un checkpoint esistente (altro giro)":"Reuse an existing checkpoint (other patrol)","Nuovo checkpoint":"New checkpoint",
+  "→ importa in gruppo di escalation":"→ import into alarm group","checkpoint":"checkpoints","Annulla":"Cancel","Chiudi":"Close","Conferma":"Confirm","Avvia ronda":"Start patrol",
+  "Riusa un checkpoint esistente (altro percorso)":"Reuse an existing checkpoint (other route)","Nuovo checkpoint":"New checkpoint",
   // colonne / etichette comuni
   "Email":"Email","Ruolo":"Role","Nome":"Name","Indirizzo":"Address","Tipo":"Type","Stato":"Status","Sede":"Site","Assegnato a":"Assignee",
   "Priorità":"Priority","Correlazione":"Correlation","Modello":"Model","Etichetta":"Label","Capacità":"Capabilities","Operatore":"Operator",
-  "Giro":"Patrol","Avvio":"Start","Matricola/targa":"Serial/plate","Descrizione":"Description","Nome ruolo?":"Role name?",
+  "Percorso":"Route","Avvio":"Start","Matricola/targa":"Serial/plate","Descrizione":"Description","Nome ruolo?":"Role name?",
   "Utenti:":"Users:","Gruppi:":"Groups:","nessun membro":"no members","nessun checkpoint":"no checkpoints","nessuna ronda":"no patrols",
   "nessun asset":"no assets","nessuna sede":"no sites","nessuna telemetria registrata":"no telemetry recorded","comando libero":"free command",
   // subtitle comuni
   "export CSV · TXT · PDF":"export CSV · TXT · PDF","catalogo, flotta":"catalog, fleet",
-  "giri di controllo · checkpoint QR/NFC/beacon/GPS · punzonature":"control patrols · QR/NFC/beacon/GPS checkpoints · punches",
+  "percorsi di ronda · checkpoint QR/NFC/beacon/GPS · punzonature":"patrol routes · QR/NFC/beacon/GPS checkpoints · punches",
   "Esci":"Sign out","Menu":"Menu","Tema":"Theme","Lingua":"Language",
 };
 function _trOne(s){ if(s==null) return s; const k=s.trim(); if(!k) return s;
@@ -323,6 +323,8 @@ async function loadCtx(){
   try{ if(ACTIVE_MODS.has('assistant')){ const A=await api('/ai/features'); AI_FEAT=(A&&A.features)||{}; } }catch(e){ AI_FEAT={}; }
   // cruscotti IoT attivi -> voci di menu dinamiche (vuoto => nessun menu "IoT Dashboard")
   try{ SCENARIOS = await api('/scenarios') || []; }catch(e){ SCENARIOS=[]; }
+  // SL-15: nomi e famiglie dei tipi di evento dal catalogo unico (superadmin); ETYPE_LAB resta di riserva
+  try{ const E=await api('/event-types'); (E&&E.types||[]).forEach(t=>{ ETYPE_LAB[t.code]=t.label; ETYPE_CAT[t.code]=t.category_label; }); }catch(e){}
 }
 // Branding per-tenant: sovrascrive i colori di base (default globale YouCo) via CSS vars su :root.
 function applyBranding(b){
@@ -415,7 +417,8 @@ function renderShell(){
       <div class="foot">
         <div class="row"><div class="ava">${initials(ME.email)}</div>
           <div class="grow" style="min-width:0"><div class="small" style="font-weight:650;overflow:hidden;text-overflow:ellipsis">${esc(ME.email.split('@')[0])}</div>
-          <div class="chip" style="padding:var(--s-2) var(--s-8)">${esc(ME.role)}</div></div></div>
+          <div class="chip" style="padding:var(--s-2) var(--s-8)">${esc(roleLabel(ME.role))}</div>
+          ${ME.impersonator?'':`<a class="small" href="#" onclick="event.preventDefault();ownPasswordForm()">Cambia password</a>`}</div></div>
       </div>
     </aside>
     <div style="display:flex;flex-direction:column;min-width:0">
@@ -758,10 +761,15 @@ const DASH_WIDGETS={
       return dKpi('receipt','In revisione',r)+dTbl(T.slice(0,6).map(t=>`<tr class="clk" data-ts="${t.id}"><td><b>${esc(t.owner||'—')}</b><div class="small mut">${esc(t.order_title||'')}</div></td><td>${chip(t.state)}</td></tr>`).join('')||emptyRow('Nessun consuntivo')); } },
   rounds:{ title:'Ronde', goto:'ronde', load:()=>api('/patrol-routes').catch(()=>null),
     body:R=>{ if(!R)return dMut(); const act=(R||[]).filter(x=>x.active!==false).length;
-      return dKpi('route','Giri attivi',act)+dTbl((R||[]).slice(0,6).map(r=>`<tr><td><b>${esc(r.name)}</b><div class="small mut">${esc(r.site||'—')}</div></td><td>${r.assigned_group?('👥 '+esc(r.group_name||'')):''}</td></tr>`).join('')||emptyRow('Nessun giro')); } },
+      return dKpi('route','Percorsi di ronda attivi',act)+dTbl((R||[]).slice(0,6).map(r=>`<tr><td><b>${esc(r.name)}</b><div class="small mut">${esc(r.site||'—')}</div></td><td>${r.assigned_group?('👥 '+esc(r.group_name||'')):''}</td></tr>`).join('')||emptyRow('Nessun percorso di ronda')); } },
   shifts:{ title:'Turni', goto:'turni', load:()=>api('/shift-plans').catch(()=>null),
     body:P=>{ if(!P)return dMut(); const fut=(P||[]).filter(p=>p.state!=='annullato');
       return dKpi('clipboard','Pianificati',fut.length)+dTbl(fut.slice(0,6).map(p=>`<tr><td><b>${new Date(p.starts_at).toLocaleString(LANG==='en'?'en-GB':'it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</b><div class="small mut">${esc(p.site||'—')}</div></td><td>${chip(p.state)}</td></tr>`).join('')||emptyRow('Nessun turno')); } },
+  // IO-16: dispositivi IoT e loro allarmi (stesso riepilogo di IoT → Monitoraggio)
+  iot:{ title:'Dispositivi IoT', goto:'iot-monitor', load:()=>api('/iot/monitor').catch(()=>null),
+    body:M=>{ if(!M||!M.summary)return dMut(); const s=M.summary;
+      return dKpi('alert','Allarmi IoT aperti',s.open_alerts||0,(s.open_alerts||0)?'pri3':'')
+        +dTbl(`<tr><td>In linea</td><td class="ta-r"><b>${esc(s.online||0)}</b></td></tr><tr><td>Non comunicano</td><td class="ta-r"><b class="${(s.offline||0)?'t-bad':''}">${esc(s.offline||0)}</b></td></tr><tr><td>Senza controllo di silenzio</td><td class="ta-r">${esc(s.no_watchdog||0)}</td></tr><tr><td>Totale</td><td class="ta-r">${esc(s.total||0)}</td></tr>`); } },
   role:{ title:'Il tuo ruolo', load:()=>Promise.resolve(ME),
     body:m=>`<div class="center" style="padding:var(--s-16)"><div class="n" style="font-size:22px">${esc(roleLabel(m.role))}</div><div class="small mut">${esc(m.email)}</div></div>` },
 };
@@ -926,7 +934,7 @@ async function vCentrale(v){
   if(isLoadFail(I)) return pageLoadError(v, t('cen_title','Centrale allarmi'), I);
   const ckErr=isLoadFail(CK0)?CK0.__loadErr:null; const CK=ckErr?[]:CK0;
   const scaduti=CK.filter(c=>c.state==='scaduto').length;
-  const onc = OC.available ? `<span class="chip s-attivo wrap" title="reperibili di turno in questo momento">📞 on-call: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
+  const onc = OC.available ? `<span class="chip s-attivo wrap" title="reperibili di turno in questo momento">📞 reperibili ora: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
   const canBulk = ['operatore','tenant_admin'].includes(ME.role);
   const open = I.filter(i=>i.state!=='chiuso').length;
   const bulk = (canBulk && open>0) ? `<button class="btn ghost small" onclick="incAckAll(this)">${t('cen_ackall','Prendi in carico tutti')}</button>
@@ -1176,6 +1184,8 @@ const ETYPE_LAB={sos:'SOS / richiesta soccorso',man_down:'Uomo a terra (man down
 // FE-5: UNICA fonte delle etichette dei tipi di evento (Centrale, mappe, geofence, regole sensori,
 // profili, escalation, audit). Codice sconosciuto → humanizeCode (mai il codice grezzo).
 function etypeLabel(e){ return ETYPE_LAB[e]||humanizeCode(e)||'Evento'; }
+const ETYPE_CAT={}; // SL-15: famiglia del tipo di evento (es. «Dispositivo che non comunica»)
+function etypeFamily(e){ return ETYPE_CAT[e]||''; }
 function etLab(e){ return etypeLabel(e); }
 // Riferimento breve dell'allarme (la correlazione è un UUID: mai mostrarlo intero).
 // Stato dei comandi inviati ai dispositivi (app.iot_commands: pending|sent|done|error).
@@ -2135,7 +2145,7 @@ function schedLabel(o){ if(!o.scheduled_start)return'<span class="mut">—</span
   const d=a.toLocaleDateString(UI_LOCALE(),{weekday:'short',day:'2-digit',month:'2-digit'});
   const hh=a.toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'});
   return `${d} ${hh}${z?'–'+z.toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'}):''}`; }
-const ANOM_LAB={abbandonata:'Ronda abbandonata (mai chiusa)',saltato:'Tappa saltata',in_ritardo:'Tratta in ritardo',non_completato:'Giro non completato',fuori_sequenza:'Fuori sequenza',permanenza:'Permanenza eccessiva',
+const ANOM_LAB={abbandonata:'Ronda abbandonata (mai chiusa)',saltato:'Tappa saltata',in_ritardo:'Tratta in ritardo',non_completato:'Ronda non completata',fuori_sequenza:'Fuori sequenza',permanenza:'Permanenza eccessiva',
   inserimento_manuale:'Codice digitato a mano',posizione_distante:'Punzonato lontano dal punto'};
 // CA-22/CA-2: etichette leggibili per tipo di checkpoint e modo di punzonatura
 const CP_KIND_LAB={qr:'QR',nfc:'NFC',beacon:'Beacon',gps:'GPS'};
@@ -2150,44 +2160,44 @@ async function vRonde(v){
   const sites=await api('/sites').catch(()=>[]);
   const canCfg=can(['pianificatore','tenant_admin'],'plan');
   const stChip=s=>`<span class="chip ${s==='completato'?'ok':(s==='incompleto'?'bad':'')}">${esc(roundStLab(s))}</span>`;
-  v.innerHTML=`<div class="page-h"><div><h1>${t('ronde_title','Ronde')}</h1><div class="mut">giri di controllo · checkpoint QR/NFC/beacon/GPS · punzonature</div></div>${canCfg?'<button class="btn" onclick="ronNew()">+ nuovo giro</button>':''}</div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('ronde_title','Ronde')}</h1><div class="mut">percorsi di ronda · checkpoint QR/NFC/beacon/GPS · punzonature</div></div>${canCfg?'<button class="btn" onclick="ronNew()">+ nuovo percorso</button>':''}</div>
   <div class="grid g2">
-    <div class="card pad"><h2>Giri configurati (${routes.length})</h2>
+    <div class="card pad"><h2>Percorsi di ronda configurati (${routes.length})</h2>
       ${routes.map(r=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10);margin-top:var(--s-8)">
         <div class="spread"><b>${esc(r.name)} ${r.active?'':'<span class="chip bad">inattivo</span>'}</b>
           <span>${canCfg?`<button class="btn ghost small" onclick="ronCp('${r.id}',${jattr(r.name)})">checkpoint (${r.checkpoints.length})</button><button class="btn-ico btn ghost" onclick="ronDel('${r.id}')">${ICON.x}</button>`:`<span class="small mut">${r.checkpoints.length} checkpoint</span>`}</span></div>
         <div class="small mut" style="margin-top:var(--s-4)">${r.site_name?('📍 '+esc(r.site_name)+' · '):''}${r.group_name?('👥 '+esc(r.group_name)+' · '):''}${r.window_minutes?('finestra '+r.window_minutes+' min · '):''}${r.checkpoints.map(c=>esc(c.name)+' ['+esc(cpKindLab(c.kind))+']').join(' → ')||'nessun checkpoint'}${r.manual_code_allowed===false?' · <b>solo scansione</b>':''}</div>
-      </div>`).join('')||'<div class="small mut" style="margin-top:var(--s-8)">Nessun giro. Crea un giro e aggiungi i checkpoint.</div>'}
+      </div>`).join('')||'<div class="small mut" style="margin-top:var(--s-8)">Nessun percorso. Crea un percorso di ronda e aggiungi i checkpoint.</div>'}
     </div>
     <div class="card pad"><h2>Ronde eseguite (${rounds.length})</h2>
-      <table class="table" data-export="ronde" style="margin-top:var(--s-8)"><thead><tr><th>Giro</th><th>Operatore</th><th>Avvio</th><th>Stato</th></tr></thead>
-      <tbody>${rounds.map(r=>`<tr class="clk" onclick="ronView('${r.id}')"><td>${esc(r.route_name)}</td><td class="small">${esc(r.email||'operatore')}</td><td class="small mut">${r.started_at?new Date(r.started_at).toLocaleString():''}</td><td>${stChip(r.status)}</td></tr>`).join('')||emptyRow(4, ICON.clipboard, 'Nessuna ronda', 'Qui compaiono i giri di controllo eseguiti. Crea un giro con i suoi checkpoint per iniziare.', canCfg?{fn:'ronNew()',label:'+ Nuovo giro'}:null)}</tbody></table>
+      <table class="table" data-export="ronde" style="margin-top:var(--s-8)"><thead><tr><th>Percorso</th><th>Operatore</th><th>Avvio</th><th>Stato</th></tr></thead>
+      <tbody>${rounds.map(r=>`<tr class="clk" onclick="ronView('${r.id}')"><td>${esc(r.route_name)}</td><td class="small">${esc(r.email||'operatore')}</td><td class="small mut">${r.started_at?new Date(r.started_at).toLocaleString():''}</td><td>${stChip(r.status)}</td></tr>`).join('')||emptyRow(4, ICON.clipboard, 'Nessuna ronda', 'Qui compaiono le ronde svolte. Crea un percorso di ronda con i suoi checkpoint per iniziare.', canCfg?{fn:'ronNew()',label:'+ Nuovo percorso'}:null)}</tbody></table>
     </div>
   </div>`;
   v._sites=sites;
 }
 async function ronNew(){
   const [groups,sites]=await Promise.all([api('/user-groups').catch(()=>[]),api('/sites').catch(()=>[])]);
-  drawer('Nuovo giro', `<div class="col" style="gap:var(--s-10)">
-    <label class="small mut">Nome giro<input id="rn_name"></label>
+  drawer('Nuovo percorso di ronda', `<div class="col" style="gap:var(--s-10)">
+    <label class="small mut">Nome del percorso<input id="rn_name"></label>
     <label class="small mut">Sede (opz.)<select id="rn_site"><option value="">— nessuna —</option>${sites.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>
       <div class="small mut">Gli orari delle ronde pianificate seguono il fuso orario della sede (o dell'azienda); l'allarme «Ronda mancata» è attribuito a questa sede.</div></label>
-    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Finestra max giro (min, opz.)<input id="rn_win" type="number" min="1"></label>
+    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Durata massima della ronda (min, opz.)<input id="rn_win" type="number" min="1"></label>
       <label class="small mut grow">Tolleranza tempi (min)<input id="rn_grace" type="number" min="0" value="0"></label></div>
     <label class="small mut">Modalità<select id="rn_mode"><option value="piedi">A piedi</option><option value="mezzo">Con mezzo</option></select></label>
     <label class="small"><input type="checkbox" id="rn_manual" checked> Consenti di digitare il codice se la scansione non funziona
       <div class="small mut">La punzonatura digitata resta valida ma è registrata come «codice digitato a mano» e segnalata a fine ronda. Togli la spunta per accettare solo scansione QR o tag NFC.</div></label>
-    <label class="small mut">Assegna a gruppo di persone (opz.)<select id="rn_grp"><option value="">— aperto a tutti —</option>${groups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select><div class="small mut">se impostato, solo i membri vedono e avviano il giro</div></label>
-    <button class="btn" id="rn_save">Crea giro</button><div class="cfg-msg small"></div></div>`);
+    <label class="small mut">Assegna a gruppo di persone (opz.)<select id="rn_grp"><option value="">— aperto a tutti —</option>${groups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select><div class="small mut">se impostato, solo i membri vedono e avviano il percorso</div></label>
+    <button class="btn" id="rn_save">Crea percorso</button><div class="cfg-msg small"></div></div>`);
   $('#rn_save').onclick=async()=>{ const m=$('.cfg-msg'); const n=$('#rn_name').value.trim(); if(!n){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
     const w=$('#rn_win').value; const b={name:n,site_id:$('#rn_site').value||null,window_minutes:w?parseInt(w):null,assigned_group:$('#rn_grp').value||null,mode:$('#rn_mode').value,grace_min:parseInt($('#rn_grace').value||'0'),manual_code_allowed:$('#rn_manual').checked};
-    try{await api('/patrol-routes',{method:'POST',body:JSON.stringify(b)}); toast('Giro creato','ok'); closeDrawer(); route();}catch(e){m.textContent=friendlyError(e);m.style.color='var(--bad)';} }; }
-async function ronDel(id){ if(!await askConfirm('Eliminare il giro? (ronde e checkpoint inclusi)'))return; try{await api('/patrol-routes/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e,'bad');} }
+    try{await api('/patrol-routes',{method:'POST',body:JSON.stringify(b)}); toast('Percorso creato','ok'); closeDrawer(); route();}catch(e){m.textContent=friendlyError(e);m.style.color='var(--bad)';} }; }
+async function ronDel(id){ if(!await askConfirm('Eliminare il percorso? (ronde svolte e checkpoint inclusi)'))return; try{await api('/patrol-routes/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e,'bad');} }
 async function ronCp(rid,rname){ const all=await api('/patrol-routes').catch(()=>[]); const r=all.find(x=>x.id===rid); if(!r)return;
   window._ronRoutes=all;
   drawer('Checkpoint — '+rname, `<div class="col" style="gap:var(--s-8)">
     ${r.checkpoints.map(c=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6)"><span>${c.position}. <b>${esc(c.name)}</b> <span class="chip">${esc(cpKindLab(c.kind))}</span> <span class="small mut">${c.kind==='gps'?((c.lat||'?')+','+(c.lon||'?')+' r'+c.radius_m+'m'):('codice <code>'+esc(c.code||'')+'</code>')}${c.max_min!=null?' · ⏱ max '+c.max_min+'min':''}</span></span><button class="btn-ico btn ghost" onclick="ronCpDel('${c.id}','${rid}',${jattr(rname)})">${ICON.x}</button></div>`).join('')||'<div class="small mut">nessun checkpoint</div>'}
-    <hr><div class="small mut">Riusa un checkpoint esistente (altro giro)</div>
+    <hr><div class="small mut">Riusa un checkpoint esistente (altro percorso)</div>
     <div class="row" style="gap:var(--s-6)"><select id="cpImp" class="grow small"></select><button class="btn ghost small" onclick="ronCpImport('${rid}',${jattr(rname)})">↳ importa</button></div>
     <hr><div class="small mut">Nuovo checkpoint</div>
     <label class="small">Nome<input id="cpN"></label>
@@ -2266,9 +2276,9 @@ async function vVigilanza(v){
       <div style="margin-top:var(--s-8)">${schRows}</div></div>`:''}`;
 }
 function schNew(){ const routes=$('#view')._vroutes||[];
-  if(!routes.length){ toast('Crea prima un giro in Ronde','warn'); return; }
+  if(!routes.length){ toast('Crea prima un percorso in Ronde','warn'); return; }
   drawer('Nuovo piano ronde',`<div class="col" style="gap:var(--s-10)">
-    <label class="small mut">Giro<select id="scR">${routes.map(r=>`<option value="${r.id}">${esc(r.name)}</option>`).join('')}</select></label>
+    <label class="small mut">Percorso<select id="scR">${routes.map(r=>`<option value="${r.id}">${esc(r.name)}</option>`).join('')}</select></label>
     <label class="small mut">Giorni</label>
     <div class="row" style="gap:var(--s-6);flex-wrap:wrap">${DOW_V.map((d,i)=>`<label class="row small" style="gap:var(--s-3)"><input type="checkbox" class="scD" data-i="${i}" checked>${d}</label>`).join('')}</div>
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Dalle<input id="scF" type="time" value="22:00"></label><label class="small mut grow">Alle<input id="scT" type="time" value="06:00"></label>
@@ -3076,7 +3086,7 @@ async function vContratti(v){
     <td>${c.active?'<span class="chip s-attivo">attivo</span>':'<span class="chip">chiuso</span>'}</td>
     <td style="text-align:right">${canEdit?`<button class="btn-ico btn ghost" onclick="event.stopPropagation();contrDel('${c.id}')">${ICON.x}</button>`:''}</td></tr>`;
   const prow=p=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick='planForm(${jattr(p)})'`:''}><td><b class="small">${esc(p.title)}</b></td><td class="small">${esc(p.client_name||'—')}${p.site?' · '+esc(p.site):''}</td>
-    <td class="small">ogni ${p.every_days} gg</td><td class="small">prossimo: ${esc(p.next_date)}</td>
+    <td class="small">ogni ${p.every_days} gg</td><td class="small">prossimo: ${esc(p.next_date)}<div class="mut">${!p.active?'piano sospeso':p.auto_generate!==false?`l'intervento si crea da solo ${p.lead_days??7} gg prima`:'solo con «genera ora»'}</div></td>
     <td style="text-align:right">${canEdit?`<button class="btn ghost small" onclick="event.stopPropagation();planGen('${p.id}')">genera ora</button> <button class="btn-ico btn ghost" onclick="event.stopPropagation();planDel('${p.id}')">${ICON.x}</button>`:''}</td></tr>`;
   v.innerHTML=`<div class="page-h"><div><h1>Contratti</h1><div class="mut">${C.length} contratti · ${P.length} piani di manutenzione</div></div>
     ${canEdit?`<span><button class="btn" onclick="contrForm()">+ Contratto</button> <button class="btn ghost" onclick="planForm()">+ Piano manutenzione</button></span>`:''}</div>
@@ -3084,7 +3094,7 @@ async function vContratti(v){
     <table class="table" data-export="contratti"><thead><tr><th>Contratto</th><th>Cliente</th><th>SLA</th><th>Monte ore</th><th>Stato</th><th></th></tr></thead>
     <tbody>${C.map(crow).join('')||emptyRow(6, ICON.receipt, 'Nessun contratto', 'Registra i contratti con i clienti (durata, importo, SLA): da qui tieni traccia di scadenze e rinnovi.', {fn:'contrForm()',label:'+ Nuovo contratto'})}</tbody></table></div>
   <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Piani di manutenzione ricorrente</h2></div>
-    <div class="card-note">«Genera ora» crea l'intervento alla data prevista e sposta avanti la prossima scadenza.</div>
+    <div class="card-note">Ogni piano crea da solo l'intervento (in bozza, alle 9:00 del giorno previsto) qualche giorno prima della scadenza e sposta avanti la data. «Genera ora» lo crea subito. Se un piano è rimasto indietro si crea un solo intervento, non uno per ogni scadenza saltata.</div>
     <table class="table" data-export="piani-manutenzione"><thead><tr><th>Piano</th><th>Cliente / sede</th><th>Cadenza</th><th>Prossimo</th><th></th></tr></thead>
     <tbody>${P.map(prow).join('')||emptyRow(5, ICON.clipboard, 'Nessun piano di manutenzione', 'Pianifica interventi ricorrenti (controlli, tagliandi): il sistema genererà le scadenze da svolgere.', {fn:'planForm()',label:'+ Nuovo piano'})}</tbody></table></div>`;
 }
@@ -3110,10 +3120,13 @@ function planForm(p){ p=p||{}; const v=$('#view'); const clients=v._clients||[],
     <label class="small mut">Cliente<select id="plClient"><option value="">—</option>${clients.map(x=>`<option value="${x.id}" ${x.id===p.client_id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label>
     <label class="small mut">Sede<select id="plSite"><option value="">—</option>${sites.map(x=>`<option value="${x.id}" ${x.id===p.site_id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label>
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Ogni (giorni)<input id="plEvery" type="number" value="${p.every_days!=null?p.every_days:180}"></label><label class="small mut grow">Prossima data<input id="plNext" type="date" value="${p.next_date||new Date().toISOString().slice(0,10)}"></label></div>
+    <div class="row" style="gap:var(--s-8);align-items:flex-end"><label class="row small grow" style="gap:var(--s-8)"><input type="checkbox" id="plAuto" ${p.auto_generate!==false?'checked':''}> Crea l'intervento da solo</label>
+      <label class="small mut grow">quanti giorni prima<input id="plLead" type="number" min="0" max="90" value="${p.lead_days??7}"></label></div>
     ${p.id?`<label class="row small" style="gap:var(--s-8)"><input type="checkbox" id="plActive" ${p.active!==false?'checked':''}> Attivo</label>`:''}
     <button class="btn" onclick="planSave('${p.id||''}')">${p.id?'Salva':'Crea piano'}</button><div class="cfg-msg small"></div></div>`); }
 async function planSave(id){ const m=$('.cfg-msg'); const t=$('#plTitle').value.trim(); if(!t){m.textContent='titolo richiesto';m.style.color='var(--bad)';return;}
-  const b={title:t,client_id:$('#plClient').value||null,site_id:$('#plSite').value||null,every_days:+$('#plEvery').value||30,next_date:$('#plNext').value||null};
+  const b={title:t,client_id:$('#plClient').value||null,site_id:$('#plSite').value||null,every_days:+$('#plEvery').value||30,next_date:$('#plNext').value||null,
+    auto_generate:$('#plAuto').checked, lead_days:Math.max(0,Math.min(90,parseInt($('#plLead').value,10)||0))};
   if(id&&$('#plActive')) b.active=$('#plActive').checked;
   try{await api(id?('/maintenance-plans/'+id):'/maintenance-plans',{method:'POST',body:JSON.stringify(b)}); toast(id?'Piano aggiornato':'Piano creato','ok'); closeDrawer(); route();}catch(e){m.textContent=friendlyError(e);m.style.color='var(--bad)';} }
 async function planGen(id){ try{ const r=await api('/maintenance-plans/'+id+'/generate',{method:'POST',body:'{}'}); toast('Intervento generato · prossimo: '+r.next_date,'ok'); route();}catch(e){toast(e,'bad');} }
@@ -4034,7 +4047,7 @@ async function devLinkCheck(id){ const box=$('#devLink'); if(box) box.innerHTML=
 // Stessa regola del watchdog del silenzio: soglia silence_after_s del tenant (0 = controllo spento).
 function devOnlineChip(d){
   if(d.service_state&&d.service_state!=='in_servizio') return `<span class="chip" title="non monitorato">${SERVICE_LABELS[d.service_state]||esc(d.service_state)}</span>`;
-  if(d.silence_shift_only && d.assigned_user && !d.in_shift) return '<span class="chip" title="Il silenzio del badge è sorvegliato solo durante il turno del lavoratore (turno aperto nell&#39;app o pianificato). Ora il lavoratore non è in turno: nessun allarme di perdita di contatto.">fuori turno · silenzio non sorvegliato</span>';
+  if(d.silence_shift_only && d.assigned_user && !d.in_shift) return '<span class="chip" title="Il silenzio del badge è sorvegliato solo durante il turno del lavoratore (turno in servizio aperto nell&#39;app, o turno pianificato). Ora il lavoratore non è in turno: nessun allarme di perdita di contatto.">fuori turno · silenzio non sorvegliato</span>';
   if(!d.last_seen_at) return '<span class="chip s-critico" title="in servizio: allarme alla soglia se non si collega">in servizio · mai collegato</span>';
   const secs=(Date.now()-new Date(d.last_seen_at).getTime())/1000;
   const lim=Number.isFinite(+d.silence_after_s)?+d.silence_after_s:600;
@@ -4162,7 +4175,7 @@ async function vConnettori(v){
       <div><div class="small mut">In servizio (monitorati)</div><b>${monitored.length}</b></div>
       <div><div class="small mut">Assegnati non in servizio</div><b>${waiting.length}</b></div>
       <div><div class="small mut">Allarme se silenzioso da</div><b>${silence>0?Math.round(silence/60)+' min':'disattivato'}</b></div></div>
-    <div class="small mut" style="margin-top:var(--s-8)">Un badge <b>in servizio</b> che, <b>durante il turno</b> del lavoratore (turno aperto nell'app o pianificato; disattivabile in «Soglie e allarmi»), smette di trasmettere (spento, scarico, senza copertura) o non si collega dopo la messa in servizio apre un allarme <b>Perdita di contatto</b> con escalation. L'allarme <b>si chiude da solo</b> quando il badge torna in linea. Lo stesso vale per l'app del lavoratore durante il turno (soglia nel modulo Lone Worker → «Silenzio dell'app»). I badge in attesa di messa in servizio o fuori servizio restano visibili ma non generano allarmi.</div>
+    <div class="small mut" style="margin-top:var(--s-8)">Un badge <b>in servizio</b> che, <b>durante il turno</b> del lavoratore (turno in servizio aperto nell'app, o turno pianificato; disattivabile in «Soglie e allarmi»), smette di trasmettere (spento, scarico, senza copertura) o non si collega dopo la messa in servizio apre un allarme <b>Perdita di contatto</b> con escalation. L'allarme <b>si chiude da solo</b> quando il badge torna in linea. Lo stesso vale per l'app del lavoratore durante il turno (soglia nel modulo Lone Worker → «Silenzio dell'app»). I badge in attesa di messa in servizio o fuori servizio restano visibili ma non generano allarmi.</div>
     <div class="small" style="margin-top:var(--s-10)"><b>Come si collegano</b></div>
     <ul class="small mut" style="margin:var(--s-4) 0 0 var(--s-16)">
       <li>Teltonika (GH-5200, FMB, TMT…): server <span class="mono">${esc(host)}</span>, porta TCP <span class="mono">5027</span>. Il dispositivo si riconosce dall'IMEI, nessuna chiave da copiare.</li>
@@ -4748,8 +4761,9 @@ async function vTrigger(v){
           <select id="tg_stopped" class="small">
             <option value="si" ${c.stopped_as_immobilita?'selected':''}>Sì (alza allarme)</option>
             <option value="no" ${!c.stopped_as_immobilita?'selected':''}>No (ignora)</option></select></label>
-        <label class="col small" style="gap:var(--s-4)">Ripetizione notifica SOS (secondi, 0=una volta)
-          <input id="tg_repeat" type="number" min="0" max="3600" value="${c.sos_repeat_seconds||0}" class="small"></label>
+        <div class="col small" style="gap:var(--s-4)"><span>Ripetizione delle notifiche</span>
+          <span class="mut">Si imposta nella policy di ogni gruppo, in <a onclick="location.hash='#/gruppi'">Escalation e reperibilità</a>.</span>
+          <input id="tg_repeat" type="hidden" value="${c.sos_repeat_seconds||0}"></div>
         <label class="col small" style="gap:var(--s-4)">Check-in: minuti default
           <input id="tg_chk_def" type="number" min="1" max="1440" value="${c.checkin_default_minutes||30}" class="small"></label>
         <label class="col small" style="gap:var(--s-4)">Check-in: minuti massimi
@@ -4774,7 +4788,8 @@ async function safetyTriggersSave(btn){
 // --- Fase C: Profili di protezione (worker + device + trigger + policy escalation in un record) ---
 const PROF_TRIGGERS=['sos','man_down','immobilita','mancato_checkin','geofence'].map(k=>[k,etypeLabel(k)]);
 async function vProfili(v){
-  const [D,users]=await Promise.all([api('/safety/profiles').catch(e=>({error:friendlyError(e)})),api('/users').catch(()=>[])]);
+  const [D,users,GP]=await Promise.all([api('/safety/profiles').catch(e=>({error:friendlyError(e)})),api('/users').catch(()=>[]),api('/groups').catch(()=>({people_groups:[]}))]);
+  const PEOPLE=(GP&&GP.people_groups)||[];
   if(D.error){ v.innerHTML=`<div class="page-h"><h1>${t('profili_title','Profili di protezione')}</h1></div><div class="card pad">${esc(D.error)}</div>`; return; }
   v._users=users; v._groups=D.groups||[];
   const groupOpts=(sel)=>`<option value="">— nessuno (routing globale) —</option>`+(D.groups||[]).map(g=>`<option value="${g.id}" ${g.id===sel?'selected':''}>${esc(g.name)}</option>`).join('');
@@ -4784,7 +4799,7 @@ async function vProfili(v){
         <input type="checkbox" data-trg="${k}" ${tg[k]!==false&&tg[k]!==undefined?(tg[k]?'checked':''):(k==='geofence'?'':'checked')}> ${esc(lab)}</label>`).join(' ');
     const mem=(p.members||[]).map(m=>`<div class="row small" style="justify-content:space-between;margin-top:var(--s-4)">
         <span>${esc(m.email)} <span class="mut">· ${m.devices} device</span></span>
-        <button class="btn-ico btn ghost" onclick="profRm('${p.id}','${m.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">nessun lavoratore assegnato</div>';
+        ${m.via_name?`<span class="small mut" title="Si toglie dal gruppo di persone o scollegando il gruppo">da «${esc(m.via_name)}»</span>`:`<button class="btn-ico btn ghost" onclick="profRm('${p.id}','${m.id}')">${ICON.x}</button>`}</div>`).join('')||'<div class="small mut">nessun lavoratore assegnato</div>';
     return `<div class="card pad" style="margin-bottom:var(--s-12)" data-prof="${p.id}">
       <div class="spread"><div class="row" style="gap:var(--s-8);align-items:center">
         <input class="small" data-f="name" value="${esc(p.name)}" style="font-weight:600;min-width:160px">
@@ -4817,7 +4832,8 @@ async function vProfili(v){
         <div class="spread"><b class="small">Lavoratori (${(p.members||[]).length}) · ${p.devices_covered} device coperti</b></div>
         ${mem}
         <div class="row" style="gap:var(--s-6);margin-top:var(--s-8)"><select id="pSel_${p.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
-          <button class="btn ghost small" onclick="profAdd('${p.id}')">+ lavoratore</button></div></div>
+          <button class="btn ghost small" onclick="profAdd('${p.id}')">+ lavoratore</button></div>
+        ${srcBox('prof', p.id, p.sources||[], PEOPLE)}</div>
       <div class="row" style="margin-top:var(--s-10)"><button class="btn" onclick="profSave('${p.id}',this)">Salva profilo</button>
         <span class="prof-msg small" style="margin-left:var(--s-10)"></span></div></div>`;
   };
@@ -4925,7 +4941,7 @@ async function vGruppi(v){
   <div class="esc-tab" data-et="gruppi">
   <div class="card pad" style="margin-bottom:var(--s-12);background:var(--brand-soft)"><div class="small">
     <b>I gruppi pilotano l'escalation.</b> Definisci gruppi, membri, rotazione di reperibilità e routing (evento→gruppo):
-    <b>YouWorkforce</b> calcola chi è di turno e consegna direttamente le notifiche (SMS/voce/e-mail/Slack) con ripetizione da <i>Escalation SOS</i>.</div></div>
+    <b>YouWorkforce</b> calcola chi è di turno e consegna direttamente le notifiche (SMS/voce/e-mail/Slack) con i passi e le ripetizioni della policy di ogni gruppo.</div></div>
   <div class="card pad" style="margin-bottom:var(--s-12)">
     <div class="spread"><h2 style="margin-bottom:var(--s-4)">Gruppo di default (catch-all)</h2>
       <span class="tag" title="Escalation e reperibilità sono gestite direttamente da YouWorkforce">gestita da YouWorkforce</span></div>
@@ -4940,11 +4956,12 @@ async function vGruppi(v){
     <div class="card pad"><h2 style="margin-bottom:var(--s-10)">Gruppi</h2>
       ${G.groups.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10);margin-bottom:var(--s-8)">
         <div class="spread"><b>${esc(g.name)}</b><button class="btn-ico btn ghost" onclick="grpDel('${g.id}')">${ICON.x}</button></div>
-        <div class="small mut" style="margin:var(--s-6) 0">${g.members.map(m=>`<span class="tag">${esc(m.email)} (${m.position})</span>`).join(' ')||'nessun membro'}</div>
+        <div class="small mut" style="margin:var(--s-6) 0">${g.members.map(m=>`<span class="tag" ${m.via_name?`title="dal gruppo di persone «${esc(m.via_name)}»"`:''}>${esc(m.email)} (${m.position})${m.via_name?' 👥':''}</span>`).join(' ')||'nessun membro'}</div>
+        ${srcBox('grp', g.id, g.sources||[], G.people_groups||[])}
         <div class="row" style="gap:var(--s-6)"><select id="mSel_${g.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
           <button class="btn ghost small" onclick="grpAdd('${g.id}')">+ membro</button></div>
         ${g.members.map(m=>`<div class="row small" style="justify-content:space-between;margin-top:var(--s-4)"><span>${esc(m.email)}</span>
-          <span>${g.oncall_mode==='turni'?`<button class="btn ghost small" title="imposta subito reperibile" onclick="grpSetActive('${g.id}','${m.user_id}')">attiva ora</button> `:''}<button class="btn-ico btn ghost" onclick="grpRm('${g.id}','${m.user_id}')">${ICON.x}</button></span></div>`).join('')}
+          <span>${g.oncall_mode==='turni'?`<button class="btn ghost small" title="imposta subito reperibile" onclick="grpSetActive('${g.id}','${m.user_id}')">attiva ora</button> `:''}${m.via_name?`<span class="small mut" title="Si toglie dal gruppo di persone o scollegando il gruppo">da «${esc(m.via_name)}»</span>`:`<button class="btn-ico btn ghost" onclick="grpRm('${g.id}','${m.user_id}')">${ICON.x}</button>`}</span></div>`).join('')}
         <div style="border-top:1px solid var(--line);margin-top:var(--s-8);padding-top:var(--s-8)">
           <div class="row small" style="gap:var(--s-6);align-items:center;flex-wrap:wrap">
             <span class="mut">Reperibilità:</span>
@@ -4980,7 +4997,7 @@ async function vGruppi(v){
                 <select id="hoD_${g.id}" class="small" title="giorno (settimanale)">${['lun','mar','mer','gio','ven','sab','dom'].map((d,i)=>`<option value="${i}" ${g.handoff_day===i?'selected':''}>${d}</option>`).join('')}</select>
               </div>
               <label class="row" style="gap:var(--s-6);align-items:center">Canale Slack <input id="slC_${g.id}" value="${esc(g.slack_channel_id||'')}" placeholder="ID canale Slack" style="width:min(140px,100%)"></label>
-              <label class="row" style="gap:var(--s-6);align-items:center">Avviso on-call Slack
+              <label class="row" style="gap:var(--s-6);align-items:center">Avviso Slack di chi è reperibile
                 <select id="slN_${g.id}" class="small">
                   <option value="off" ${(g.slack_notify||'off')==='off'?'selected':''}>off</option>
                   <option value="onchange" ${g.slack_notify==='onchange'?'selected':''}>a ogni cambio turno</option>
@@ -5257,7 +5274,7 @@ async function ocUserRules(uid){
           <select id="urk_${uid}" class="small">${UR_KINDS.map(k=>`<option value="${k[0]}">${k[1]}</option>`).join('')}</select>
           <input id="urv_${uid}" placeholder="numero o email" style="width:min(150px,100%)">
           <button class="btn ghost small" onclick="ocCmAdd('${uid}')">+ recapito</button></div></div>
-      <div><b>Regole di notifica (ladder)</b>${rules}
+      <div><b>Regole di notifica (sequenza dei canali)</b>${rules}
         ${cmOpts?`<div class="row small" style="gap:var(--s-4);align-items:center;margin-top:var(--s-4)">
           <select id="urr_${uid}" class="small">${cmOpts}</select>
           dopo <input id="urd_${uid}" type="number" min="0" max="1440" value="0" style="width:56px"> min
@@ -5307,7 +5324,7 @@ async function ocAbsAdd(gid){
   if(!s||!e){ toast('indica le date','bad'); return; }
   if(!rem&&!add){ toast('indica assente e/o sostituto','bad'); return; }
   if(window._absEditId){ const id=window._absEditId; window._absEditId=null;
-    try{ await api('/oncall-overrides/update',{method:'POST',body:JSON.stringify({id,start:s+'T00:00:00Z',end:e+'T23:59:59Z',remove_user_id:rem||null,add_user_id:add||null})}); toast('Override aggiornato','ok'); ocAbsences(); }catch(err){ toast(err,'bad'); } return; }
+    try{ await api('/oncall-overrides/update',{method:'POST',body:JSON.stringify({id,start:s+'T00:00:00Z',end:e+'T23:59:59Z',remove_user_id:rem||null,add_user_id:add||null})}); toast('Sostituzione aggiornata','ok'); ocAbsences(); }catch(err){ toast(err,'bad'); } return; }
   const body={group_id:gid, start:s+'T00:00:00Z', end:e+'T23:59:59Z', remove_user_id:rem||null, add_user_id:add||null};
   try{ await api('/oncall-overrides',{method:'POST',body:JSON.stringify(body)}); toast('Assenza registrata','ok'); ocAbsences(); }
   catch(err){ toast(err,'bad'); }
@@ -5333,11 +5350,26 @@ function simpleCreateDrawer(title,label,placeholder,fn){
     if(!val){ m.textContent='valore richiesto'; m.style.color='var(--bad)'; return; }
     try{ await fn(val); toast('Creato','ok'); closeDrawer(); route(); }catch(e){ m.textContent=friendlyError(e); m.style.color='var(--bad)'; } };
 }
-function grpNew(){ simpleCreateDrawer('Nuovo gruppo allarme','Nome gruppo','', v=>api('/groups',{method:'POST',body:JSON.stringify({name:v})})); }
+function grpNew(){ simpleCreateDrawer('Nuovo gruppo di escalation','Nome gruppo','', v=>api('/groups',{method:'POST',body:JSON.stringify({name:v})})); }
 async function grpDel(id){ if(!await askConfirm('Eliminare il gruppo?'))return;
   try{await api('/groups/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e,'bad');} }
 async function grpAdd(gid){ const uid=$('#mSel_'+gid).value; if(!uid)return;
   try{await api('/groups/'+gid+'/members',{method:'POST',body:JSON.stringify({user_id:uid,position:1})}); toast('Membro aggiunto','ok'); route();}catch(e){toast(e,'bad');} }
+// TA-7: membri presi da gruppi di persone, sempre allineati (chi entra/esce dal gruppo entra/esce qui)
+function srcBox(kind, id, sources, people){
+  const linked=new Set(sources.map(x=>x.user_group_id));
+  const free=people.filter(g=>!linked.has(g.id));
+  return `<div class="small" style="margin:var(--s-6) 0">
+    <span class="mut">Membri dai gruppi di persone:</span>
+    ${sources.map(x=>`<span class="tag">👥 ${esc(x.name)} <a href="#" onclick='event.preventDefault();srcDel(${jattr(kind)},${jattr(id)},${jattr(x.user_group_id)})' aria-label="Scollega ${esc(x.name)}">✕</a></span>`).join(' ')||'<span class="mut">nessuno</span>'}
+    ${free.length?`<span class="row" style="gap:var(--s-6);margin-top:var(--s-4)"><select id="src_${kind}_${id}" class="small" aria-label="Gruppo di persone da collegare">${free.map(g=>`<option value="${esc(g.id)}">${esc(g.name)} (${g.members})</option>`).join('')}</select>
+      <button class="btn ghost small" onclick='srcAdd(${jattr(kind)},${jattr(id)})'>+ collega</button></span>`:''}</div>`;
+}
+function srcUrl(kind,id){ return kind==='grp' ? '/groups/'+id+'/sources' : '/safety/profiles/'+id+'/sources'; }
+async function srcAdd(kind,id){ const sel=$('#src_'+kind+'_'+id); if(!sel||!sel.value) return;
+  try{ await api(srcUrl(kind,id),{method:'POST',body:JSON.stringify({user_group_id:sel.value})}); toast('Gruppo collegato: i suoi membri sono stati aggiunti','ok'); route(); }catch(e){ toast(e,'bad'); } }
+async function srcDel(kind,id,ug){ if(!await askConfirm('Scollegare il gruppo? Le persone arrivate da questo gruppo vengono tolte (quelle aggiunte a mano restano).')) return;
+  try{ await api(srcUrl(kind,id)+'/'+ug,{method:'DELETE'}); toast('Gruppo scollegato','ok'); route(); }catch(e){ toast(e,'bad'); } }
 async function grpRm(gid,uid){ try{await api('/groups/'+gid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e,'bad');} }
 async function grpSetActive(gid,uid){ try{await api('/groups/'+gid+'/rotation/set-active',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Reperibile attivato ora','ok');}catch(e){toast(e,'bad');} }
 window._shf={}; // gid -> {shifts, view, user}
@@ -5399,7 +5431,7 @@ async function grpAssignLoad(gid){ const out=$('#asg_'+gid); out.innerHTML='<spa
         giorni ${['L','M','M','G','V','S','D'].map((d,i)=>`<label class="small" style="display:inline-flex;flex-direction:column;align-items:center"><span>${d}</span><input type="checkbox" id="asgd_${gid}_${i}" checked></label>`).join('')}
         dalle <input id="asgS_${gid}" type="time"> alle <input id="asgE_${gid}" type="time">
         <button class="btn small" onclick="asgAdd('${gid}')">+ assegnazione</button></div>
-      <div class="small faint">Ogni assegnazione aggiunge i suoi membri all'on-call quando la sua finestra (giorni+orario, ora locale) è attiva. "a turni" = ruota i membri dell'assegnazione. Vuoto = 24h.</div>
+      <div class="small faint">Ogni assegnazione aggiunge i suoi membri ai reperibili quando la sua finestra (giorni+orario, ora locale) è attiva. "a turni" = ruota i membri dell'assegnazione. Vuoto = 24h.</div>
       <div class="row" style="gap:var(--s-6);margin-top:var(--s-4)"><button class="btn ghost small" onclick="grpCalendar('${gid}')">📅 URL iCal del gruppo</button><span id="gcal_${gid}" class="small" style="word-break:break-all"></span></div></div>`;
   }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(friendlyError(e))+'</span>'; } }
 async function asgAdd(gid){ let days=''; for(let i=0;i<7;i++){ days+=($('#asgd_'+gid+'_'+i)?.checked)?'1':'0'; }
@@ -5423,7 +5455,7 @@ async function routeSet(etype,gid){ try{await api('/routing',{method:'POST',body
 // ---------------- Policy escalation multi-step (nativo) ----------------
 window._pol={}; // gid -> {steps:[{delay_min,channel}], repeat}
 const POL_CH=[['sms','SMS'],['voice','Voce'],['email','Email'],['slack','Slack']];
-const POL_TGT=[['oncall','on-call del gruppo'],['group','altro gruppo'],['user','persona'],['slack','canale Slack']];
+const POL_TGT=[['oncall','reperibile del gruppo'],['group','altro gruppo'],['user','persona'],['slack','canale Slack']];
 async function grpPolicyLoad(gid){
   try{ const r=await api('/groups/'+gid+'/policy');
     window._pol[gid]={steps:(r.steps||[]).map(s=>({delay_min:s.delay_min,channel:s.channel,target_kind:s.target_kind||'oncall',target_group_id:s.target_group_id||'',target_user_id:s.target_user_id||'',target_slack:s.target_slack||''})), repeat:r.repeat||0};
@@ -5449,13 +5481,13 @@ function grpPolicyRender(gid){
     <button class="btn-ico btn ghost" title="su" onclick="grpPolMove('${gid}',${i},-1)">↑</button>
     <button class="btn-ico btn ghost" title="giù" onclick="grpPolMove('${gid}',${i},1)">↓</button>
     <button class="btn-ico btn ghost" onclick="grpPolRm('${gid}',${i})">${ICON.x}</button></div>`).join('')
-    ||'<div class="small mut">Nessuno step personalizzato → usa la ladder derivata (SMS→Voce) verso l\'on-call del gruppo.</div>';
+    ||'<div class="small mut">Nessun passo personalizzato: si usa la sequenza predefinita (SMS, poi chiamata) verso il reperibile del gruppo.</div>';
   $('#pol_'+gid).innerHTML=`${rows}
     <div class="row small" style="gap:var(--s-6);align-items:center;margin-top:var(--s-6)">
       <button class="btn ghost small" onclick="grpPolAdd('${gid}')">+ step</button>
       ripeti <input type="number" min="0" max="10" value="${p.repeat||0}" style="width:50px" onchange="window._pol['${gid}'].repeat=+this.value"> volte
       <button class="btn small" onclick="grpPolSave('${gid}')">Salva policy</button></div>
-    <div class="small faint" style="margin-top:var(--s-3)">Ogni step notifica il <b>target</b> scelto (on-call del gruppo, un altro gruppo, una persona o un canale Slack) sul canale indicato, poi aspetta i minuti prima del successivo. Dopo l'ultimo, ripete N volte finché non c'è presa in carico.</div>`;
+    <div class="small faint" style="margin-top:var(--s-3)">Ogni step notifica il <b>destinatario</b> scelto (reperibile del gruppo, un altro gruppo, una persona o un canale Slack) sul canale indicato, poi aspetta i minuti prima del successivo. Dopo l'ultimo, ripete N volte finché non c'è presa in carico.</div>`;
 }
 function grpPolAdd(gid){ (window._pol[gid]=window._pol[gid]||{steps:[],repeat:0}).steps.push({delay_min:5,channel:'sms',target_kind:'oncall',target_group_id:'',target_user_id:'',target_slack:''}); grpPolicyRender(gid); }
 function grpPolRm(gid,i){ window._pol[gid].steps.splice(i,1); grpPolicyRender(gid); }
@@ -5547,7 +5579,7 @@ async function vUtentiRuoli(v){
     <table class="table" data-export="utenti"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
     <tbody>${users.map(u=>`<tr class="clk" onclick='userEdit(${jattr(u)})'><td>${esc(u.email)}</td><td><span class="chip">${esc(roleLabel(u.role))}</span></td>
       <td></td></tr>`).join('')||emptyRow(3, null, 'Nessun utente', 'Invita le persone del team e assegna i ruoli: potranno accedere secondo i permessi.', {fn:'userNew()',label:'+ Invita utente'})}</tbody></table></div>
-  <div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><div><h2>Gruppi di persone (${ugroups.length})</h2><div class="small mut">insiemi di persone condivisi, riusabili da qualunque modulo (es. importabili nei gruppi di allarme)</div></div><button class="btn ghost small" onclick="ugNew()">+ nuovo gruppo</button></div>
+  <div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><div><h2>Gruppi di persone (${ugroups.length})</h2><div class="small mut">insiemi di persone condivisi, riusabili da qualunque modulo (es. importabili nei gruppi di escalation)</div></div><button class="btn ghost small" onclick="ugNew()">+ nuovo gruppo</button></div>
     <div class="grid g2" style="margin-top:var(--s-10)">${ugroups.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10)">
       <div class="spread"><b>${esc(g.name)} <span class="chip">${esc(groupKindLabel(g.kind))}</span></b>
         <span><button class="btn ghost small" onclick='ugRename(${jattr(g)})'>gestisci</button>
@@ -5556,7 +5588,7 @@ async function vUtentiRuoli(v){
       <div class="row" style="gap:var(--s-6)"><select id="ugm_${g.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
         <button class="btn ghost small" onclick="ugAdd('${g.id}')">+ membro</button></div>
       ${agroups.length?`<div class="row" style="gap:var(--s-6);margin-top:var(--s-6)"><select id="ugimp_${g.id}" class="grow small">${agroups.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>
-        <button class="btn ghost small" onclick="ugImport('${g.id}')">→ importa in gruppo allarme</button></div>`:''}
+        <button class="btn ghost small" onclick="ugImport('${g.id}')">→ importa in gruppo di escalation</button></div>`:''}
       </div>`).join('')||'<div class="small mut">Nessun gruppo. Crea insiemi di persone da riusare ovunque.</div>'}</div></div>
   ${caps?(()=>{ const visCat=caps.catalog.filter(c=>c.relevant); const visSet=new Set(visCat.map(c=>c.code)); const hidden=caps.catalog.length-visCat.length;
     return `<div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><div><h2>Permessi (capability)</h2><div class="small mut">cosa può fare ogni ruolo. Mostrati i permessi <b>di base</b> e quelli dei <b>moduli attivi</b>${hidden?` (${hidden} legati a moduli non attivi sono nascosti)`:''}. <b>neretto</b> = modificato rispetto al default.</div></div><a onclick="capReset()">↺ ripristina default</a></div>
@@ -5813,10 +5845,12 @@ const CAP_LABELS={
   'orders.view_all':    ['Interventi · Vedere tutti','Leggere tutti gli interventi delle proprie sedi, non solo quelli assegnati a sé o al proprio gruppo.'],
   'costs.view':         ['Costi · Vedere','Vedere budget, costi, SAL, fatture delle commesse e i prezzi dei materiali degli interventi.'],
   'config.view':        ['Configurazione · Sola lettura','Vedere impostazioni e diagnostica (senza modificarle).'],
-  'users.manage':       ['Amministrazione · Utenti e ruoli','Creare/modificare utenti, gruppi di persone, permessi, ruoli, sedi e squadre.'],
+  'work.own':           ['Lavoro personale','Vedere nel cruscotto i propri interventi, consuntivi, ronde e turni.'],
+  'users.manage':       ['Amministrazione · Persone e permessi','Creare/modificare utenti, gruppi di persone (anche le squadre), permessi e ruoli.'],
+  'sites.manage':       ['Sedi e asset','Creare e modificare sedi (indirizzo, posizione, fuso orario) e mezzi/attrezzature.'],
   'devices.admin':      ['Amministrazione · Dispositivi','Censire dispositivi, gestire token/onboarding, geofence e provisioning.'],
   'iot.manage':         ['IoT · Regole e sensori','Gestire regole sensori e le integrazioni IoT.'],
-  'escalation.manage':  ['Escalation e reperibilità','Gestire gruppi di allarme, turni on-call, override e trigger.'],
+  'escalation.manage':  ['Escalation e reperibilità','Gestire gruppi di escalation, turni di reperibilità, sostituzioni e trigger.'],
   'settings.manage':    ['Impostazioni del tenant','Attivare funzionalità e modificare la configurazione generale.'],
   'gdpr.manage':        ['Privacy (GDPR)','Esportare e anonimizzare i dati personali.'],
   'audit.view':         ['Audit · Registro attività','Leggere il registro delle attività del tenant.'],
@@ -5915,28 +5949,52 @@ async function ugSave(id, prev){
 }
 function ugNew(){ ugForm(null); }
 function ugRename(g){ ugForm(g); }
-async function ugDel(id){ if(!await askConfirm('Eliminare il gruppo? (i gruppi di allarme già popolati restano intatti)'))return; try{await api('/user-groups/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e,'bad');} }
+async function ugDel(id){ if(!await askConfirm('Eliminare il gruppo? (i gruppi di escalation già popolati restano intatti)'))return; try{await api('/user-groups/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e,'bad');} }
 async function ugAdd(gid){ const uid=$('#ugm_'+gid).value; if(!uid)return; try{await api('/user-groups/'+gid+'/members',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Aggiunto','ok'); route();}catch(e){toast(e,'bad');} }
 async function ugRm(gid,uid){ try{await api('/user-groups/'+gid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e,'bad');} }
-async function ugImport(gid){ const ag=$('#ugimp_'+gid).value; if(!ag)return; try{const r=await api('/groups/'+ag+'/members/import',{method:'POST',body:JSON.stringify({user_group_id:gid})}); toast((r.added||0)+' membri importati nel gruppo allarme','ok');}catch(e){toast(e,'bad');} }
+async function ugImport(gid){ const ag=$('#ugimp_'+gid).value; if(!ag)return; try{const r=await api('/groups/'+ag+'/members/import',{method:'POST',body:JSON.stringify({user_group_id:gid})}); toast((r.added||0)+' membri importati nel gruppo di escalation','ok');}catch(e){toast(e,'bad');} }
 const ROLES=['tenant_admin','operatore','pianificatore','responsabile','lavoratore','reperibile','auditor'];
 // Nomi CHIARI dei ruoli base (il codice resta il valore salvato).
-const ROLE_LABELS={tenant_admin:'Amministratore',operatore:'Operatore centrale',pianificatore:'Pianificatore',responsabile:'Responsabile',lavoratore:'Lavoratore',reperibile:'Reperibile (on-call)',auditor:'Auditor (sola lettura)'};
+const ROLE_LABELS={tenant_admin:'Amministratore',operatore:'Operatore centrale',pianificatore:'Pianificatore',responsabile:'Responsabile',lavoratore:'Lavoratore',reperibile:'Reperibile',auditor:'Auditor (sola lettura)'};
 function roleLabel(r){ return ROLE_LABELS[r]||humanizeCode(r)||'—'; }
 function roleOptions(sel){ return ROLES.map(r=>`<option value="${r}" ${r===sel?'selected':''}>${esc(roleLabel(r))}</option>`).join(''); }
 function userNew(){
   drawer('Invita utente',`<div class="col" style="gap:var(--s-10)">
     <label class="small mut">Email<input id="uEm"></label>
     <label class="small mut">Ruolo<select id="uRo">${roleOptions('')}</select></label>
-    <label class="small mut">Password iniziale<input id="uPw" value="cambiami1"></label>
-    <button class="btn" onclick="userCreate()">Crea</button><div class="cfg-msg small"></div></div>`);
+    <div class="small mut">La persona riceve un <b>link di accesso monouso</b> (valido 7 giorni) e sceglie lei la propria password. Se l’invio email non è configurato, il link compare qui da copiare e consegnare.</div>
+    <button class="btn" onclick="userCreate()">Invita</button><div class="cfg-msg small"></div></div>`);
+}
+// TA-8: il link di accesso (invito o nuova password) da consegnare alla persona
+function inviteShow(email, inv){
+  const url=location.origin+inv.invite_path;
+  drawer('Link di accesso · '+esc(email),`<div class="col" style="gap:var(--s-10)">
+    ${inv.emailed?'<div class="small">✉️ Link inviato per email.</div>':'<div class="small">Consegna questo link alla persona (per esempio in un messaggio). Vale <b>7 giorni</b> e si usa <b>una volta sola</b>: con il link sceglie la sua password.</div>'}
+    <label class="small mut">Link<input id="invUrl" readonly value="${esc(url)}"></label>
+    <button class="btn" onclick="navigator.clipboard&&navigator.clipboard.writeText($('#invUrl').value).then(()=>toast('Link copiato','ok'),()=>{$('#invUrl').select();})">Copia il link</button></div>`);
 }
 async function userCreate(){
-  const b={email:$('#uEm').value.trim(),role:$('#uRo').value,password:$('#uPw').value};
+  const email=$('#uEm').value.trim(); const b={email,role:$('#uRo').value};
   const m=$('.cfg-msg');
-  try{const r=await api('/users',{method:'POST',body:JSON.stringify(b)}); const w=(r&&r.license_warnings)||[]; toast(w.length?('Utente creato. Attenzione, licenze superate: '+w.map(l=>l.label+' '+l.used+' su '+l.limit).join(', ')):'Utente creato', w.length?'warn':'ok'); closeDrawer(); route();}
+  try{const r=await api('/users',{method:'POST',body:JSON.stringify(b)}); const w=(r&&r.license_warnings)||[];
+    toast(w.length?('Utente invitato. Attenzione, licenze superate: '+w.map(l=>l.label+' '+l.used+' su '+l.limit).join(', ')):'Utente invitato', w.length?'warn':'ok');
+    route(); if(r&&r.invite) inviteShow(email, r.invite); else closeDrawer(); }
   catch(e){m.textContent=friendlyError(e);m.style.color='var(--bad)';}
 }
+async function userInvite(id,email){
+  try{ const r=await api('/users/'+id+'/invite',{method:'POST'}); inviteShow(email, r); }catch(e){ toast(e,'bad'); } }
+// TA-8: cambio della propria password
+function ownPasswordForm(){
+  drawer('Cambia la tua password',`<div class="col" style="gap:var(--s-10)">
+    <label class="small mut">Password attuale<input id="opCur" type="password" autocomplete="current-password"></label>
+    <label class="small mut">Nuova password (almeno 10 caratteri)<input id="opNew" type="password" autocomplete="new-password"></label>
+    <label class="small mut">Ripeti la nuova password<input id="opNew2" type="password" autocomplete="new-password"></label>
+    <button class="btn" onclick="ownPasswordSave()">Cambia password</button><div class="cfg-msg small"></div></div>`);
+}
+async function ownPasswordSave(){ const m=$('.cfg-msg'); const n=$('#opNew').value;
+  if(n!==$('#opNew2').value){ m.textContent='Le due password non coincidono'; m.style.color='var(--bad)'; return; }
+  try{ await api('/me/password',{method:'POST',body:JSON.stringify({current:$('#opCur').value,new:n})}); toast('Password cambiata','ok'); closeDrawer(); }
+  catch(e){ m.textContent=friendlyError(e); m.style.color='var(--bad)'; } }
 async function userEdit(u){
   const scoped=['operatore','lavoratore','reperibile'].includes(u.role);
   let sites=[], cur=[];
@@ -5946,14 +6004,14 @@ async function userEdit(u){
     ${sites.map(s=>`<label class="row small" style="gap:var(--s-8)"><input type="checkbox" class="uSite" value="${s.id}" ${cur.includes(s.id)?'checked':''}> ${esc(s.name)}</label>`).join('')||'<span class="mut">nessuna sede</span>'}</div>` : '';
   drawer('Utente · '+esc(u.email),`<div class="col" style="gap:var(--s-10)">
     <label class="small mut">Ruolo<select id="uRo2">${roleOptions(u.role)}</select></label>
-    <label class="small mut">Nuova password (opzionale)<input id="uPw2" placeholder="lascia vuoto per non cambiare"></label>
+    <div class="spread small"><span class="mut">Accesso</span><button class="btn ghost small" onclick='userInvite(${jattr(u.id)},${jattr(u.email)})' title="Primo accesso non ancora fatto o password dimenticata">Nuovo link di accesso</button></div>
     <label class="small mut">Telefono (E.164, per notifiche SMS/voce)<input id="uPhone" placeholder="+393331234567" value="${esc(u.phone||'')}"></label>
     ${siteBox}
     <div class="row" style="gap:var(--s-8)"><button class="btn grow" onclick="userSave('${u.id}',${scoped})">Salva</button>
       <button class="btn ghost" onclick="userDel('${u.id}')">Elimina</button></div><div class="cfg-msg small"></div></div>`);
 }
 async function userSave(id,scoped){
-  const b={role:$('#uRo2').value, phone:$('#uPhone').value.trim()}; const p=$('#uPw2').value; if(p)b.password=p;
+  const b={role:$('#uRo2').value, phone:$('#uPhone').value.trim()};
   const m=$('.cfg-msg');
   try{await api('/users/'+id,{method:'POST',body:JSON.stringify(b)});
     if(scoped){ const ids=[...document.querySelectorAll('.uSite:checked')].map(c=>c.value);

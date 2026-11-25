@@ -184,7 +184,7 @@ async fn handle(st: AppState, mut sock: TcpStream, peer: String) -> std::io::Res
     });
 
     // reader loop: AVL (ingest) + risposte comando (codec12 type 0x06 -> fulfill pending)
-    let res = read_loop(&st, tid, did, &imei, &source, &io_alarm_map, &pending, &cmd_tx, &mut rd).await;
+    let res = read_loop(&st, tid, did, &imei, &source, io_alarm_map, &pending, &cmd_tx, &mut rd).await;
     {
         // rimuove SOLO la propria voce: una riconnessione più recente resta registrata
         let mut reg = registry().lock().unwrap();
@@ -196,11 +196,18 @@ async fn handle(st: AppState, mut sock: TcpStream, peer: String) -> std::io::Res
 
 #[allow(clippy::too_many_arguments)]
 async fn read_loop(st: &AppState, tid: uuid::Uuid, did: uuid::Uuid, imei: &str, source: &str,
-    io_alarm_map: &HashMap<i64,String>,
+    mut io_alarm_map: HashMap<i64,String>,
     pending: &Arc<Mutex<Option<oneshot::Sender<String>>>>,
     ack_tx: &mpsc::UnboundedSender<Vec<u8>>,
     rd: &mut tokio::net::tcp::OwnedReadHalf) -> std::io::Result<()> {
+    // SL-16: la mappa IO -> allarme si rilegge ogni minuto (prima una volta per connessione: una
+    // modifica della configurazione valeva solo dopo che il badge si ricollegava)
+    let mut map_loaded = std::time::Instant::now();
     loop {
+        if map_loaded.elapsed() > std::time::Duration::from_secs(60) {
+            io_alarm_map = crate::api::teltonika_io_alarm_map(st, tid, did).await;
+            map_loaded = std::time::Instant::now();
+        }
         let mut head = [0u8; 8];
         match rd.read_exact(&mut head).await { Ok(_) => {}, Err(_) => return Ok(()) }
         let data_len = u32::from_be_bytes([head[4],head[5],head[6],head[7]]) as usize;
@@ -237,7 +244,10 @@ async fn read_loop(st: &AppState, tid: uuid::Uuid, did: uuid::Uuid, imei: &str, 
                 for r in &records {
                     let ts_rfc = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(r.ts_ms)
                         .unwrap_or_else(chrono::Utc::now).to_rfc3339();
-                    let alarm = alarm_for(io_alarm_map, r.event_io);
+                    // SL-16: allarme solo quando l'IO dell'evento è ATTIVO (pulsante premuto, caduta
+                    // rilevata); il record generato al rilascio (valore 0) non apre un altro allarme
+                    let ev_val = r.io.iter().find(|(id, _)| *id == r.event_io).map(|x| x.1);
+                    let alarm = if ev_val == Some(0) { None } else { alarm_for(&io_alarm_map, r.event_io) };
                     let io_attrs = io_attributes(&r.io);
                     crate::api::teltonika_ingest_one(st, tid, imei, source, &ts_rfc,
                         r.lat, r.lon, r.speed, r.course, r.battery, alarm, io_attrs).await;
@@ -358,4 +368,16 @@ pub fn decode_avl(data: &[u8]) -> Result<Vec<Rec>, String> {
     let count2 = c.u8()? as usize;
     if count2 != count { return Err(format!("mismatch record count {count} != {count2}")); }
     Ok(out)
+}
+
+#[cfg(test)]
+mod sl16_tests {
+    #[test]
+    fn release_value_is_not_an_alarm() {
+        let io = vec![(1i64, 0i64), (113, 80)];
+        let ev_val = io.iter().find(|(id, _)| *id == 1).map(|x| x.1);
+        assert_eq!(ev_val, Some(0));
+        let io2 = vec![(1i64, 1i64)];
+        assert_eq!(io2.iter().find(|(id, _)| *id == 1).map(|x| x.1), Some(1));
+    }
 }

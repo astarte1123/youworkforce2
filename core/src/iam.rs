@@ -154,6 +154,8 @@ pub async fn update_custom_role(State(st): State<AppState>, h: HeaderMap, Path(r
 pub async fn delete_custom_role(State(st): State<AppState>, h: HeaderMap, Path(rid): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
+    // TA-1: chi non ha tutti i permessi del ruolo non lo elimina (come per modifica e assegnazione)
+    require_grantable(&s, &custom_role_caps(&st, tid, rid).await)?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.custom_roles WHERE id=$1").bind(rid).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;

@@ -1,10 +1,36 @@
-# Piano — Permessi granulari module-neutral (IAM Fase 4)
+# Piano — Permessi granulari module-neutral (IAM Fase 4) — COMPLETATO
 
-Obiettivo: rendere **utenti/gruppi/ruoli** davvero flessibili e non sbilanciati sulla sicurezza.
-Oggi la flessibilità (capability + ruoli custom) controlla **solo 3 cose** (`admin/plan/approve`) e
-**36 controlli** sono cablati su stringhe-ruolo (operatore/auditor/reperibile/…), che i ruoli custom
-**non** toccano. Questo piano introduce un **catalogo capability per-modulo** e migra tutti i
-controlli a `require_cap`, **mantenendo il comportamento di default identico** (default-preserving).
+> **Stato: piano storico, tutte le tappe sono FATTE.** Il catalogo realmente implementato è
+> **diverso** dalla proposta del §1 (molte capability proposte non sono mai state create). Per i
+> permessi attuali, i default per ruolo e le regole di delega fa fede
+> **[capability-layer.md](capability-layer.md)**, allineato al codice (`CAPABILITIES` e
+> `default_role_caps` in `core/src/api.rs`).
+>
+> Esito in sintesi:
+> - catalogo finale di **19** permessi: `admin`, `incidents.view`, `incidents.handle`,
+>   `devices.manage`, `plan`, `approve`, `timesheets.view_all`, `orders.view_all`, `costs.view`,
+>   `config.view`, `users.manage`, `devices.admin`, `iot.manage`, `escalation.manage`,
+>   `settings.manage`, `gdpr.manage`, `audit.view`, `dashboard.manage` (+ `sites.manage` in arrivo,
+>   decisione PO 26/11/2026);
+> - **mai create** (restano solo come proposta in questo piano): `oncall.handle`, `safety.config`,
+>   `devices.view`, `orders.manage`, `orders.execute`, `orders.review`, `patrols.manage`,
+>   `patrols.execute`, `timesheets.submit`, `timesheets.approve`, `shifts.manage`,
+>   `shifts.view_own`, `reports.view`. Al loro posto: `plan` (ordini, ronde, turni),
+>   `approve` (consuntivi), `incidents.handle` (anche per il reperibile), `escalation.manage`
+>   (anche trigger e profili di protezione), controlli «solo i propri» per l'esecuzione;
+> - decisioni del §4: `admin` **spezzato** in permessi d'area (Tappa 2), ma resta come permesso
+>   «super» che li implica; l'auditor **non** ha `audit.view` di default (registro attività solo
+>   all'amministratore, delegabile); nessun ruolo personalizzato come ruolo primario (i ruoli
+>   personalizzati sono solo additivi).
+>
+> I numeri di riga del §2 si riferiscono al vecchio `api.rs` monolitico, poi diviso in moduli.
+
+Obiettivo (originale): rendere **utenti/gruppi/ruoli** davvero flessibili e non sbilanciati sulla
+sicurezza. Allora la flessibilità (capability + ruoli custom) controllava **solo 3 cose**
+(`admin/plan/approve`) e **36 controlli** erano cablati su stringhe-ruolo
+(operatore/auditor/reperibile/…), che i ruoli custom **non** toccavano. Il piano introduce un
+**catalogo capability per-modulo** e migra tutti i controlli a `require_cap`, **mantenendo il
+comportamento di default identico** (default-preserving).
 
 ## Principi
 
@@ -14,7 +40,9 @@ controlli a `require_cap`, **mantenendo il comportamento di default identico** (
   perde accesso al cutover).
 - I **ruoli custom** potranno comporre QUALSIASI capability → granularità vera per ogni modulo.
 
-## 1. Catalogo capability proposto (~20, per area)
+## 1. Catalogo capability proposto (~20, per area) — PROPOSTA, non implementata così
+
+> Catalogo reale: vedi il riquadro in cima e [capability-layer.md](capability-layer.md).
 
 | Area | Capability | Significato | Set-ruolo storico (default) |
 |---|---|---|---|
@@ -78,7 +106,7 @@ Raggruppati per capability (riga : controllo attuale → cap):
 7. UI matrice Permessi + Ruoli custom: nessuna modifica strutturale (leggono `catalog`); solo più
    colonne. Opz.: raggruppare le capability per `area` nella matrice.
 
-## 4. Decisioni aperte (da confermare)
+## 4. Decisioni aperte (chiuse: vedi il riquadro in cima)
 
 - **Granularità `admin`**: splittarlo in `users.manage`+`settings.manage`+`escalation.manage`+
   `safety.config`+`iot.manage` (consigliato) oppure tenere un `admin` unico che le implica? (Il
@@ -146,5 +174,11 @@ Oggi i gruppi condivisi servono solo l'import nei gruppi allarme. Estensione pro
    `GET /api/gdpr/retention` (policy sola lettura da `YW_RETENTION_DAYS`). Riusa gli endpoint
    GDPR già esistenti `GET /api/gdpr/export/:uid` (download JSON lato UI) e
    `POST /api/gdpr/anonymize/:uid`. Tutti `admin_only`. Provato da `qa/gdpr-audit-e2e.sh` 12/12.
-   Dettaglio: vedi `docs/gdpr-privacy-audit.md`. NB: capability dedicate `gdpr.manage`/`audit.view`
-   rimandate alla Tappa 2 (dove `admin` verrà spezzato nei `*.manage`); per ora gate = `admin_only`.
+   Dettaglio: vedi `docs/gdpr-privacy-audit.md`. Gate attuale: `gdpr.manage` (export,
+   anonimizzazione, retention) e `audit.view` (registro attività), introdotte con la Tappa 2; la
+   voce di menu compare con l'uno o l'altro permesso.
+5. **Dopo la Fase 4 — FATTE** (25/11/2026): `orders.view_all` e `costs.view` (CA-10/CA-11),
+   `dashboard.manage` (dashboard configurabile), regole di delega TA-1..TA-4, elenco utenti TA-10.
+   Vedi [capability-layer.md](capability-layer.md).
+6. **In arrivo**: `sites.manage` (gestione sedi, default tenant_admin + pianificatore; decisione PO
+   26/11/2026).

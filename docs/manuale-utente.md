@@ -18,6 +18,7 @@ Aggiornato al 25/11/2026. I nomi di pagine e menu sono quelli del menu attuale (
    - [Le due grandi aree e i moduli](#cap1-moduli)
    - [I ruoli](#cap1-ruoli)
    - [Il menu](#cap1-menu)
+   - [Le parole che usiamo](#cap1-glossario)
    - [Il tuo lavoro in YW: guida rapida per ruolo](#cap1-rapida)
 2. [Primo accesso e configurazione guidata](#cap2)
 3. [Sicurezza lavoratore](#cap3)
@@ -99,7 +100,7 @@ insieme.
 | IoT | **Dispositivi e IoT industriale** | sensori, telemetria, regole e soglie, monitoraggio, alert IoT, cruscotti degli scenari |
 | Lavoro sul campo | **Interventi** | ordini di lavoro, clienti, listino, richieste, contratti, agenda tecnici |
 | | **Cantieri** | commesse di cantiere, avanzamento, presenze, costi, SAL e fatture |
-| | **Ronde e punzonature** | giri di controllo con punti QR, NFC, beacon o GPS; ronda mancata |
+| | **Ronde e punzonature** | percorsi di ronda con punti QR, NFC, beacon o GPS; ronda mancata |
 | | **Forza lavoro e turni** (gestione turni) | turni pianificati e svolti, reperibilità, assenze, copertura minima |
 | | **Ore, spese e consuntivi** | consuntivi con approvazione |
 | | **Qualifiche e scadenze** | qualifiche delle persone, usate da turni e listino |
@@ -134,7 +135,7 @@ personalizzati** (vedi [capitolo 7](#cap7)).
 |---|---|
 | **Amministratore** | configura tutto: persone, sedi, dispositivi, regole, escalation, moduli e AI, privacy |
 | **Operatore centrale** | segue la Centrale allarmi, prende in carico e chiude gli allarmi, invia comandi ai dispositivi |
-| **Reperibile (on-call)** | riceve gli avvisi e gestisce gli allarmi che gli arrivano |
+| **Reperibile** | riceve gli avvisi e gestisce gli allarmi che gli arrivano |
 | **Responsabile** | supervisiona allarmi, approva consuntivi, vede ordini e costi |
 | **Pianificatore** | crea e assegna interventi, ronde, turni, cantieri |
 | **Lavoratore** | usa l'app sul telefono: SOS, check-in, turno, interventi, ronde, diario |
@@ -174,6 +175,26 @@ di sicurezza») portano da soli alla voce e alla scheda nuove.
 - Dopo un aggiornamento del sistema, se qualcosa sembra strano, ricarica la pagina con
   `Ctrl+Shift+R`.
 
+<a id="cap1-glossario"></a>
+### Le parole che usiamo
+
+Ogni cosa ha un solo nome in tutta YW (elenco completo in [glossario](glossario.md)):
+
+- **Gruppo di persone**: un insieme di persone dell'anagrafica (squadra, reparto, zona). Si usa in
+  tutti i moduli.
+- **Gruppo di escalation**: chi riceve gli allarmi, con la rotazione dei reperibili e la sequenza
+  dei passi. Può prendere i membri da uno o più gruppi di persone.
+- **Turno pianificato**: il turno di lavoro messo in calendario.
+- **Turno in servizio**: il lavoratore ha aperto il turno nell'app; in questo periodo il silenzio
+  del telefono e del badge è sorvegliato.
+- **Turno di reperibilità**: il periodo in cui una persona è il reperibile di turno del suo gruppo
+  di escalation.
+- **Percorso di ronda**: la sequenza di punti di controllo da punzonare; una **ronda** è un
+  passaggio di una guardia sul percorso.
+- **Evento** e **allarme**: un evento viene registrato; un allarme apre un incidente in Centrale e
+  avvia l'escalation. Gli allarmi **salva-vita** (SOS, uomo a terra, immobilità, check-in mancato,
+  perdita contatto) non si perdono mai.
+
 <a id="cap1-rapida"></a>
 ### Il tuo lavoro in YW: guida rapida per ruolo
 
@@ -203,7 +224,7 @@ di sicurezza») portano da soli alla voce e alla scheda nuove.
 
 **Pianificatore**
 1. Crea gli **Interventi** e assegnali in **Pianificazione → Agenda tecnici**.
-2. Prepara i **giri di ronda** e i loro orari in **Ronde**.
+2. Prepara i **percorsi di ronda** e i loro orari in **Ronde**.
 3. Pianifica i **turni** in **Pianificazione → Turni**, segui i **Cantieri**.
 
 **Lavoratore**
@@ -253,8 +274,10 @@ I passi dipendono dai moduli attivi:
 | Aggiungi i clienti | i committenti di interventi e commesse | Clienti |
 
 ### La dashboard
-La **Dashboard** mostra riquadri (widget) adatti al tuo ruolo e ai moduli attivi: allarmi aperti,
-interventi, ronde, turni, consuntivi e altro. Il riquadro **Cosa fare adesso** elenca le azioni in
+La **Dashboard** mostra riquadri (widget) secondo i tuoi permessi e i moduli attivi: allarmi aperti,
+dispositivi IoT (in linea, che non comunicano, allarmi aperti), interventi, ronde, turni,
+consuntivi e altro. Un riquadro compare se hai il permesso per quello che mostra: per esempio,
+dando a un ruolo il permesso di vedere la Centrale compare anche il riquadro degli allarmi. Il riquadro **Cosa fare adesso** elenca le azioni in
 sospeso per te (allarmi da prendere in carico, interventi da gestire, turni da confermare, i tuoi
 interventi). Chi ha il permesso «Dashboard · Organizzare» può scegliere, ordinare e
 dimensionare i riquadri per tutta l'azienda con **Organizza**.
@@ -509,6 +532,12 @@ reperibili**, ai **trigger** attivi (SOS, uomo a terra, immobilità, check-in ma
 **check-in** e all'**immobilità**. I dispositivi coperti sono quelli assegnati ai lavoratori del
 profilo.
 
+I lavoratori si aggiungono uno per uno oppure **collegando un gruppo di persone** (riga «Membri dai
+gruppi di persone», **+ collega**): chi entra nel gruppo di persone entra nel profilo, chi ne esce
+ne esce, senza altri passaggi. Queste persone hanno l'indicazione «da «nome del gruppo»» e si tolgono
+dal gruppo di persone o scollegando il gruppo. Una persona ha un solo profilo: se ne ha già un
+altro, resta in quello.
+
 Se il profilo ha un gruppo, gli allarmi di quei lavoratori vanno a quel gruppo, prima di qualunque
 altra regola. Spegnere un trigger nel profilo sopprime davvero quegli allarmi per i suoi
 lavoratori. Il gruppo del profilo vale anche quando il lavoratore usa un badge registrato a nome di
@@ -528,7 +557,10 @@ GPS e badge, IoT o Ronde. Le modifiche valgono subito. La pagina ha sei schede.
 4. se non c'è nessuno, e l'allarme è critico, la **rete di ultima istanza**.
 
 **Scheda Gruppi**
-1. **+ Nuovo gruppo** (es. «Reperibili notte») e aggiungi i membri.
+1. **+ Nuovo gruppo** (es. «Reperibili notte») e aggiungi i membri: uno per uno, oppure collegando
+   uno o più **gruppi di persone** (**+ collega**). Con un gruppo collegato il gruppo di escalation
+   resta sempre allineato: chi entra nel gruppo di persone va in coda alla rotazione, chi ne esce
+   viene tolto. Queste persone hanno il simbolo 👥; quelle aggiunte a mano non vengono mai toccate.
 2. Scegli il **gruppo di default**, che riceve tutto ciò che non ha un routing specifico. Senza,
    un allarme rischia di non arrivare a nessuno.
 3. Reperibilità del gruppo: **tutti insieme** oppure **a turni** (orario, giornaliero,
@@ -560,13 +592,15 @@ aprono un allarme.
   (sensori, dispositivi…). A fine finestra arriva un riepilogo unico. **Termina** la chiude subito.
   I salva-vita passano sempre.
 - **Il mio calendario reperibilità**: link iCal con i tuoi turni per Google o Apple Calendar.
-- Diagnostica del motore di escalation.
 
 **Scheda Recapiti**
 - Per ogni persona il telefono e lo stato di verifica: **invia codice** (arriva un SMS),
-  **inserisci codice**, **prova** (SMS di test). Gli avvisi partono solo verso recapiti verificati.
+  **inserisci codice**, **prova** (SMS di test). Verifica sempre i recapiti: la verifica conferma che il numero è
+  giusto, ma gli avvisi partono anche verso un numero non ancora verificato (meglio un avviso in
+  più che uno perso), quindi un numero sbagliato si scopre solo con la verifica.
 - Recapiti aggiuntivi (SMS, voce, email) e **regole personali**: quale recapito e dopo quanti
-  minuti (es. SMS subito, chiamata dopo 2 minuti).
+  minuti (es. SMS subito, chiamata dopo 2 minuti). Gli avvisi personali continuano fino alla presa
+  in carico, anche se nel frattempo l'escalation è passata al passo successivo.
 - **Opt-out**: chi risponde STOP a un SMS o preme 9 durante una chiamata non riceve più nulla su
   quel recapito. Per riattivarlo risponde START, oppure l'amministratore preme **Riabilita**; poi
   il recapito va verificato di nuovo. Lo stato è segnato in rosso.
@@ -750,14 +784,14 @@ Nella sezione **Oggi · ordini assegnati**:
 Se la rete cade, il testo resta in coda sul telefono («in attesa») e si invia da solo al ritorno.
 
 ### Ronde
-1. Scegli il giro e premi **Avvia ronda**.
+1. Scegli il percorso e premi **Avvia ronda**.
 2. Per ogni punto premi **punzona**:
    - **QR**: si apre la fotocamera con il mirino; inquadra il codice;
    - **NFC**: avvicina il telefono al tag (Android con Chrome);
    - **GPS**: basta essere vicini al punto;
    - **beacon**: inserisci il codice.
 3. Se lo scanner non funziona puoi **digitare il codice** scritto sul punto (**Annulla / digita**).
-   Vale, ma viene segnalato come «codice digitato a mano». Sui giri «solo scansione» non è
+   Vale, ma viene segnalato come «codice digitato a mano». Sui percorsi «solo scansione» non è
    possibile.
 4. **Chiudi ronda**: completata se tutti i punti sono a posto entro il tempo previsto, altrimenti
    incompleta.
@@ -819,6 +853,13 @@ Gli **scenari IoT** (16 ambienti predefiniti, come energia, catena del freddo, S
 superadmin. Ogni scenario attivo aggiunge un cruscotto nel gruppo **IoT Dashboard**, con i
 dispositivi dimostrativi e i sensori reali collegati allo scenario.
 
+I **dati demo** arrivano come la telemetria di un sensore vero: finiscono nello storico, fanno
+scattare le regole sensori e aprono gli **alert IoT**; aprono un allarme in Centrale solo se
+l'azienda ha anche la sicurezza lavoratore. Servono il modulo IoT e i dispositivi demo dello
+scenario. Comandi come **l'aerazione di un silo** sono comandi veri, registrati tra i comandi del
+dispositivo: un dispositivo reale li riceve e risponde con il nuovo stato; un dispositivo demo li
+esegue subito.
+
 ---
 
 <a id="cap6"></a>
@@ -860,8 +901,12 @@ checklist, materiali, esito, report e allegati (foto, documenti, firma). Un inte
   contatti). Una richiesta si **converte in intervento** (bozza) una sola volta; una richiesta
   chiusa non si converte.
 - **Contratti**: contratti con i clienti (SLA di risposta in ore, monte ore, inizio e fine, stato)
-  e **piani di manutenzione ricorrente** (ogni N giorni). **Genera ora** crea l'intervento alla
-  data prevista e sposta avanti la prossima scadenza.
+  e **piani di manutenzione ricorrente** (ogni N giorni). Un piano **crea da solo l'intervento**
+  (in bozza, alle 9:00 del giorno previsto, ora dell'azienda) qualche giorno prima della scadenza
+  (**quanti giorni prima**, di solito 7) e sposta avanti la data; togliendo **Crea l'intervento da
+  solo** il piano resta manuale. **Genera ora** crea subito l'intervento della prossima scadenza.
+  Se un piano è rimasto indietro (scadenze già passate) si crea un solo intervento e la prossima
+  data passa alla prima scadenza futura.
 
 <a id="cap6-listino"></a>
 ### Listino
@@ -895,7 +940,9 @@ La scheda della commessa ha quattro schede:
 - **Persone**: **squadre assegnate** (gruppi di persone di tipo squadra), **presenze**, turni
   collegati;
 - **Economia**: budget, costi, **SAL** e **fatture** (solo per chi vede i costi);
-- **Diario & Documenti**.
+- **Diario & Documenti**: il **giornale di cantiere** (nota con data, meteo e numero di presenti)
+  e i documenti. Il giornale fa parte dell'unico diario di YW: le note compaiono anche nelle Note di
+  lavoro e sono incluse nell'export e nell'anonimizzazione della privacy.
 
 **Presenze (timbrature)**
 - **Timbra entrata** / **Timbra uscita** dalla scheda del cantiere.
@@ -914,12 +961,13 @@ La scheda della commessa ha quattro schede:
 <a id="cap6-ronde"></a>
 ### Ronde e cruscotto vigilanza
 
-Menu **Lavoro sul campo → Ronde** (modulo Ronde e punzonature). Un **giro** è una sequenza
-ordinata di **punti di controllo**; la guardia esegue una **ronda** e **punzona** ogni punto.
+Menu **Lavoro sul campo → Ronde** (modulo Ronde e punzonature). Un **percorso di ronda** è una
+sequenza ordinata di **punti di controllo**; la guardia esegue una **ronda** (un passaggio sul
+percorso) e **punzona** ogni punto.
 
-**Preparare un giro** (pianificatore)
-1. Crea il giro: nome, **sede** (serve per il fuso orario e per la sede dell'allarme), finestra
-   in minuti per completarlo, se ammettere il **codice digitato a mano**, eventuale **gruppo**
+**Preparare un percorso di ronda** (pianificatore)
+1. Crea il percorso: nome, **sede** (serve per il fuso orario e per la sede dell'allarme), durata
+   massima della ronda in minuti, se ammettere il **codice digitato a mano**, eventuale **gruppo**
    assegnato (solo i membri lo vedono e lo avviano).
 2. Aggiungi i punti:
 
@@ -930,7 +978,7 @@ ordinata di **punti di controllo**; la guardia esegue una **ronda** e **punzona*
 | **beacon** | l'identificativo del beacon (obbligatorio) |
 | **GPS** | la posizione è entro il raggio dal punto |
 
-Un punto esistente si può riusare in un altro giro. Un codice troppo corto produce un avviso.
+Un punto esistente si può riusare in un altro percorso. Un codice troppo corto produce un avviso.
 
 **Regole che rendono affidabili le punzonature**
 - La guardia non vede mai il codice atteso.
@@ -940,13 +988,13 @@ Un punto esistente si può riusare in un altro giro. Un codice troppo corto prod
 - Punzona solo chi esegue la ronda; il pianificatore vede e chiude le ronde altrui ma non punzona
   per altri.
 - Un tentativo fallito non cancella una punzonatura riuscita.
-- Una sola ronda in corso per giro. Una ronda mai chiusa viene chiusa dal sistema come
-  **abbandonata** (con anomalia) e il giro torna avviabile.
+- Una sola ronda in corso per percorso. Una ronda mai chiusa viene chiusa dal sistema come
+  **abbandonata** (con anomalia) e il percorso torna avviabile.
 
 Un QR fotografato può essere riscansionato altrove: la distanza registrata lo rende visibile. Per i
 punti critici usa NFC o punti GPS.
 
-**Ronde pianificate e ronda mancata.** Gli orari dei piani sono nell'ora locale della sede del giro
+**Ronde pianificate e ronda mancata.** Gli orari dei piani sono nell'ora locale della sede del percorso
 (o dell'azienda: il fuso si imposta in **Sedi e asset**). Se all'orario previsto nessuno avvia la
 ronda, si apre l'allarme **Ronda mancata** in Centrale, con escalation ai reperibili. Non è
 salva-vita: la manutenzione lo sospende. Creare o riattivare un piano non genera allarmi arretrati.
@@ -1038,9 +1086,14 @@ Menu **Configurazione → Persone e permessi** (amministratore o permesso «Ammi
 ruoli»).
 
 **Utenti**
-- **Invita utente**: email, ruolo, password iniziale. Oltre la licenza compare un avviso (le
-  licenze sono indicative: nulla viene bloccato).
-- Scheda della persona: ruolo, nuova password, **telefono** (formato internazionale, serve per SMS
+- **Invita utente**: email e ruolo. La persona riceve un **link di accesso monouso** (valido 7
+  giorni) e sceglie lei la propria password (almeno 10 caratteri). Se l'invio email è configurato
+  il link parte per email, altrimenti compare da copiare e consegnare. Oltre la licenza compare un
+  avviso (le licenze sono indicative: nulla viene bloccato).
+- **Cambia password**: ognuno la cambia dal proprio profilo (in basso nel menu), indicando quella
+  attuale; le sue altre sessioni aperte si chiudono.
+- Scheda della persona: ruolo, **Nuovo link di accesso** (primo accesso non ancora fatto o password
+  dimenticata: il link precedente smette di valere), **telefono** (formato internazionale, serve per SMS
   e chiamate) e, per operatori, lavoratori e reperibili, le **sedi visibili** (vuoto = tutte).
 - Il telefono dei colleghi lo vede solo chi gestisce persone, allarmi o pianificazione. Chi non
   coordina nessuno vede solo sé stesso nell'elenco.
@@ -1048,8 +1101,8 @@ ruoli»).
 
 **Gruppi di persone**: insiemi di persone riusabili ovunque (squadre, reparti, zone, turni). Un
 gruppo ha nome e **tipo**; le **squadre** sono gruppi di tipo «squadra». Si usano per assegnare
-interventi, giri di ronda e cantieri, per i ruoli personalizzati e, con **Importa in gruppo
-allarme**, per popolare un gruppo di reperibilità (la copia non si svuota se elimini il gruppo di
+interventi, percorsi di ronda e cantieri, per i ruoli personalizzati e, con **Importa in gruppo
+di escalation**, per copiarne i membri in un gruppo di escalation (la copia non si svuota se elimini il gruppo di
 partenza).
 
 **Ruoli personalizzati**: pacchetti di permessi con un nome (es. «DPO» con solo Privacy e Audit),
@@ -1070,6 +1123,7 @@ all'origine.
 | Interventi · Vedere tutti | tutti gli interventi delle proprie sedi |
 | Costi · Vedere | budget, costi, SAL, fatture, prezzi dei materiali |
 | Configurazione · Sola lettura | impostazioni e diagnostica senza modificarle |
+| Lavoro personale | i propri interventi, consuntivi, ronde e turni nella dashboard |
 | Amministrazione · Utenti e ruoli | persone, gruppi, permessi, ruoli, sedi, asset |
 | Amministrazione · Dispositivi | censimento, chiavi, onboarding, aree, piantine |
 | IoT · Regole e sensori | regole sensori, monitoraggio e alert IoT |
@@ -1164,8 +1218,8 @@ nell'app del lavoratore. Scrivi cosa ti serve; l'agente legge i dati e propone l
 <a id="cap9"></a>
 ## 9. Superadmin
 
-La console superadmin gestisce tutte le aziende della piattaforma. Ha quattro schede:
-**Panoramica**, **Tenant**, **Sistema**, **Scenari IoT**.
+La console superadmin gestisce tutte le aziende della piattaforma. Ha cinque schede:
+**Panoramica**, **Tenant**, **Sistema**, **Scenari IoT**, **Cataloghi**.
 
 ### Accesso e verifica in due passaggi
 - Ogni account superadmin usa **password e codice** di un'app di autenticazione (verifica in due
@@ -1244,6 +1298,19 @@ Catalogo degli ambienti IoT (16 predefiniti): crea, modifica, disattiva o elimin
 predefinito si disattiva ma non si elimina; uno attivo su qualche azienda non si elimina; le
 modifiche valgono per le nuove attivazioni (per aggiornare un'azienda si riapplica lo scenario).
 Rimuovendo uno scenario da un'azienda si elimina solo la sua sede demo, se vuota.
+
+### Cataloghi
+- **Pacchetti**: i gruppi di moduli proposti quando crei un'azienda (Sicurezza lavoratore, Lavoro
+  sul campo, IoT, Completo e quelli che aggiungi). Per ogni pacchetto scegli nome, descrizione e
+  moduli; i moduli di cui questi hanno bisogno si attivano da soli. Un pacchetto disattivato non
+  compare più nella creazione delle aziende. I predefiniti non si eliminano. Cambiare un pacchetto
+  non tocca le aziende già create.
+- **Tipi di evento**: nome, famiglia e spiegazione di ogni tipo di evento (SOS, uomo a terra,
+  dispositivo offline, ingresso in area…), uguali in Centrale, mappe, report, messaggi di allarme e
+  regole di tutte le aziende. La **famiglia** raggruppa le varianti: per esempio «Dispositivo che
+  non comunica» comprende dispositivo offline, perdita contatto, segnale periodico assente e
+  dispositivo inattivo. La colonna **Gestione** dice se il tipo è un evento, un allarme critico o
+  un allarme salva-vita: lo decide il prodotto e non si modifica da qui.
 
 ---
 

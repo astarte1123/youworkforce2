@@ -14,6 +14,7 @@ mod mqtt; // broker MQTT nativo (IoT): ingest telemetria + downlink comandi su T
 mod dashboard; // servizio core: dashboard unica configurabile (widget + layout per-tenant)
 mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
 mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
+mod catalogs; // cataloghi di prodotto nel DB gestiti dal superadmin: tipi di evento (SL-15), pacchetti (SA-10)
 mod sites; // servizio core: sedi e asset/mezzi condivisi
 mod iam; // servizio core: permessi (capability) e ruoli personalizzati
 mod users; // servizio core: identità/utenti (CRUD anagrafica + ACL sedi); login/sessione restano in api.rs
@@ -114,7 +115,11 @@ fn superadmin_routes() -> Router<AppState> {
         .route("/api/superadmin/tenants/:id/modules", post(api::set_module).get(api::super_list_modules))
         .route("/api/superadmin/tenants/:id/ai", get(api::super_get_ai).post(api::super_set_ai))
         .route("/api/superadmin/tenants/:id/ai/verify", post(api::ai_verify))
-        .route("/api/superadmin/plans", get(api::super_plans_list))
+        .route("/api/superadmin/plans", get(api::super_plans_list).post(api::super_plan_create))
+        .route("/api/superadmin/plans/:code", axum::routing::put(api::super_plan_update).delete(api::super_plan_delete))
+        .route("/api/superadmin/modules-catalog", get(api::super_modules_catalog))
+        .route("/api/superadmin/event-types", get(api::super_event_types))
+        .route("/api/superadmin/event-types/:code", axum::routing::put(api::super_event_type_set))
         .route("/api/superadmin/system", get(api::super_system))
         .route("/api/superadmin/system/alerts", get(api::super_system_alerts))
         .route("/api/superadmin/secrets", get(api::super_secrets_get))
@@ -168,6 +173,8 @@ fn extra_routes() -> Router<AppState> {
         .route("/api/safety/profiles", get(api::protection_profiles_list).post(api::protection_profile_create))
         .route("/api/safety/profiles/:id", axum::routing::put(api::protection_profile_update).delete(api::protection_profile_delete))
         .route("/api/safety/profiles/:id/members", post(api::protection_profile_member_add))
+        .route("/api/safety/profiles/:id/sources", post(api::profile_source_add))
+        .route("/api/safety/profiles/:id/sources/:ug", axum::routing::delete(api::profile_source_del))
         .route("/api/safety/profiles/:id/members/:uid", axum::routing::delete(api::protection_profile_member_del))
         // FASE 3 cutover: lettura motore (admin) + set/rollback (superadmin)
         // ack inbound Twilio (firma validata; CSRF-exempt come /api/ingress/*)
@@ -236,6 +243,7 @@ async fn run() -> anyhow::Result<()> {
     // Chiave dei segreti dal DB (sigillata dal server); prima volta: generata. Poi migrazione.
     api::secrets_init(&st).await;
     api::load_delivery_channels(&st).await; // SA-11
+    catalogs::load_event_types(&st.owner_pool).await; // SL-15
     if st.secrets.enabled() {
         if let Err(e) = crypto_migrate(&st).await { tracing::warn!("crypto migrate: {e}"); }
         tracing::info!("cifratura dei segreti attiva (chiave {:?}, {})", st.secrets.active_id(), crypto::seal_method());
@@ -301,6 +309,8 @@ async fn run() -> anyhow::Result<()> {
         // tenant plane
         .route("/api/invite/check", get(api::check_invite))
         .route("/api/invite/accept", post(api::accept_invite))
+        .route("/api/users/:id/invite", post(users::user_invite))
+        .route("/api/me/password", post(users::change_own_password))
         .route("/api/login", post(api::tenant_login))
         .route("/api/me", get(api::me))
         .route("/api/logout", post(api::logout))
@@ -348,6 +358,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/devices/:id/test-sos", post(api::device_test_sos))
         .route("/api/devices/:id/gprs-command", post(api::device_gprs_command))
         .route("/api/catalog/devices", get(api::list_catalog))
+        .route("/api/event-types", get(api::event_types_public))
         .route("/api/catalog/facets", get(api::catalog_facets))
         .route("/api/assets", get(sites::list_assets).post(sites::create_asset))
         .route("/api/assets/:id", post(sites::update_asset).delete(sites::delete_asset))
@@ -356,6 +367,8 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/groups/:id", axum::routing::delete(api::delete_group))
         .route("/api/groups/:id/members", post(api::add_group_member))
         .route("/api/groups/:id/members/import", post(api::alarm_group_import_members))
+        .route("/api/groups/:id/sources", post(api::alarm_group_source_add))
+        .route("/api/groups/:id/sources/:ug", axum::routing::delete(api::alarm_group_source_del))
         .route("/api/groups/:id/oncall", post(api::set_group_oncall))
         .route("/api/groups/:id/policy", get(api::group_policy_get).post(api::group_policy_set))
         .route("/api/groups/:id/rotation/set-active", post(api::rotation_set_active))
@@ -578,6 +591,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/stream", get(api::stream))
         .route("/api/_test/advance", post(api::test_advance))
         .route("/api/_test/iot-watchdog", post(api::test_iot_watchdog))
+        .route("/api/_test/maintenance-autogen", post(api::test_maintenance_autogen))
         .route("/api/_test/gps-silence-watchdog", post(api::test_gps_silence_watchdog))
         .layer(axum::middleware::from_fn(api::csrf_guard))
         .layer(axum::middleware::from_fn(api::client_ip_mw)) // IP client dal peer TCP (anti-spoof XFF, SA-4)

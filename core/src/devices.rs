@@ -56,7 +56,7 @@ pub async fn ingest_event(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
         }
     }
 
-    persist_ingest(&st, tid, Normalized {
+    persist_ingest(&st, tid, Normalized { device_id: None,
         source,
         source_event: b.source_event.clone(),
         idem,
@@ -73,6 +73,8 @@ pub async fn ingest_event(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
 /// A source-neutral normalized ingress. Every machine source (direct badge HTTP,
 /// JSON HTTP, Teltonika, OsmAnd, …) maps onto this shape so the SOS chain stays single-path.
 pub struct Normalized {
+    /// dispositivo già risolto dal chiamante (ha la precedenza su sorgente + identificativo esterno)
+    pub device_id: Option<Uuid>,
     pub source: String,
     pub source_event: String,
     pub idem: String,
@@ -194,7 +196,10 @@ pub(crate) async fn persist_ingest_inner(st: &AppState, tid: Uuid, n: Normalized
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
 
     // resolve device/site within tenant (optional)
-    let device_id: Option<Uuid> = if let Some(ext) = &n.device_external_id {
+    let device_id: Option<Uuid> = if let Some(did) = n.device_id {
+        // RLS della transazione: un id di un'altra azienda non viene trovato
+        sqlx::query_scalar("SELECT id FROM app.devices WHERE id=$1").bind(did).fetch_optional(&mut *tx).await.map_err(ise)?
+    } else if let Some(ext) = &n.device_external_id {
         sqlx::query_scalar("SELECT id FROM app.devices WHERE source=$1 AND external_id=$2")
             .bind(&n.source).bind(ext).fetch_optional(&mut *tx).await.map_err(ise)?
     } else { None };
@@ -350,7 +355,7 @@ pub async fn ingest_gps_event(
     let (lat, lon) = if indoor { if let Some((a,o)) = anchor { (Some(a), Some(o)) } else { (lat, lon) } } else { (lat, lon) };
 
     let source_event = format!("gps-evt-{}", evt_id);
-    persist_ingest(&st, tid, Normalized {
+    persist_ingest(&st, tid, Normalized { device_id: None,
         source,
         source_event: source_event.clone(),
         idem: source_event.clone(),
@@ -565,6 +570,7 @@ pub struct GeofenceReq { pub name: String, pub kind: String, pub geom: Value, pu
     #[serde(default)] pub alert_on: Option<String> }
 pub async fn create_geofence(State(st): State<AppState>, h: HeaderMap, Json(b): Json<GeofenceReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     // indoor (geom in coordinate immagine): cerchio={cx,cy,radius}, poligono={points}
@@ -800,7 +806,12 @@ pub(crate) fn text_response(body: String, filename: &str) -> Response {
 // Quando il tenant ha un modulo che genera allarmi (loneworker/gps), il report
 // principale e' quello degli ALLARMI/incidenti, non percorsi/soste/presenze.
 // Descrizioni leggibili per ogni tipo di allarme (DVR, operatori non tecnici).
-pub fn etype_label(e: &str) -> &'static str {
+/// SL-15: il nome viene dal catalogo nel DB (app.event_types, modificabile dal superadmin);
+/// questi sono i nomi predefiniti, usati se il catalogo non è caricato o il codice non c'è.
+pub fn etype_label(e: &str) -> String {
+    crate::catalogs::event_label(e).unwrap_or_else(|| builtin_etype_label(e).to_string())
+}
+pub fn builtin_etype_label(e: &str) -> &'static str {
     match e {
         "sos" => "SOS / richiesta soccorso",
         "man_down" => "Uomo a terra (man down)",
@@ -914,7 +925,7 @@ pub async fn report_alarms_csv(State(st): State<AppState>, h: HeaderMap,
     for r in &rows {
         csv.push_str(&format!("{},{},{},{},{},{},{},{},{},{},{}\n",
             r.opened_at.to_rfc3339(),
-            csv_esc(&r.etype), csv_esc(etype_label(&r.etype)),
+            csv_esc(&r.etype), csv_esc(&etype_label(&r.etype)),
             csv_esc(&r.state), r.priority,
             r.ack_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
             r.response_s().map(|x| x.to_string()).unwrap_or_default(),
@@ -1021,6 +1032,7 @@ pub struct BeaconReq {
 }
 pub async fn list_beacons(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     if !has_cap(&s,"incidents.view") {
         return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato"));
     }
@@ -1044,6 +1056,7 @@ pub async fn list_beacons(State(st): State<AppState>, h: HeaderMap) -> R {
 }
 pub async fn save_beacon(State(st): State<AppState>, h: HeaderMap, Json(b): Json<BeaconReq>) -> R {
     let s = require_tenant(&st, &h).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     require_cap(&s, "devices.admin")?; // TA-4: permesso, non nome del ruolo
     if b.beacon_uid.trim().is_empty() || b.zone_name.trim().is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "beacon_uid e zona richiesti"));
@@ -1082,6 +1095,7 @@ pub async fn delete_beacon(State(st): State<AppState>, h: HeaderMap, Path(id): P
 // ============ Piantine indoor — upload immagine + CRUD ============
 pub async fn list_floorplans(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     if !has_cap(&s,"incidents.view") {
         return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato"));
     }
@@ -1104,6 +1118,7 @@ pub async fn create_floorplan(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>,
     body: axum::body::Bytes) -> R {
     let s = require_tenant(&st, &h).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     require_cap(&s, "devices.admin")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     let name = q.get("name").map(|x| x.trim().to_string()).filter(|x| !x.is_empty())
@@ -1127,6 +1142,7 @@ pub async fn create_floorplan(State(st): State<AppState>, h: HeaderMap,
 pub async fn get_floorplan_image(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>)
     -> Result<Response,(StatusCode,String)> {
     let s = require_tenant(&st, &h).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("SELECT image,content_type FROM app.floorplans WHERE id=$1")
@@ -1141,6 +1157,7 @@ pub struct FloorplanPatch { pub name: Option<String>, pub site_id: Option<Uuid> 
 /// Rinomina / riassegna sede di una piantina (l'immagine resta). tenant_admin.
 pub async fn update_floorplan(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<FloorplanPatch>) -> R {
     let s = require_tenant(&st, &h).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     require_cap(&s, "devices.admin")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     let name = b.name.map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
@@ -1153,6 +1170,7 @@ pub async fn update_floorplan(State(st): State<AppState>, h: HeaderMap, Path(id)
 }
 pub async fn delete_floorplan(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     require_cap(&s, "devices.admin")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -1166,6 +1184,7 @@ pub async fn delete_floorplan(State(st): State<AppState>, h: HeaderMap, Path(id)
 /// Serve a mostrare sulla mappa indoor i device che si trovano al chiuso (senza GPS).
 pub async fn floorplan_devices(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; report_role(&s)?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     let tid = s.tenant_id.unwrap();
     let acl = allowed_sites(&st, &s).await;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -1198,6 +1217,7 @@ pub struct BeaconPlace { pub floorplan_id: Option<Uuid>, pub x: Option<f64>, pub
 /// Non crea beacon: aggiorna solo la posizione di uno esistente del tenant. tenant_admin.
 pub async fn place_beacon(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<BeaconPlace>) -> R {
     let s = require_tenant(&st, &h).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     require_cap(&s, "devices.admin")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -1211,6 +1231,7 @@ pub async fn place_beacon(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
 // Posiziona (o rimuove: floorplan_id=null) un DISPOSITIVO del tenant su una piantina, in pixel.
 pub async fn place_device(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<BeaconPlace>) -> R {
     let s = require_tenant(&st, &h).await?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     require_cap(&s, "devices.admin")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -1328,7 +1349,7 @@ pub async fn ingest_osmand(
             None => format!("osmand-evt-{}", Uuid::new_v4()),
         };
         let payload = json!({"channel":"osmand","alarm":al,"lat":lat,"lon":lon,"battery":battery,"occurred_at":ts_rfc});
-        let r = persist_ingest(&st, tid, Normalized{
+        let r = persist_ingest(&st, tid, Normalized{ device_id: None,
             source: dev_source.clone(), source_event: src_evt.clone(), idem: src_evt,
             etype, device_external_id: Some(ext.clone()), site_name:None,
             lat, lon, accuracy_m: accuracy, correlation: corr, payload,
@@ -1492,7 +1513,13 @@ pub async fn any_device_module(st: &AppState, tid: Uuid) -> bool {
 pub async fn teltonika_ingest_one(st: &AppState, tid: Uuid, ext: &str, source: &str, ts_rfc: &str,
     lat: f64, lon: f64, speed: Option<f64>, course: Option<f64>, battery: Option<f64>, alarm: Option<String>,
     io_attrs: Value) {
-    if source == "gps" {
+    // SL-16: 0,0 = nessun fix GPS (il badge lo manda senza satelliti): non è una posizione
+    let fix = !(lat == 0.0 && lon == 0.0);
+    if source == "gps" && !fix {
+        // niente posizione né controlli di area; il contatto è già registrato (touch_device_seen)
+        tracing::debug!("teltonika {ext}: record senza fix GPS, posizione ignorata");
+    }
+    if source == "gps" && fix {
         let prev_batt = device_last_battery(st, tid, source, ext).await;
         if alarm.is_none() { gps_battery_check(st, tid, source, ext, prev_batt, battery, Some(lat), Some(lon), Some(ts_rfc)).await; }
         let mut attrs = match io_attrs { Value::Object(m) => m, _ => serde_json::Map::new() };
@@ -1510,11 +1537,11 @@ pub async fn teltonika_ingest_one(st: &AppState, tid: Uuid, ext: &str, source: &
         // dispositivo e tipo fa confluire le pressioni ripetute nell'incidente ancora aperto.
         let src_evt = format!("telt-evt-{ext}-{ts_rfc}-{al}");
         let corr = format!("telt-{ext}-{etype}");
-        let _ = persist_ingest(st, tid, Normalized{
+        let _ = persist_ingest(st, tid, Normalized{ device_id: None,
             source: source.into(), source_event: src_evt.clone(), idem: src_evt, etype,
             device_external_id: Some(ext.into()), site_name: None,
-            lat: Some(lat), lon: Some(lon), accuracy_m: None, correlation: corr,
-            payload: json!({"channel":"teltonika","alarm":al,"lat":lat,"lon":lon,"battery":battery,"occurred_at":ts_rfc}),
+            lat: fix.then_some(lat), lon: fix.then_some(lon), accuracy_m: None, correlation: corr,
+            payload: json!({"channel":"teltonika","alarm":al,"lat":fix.then_some(lat),"lon":fix.then_some(lon),"no_fix":!fix,"battery":battery,"occurred_at":ts_rfc}),
             indoor: false, beacon_uid: None, zone: None }).await;
     }
 }
@@ -1573,7 +1600,7 @@ pub async fn gps_battery_check(st: &AppState, tid: Uuid, source: &str, ext: &str
     if etype == "device_event" || etype == "ignore" { return; }
     let corr = format!("batt-{ext}");
     let ev = format!("batt-{ext}-{}", ts.map(|x| x.to_string()).unwrap_or_else(|| st.clock.now().timestamp_millis().to_string()));
-    let _ = persist_ingest(st, tid, Normalized{
+    let _ = persist_ingest(st, tid, Normalized{ device_id: None,
         source: source.into(), source_event: ev.clone(), idem: ev, etype,
         device_external_id: Some(ext.into()), site_name: None, lat, lon, accuracy_m: None, correlation: corr,
         payload: json!({"channel":"batteria","battery":b,"soglia":min,"occurred_at":ts}),
@@ -1800,7 +1827,7 @@ pub async fn geofence_crossing_alarm(st: &AppState, tid: Uuid, gid: Uuid, dev_id
         // l'incidente è aperto, gli attraversamenti ripetuti al confine confluiscono in quello
         let corr = format!("gf-{gid}-{dev_id}-{dir}-{et}");
         let ev = format!("{corr}-{}", at.timestamp_millis());
-        let _ = persist_ingest(st, tid, Normalized{
+        let _ = persist_ingest(st, tid, Normalized{ device_id: None,
             source: source.clone(), source_event: ev.clone(), idem: ev, etype: et,
             device_external_id: Some(ext.clone()), site_name: None,
             lat, lon, accuracy_m: None, correlation: corr,
@@ -1910,6 +1937,7 @@ pub struct DeviceReq { pub external_id: String, pub source: String, pub label: O
     pub site_id: Option<Uuid>, pub assigned_user: Option<Uuid>, pub enabled: Option<bool>, pub config: Option<Value> }
 pub async fn create_device(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DeviceReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     let tid = s.tenant_id.unwrap();
     if b.external_id.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "external_id richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -1927,6 +1955,7 @@ pub async fn create_device(State(st): State<AppState>, h: HeaderMap, Json(b): Js
 }
 pub async fn update_device(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<DeviceReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let old: Option<Uuid> = sqlx::query_scalar("SELECT assigned_user FROM app.devices WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.flatten();
@@ -1950,6 +1979,7 @@ pub async fn update_device(State(st): State<AppState>, h: HeaderMap, Path(id): P
 }
 pub async fn delete_device(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // Elimina in modo completo: telemetria/attributi/comandi/posizioni/presenze/geofence/
@@ -2120,7 +2150,8 @@ pub async fn list_catalog(State(st): State<AppState>, h: HeaderMap,
 }
 pub async fn catalog_facets(State(st): State<AppState>, h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
-    let _ = require_tenant(&st, &h).await?;
+    let s_ = require_tenant(&st, &h).await?;
+    require_any_module(&st, s_.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     // facets coerenti col perimetro; il bucket 'altro' (catalogo GPS generico) è sempre escluso dai filtri
     // per non proporre centinaia di produttori-rumore (resta comunque cercabile per testo).
     let scope = q.get("scope").filter(|s| !s.is_empty()).cloned();
@@ -2145,6 +2176,7 @@ pub async fn catalog_facets(State(st): State<AppState>, h: HeaderMap,
 pub struct AssignReq2 { pub user_id: Option<Uuid>, pub asset_id: Option<Uuid> }
 pub async fn assign_device(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<AssignReq2>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     if b.user_id.is_some() && b.asset_id.is_some() { return Err(err(StatusCode::BAD_REQUEST, "assegna a utente OPPURE asset, non entrambi")); }
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -2199,6 +2231,7 @@ pub struct DokReq {
 }
 pub async fn device_onboarding_kit(State(st): State<AppState>, h: HeaderMap, Json(b): Json<DokReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     let tid = s.tenant_id.unwrap();
     dok_build(&st, tid, &s.email, b).await.map(Json)
 }
@@ -2363,6 +2396,7 @@ pub async fn dok_build(st: &AppState, tid: Uuid, actor: &str, b: DokReq) -> Resu
 /// verificato (abbiamo mai ricevuto quel segnale). Stati: registrazione · assegnazione · connessione · protezione.
 pub async fn device_readiness(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "devices.admin")?;
+    require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("devices")).await?; // AR-4: servizio abilitato dai moduli
     let tid = s.tenant_id.unwrap();
     device_readiness_value(&st, tid, id).await.map(Json)
 }
@@ -2417,7 +2451,7 @@ pub async fn device_test_sos(State(st): State<AppState>, h: HeaderMap, Path(id):
     let Some(ext) = ext else { return Err(err(StatusCode::NOT_FOUND, "device inesistente")); };
     let corr = format!("TEST-SOS-{}", &Uuid::new_v4().to_string()[..8]);
     let src_evt = format!("test-sos-{}", Uuid::new_v4());
-    let r = persist_ingest(&st, tid, Normalized{
+    let r = persist_ingest(&st, tid, Normalized{ device_id: None,
         source:"gps".into(), source_event: src_evt.clone(), idem: src_evt,
         etype:"sos".into(), device_external_id: Some(ext.clone()),
         site_name:None, lat:None, lon:None, accuracy_m:None, correlation: corr.clone(),

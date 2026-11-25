@@ -27,7 +27,7 @@ AC=$(awk '$6=="yw_csrf"{print $7}' "$J/a" | tail -1)
 A(){ curl -s -b "$J/a" -H "x-tenant-slug: $SLUG" -H "x-csrf-token: $AC" -H 'content-type: application/json' "$@"; }
 
 EM="mario.rossi.$R@$SLUG.test"; PH="+39333$R"
-UID1=$(A -X POST "$BASE/api/users" -d "{\"email\":\"$EM\",\"role\":\"reperibile\",\"password\":\"Pass$R\"}" | python -c "import sys,json;print(json.load(sys.stdin)['id'])")
+UID1=$(A -X POST "$BASE/api/users" -d "{\"email\":\"$EM\",\"role\":\"reperibile\",\"password\":\"Passw0rd$R\"}" | python -c "import sys,json;print(json.load(sys.stdin)['id'])")
 A -X POST "$BASE/api/users/$UID1" -d "{\"phone\":\"$PH\"}" >/dev/null
 docker exec -i ywdb psql -U postgres -d youworkforce -v ON_ERROR_STOP=1 -q >/dev/null <<SQL
 INSERT INTO app.user_contact_methods(tenant_id,user_id,kind,value) VALUES('$TID','$UID1','email','$EM');

@@ -1,0 +1,24 @@
+> **DOCUMENTO STORICO — non descrive il prodotto attuale.** Il motore esterno YWAlert (GoAlert)
+> è stato **ritirato**: i connettori esterni sono stati rimossi con la migrazione
+> `0125_remove_external_connectors.sql`, non esiste più la scelta «Motore escalation = YWAlert» né
+> il provisioning, e non c'è alcun rollback verso un motore esterno. L'escalation è solo quella
+> **nativa**: vedi [escalation-manuale.md](../escalation-manuale.md).
+
+# Reperibilità e notifiche (YWAlert) — SPOSTATO
+
+> **Questo manuale è superato.** Dalla razionalizzazione Worker Safety il motore di escalation è
+> **nativo** di YouWorkforce (default) e YWAlert resta solo come **rete di sicurezza / rollback**.
+>
+> La guida aggiornata è in **[escalation-manuale.md](../escalation-manuale.md)**: copre motore nativo,
+> policy multi-step, rotazioni (incl. mensile) e pianificazioni temporanee, recapiti e regole di
+> notifica per-utente, dedup, manutenzione con riepilogo, label/ricerca, calendario iCal dai turni
+> calcolati, e il disaccoppiamento dal modulo (l'escalation serve anche IoT/dispositivi GPS).
+
+## YWAlert come rollback (riferimento rapido)
+
+- **Provisiona YWAlert** (superadmin → Connessioni & integrazioni): crea servizio, escalation policy,
+  chiave e heartbeat per il tenant. Necessario solo se si vuole usare YWAlert come motore.
+- **Motore escalation = YWAlert** (superadmin → scheda tenant): rimette YWAlert come motore al posto
+  del nativo. Da usare solo per tornare indietro.
+- Quando il motore è nativo, YWAlert (se provisionato) viene mantenuto allineato in *best-effort* e
+  usato per il confronto di parità (report shadow), ma non è richiesto perché l'escalation funzioni.

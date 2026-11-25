@@ -3,7 +3,7 @@
 Ogni tenant riceve dal superadmin un sottoinsieme di moduli (`tenant_modules.state='attivo'`). I due
 perimetri di prodotto devono funzionare **da soli** e **insieme**:
 
-- **Sicurezza lavoratore** — `loneworker` (centrale, check-in, SOS, escalation YWAlert nativa) +
+- **Sicurezza lavoratore** — `loneworker` (centrale, check-in, SOS, escalation nativa) +
   sorgenti `gps`/`iot`.
 - **Lavoro sul campo** — `interventi` (ordini), `giri` (ronde), `consuntivi`, `workforce` (turni).
 
@@ -31,6 +31,8 @@ perimetri di prodotto devono funzionare **da soli** e **insieme**:
   | Immobilità | loneworker, gps |
   | Ronde mancate | giri |
   | Squadre / piani dei turni | workforce, cantieri / workforce |
+  | Dispositivi, piantine, beacon, aree (AR-4) | loneworker, gps, iot, giri, interventi, cantieri, workforce |
+  | Turno nell'app | workforce |
 
   Senza nessuno dei moduli l'SOS dall'app è **rifiutato** con «chiama subito i soccorsi»: prima
   veniva accettato anche se nessuno poteva vederlo. Un unit test verifica che ogni modulo citato

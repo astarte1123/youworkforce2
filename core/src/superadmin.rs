@@ -94,18 +94,7 @@ pub struct CreateTenant { pub slug: String, pub name: String, pub admin_email: S
     pub brand_primary: Option<String>, pub brand_ink: Option<String>, pub brand_soft: Option<String>, pub brand_accent: Option<String> }
 /// Pacchetti/piano: preset di moduli da attivare in un colpo alla creazione del tenant.
 /// Catalogo definito nel codice (come gli scenari), esposto via API; l'UI lo consuma.
-pub struct Plan { pub code: &'static str, pub name: &'static str, pub desc: &'static str, pub modules: &'static [&'static str] }
-pub fn plan_catalog() -> Vec<Plan> { vec![
-    Plan{ code:"sicurezza", name:"Sicurezza lavoratore", desc:"SOS / uomo a terra / reperibilità (Lone Worker).", modules:&["loneworker"] },
-    Plan{ code:"campo", name:"Lavoro sul campo", desc:"Interventi, cantieri, ronde, consuntivi, turni.", modules:&["interventi","cantieri","giri","consuntivi","workforce"] },
-    Plan{ code:"iot", name:"IoT", desc:"Sensori, telemetria, soglie→incidenti, cruscotti.", modules:&["iot"] },
-    Plan{ code:"full", name:"Completo", desc:"Tutti i moduli + assistente AI.", modules:&["loneworker","gps","interventi","cantieri","giri","consuntivi","workforce","iot","assistant"] },
-]}
-pub async fn super_plans_list(State(st): State<AppState>, h: HeaderMap) -> R {
-    require_super(&st, &h).await?;
-    Ok(Json(json!(plan_catalog().iter().map(|p| json!({
-        "code":p.code,"name":p.name,"desc":p.desc,"modules":p.modules })).collect::<Vec<_>>())))
-}
+// SA-10: i pacchetti stanno nel DB (app.plans_catalog, catalogs.rs), gestiti dal superadmin.
 /// Normalizza+valida uno slug tenant (finisce nel sottodominio): minuscole, a-z0-9-, 2..40, niente trattini ai bordi.
 pub(crate) fn clean_slug(raw: &str) -> Result<String, (StatusCode,String)> {
     let s: String = raw.trim().to_lowercase().chars()
@@ -156,15 +145,16 @@ pub async fn create_tenant(State(st): State<AppState>, h: HeaderMap, Json(b): Js
     // Pacchetto/piano: espande in moduli; unione con eventuali moduli espliciti. Attiva solo i
     // moduli disponibili nel prodotto (available=true). Nessun errore se un codice non esiste.
     let mut mods: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    if let Some(pc) = b.plan.as_deref() { if let Some(p) = plan_catalog().into_iter().find(|p| p.code==pc) {
-        for m in p.modules { mods.insert(m.to_string()); } } }
+    if let Some(pc) = b.plan.as_deref().filter(|x| !x.is_empty()) {
+        match crate::catalogs::plans(&st, true).await?.into_iter().find(|p| p.code==pc) {
+            Some(p) => for m in p.modules { mods.insert(m); },
+            None => return Err(err(StatusCode::BAD_REQUEST, "pacchetto non trovato o disattivato")),
+        }
+    }
     if let Some(ms) = &b.modules { for m in ms { mods.insert(m.clone()); } }
     if !mods.is_empty() {
         let codes: Vec<String> = mods.into_iter().collect();
-        sqlx::query("UPDATE app.tenant_modules SET state='attivo'
-            WHERE tenant_id=$1 AND module_code = ANY($2)
-              AND module_code IN (SELECT code FROM app.modules_catalog WHERE available=true)")
-            .bind(tid).bind(&codes).execute(&mut *tx).await.map_err(ise)?;
+        activate_modules(&mut *tx, tid, &codes).await?; // AR-3: stesso percorso, con le dipendenze
     }
     // Invito monouso (se non è stata data una password diretta): token in chiaro una volta sola.
     let mut invite_token: Option<String> = None;
@@ -194,7 +184,8 @@ pub async fn create_tenant(State(st): State<AppState>, h: HeaderMap, Json(b): Js
 pub struct InviteAccept { pub slug: String, pub token: String, pub password: String }
 /// Accetta un invito: l'admin imposta la PROPRIA password. Pubblico (no sessione), CSRF-exempt, monouso.
 pub async fn accept_invite(State(st): State<AppState>, Json(b): Json<InviteAccept>) -> R {
-    if b.password.trim().len() < 8 { return Err(err(StatusCode::BAD_REQUEST, "la password deve avere almeno 8 caratteri")); }
+    // TA-8: la password scelta dalla persona ha almeno 10 caratteri
+    if b.password.trim().chars().count() < crate::users::MIN_OWN_PASSWORD { return Err(err(StatusCode::BAD_REQUEST, "la password deve avere almeno 10 caratteri")); }
     let tid: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.tenants WHERE slug=$1").bind(b.slug.trim().to_lowercase())
         .fetch_optional(&st.owner_pool).await.map_err(ise)?;
     let tid = tid.ok_or_else(|| err(StatusCode::NOT_FOUND, "tenant inesistente"))?;
@@ -347,7 +338,7 @@ pub async fn system_snapshot(st: &AppState) -> Value {
     add("mem", lvl_pct(mem_pct,mem_max), format!("memoria al {:.0}%", mem_pct));
     add("cpu", lvl_pct(cpu_pct,cpu_max), format!("CPU al {:.0}%", cpu_pct));
     let wsev = if hb_age<0 || hb_age>worker_stale {"bad"} else if hb_age>worker_stale/2 {"warn"} else {"ok"};
-    add("worker", wsev, if hb_age<0 {"worker mai visto".into()} else {format!("ultimo giro worker {}s fa", hb_age)});
+    add("worker", wsev, if hb_age<0 {"worker mai visto".into()} else {format!("ultimo ciclo del worker {}s fa", hb_age)});
     if outbox_error>0 { add("outbox", if outbox_error>20 {"bad"} else {"warn"}, format!("{} messaggi outbox in errore", outbox_error)); }
     // Backlog di ESCALATION ATTIVA del tenant più carico (stesso working-set dello scan consegna):
     // sorveglia la coda che il motore deve drenare. In salute è piccolo; se cresce (emergenza di
@@ -903,7 +894,7 @@ pub async fn immobility_watchdog(st: &AppState) {
             if claimed.is_none() { continue; }
             let ext: String = r.get("external_id"); let source: String = r.get("source");
             let key = format!("imm-{dev}-{}", moved.timestamp());
-            let _ = persist_ingest(st, tid, Normalized{
+            let _ = persist_ingest(st, tid, Normalized{ device_id: None,
                 source, source_event: key.clone(), idem: key.clone(), etype: "immobilita".into(),
                 device_external_id: Some(ext), site_name: None,
                 lat: r.try_get("last_lat").ok().flatten(), lon: r.try_get("last_lon").ok().flatten(), accuracy_m: None,
@@ -1130,12 +1121,42 @@ pub async fn super_list_modules(State(st): State<AppState>, h: HeaderMap, Path(t
 }
 
 #[derive(Deserialize)]
-pub struct SetModule { pub module_code: String, pub state: String }
+pub struct SetModule { pub module_code: String, pub state: String, #[serde(default)] pub with_deps: bool }
+
+/// AR-3 (decisione PO 26/11/2026): UNICO percorso di attivazione dei moduli (pannello, creazione del
+/// tenant, scenari): si attivano anche le dipendenze dichiarate; i moduli ritirati non si attivano.
+/// Ritorna i moduli effettivamente attivati.
+pub(crate) async fn activate_modules<'e, E>(ex: E, tid: Uuid, codes: &[String]) -> Result<Vec<String>, (StatusCode, String)>
+where E: sqlx::PgExecutor<'e> {
+    let all = crate::modules::with_deps(codes);
+    let rows: Vec<String> = sqlx::query_scalar(
+        "INSERT INTO app.tenant_modules(tenant_id,module_code,state)
+         SELECT $1, c.code, 'attivo' FROM app.modules_catalog c WHERE c.code = ANY($2) AND c.available
+         ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo', updated_at=now()
+         RETURNING module_code")
+        .bind(tid).bind(&all).fetch_all(ex).await.map_err(ise)?;
+    Ok(rows)
+}
 
 pub async fn set_module(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetModule>) -> R {
     let sa_ = require_super(&st, &h).await?;
-    let valid = ["non_abilitato","da_configurare","attivo","degradato","in_disattivazione"];
-    if !valid.contains(&b.state.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "bad state")); }
+    // AR-5: due soli stati
+    if !["attivo","non_abilitato"].contains(&b.state.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "stato non valido: attivo o non_abilitato")); }
+    let active_now: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>(
+        "SELECT module_code FROM app.tenant_modules WHERE tenant_id=$1 AND state='attivo'")
+        .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?.into_iter().collect();
+    // AR-3: dipendenze BLOCCANTI
+    if b.state == "attivo" {
+        let miss = crate::modules::missing_deps(&b.module_code, &active_now);
+        if !miss.is_empty() && !b.with_deps {
+            return Err(err(StatusCode::CONFLICT, &format!("serve attivare anche: {}", miss.join(", "))));
+        }
+    } else {
+        let dep = crate::modules::dependents_active(&b.module_code, &active_now);
+        if !dep.is_empty() {
+            return Err(err(StatusCode::CONFLICT, &format!("prima disattiva i moduli che lo usano: {}", dep.join(", "))));
+        }
+    }
     // Ritiro connettori esterni: un modulo non disponibile nel prodotto (available=false) non può
     // essere attivato (suite self-contained). Disattivarlo resta sempre consentito.
     if b.state != "non_abilitato" {
@@ -1153,24 +1174,17 @@ pub async fn set_module(State(st): State<AppState>, h: HeaderMap, Path(tid): Pat
     // UPSERT: i moduli aggiunti al catalogo DOPO la creazione del tenant non hanno la riga
     // (il seed la crea solo al create). Un semplice UPDATE non troverebbe nulla e lo stato
     // resterebbe 'non_abilitato'. Con ON CONFLICT l'attivazione funziona per qualsiasi modulo.
-    sqlx::query("INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES($2,$3,$1)
-                 ON CONFLICT (tenant_id,module_code) DO UPDATE SET state=EXCLUDED.state,updated_at=now()")
-        .bind(&b.state).bind(tid).bind(&b.module_code).execute(&st.owner_pool).await.map_err(ise)?;
-    // SA-15: una sola riga di audit (in fondo, con l'email del superadmin)
-    // #3 manifest: avvisi soft sulle dipendenze (non bloccano).
-    let active: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>(
-        "SELECT module_code FROM app.tenant_modules WHERE tenant_id=$1 AND state='attivo'")
-        .bind(tid).fetch_all(&st.owner_pool).await.unwrap_or_default().into_iter().collect();
-    let mut warning: Option<String> = None;
-    if b.state == "attivo" {
-        let miss = crate::modules::missing_deps(&b.module_code, &active);
-        if !miss.is_empty() { warning = Some(format!("dipendenze non attive: {}", miss.join(", "))); }
-    } else if b.state == "non_abilitato" {
-        let dep = crate::modules::dependents_active(&b.module_code, &active);
-        if !dep.is_empty() { warning = Some(format!("moduli attivi che dipendono da questo: {}", dep.join(", "))); }
-    }
-    audit(&st, tid, &format!("superadmin:{}", sa_.email), "set_module", json!({"module":b.module_code,"state":b.state})).await;
-    Ok(Json(json!({"ok":true,"warning":warning})))
+    let activated: Vec<String> = if b.state == "attivo" {
+        activate_modules(&st.owner_pool, tid, &[b.module_code.clone()]).await?
+    } else {
+        sqlx::query("INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES($1,$2,'non_abilitato')
+                     ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='non_abilitato',updated_at=now()")
+            .bind(tid).bind(&b.module_code).execute(&st.owner_pool).await.map_err(ise)?;
+        vec![]
+    };
+    // SA-15: una sola riga di audit (con l'email del superadmin)
+    audit(&st, tid, &format!("superadmin:{}", sa_.email), "set_module", json!({"module":b.module_code,"state":b.state,"activated":activated})).await;
+    Ok(Json(json!({"ok":true,"activated":activated})))
 }
 
 

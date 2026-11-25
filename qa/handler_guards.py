@@ -29,7 +29,7 @@ for fn in os.listdir(SRC):
 
 AUTH = r'WHERE token=\$1|token_hash|esc_verify_inbound|require_tenant|require_super|require_super_or_setup|session_of|resolve_ingest_token|x-ingest-token|ingest_token|verify_twilio|twilio_signature|webhook_secret|lorawan|ingress_auth|cred\b|require_worker|invite_token'
 MODULE = r'require_module|require_any_module|module_active|any_module_active|order_view_allowed|order_edit_allowed|ag_safety_scope|ai_feature_on|feature_modules|require_field|guard_incident_site|ESCALATION_MODS|DEVICE_MODS|IOT_MODS|FIELD_MODS|scenario_applied|guard_timesheet_access|guard_owner_editable|order_open'
-PERM = r'require_cap|has_cap\(|is_planner|is_approver|is_supervisor|can_see_costs|require_grantable|guard_[a-z_]+|order_edit_allowed|order_view_allowed|order_line_allowed|is_admin|require_super|require_super_or_setup|\.user_id\s*==|s\.user_id|caps\.contains|can\(|require_role|is_reperibile'
+PERM = r'require_cap|require_any_cap|has_cap\(|is_planner|is_approver|is_supervisor|can_see_costs|require_grantable|guard_[a-z_]+|order_edit_allowed|order_view_allowed|order_line_allowed|is_admin|require_super|require_super_or_setup|\.user_id\s*==|s\.user_id|caps\.contains|can\(|require_role|is_reperibile'
 
 allow = {}
 ap = os.path.join(ROOT, 'qa', 'handler_guards_allow.txt')

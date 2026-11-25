@@ -181,6 +181,7 @@ async function shell(){
       <button type="button" class="tab" role="tab" id="tab-tenant" aria-selected="false" aria-controls="pane-tenant" tabindex="-1" data-t="tenant" onclick="saTab('tenant')" onkeydown="saTabKey(event)">Tenant</button>
       <button type="button" class="tab" role="tab" id="tab-sistema" aria-selected="false" aria-controls="pane-sistema" tabindex="-1" data-t="sistema" onclick="saTab('sistema')" onkeydown="saTabKey(event)">Sistema</button>
       <button type="button" class="tab" role="tab" id="tab-scenari" aria-selected="false" aria-controls="pane-scenari" tabindex="-1" data-t="scenari" onclick="saTab('scenari')" onkeydown="saTabKey(event)">Scenari IoT</button>
+      <button type="button" class="tab" role="tab" id="tab-cataloghi" aria-selected="false" aria-controls="pane-cataloghi" tabindex="-1" data-t="cataloghi" onclick="saTab('cataloghi')" onkeydown="saTabKey(event)">Cataloghi</button>
     </div>
 
     <div class="pane on" id="pane-panoramica" role="tabpanel" aria-labelledby="tab-panoramica">
@@ -299,6 +300,18 @@ async function shell(){
         <div id="catList"><div class="small mut">Carico…</div></div>
         <div id="catForm" class="mt-12"></div></div></div>
     </div>
+
+    <div class="pane" id="pane-cataloghi" role="tabpanel" aria-labelledby="tab-cataloghi">
+      <div class="card mb-16"><div class="card-h"><h2>Pacchetti</h2>
+        <button class="btn small" onclick="planEdit(null)">+ Nuovo pacchetto</button></div>
+        <div class="card-b"><div class="small mut mb-8">Un pacchetto è un gruppo di moduli proposto quando crei un tenant. I moduli che servono ad altri moduli vengono attivati anche loro. I predefiniti si modificano o disattivano ma non si eliminano. Cambiare un pacchetto non tocca i tenant già creati.</div>
+        <div id="planList"><div class="small mut">Carico…</div></div>
+        <div id="planForm" class="mt-12"></div></div></div>
+      <div class="card"><div class="card-h"><h2>Tipi di evento</h2></div>
+        <div class="card-b"><div class="small mut mb-8">Il nome e la spiegazione di ogni tipo di evento compaiono in Centrale, mappe, report, messaggi di allarme e regole, per tutti i tenant. La famiglia raggruppa le varianti (per esempio i diversi modi in cui un dispositivo smette di comunicare). Se un tipo è un allarme critico o salva-vita lo decide il prodotto e non si cambia da qui.</div>
+        <div class="row gap-10 mb-8"><input id="etQ" placeholder="Cerca per nome o famiglia" aria-label="Cerca tipo di evento" oninput="etRender()" class="w-240"></div>
+        <div id="etList"><div class="small mut">Carico…</div></div></div></div>
+    </div>
   </main>`;
   $('#c_go').onclick=create; ['c_cp','c_ca','c_ck','c_cs'].forEach(syncPair); slugPrev(); loadPlans(); load(); loadSystem();
 }
@@ -308,7 +321,66 @@ function saTab(k){
   document.querySelectorAll('.pane').forEach(p=>p.classList.toggle('on',p.id==='pane-'+k));
   if(k==='sistema') loadSystem();
   if(k==='scenari') catLoad();
+  if(k==='cataloghi'){ planLoad(); etLoad(); }
 }
+// ---------- SA-10: pacchetti ----------
+let MODCAT=[];
+async function planLoad(){ const box=$('#planList'); if(!box) return;
+  try{ [PLANS, MODCAT]=await Promise.all([api('/superadmin/plans'), api('/superadmin/modules-catalog')]); }
+  catch(e){ box.innerHTML=`<div class="small t-bad" role="alert">${esc(friendlyError(e))}</div>`; return; }
+  box.innerHTML=`<div class="tbl-wrap"><table class="table"><thead><tr><th>Pacchetto</th><th>Moduli</th><th>Stato</th><th><span class="sr-only">Azioni</span></th></tr></thead><tbody>${
+    PLANS.map(p=>`<tr><td><b>${esc(p.name)}</b><div class="small mut">${esc(p.desc||'')}</div></td>
+      <td class="small">${(p.module_names||p.modules||[]).map(esc).join(', ')}</td>
+      <td>${p.active?'<span class="chip s-attivo">proposto</span>':'<span class="chip">disattivato</span>'}${p.builtin?' <span class="chip" title="incluso nel prodotto">predefinito</span>':''}</td>
+      <td class="ta-r nowrap"><button class="btn ghost small" onclick="planEdit(${jattr(p.code)})">modifica</button>
+        ${p.builtin?'':`<button class="btn ghost small t-bad" onclick="planDel(${jattr(p.code)})">elimina</button>`}</td></tr>`).join('')
+    ||'<tr><td colspan="4" class="empty">Nessun pacchetto</td></tr>'}</tbody></table></div>`;
+  const ps=$('#c_plan'); if(ps) ps.innerHTML='<option value="">— nessuno (attiva dopo) —</option>'+PLANS.filter(p=>p.active).map(p=>`<option value="${esc(p.code)}">${esc(p.name)}</option>`).join('');
+}
+function planEdit(code){ const box=$('#planForm');
+  const p=PLANS.find(x=>x.code===code)||{code:'',name:'',desc:'',modules:[],active:true};
+  box.innerHTML=`<div class="card sa-panel"><h3 class="mb-8">${code?'Modifica «'+esc(p.name)+'»':'Nuovo pacchetto'}</h3>
+    <div class="ct-grid">
+      <div class="field"><label for="pl_name">Nome</label><input id="pl_name" value="${esc(p.name)}"></div>
+      <div class="field"><label for="pl_desc">Descrizione</label><input id="pl_desc" value="${esc(p.desc||'')}"></div>
+    </div>
+    <fieldset class="mt-12"><legend class="small">Moduli inclusi</legend><div class="row gap-10" style="flex-wrap:wrap">
+      ${MODCAT.map(m=>`<label class="row small gap-6"><input type="checkbox" class="pl_mod" value="${esc(m.code)}" ${(p.modules||[]).includes(m.code)?'checked':''}> ${esc(m.name)}${m.available?'':' <span class="mut">(non disponibile)</span>'}</label>`).join('')}
+    </div></fieldset>
+    <label class="row small gap-6 mt-12"><input type="checkbox" id="pl_active" ${p.active?'checked':''}> Proposto alla creazione dei tenant</label>
+    <div class="row gap-10 mt-12"><button class="btn" onclick="planSave(${jattr(code||'')})">Salva</button>
+      <button class="btn ghost" onclick="$('#planForm').innerHTML=''">Annulla</button></div></div>`;
+}
+async function planSave(code){
+  const body={name:$('#pl_name').value.trim(), desc:$('#pl_desc').value.trim(), active:$('#pl_active').checked,
+    modules:[...document.querySelectorAll('.pl_mod:checked')].map(x=>x.value)};
+  try{ if(code) await api('/superadmin/plans/'+encodeURIComponent(code),{method:'PUT',body:JSON.stringify(body)});
+    else await api('/superadmin/plans',{method:'POST',body:JSON.stringify(body)});
+    toast('Pacchetto salvato','ok'); $('#planForm').innerHTML=''; planLoad(); }catch(e){ toast(e,'bad'); } }
+async function planDel(code){ if(!await askConfirm('Eliminare il pacchetto? I tenant già creati non cambiano.')) return;
+  try{ await api('/superadmin/plans/'+encodeURIComponent(code),{method:'DELETE'}); toast('Pacchetto eliminato','ok'); planLoad(); }catch(e){ toast(e,'bad'); } }
+// ---------- SL-15: tipi di evento ----------
+let ET={types:[],categories:[]};
+async function etLoad(){ try{ ET=await api('/superadmin/event-types'); }catch(e){ $('#etList').innerHTML=`<div class="small t-bad" role="alert">${esc(friendlyError(e))}</div>`; return; } etRender(); }
+function etRender(){ const box=$('#etList'); if(!box) return; const q=($('#etQ')?.value||'').toLowerCase();
+  const L=ET.types.filter(t=>!q||(t.label+' '+t.category_label+' '+t.description).toLowerCase().includes(q));
+  box.innerHTML=`<div class="tbl-wrap"><table class="table"><thead><tr><th>Nome</th><th>Famiglia</th><th>Gestione</th><th><span class="sr-only">Azioni</span></th></tr></thead><tbody>${
+    L.map(t=>`<tr><td><b>${esc(t.label)}</b><div class="small mut">${esc(t.description||'')}</div></td>
+      <td class="small">${esc(t.category_label)}</td>
+      <td>${t.life_safety?'<span class="chip s-critico" title="Non si perde mai: escalation fino alla presa in carico">salva-vita</span>':t.critical?'<span class="chip s-critico">allarme critico</span>':'<span class="chip">evento</span>'}</td>
+      <td class="ta-r"><button class="btn ghost small" onclick="etEdit(${jattr(t.code)})" aria-label="Modifica ${esc(t.label)}">modifica</button></td></tr>
+      <tr id="etf_${esc(t.code)}" hidden><td colspan="4"></td></tr>`).join('')
+    ||'<tr><td colspan="4" class="empty">Nessun tipo trovato</td></tr>'}</tbody></table></div>`; }
+function etEdit(code){ const t=ET.types.find(x=>x.code===code); const row=document.getElementById('etf_'+code); if(!t||!row) return;
+  row.hidden=false; row.firstElementChild.innerHTML=`<div class="ct-grid">
+    <div class="field"><label for="et_l">Nome</label><input id="et_l" value="${esc(t.label)}" maxlength="120"></div>
+    <div class="field"><label for="et_c">Famiglia</label><select id="et_c">${ET.categories.map(c=>`<option value="${esc(c.code)}" ${c.code===t.category?'selected':''}>${esc(c.label)}</option>`).join('')}</select></div>
+    <div class="field"><label for="et_d">Spiegazione</label><input id="et_d" value="${esc(t.description||'')}" maxlength="400"></div></div>
+    <div class="row gap-10 mt-8"><button class="btn small" onclick="etSave(${jattr(code)})">Salva</button><button class="btn ghost small" onclick="etRender()">Annulla</button></div>`;
+  $('#et_l').focus(); }
+async function etSave(code){
+  try{ await api('/superadmin/event-types/'+encodeURIComponent(code),{method:'PUT',body:JSON.stringify({label:$('#et_l').value.trim(),category:$('#et_c').value,description:$('#et_d').value.trim()})});
+    toast('Tipo di evento aggiornato per tutti i tenant','ok'); etLoad(); }catch(e){ toast(e,'bad'); } }
 // FE-16: schede da tastiera (frecce sinistra/destra, Home, Fine) come da pattern ARIA tablist
 function saTabKey(e){ const T=[...document.querySelectorAll('.tab')]; const i=T.indexOf(e.currentTarget); let j=-1;
   if(e.key==='ArrowRight') j=(i+1)%T.length; else if(e.key==='ArrowLeft') j=(i-1+T.length)%T.length;
@@ -585,13 +657,13 @@ function renderSysAlerts(al){
 let PLANS=[];
 async function loadPlans(){
   try{ PLANS=await api('/superadmin/plans'); }catch(e){ PLANS=[]; }
-  const ps=$('#c_plan'); if(ps) ps.innerHTML='<option value="">— nessuno (attiva dopo) —</option>'+PLANS.map(p=>`<option value="${esc(p.code)}">${esc(p.name)}</option>`).join('');
+  const ps=$('#c_plan'); if(ps) ps.innerHTML='<option value="">— nessuno (attiva dopo) —</option>'+PLANS.filter(p=>p.active!==false).map(p=>`<option value="${esc(p.code)}">${esc(p.name)}</option>`).join('');
   try{ const sc=await api('/superadmin/scenarios'); const ss=$('#c_scn');
     if(ss) ss.innerHTML='<option value="">— nessuno —</option>'+(sc||[]).map(s=>`<option value="${esc(s.code)}">${esc(s.name)}</option>`).join('');
   }catch(e){}
 }
 function planPrev(){ const p=PLANS.find(x=>x.code===$('#c_plan').value); const el=$('#c_planprev');
-  if(!el)return; el.textContent = p ? ('attiva: '+(p.modules||[]).join(', ')) : ''; }
+  if(!el)return; el.textContent = p ? ('attiva: '+(p.module_names||p.modules||[]).join(', ')) : ''; }
 async function out(){ try{ await api('/logout',{method:'POST'}); }catch(e){} location.reload(); }
 // Normalizza lo slug come il backend (a-z0-9-, spazi/_ -> -, niente trattini ai bordi).
 function slugNorm(raw){ return (raw||'').trim().toLowerCase().replace(/[\s_]+/g,'-').replace(/[^a-z0-9-]/g,'').replace(/^-+|-+$/g,''); }
@@ -912,7 +984,15 @@ async function impersonate(tid){
 }
 async function toggle(tid,code,cb){
   const state=cb.checked?'attivo':'non_abilitato';
-  try{ await api('/superadmin/tenants/'+tid+'/modules',{method:'POST',body:JSON.stringify({module_code:code,state})});
+  try{ let r;
+    try{ r=await api('/superadmin/tenants/'+tid+'/modules',{method:'POST',body:JSON.stringify({module_code:code,state})}); }
+    catch(e){
+      // AR-3: dipendenze bloccanti -> conferma e attivazione insieme ai moduli richiesti
+      if(e.status===409 && /serve attivare anche/.test(e.message||'') && await askConfirm(e.message+'. Attivarli insieme?')){
+        r=await api('/superadmin/tenants/'+tid+'/modules',{method:'POST',body:JSON.stringify({module_code:code,state,with_deps:true})});
+        if((r.activated||[]).length>1){ toast('Attivati: '+r.activated.map(modName).join(', '),'ok'); return load(); }
+      } else throw e;
+    }
     toast(modName(code)+(cb.checked?' attivato':' disattivato'),'ok');
     const st=document.querySelector(`[data-modstate="${tid}_${code}"]`); if(st) st.innerHTML=chip(state);
     // aggiorna conteggi locali senza ricaricare (la riga resta aperta)

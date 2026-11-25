@@ -40,7 +40,7 @@ async function init(){
   if(!r.valid){ el('body').innerHTML='<div class="msg bad">Invito non valido, già usato o scaduto. Chiedi al tuo referente un nuovo invito.</div>'; return; }
   el('body').innerHTML=`
     <div class="who">Account: <b>${(r.email||'').replace(/[<>&]/g,'')}</b></div>
-    <label>Nuova password (min 8 caratteri)</label><input id="p1" type="password" autocomplete="new-password">
+    <label>Nuova password (almeno 10 caratteri)</label><input id="p1" type="password" autocomplete="new-password">
     <label>Conferma password</label><input id="p2" type="password" autocomplete="new-password">
     <button id="go">Attiva e imposta password</button>
     <div class="hint">Dopo l'attivazione potrai accedere con la tua email e questa password.</div>
@@ -51,7 +51,7 @@ async function init(){
 async function submit(){
   const m=el('m'), p1=el('p1').value, p2=el('p2').value;
   m.className='msg';
-  if(p1.length<8){ m.className='msg bad'; m.textContent='La password deve avere almeno 8 caratteri.'; return; }
+  if(p1.length<10){ m.className='msg bad'; m.textContent='La password deve avere almeno 10 caratteri.'; return; }
   if(p1!==p2){ m.className='msg bad'; m.textContent='Le due password non coincidono.'; return; }
   el('go').disabled=true; m.textContent='Attivo…';
   try{

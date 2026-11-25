@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::state::AppState;
-use crate::api::{conflict_or, R, require_tenant, require_cap, ise, err, audit, is_planner};
+use crate::api::{conflict_or, R, require_tenant, require_any_cap, ise, err, audit, is_planner};
 use crate::db;
 
 // --- Sedi ---
@@ -27,7 +27,7 @@ fn site_tz(b: &SiteReq) -> Result<Option<Option<String>>, (StatusCode, String)> 
     }
 }
 pub async fn create_site(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SiteReq>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
+    let s = require_tenant(&st, &h).await?; require_any_cap(&s, &["sites.manage","users.manage"])?; // TA-17
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let tz = site_tz(&b)?.flatten();
@@ -40,7 +40,7 @@ pub async fn create_site(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     Ok(Json(json!({"id":row.get::<Uuid,_>("id")})))
 }
 pub async fn update_site(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<SiteReq>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
+    let s = require_tenant(&st, &h).await?; require_any_cap(&s, &["sites.manage","users.manage"])?; // TA-17
     let tid = s.tenant_id.unwrap();
     let tz = site_tz(&b)?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -58,7 +58,7 @@ pub async fn update_site(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_site(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
+    let s = require_tenant(&st, &h).await?; require_any_cap(&s, &["sites.manage","users.manage"])?; // TA-17
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.sites WHERE id=$1").bind(id).execute(&mut *tx).await
@@ -88,7 +88,7 @@ pub async fn list_assets(State(st): State<AppState>, h: HeaderMap) -> R {
 #[derive(Deserialize)]
 pub struct AssetReq { pub name: String, pub kind: Option<String>, pub identifier: Option<String>, pub site_id: Option<Uuid>, pub note: Option<String> }
 pub async fn create_asset(State(st): State<AppState>, h: HeaderMap, Json(b): Json<AssetReq>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
+    let s = require_tenant(&st, &h).await?; require_any_cap(&s, &["sites.manage","users.manage"])?; // TA-17
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let kind = b.kind.clone().unwrap_or("attrezzatura".into());
@@ -101,7 +101,7 @@ pub async fn create_asset(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     Ok(Json(json!({"id":row.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id")})))
 }
 pub async fn update_asset(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<AssetReq>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
+    let s = require_tenant(&st, &h).await?; require_any_cap(&s, &["sites.manage","users.manage"])?; // TA-17
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -114,7 +114,7 @@ pub async fn update_asset(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_asset(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
+    let s = require_tenant(&st, &h).await?; require_any_cap(&s, &["sites.manage","users.manage"])?; // TA-17
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.assets WHERE id=$1").bind(id).execute(&mut *tx).await
         .map_err(|e| match e.as_database_error().and_then(|d| d.code()) {

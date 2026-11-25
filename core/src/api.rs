@@ -7,6 +7,7 @@ use uuid::Uuid;
 use futures::stream::Stream;
 use crate::state::{AppState, Session, TenantEvent};
 use crate::{auth, db};
+pub(crate) use crate::catalogs::*; // SL-15/SA-10: cataloghi tipi di evento e pacchetti
 pub(crate) use crate::superadmin::*; // split: Piano di controllo (superadmin): tenant, moduli, monitoraggio di sistema, chiave dei segreti, canali di consegna, account e MFA, impersonazione
 pub(crate) use crate::devices::*; // split: Dispositivi e localizzazione: ingest nativo (GPS, OsmAnd, Teltonika, JSON), comandi, geofence, report, mappe, beacon e piantine, catalogo, onboarding
 pub(crate) use crate::iot::*; // split: IoT nativo: telemetria, attributi, comandi, blueprint, MQTT, alert e monitoraggio IoT, scenari
@@ -571,6 +572,50 @@ pub async fn list_modules(State(st): State<AppState>, h: HeaderMap) -> R {
 /// Import "serve a tutti i moduli": copia i membri di un gruppo comune in un GRUPPO DI ALLARME
 /// (escalation). Dimostra il riuso senza accoppiare i modelli. Richiede il modulo escalation.
 #[derive(Deserialize)] pub struct ImportGroupReq { pub user_group_id: Uuid }
+#[derive(Deserialize)] pub struct SourceReq { pub user_group_id: Uuid }
+/// TA-7: collega un gruppo di persone a un gruppo di escalation (membri sempre allineati).
+pub async fn alarm_group_source_add(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<SourceReq>) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.alarm_group_sources(tenant_id,group_id,user_group_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+        .bind(tid).bind(gid).bind(b.user_group_id).execute(&mut *tx).await.map_err(|e| conflict_or(e, "gruppo non valido"))?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "alarm_group_source_add", json!({"group":gid,"user_group":b.user_group_id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn alarm_group_source_del(State(st): State<AppState>, h: HeaderMap, Path((gid, ug)): Path<(Uuid, Uuid)>) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
+    let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, ESCALATION_MODS).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.alarm_group_sources WHERE group_id=$1 AND user_group_id=$2").bind(gid).bind(ug).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "alarm_group_source_del", json!({"group":gid,"user_group":ug})).await;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn profile_source_add(State(st): State<AppState>, h: HeaderMap, Path(pid): Path<Uuid>, Json(b): Json<SourceReq>) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "loneworker").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.protection_profile_sources(tenant_id,profile_id,user_group_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+        .bind(tid).bind(pid).bind(b.user_group_id).execute(&mut *tx).await.map_err(|e| conflict_or(e, "gruppo non valido"))?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "profile_source_add", json!({"profile":pid,"user_group":b.user_group_id})).await;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn profile_source_del(State(st): State<AppState>, h: HeaderMap, Path((pid, ug)): Path<(Uuid, Uuid)>) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
+    let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "loneworker").await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.protection_profile_sources WHERE profile_id=$1 AND user_group_id=$2").bind(pid).bind(ug).execute(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "profile_source_del", json!({"profile":pid,"user_group":ug})).await;
+    Ok(Json(json!({"ok":true})))
+}
 pub async fn alarm_group_import_members(State(st): State<AppState>, h: HeaderMap, Path(gid): Path<Uuid>, Json(b): Json<ImportGroupReq>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.unwrap();
@@ -627,12 +672,16 @@ pub const CAPABILITIES: &[(&str,&str)] = &[
     ("orders.view_all",      "Interventi: lettura di tutti gli ordini delle proprie sedi (non solo i propri)"),
     ("costs.view",           "Costi: budget, costi, SAL, fatture e prezzi dei materiali"),
     ("config.view",          "Lettura configurazione e diagnostica"),
+    // IO-16: il proprio lavoro (interventi assegnati, propri consuntivi, ronde, turni) nel cruscotto
+    ("work.own",             "Lavoro personale: i propri interventi, consuntivi, ronde e turni nel cruscotto"),
     // Fase 4 (Tappa 2): aree amministrative, split di `admin`. Nessun ruolo le ha di default
     // (solo `tenant_admin` via `admin` super); assegnabili a ruoli custom per delega mirata.
-    ("users.manage",         "Amministrazione: utenti, gruppi di persone, permessi, ruoli custom, sedi/squadre/asset"),
+    ("users.manage",         "Amministrazione: utenti, gruppi di persone (anche squadre), permessi, ruoli custom"),
+    // TA-17 (decisione PO 26/11/2026): sedi e asset con un permesso proprio (prima solo users.manage)
+    ("sites.manage",         "Sedi e asset: creazione, modifica, fuso orario, mezzi e attrezzature"),
     ("devices.admin",        "Amministrazione dispositivi: censimento, token/onboarding, geofence, provisioning"),
     ("iot.manage",           "Dispositivi e IoT: allarmi dei dispositivi, regole sensori, allarmi da email"),
-    ("escalation.manage",    "Escalation e reperibilità: gruppi allarme, turni on-call, override, profili, trigger"),
+    ("escalation.manage",    "Escalation e reperibilità: gruppi di escalation, turni di reperibilità, sostituzioni, profili, trigger"),
     ("settings.manage",      "Impostazioni tenant: funzionalità UI e configurazione generale"),
     ("gdpr.manage",          "Privacy GDPR: export e anonimizzazione dati personali"),
     ("audit.view",           "Audit: lettura del registro attività"),
@@ -643,10 +692,11 @@ pub(crate) fn default_role_caps(role: &str) -> Vec<&'static str> {
     match role {
         "tenant_admin"  => vec!["admin"],
         "operatore"     => vec!["incidents.view","incidents.handle","devices.manage"],
-        "pianificatore" => vec!["plan"],
+        "pianificatore" => vec!["plan","sites.manage"], // TA-17: crea commesse e ordini sulle sedi
         "responsabile"  => vec!["approve","incidents.view","incidents.handle","timesheets.view_all","orders.view_all","costs.view"],
         "auditor"       => vec!["incidents.view","timesheets.view_all","config.view","orders.view_all","costs.view"],
         "reperibile"    => vec!["incidents.handle"],
+        "lavoratore"    => vec!["work.own"], // IO-16
         _ => vec![],
     }
 }
@@ -686,6 +736,11 @@ pub(crate) fn has_cap(s: &Session, cap: &str) -> bool { s.caps.iter().any(|c| c 
 pub(crate) fn require_cap(s: &Session, cap: &str) -> Result<(), (StatusCode, String)> {
     if !has_cap(s, cap) { return Err(err(StatusCode::FORBIDDEN, &format!("permesso richiesto: {cap}"))); }
     Ok(())
+}
+/// Basta uno dei permessi elencati.
+pub(crate) fn require_any_cap(s: &Session, caps: &[&str]) -> Result<(), (StatusCode, String)> {
+    if caps.iter().any(|c| has_cap(s, c)) { return Ok(()); }
+    Err(err(StatusCode::FORBIDDEN, &format!("permesso richiesto: {}", caps.join(" o "))))
 }
 /// TA-1: NON SI CONCEDE CIÒ CHE NON SI POSSIEDE. Chi gestisce utenti/permessi può assegnare (a un
 /// ruolo, a un ruolo personalizzato, a un utente) solo permessi che ha già. `admin` li copre tutti:
@@ -763,16 +818,26 @@ pub async fn list_groups(State(st): State<AppState>, h: HeaderMap) -> R {
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let groups = sqlx::query("SELECT id,name,oncall_mode,oncall_type,oncall_shift,oncall_tz,coverage_mode,cov_start,cov_end,cov_days,handoff_time,handoff_day,slack_channel_id,slack_notify,labels,playbook FROM app.alarm_groups ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
     let members = sqlx::query(
-        "SELECT m.group_id,m.user_id,m.position,u.email,u.role FROM app.alarm_group_members m
-         JOIN app.users u ON u.id=m.user_id ORDER BY m.position").fetch_all(&mut *tx).await.map_err(ise)?;
+        "SELECT m.group_id,m.user_id,m.position,u.email,u.role,m.via_user_group,ug.name AS via_name FROM app.alarm_group_members m
+         JOIN app.users u ON u.id=m.user_id LEFT JOIN app.user_groups ug ON ug.id=m.via_user_group ORDER BY m.position").fetch_all(&mut *tx).await.map_err(ise)?;
+    // TA-7: gruppi di persone che alimentano ciascun gruppo di escalation
+    let sources = sqlx::query("SELECT s.group_id,s.user_group_id,ug.name FROM app.alarm_group_sources s JOIN app.user_groups ug ON ug.id=s.user_group_id ORDER BY ug.name")
+        .fetch_all(&mut *tx).await.map_err(ise)?;
+    let people: Vec<Value> = sqlx::query("SELECT g.id,g.name,(SELECT count(*) FROM app.user_group_members m WHERE m.group_id=g.id)::int AS n FROM app.user_groups g ORDER BY g.name")
+        .fetch_all(&mut *tx).await.map_err(ise)?.iter()
+        .map(|r| json!({"id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"members":r.get::<i32,_>("n")})).collect();
     let routing = sqlx::query("SELECT etype,group_id FROM app.alarm_routing").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = groups.iter().map(|g| {
         let gid: Uuid = g.get("id");
         let mem: Vec<Value> = members.iter().filter(|m| m.get::<Uuid,_>("group_id")==gid).map(|m| json!({
             "user_id":m.get::<Uuid,_>("user_id"),"email":m.get::<String,_>("email"),
-            "role":m.get::<String,_>("role"),"position":m.get::<i32,_>("position")})).collect();
-        json!({"id":gid,"name":g.get::<String,_>("name"),"members":mem,
+            "role":m.get::<String,_>("role"),"position":m.get::<i32,_>("position"),
+            "via_user_group":m.try_get::<Option<Uuid>,_>("via_user_group").ok().flatten(),
+            "via_name":m.try_get::<Option<String>,_>("via_name").ok().flatten()})).collect();
+        let src: Vec<Value> = sources.iter().filter(|x| x.get::<Uuid,_>("group_id")==gid)
+            .map(|x| json!({"user_group_id":x.get::<Uuid,_>("user_group_id"),"name":x.get::<String,_>("name")})).collect();
+        json!({"id":gid,"name":g.get::<String,_>("name"),"members":mem,"sources":src,
             "oncall_mode":g.get::<String,_>("oncall_mode"),"oncall_type":g.get::<String,_>("oncall_type"),
             "oncall_shift":g.get::<i32,_>("oncall_shift"),"oncall_tz":g.get::<String,_>("oncall_tz"),
             "coverage_mode":g.get::<String,_>("coverage_mode"),
@@ -789,7 +854,7 @@ pub async fn list_groups(State(st): State<AppState>, h: HeaderMap) -> R {
     let routes: Vec<Value> = routing.iter().map(|r| json!({"etype":r.get::<String,_>("etype"),"group_id":r.get::<Uuid,_>("group_id")})).collect();
     // SL-19: i tipi instradabili sono TUTTI quelli che aprono un allarme (prima la console ne elencava 11)
     let routable: Vec<Value> = CRITICAL.iter().map(|e| json!({"etype": e, "label": etype_label(e)})).collect();
-    Ok(Json(json!({"groups":out,"routing":routes,"routable":routable})))
+    Ok(Json(json!({"groups":out,"routing":routes,"routable":routable,"people_groups":people})))
 }
 #[derive(Deserialize)]
 pub struct GroupReq { pub name: String }
@@ -1137,6 +1202,10 @@ pub async fn remove_group_member(State(st): State<AppState>, h: HeaderMap, Path(
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     require_any_module(&st, s.tenant_id.unwrap(), ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
+    if let Some(via) = sqlx::query_scalar::<_, Option<String>>("SELECT ug.name FROM app.alarm_group_members m JOIN app.user_groups ug ON ug.id=m.via_user_group WHERE m.group_id=$1 AND m.user_id=$2")
+        .bind(gid).bind(uid).fetch_optional(&mut *tx).await.map_err(ise)?.flatten() {
+        return Err(err(StatusCode::CONFLICT, &format!("questa persona arriva dal gruppo di persone «{via}»: toglila da lì o scollega il gruppo")));
+    }
     sqlx::query("DELETE FROM app.alarm_group_members WHERE group_id=$1 AND user_id=$2").bind(gid).bind(uid).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
@@ -1906,11 +1975,11 @@ pub async fn diary_list(State(st): State<AppState>, h: HeaderMap) -> R {
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     let all = matches!(s.role.as_str(), "operatore"|"responsabile"|"tenant_admin"|"auditor");
     let sql = if all {
-        "SELECT d.id,d.body,d.source,d.created_at,d.work_order_id,u.email AS author
-         FROM app.diary_entries d JOIN app.users u ON u.id=d.user_id ORDER BY d.created_at DESC LIMIT 100"
+        "SELECT d.id,d.body,d.source,d.created_at,d.work_order_id,d.commessa_id,d.diary_date,u.email AS author
+         FROM app.diary_entries d LEFT JOIN app.users u ON u.id=d.user_id ORDER BY d.created_at DESC LIMIT 100"
     } else {
-        "SELECT d.id,d.body,d.source,d.created_at,d.work_order_id,u.email AS author
-         FROM app.diary_entries d JOIN app.users u ON u.id=d.user_id WHERE d.user_id=$1 ORDER BY d.created_at DESC LIMIT 100"
+        "SELECT d.id,d.body,d.source,d.created_at,d.work_order_id,d.commessa_id,d.diary_date,u.email AS author
+         FROM app.diary_entries d LEFT JOIN app.users u ON u.id=d.user_id WHERE d.user_id=$1 ORDER BY d.created_at DESC LIMIT 100"
     };
     let q = sqlx::query(sql);
     let q = if all { q } else { q.bind(s.user_id) };
@@ -1919,7 +1988,9 @@ pub async fn diary_list(State(st): State<AppState>, h: HeaderMap) -> R {
     let out: Vec<Value> = rows.iter().map(|r| json!({
         "id": r.get::<Uuid,_>("id"), "body": r.get::<String,_>("body"), "source": r.get::<String,_>("source"),
         "created_at": r.get::<Dt,_>("created_at"), "work_order_id": r.try_get::<Uuid,_>("work_order_id").ok(),
-        "author": r.get::<String,_>("author") })).collect();
+        "commessa_id": r.try_get::<Option<Uuid>,_>("commessa_id").ok().flatten(),
+        "diary_date": r.try_get::<chrono::NaiveDate,_>("diary_date").ok().map(|d| d.to_string()),
+        "author": r.try_get::<Option<String>,_>("author").ok().flatten().unwrap_or_else(|| "utente rimosso".into()) })).collect();
     Ok(Json(json!(out)))
 }
 
@@ -2313,18 +2384,25 @@ pub async fn protection_profiles_list(State(st): State<AppState>, h: HeaderMap) 
     for r in &rows {
         let pid: Uuid = r.get("id");
         let members = sqlx::query(
-            "SELECT u.id,u.email,
+            "SELECT u.id,u.email,m.via_user_group,ug.name AS via_name,
                     (SELECT count(*) FROM app.devices d WHERE d.tenant_id=$1 AND d.assigned_user=u.id) AS devices
                FROM app.protection_profile_members m JOIN app.users u ON u.id=m.user_id
+               LEFT JOIN app.user_groups ug ON ug.id=m.via_user_group
               WHERE m.profile_id=$2 ORDER BY u.email")
             .bind(tid).bind(pid).fetch_all(&st.owner_pool).await.map_err(ise)?;
         let mut device_total = 0i64;
         let mem: Vec<Value> = members.iter().map(|m| {
             let dc: i64 = m.get("devices"); device_total += dc;
-            json!({"id": m.get::<Uuid,_>("id"), "email": m.get::<String,_>("email"), "devices": dc})
+            json!({"id": m.get::<Uuid,_>("id"), "email": m.get::<String,_>("email"), "devices": dc,
+                   "via_user_group": m.try_get::<Option<Uuid>,_>("via_user_group").ok().flatten(),
+                   "via_name": m.try_get::<Option<String>,_>("via_name").ok().flatten()})
         }).collect();
+        let src: Vec<Value> = sqlx::query("SELECT s.user_group_id,ug.name FROM app.protection_profile_sources s JOIN app.user_groups ug ON ug.id=s.user_group_id WHERE s.tenant_id=$1 AND s.profile_id=$2 ORDER BY ug.name")
+            .bind(tid).bind(pid).fetch_all(&st.owner_pool).await.map_err(ise)?
+            .iter().map(|x| json!({"user_group_id":x.get::<Uuid,_>("user_group_id"),"name":x.get::<String,_>("name")})).collect();
         let eg: Option<Uuid> = r.get("escalation_group_id");
         out.push(json!({
+            "sources": src,
             "id": pid,
             "name": r.get::<String,_>("name"),
             "descr": r.get::<String,_>("descr"),
@@ -2467,6 +2545,10 @@ pub async fn protection_profile_member_del(State(st): State<AppState>, h: Header
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
     let tid = s.tenant_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "tenant mancante"))?;
     require_module(&st, tid, "loneworker").await?;
+    if let Some(via) = sqlx::query_scalar::<_, Option<String>>("SELECT ug.name FROM app.protection_profile_members m JOIN app.user_groups ug ON ug.id=m.via_user_group WHERE m.tenant_id=$1 AND m.profile_id=$2 AND m.user_id=$3")
+        .bind(tid).bind(id).bind(uid).fetch_optional(&st.owner_pool).await.map_err(ise)?.flatten() {
+        return Err(err(StatusCode::CONFLICT, &format!("questa persona arriva dal gruppo di persone «{via}»: toglila da lì o scollega il gruppo")));
+    }
     let n = sqlx::query("DELETE FROM app.protection_profile_members WHERE tenant_id=$1 AND profile_id=$2 AND user_id=$3")
         .bind(tid).bind(id).bind(uid).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
     if n == 0 { return Err(err(StatusCode::NOT_FOUND, "membro inesistente")); }

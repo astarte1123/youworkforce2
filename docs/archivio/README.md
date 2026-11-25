@@ -12,6 +12,7 @@ Per il funzionamento attuale fanno fede il [`README`](../../README.md) e i manua
 | `porting-project.md` | piano di porting modulare (fase connettori) |
 | `native-escalation-engine-project.md` | progetto del motore di escalation nativo (sostituzione di GoAlert) |
 | `ywalert-parity-project.md` | parità funzionale del motore di escalation |
+| `ywalert-manuale.md` | vecchio manuale di reperibilità con YWAlert come motore o rollback (ritirato) |
 | `worker-safety-rationalization.md` | razionalizzazione del perimetro sicurezza lavoratore |
 | `device-catalog-onboarding.md` | catalogo dispositivi e onboarding (prima della decodifica nativa) |
 | `scenario-generation-project.md` | generatore di scenari IoT |

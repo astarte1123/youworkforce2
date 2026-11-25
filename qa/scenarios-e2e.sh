@@ -64,8 +64,11 @@ R2=$(sapi -H 'content-type: application/json' -X POST "$BASE/api/superadmin/tena
 D=$(sapi -X POST "$BASE/api/superadmin/tenants/$TID/scenarios/$SCN/demo")
 [ "$(echo "$D" | jv 'd["events"]')" -ge 2 ] && ok "demo: eventi iniettati ($(echo "$D"|jv 'd["events"]'))" || no "demo senza eventi" "$D"
 [ "$(echo "$D" | jv 'd["incidents"]')" -ge 1 ] && ok "demo: incidenti alzati dalle regole ($(echo "$D"|jv 'd["incidents"]'))" || no "demo senza incidenti" "$D"
-INCD=$(sql "SELECT count(*) FROM app.incidents WHERE tenant_id=$TIDQ AND correlation LIKE 'scndemo-$SCN-%'")
+# IO-7: la demo passa dalla pipeline vera della telemetria (acme ha Lone Worker: incidente in Centrale)
+INCD=$(sql "SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id JOIN app.devices d ON d.id=e.device_id WHERE i.tenant_id=$TIDQ AND d.source='scenario' AND d.external_id LIKE 'scn-$SCN-%'")
 [ "$INCD" -ge 1 ] && ok "demo: incidenti presenti su DB (centrale)" || no "incidenti demo non su DB" "$INCD"
+TEL=$(sql "SELECT count(*) FROM app.device_telemetry t JOIN app.devices d ON d.id=t.device_id WHERE d.tenant_id=$TIDQ AND d.source='scenario' AND d.external_id LIKE 'scn-$SCN-%'")
+[ "$TEL" -ge 2 ] && ok "demo: dati salvati come telemetria vera ($TEL letture)" || no "telemetria demo assente" "$TEL"
 
 # 5c) cruscotto parametrico (tenant): widget derivati + valori dalla telemetria demo
 AD=$(mktemp); curl -s -o /dev/null -c "$AD" -X POST "$BASE/api/login" -H 'content-type: application/json' -H 'x-tenant-slug: acme' -d '{"email":"admin@acme.loneworker.eu","password":"demo"}'
@@ -98,7 +101,7 @@ echo "$R3" | grep -q '"ok":true' && ok "scenario rimosso" || no "remove fallito"
 [ "$(sql "SELECT count(*) FROM app.tenant_scenarios WHERE tenant_id=$TIDQ AND scenario_code='$SCN'")" = "0" ] && ok "stato scenario rimosso" || no "stato non rimosso" "-"
 
 # cleanup demo residuo (prima incidenti/eventi demo, poi device/sito FK-safe)
-sql "DELETE FROM app.incidents WHERE tenant_id=$TIDQ AND correlation LIKE 'scndemo-$SCN-%'" >/dev/null
+sql "DELETE FROM app.incidents WHERE tenant_id=$TIDQ AND (correlation LIKE 'scndemo-$SCN-%' OR event_id IN (SELECT e.id FROM app.events e JOIN app.devices d ON d.id=e.device_id WHERE d.source='scenario' AND d.external_id LIKE 'scn-$SCN-%'))" >/dev/null
 sql "DELETE FROM app.events WHERE tenant_id=$TIDQ AND correlation LIKE 'scndemo-$SCN-%'" >/dev/null
 sql "DELETE FROM app.devices WHERE tenant_id=$TIDQ AND source='scenario' AND external_id LIKE 'scn-$SCN-%' AND id NOT IN (SELECT device_id FROM app.events WHERE device_id IS NOT NULL)" >/dev/null
 sql "DELETE FROM app.sites WHERE tenant_id=$TIDQ AND name='Air Quality Monitoring (demo)'" >/dev/null

@@ -44,6 +44,7 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     // CA-12: ronde pianificate non svolte -> incidente «Ronda mancata» (~ogni 30 s)
     if n % 15 == 13 { Box::pin(api::patrol_missed_watchdog(st)).await; }
     if n % 30 == 23 { Box::pin(api::stale_open_watchdog(st)).await; } // CA-17
+    if n % 300 == 37 { Box::pin(crate::field::maintenance_autogen(st)).await; } // CA-20: manutenzioni generate da sole (~10 min)
     // #7 ritenzione GDPR (opt-in YW_RETENTION_DAYS): ~ogni ora (1800 tick * 2s)
     if n % 1800 == 0 { Box::pin(privacy::purge_retention(st)).await; }
     if n % 1800 == 900 { api::purge_connect_attempts(st).await; }
@@ -162,7 +163,7 @@ pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
         let seen: Option<i32> = sqlx::query_scalar("SELECT 1 FROM app.events WHERE tenant_id=$1 AND idem_key=$2")
             .bind(tid).bind(&srcev).fetch_optional(&st.owner_pool).await?;
         if seen.is_some() { continue; }
-        let res = api::persist_ingest(st, tid, api::Normalized{
+        let res = api::persist_ingest(st, tid, api::Normalized{ device_id: None,
             source: source.clone(),
             source_event: srcev.clone(),
             idem: srcev.clone(),

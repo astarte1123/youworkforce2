@@ -1,7 +1,7 @@
 //! Dashboard unica configurabile — servizio CORE (trasversale): aggrega i widget dei moduli attivi.
 //! Primo modulo-feature estratto da api.rs verso lo strato core (vedi docs/architettura-moduli.md).
 //! Il catalogo widget qui è la single source of truth dei widget disponibili; il filtro autoritativo
-//! (modulo attivo + ruolo) vive in `dashboard_layout_get`. L'organizzazione (abilita/ordina/dimensiona)
+//! (modulo attivo + permesso) vive in `dashboard_layout_get`. L'organizzazione (abilita/ordina/dimensiona)
 //! è del tenant_admin (capability dashboard.manage); l'attivazione dei moduli resta del superadmin.
 
 use axum::{extract::State, http::HeaderMap, Json};
@@ -12,19 +12,22 @@ use crate::state::AppState;
 use crate::api::{R, require_tenant, require_cap, has_cap, ise, audit};
 use crate::db;
 
-/// Catalogo widget: (key, moduli-any-of, ruoli-any-of, size-default, permessi-any-of). Un widget è
-/// candidato se un suo modulo è attivo (lista vuota = sempre, es. core) e il ruolo combacia (lista
-/// vuota = tutti) OPPURE l'utente ha uno dei permessi (TA-6: delega con ruoli personalizzati). I
-/// permessi sono scelti in modo che i ruoli predefiniti vedano esattamente gli stessi widget di prima.
-/// L'ordine qui è il default quando il tenant non ha un layout salvato.
-pub const DASHBOARD_WIDGETS: &[(&str, &[&str], &[&str], &str, &[&str])] = &[
-    ("incidents",  &["loneworker","gps","iot","giri"], &["operatore","tenant_admin","auditor","responsabile"], "half", &["incidents.view"]),
-    ("checkins",   &["loneworker"], &["operatore","tenant_admin","auditor"], "half", &[]),
-    ("orders",     &["interventi"], &["pianificatore","tenant_admin","lavoratore","auditor"], "half", &["plan"]),
-    ("timesheets", &["consuntivi"], &["lavoratore","responsabile","tenant_admin","auditor"], "half", &["approve","timesheets.view_all"]),
-    ("rounds",     &["giri"], &["pianificatore","tenant_admin","lavoratore","auditor"], "half", &["plan"]),
-    ("shifts",     &["workforce"], &["pianificatore","tenant_admin","lavoratore","reperibile","auditor"], "half", &["plan"]),
-    ("role",       &[], &[], "half", &[]),
+/// Catalogo widget: (key, moduli-any-of, permessi-any-of, size-default). IO-16 (decisione PO
+/// 26/11/2026): un widget è visibile se un suo modulo è attivo (lista vuota = sempre) e l'utente ha
+/// UNO dei suoi permessi (lista vuota = tutti). Niente più nomi di ruolo: vale anche per i ruoli
+/// personalizzati. `work.own` = il proprio lavoro (di default al lavoratore). I permessi sono scelti
+/// perché i ruoli predefiniti vedano gli stessi widget di prima (in più: il responsabile vede i
+/// check-in e gli ordini delle sue sedi, operatore e responsabile i turni, chi gestisce gli
+/// dispositivi il nuovo widget IoT). L'ordine qui è il default quando il tenant non ha un layout salvato.
+pub const DASHBOARD_WIDGETS: &[(&str, &[&str], &[&str], &str)] = &[
+    ("incidents",  &["loneworker","gps","iot","giri"], &["incidents.view"], "half"),
+    ("iot",        &["iot"], &["iot.manage","devices.manage","config.view"], "half"),
+    ("checkins",   &["loneworker"], &["incidents.view"], "half"),
+    ("orders",     &["interventi"], &["plan","orders.view_all","work.own"], "half"),
+    ("timesheets", &["consuntivi"], &["approve","timesheets.view_all","work.own"], "half"),
+    ("rounds",     &["giri"], &["plan","config.view","work.own"], "half"),
+    ("shifts",     &["workforce"], &["plan","config.view","work.own","incidents.handle"], "half"),
+    ("role",       &[], &[], "half"),
 ];
 
 /// Layout effettivo per l'utente: catalogo filtrato per moduli attivi + ruolo, merge col layout
@@ -40,10 +43,10 @@ pub async fn dashboard_layout_get(State(st): State<AppState>, h: HeaderMap) -> R
     let mut smap: std::collections::HashMap<String,(bool,i32,String)> = std::collections::HashMap::new();
     for r in &saved { smap.insert(r.get::<String,_>("widget_key"), (r.get("enabled"), r.get("position"), r.get("size"))); }
     let mut out: Vec<Value> = Vec::new();
-    for (i,(key,mods,roles,size,caps)) in DASHBOARD_WIDGETS.iter().enumerate() {
+    for (i,(key,mods,caps,size)) in DASHBOARD_WIDGETS.iter().enumerate() {
         let mod_ok = mods.is_empty() || mods.iter().any(|m| act.contains(*m));
-        let role_ok = roles.is_empty() || roles.contains(&s.role.as_str()) || caps.iter().any(|c| has_cap(&s, c));
-        if !mod_ok || !role_ok { continue; }
+        let cap_ok = caps.is_empty() || caps.iter().any(|c| has_cap(&s, c));
+        if !mod_ok || !cap_ok { continue; }
         let (enabled, position, sz) = match smap.get(*key) {
             Some((e,p,s2)) => (*e, *p, s2.clone()),
             None => (true, i as i32, size.to_string()),

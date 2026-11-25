@@ -133,11 +133,12 @@ pub(crate) async fn assistant_plan(st: &AppState, s: &Session, q: &str) -> Resul
             return Err(err(StatusCode::FORBIDDEN, "metadati moduli non consentiti a questo ruolo"));
         }
         let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-        let rows = sqlx::query("SELECT module_code,state FROM app.tenant_modules WHERE state IN ('degradato','in_disattivazione')")
+        // AR-5: due soli stati; si riportano i moduli NON attivi
+        let rows = sqlx::query("SELECT module_code,state FROM app.tenant_modules WHERE state<>'attivo'")
             .fetch_all(&mut *tx).await.map_err(ise)?;
         tx.commit().await.map_err(ise)?;
         let srcs: Vec<Value> = rows.iter().map(|r| json!({"type":"module","code":r.get::<String,_>("module_code"),"state":r.get::<String,_>("state")})).collect();
-        let ans = if rows.is_empty() { "Nessun modulo degradato.".to_string() } else { format!("{} moduli in stato degradato/in disattivazione.", rows.len()) };
+        let ans = if rows.is_empty() { "Tutti i moduli del tenant sono attivi.".to_string() } else { format!("{} moduli non attivi.", rows.len()) };
         return Ok(json!({"provider":"SIMULATO","intent":"moduli_degradati","answer":ans,"sources":srcs,"period":"stato attuale"}));
     }
 

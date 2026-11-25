@@ -54,26 +54,8 @@ GET    /api/audit-log/export            module  # registro attività (nucleo, au
 GET    /api/invite/check                module  # pubblico: verifica di un invito con token
 POST   /api/impersonate/stop            module,perm  # chiude l'impersonazione della propria sessione
 
-# --- servizio dispositivi e mappe indoor: nucleo (AR-4), permessi devices.admin nel gestore ---
-POST   /api/devices                     module  # servizio dispositivi del nucleo (AR-4)
-POST   /api/devices/onboarding-kit      module  # servizio dispositivi del nucleo (AR-4)
-POST   /api/devices/:id                 module  # servizio dispositivi del nucleo (AR-4)
-DELETE /api/devices/:id                 module  # servizio dispositivi del nucleo (AR-4)
-POST   /api/devices/:id/assign          module  # servizio dispositivi del nucleo (AR-4)
-GET    /api/devices/:id/readiness       module  # servizio dispositivi del nucleo (AR-4)
-POST   /api/devices/:id/place           module  # piantine: comuni a Sicurezza e Campo
+# --- servizio dispositivi (AR-4: abilitato dai moduli, controllo nel gestore) ---
 GET    /api/devices/:id/report/:kind    auth,module  # controlli nel helper track::build_report (sessione, incidents.view, DEVICE_MODS)
-GET    /api/catalog/facets              module  # catalogo modelli (sola lettura)
-POST   /api/geofences                   module  # aree: comuni a Sicurezza e Campo
-GET    /api/beacons                     module  # piantine: comuni a Sicurezza e Campo
-POST   /api/beacons                     module  # piantine: comuni a Sicurezza e Campo
-POST   /api/beacons/:id/place           module  # piantine: comuni a Sicurezza e Campo
-GET    /api/floorplans                  module  # piantine: comuni a Sicurezza e Campo
-POST   /api/floorplans                  module  # piantine: comuni a Sicurezza e Campo
-POST   /api/floorplans/:id              module  # piantine: comuni a Sicurezza e Campo
-DELETE /api/floorplans/:id              module  # piantine: comuni a Sicurezza e Campo
-GET    /api/floorplans/:id/image        module  # piantine: comuni a Sicurezza e Campo
-GET    /api/floorplans/:id/devices      module  # piantine: comuni a Sicurezza e Campo
 
 # --- calendari personali: il token è creato solo dentro il modulo ---
 GET    /api/oncall-calendar/url         module  # link personale (il calendario lo legge il token)
@@ -94,3 +76,8 @@ POST   /api/ai/reports/generate         perm  # report AI sui dati che l'utente 
 POST   /api/scenarios/:code/ai-analysis perm  # analisi in sola lettura
 POST   /api/diary/transcribe            perm  # trascrizione del proprio audio
 POST   /api/commesse/:id/attachments    perm  # regole nel gestore: costi per fatture/SAL, gruppo assegnato per foto/diario
+
+# --- TA-8: accesso delle persone (nucleo) ---
+POST   /api/users/:id/invite            module  # nuovo link di accesso (users.manage nel gestore)
+POST   /api/me/password                 module  # cambio della propria password
+GET    /api/event-types                 module  # nomi dei tipi di evento (catalogo di prodotto, sola lettura)

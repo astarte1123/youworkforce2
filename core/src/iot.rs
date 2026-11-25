@@ -116,7 +116,9 @@ pub async fn persist_telemetry(st: &AppState, tid: Uuid, dev_id: Uuid,
             let ext: String = sqlx::query_scalar("SELECT external_id FROM app.devices WHERE id=$1").bind(dev_id)
                 .fetch_optional(&st.owner_pool).await.map_err(ise)?.unwrap_or_default();
             let ev = format!("iot-telem-{}", Uuid::new_v4());
-            let r = persist_ingest(st, tid, Normalized{
+            // il dispositivo è già noto (qualunque sia la sua sorgente: iot, lorawan, mqtt, scenario…):
+            // l'evento gli resta legato, così l'allarme ha sede, lavoratore assegnato e instradamento
+            let r = persist_ingest(st, tid, Normalized{ device_id: Some(dev_id),
                 source: "iot".into(), source_event: ev.clone(), idem: ev.clone(), etype,
                 device_external_id: Some(ext), site_name: None, lat: None, lon: None, accuracy_m: None,
                 correlation: ev, payload, indoor: false, beacon_uid: None, zone: None }).await?;
@@ -1086,11 +1088,8 @@ pub(crate) async fn scenario_apply_inner(st: &AppState, tid: Uuid, code: &str, w
     let scn = cat.iter().find(|s| s.code==code).ok_or_else(|| err(StatusCode::BAD_REQUEST, "scenario sconosciuto"))?;
     if !scn.enabled { return Err(err(StatusCode::CONFLICT, "scenario disattivato nel catalogo")); }
     // 1) moduli
-    for m in &scn.modules {
-        sqlx::query("INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES($1,$2,'attivo')
-            ON CONFLICT (tenant_id,module_code) DO UPDATE SET state='attivo', updated_at=now()")
-            .bind(tid).bind(m).execute(&st.owner_pool).await.map_err(ise)?;
-    }
+    // AR-3: stesso percorso di attivazione del pannello (dipendenze comprese, mai moduli ritirati)
+    crate::superadmin::activate_modules(&st.owner_pool, tid, &scn.modules).await?;
     // 2) regole (idempotenti per label scn:<code>:<metric>:<op>)
     let mut rules_added = 0i64;
     for ru in &scn.rules {
@@ -1235,9 +1234,20 @@ pub async fn super_scenario_demo(State(st): State<AppState>, h: HeaderMap, Path(
     let sa_ = require_super(&st, &h).await?;
     let cat = scenario_catalog(&st).await;
     let scn = cat.iter().find(|s| s.code==code).ok_or_else(|| err(StatusCode::BAD_REQUEST, "scenario sconosciuto"))?;
-    // nomi device demo (se lo scenario non ha device demo, usa un nome sintetico)
-    let devs: Vec<String> = if scn.devices.is_empty() { vec![format!("scn-{}-demo", scn.code)] }
-        else { scn.devices.iter().map(|d| format!("scn-{}-{}", scn.code, d.suffix)).collect() };
+    // IO-7 (decisione PO 26/11/2026): i dati demo passano dalla pipeline VERA della telemetria
+    // (persist_telemetry: serie, ultimo stato, regole, alert IoT; incidente di sicurezza solo con Lone
+    // Worker attivo), come un dispositivo reale. Prima creavano incidenti direttamente, anche con il
+    // modulo spento. Servono il modulo IoT e i dispositivi demo dello scenario.
+    if !module_active(&st, tid, "iot").await {
+        return Err(err(StatusCode::CONFLICT, "i dati demo arrivano come telemetria IoT: attiva prima il modulo IoT su questa azienda"));
+    }
+    let mut devs: Vec<Uuid> = Vec::new();
+    for d in &scn.devices {
+        if let Some(id) = device_id_by_ext(&st, tid, "scenario", &format!("scn-{}-{}", scn.code, d.suffix)).await { devs.push(id); }
+    }
+    if devs.is_empty() {
+        return Err(err(StatusCode::CONFLICT, "lo scenario non ha dispositivi demo su questa azienda: riapplicalo con «dispositivi demo»"));
+    }
     // Telemetria demo: spec-driven (realistica, multi-metrica) se esiste la spec generata,
     // altrimenti derivata dalle regole (comportamento storico).
     let spec = scn.spec.clone();
@@ -1287,22 +1297,21 @@ pub async fn super_scenario_demo(State(st): State<AppState>, h: HeaderMap, Path(
             payloads.push(Value::Object(p));
         }
     }
-    let mut events = 0i64; let mut incidents = 0i64;
+    let (mut events, mut alerts, mut incidents) = (0i64, 0i64, 0i64);
+    let now = st.clock.now(); let total = payloads.len() as i64;
     for (i, payload) in payloads.iter().enumerate() {
-        let device = devs[i % devs.len()].clone();
-        let dev_id = device_id_by_ext(&st, tid, "scenario", &device).await;
-        let etype = eval_sensor_rules(&st, tid, dev_id, payload).await.unwrap_or_else(|| "telemetria".into());
-        let is_crit = CRITICAL.contains(&etype.as_str());
-        let corr = format!("scndemo-{}-{}", scn.code, Uuid::new_v4());
-        let _ = persist_ingest(&st, tid, Normalized{
-            source:"scenario".into(), source_event:corr.clone(), idem:corr.clone(),
-            etype, device_external_id:Some(device), site_name:None,
-            lat:None, lon:None, accuracy_m:None, correlation:corr, payload:payload.clone(),
-            indoor:false, beacon_uid:None, zone:None }).await;
-        events += 1; if is_crit { incidents += 1; }
+        let dev_id = devs[i % devs.len()];
+        let Some(values) = payload.as_object() else { continue };
+        if values.is_empty() { continue; }
+        // campioni distribuiti nell'ultima ora (serie realistiche), l'ultimo adesso
+        let ts = now - chrono::Duration::minutes((total - 1 - i as i64) * 5);
+        match persist_telemetry(&st, tid, dev_id, ts, values, None).await {
+            Ok((_, alert, incident)) => { events += 1; if !alert.is_null() { alerts += 1; } if !incident.is_null() { incidents += 1; } }
+            Err(e) => tracing::warn!("demo scenario {}: {:?}", scn.code, e),
+        }
     }
-    audit(&st, tid, &format!("superadmin:{}", sa_.email), "scenario_demo", json!({"code":scn.code,"events":events,"incidents":incidents})).await;
-    Ok(Json(json!({"ok":true,"events":events,"incidents":incidents})))
+    audit(&st, tid, &format!("superadmin:{}", sa_.email), "scenario_demo", json!({"code":scn.code,"events":events,"alerts":alerts,"incidents":incidents})).await;
+    Ok(Json(json!({"ok":true,"events":events,"alerts":alerts,"incidents":incidents})))
 }
 
 // ---- Motore dashboard parametrico per scenario (widget derivati dalle regole) ----
@@ -1448,27 +1457,38 @@ pub(crate) async fn scenario_dash_json(st: &AppState, tid: Uuid, scn: &Scenario)
     let ids: Vec<Uuid> = devs.iter().map(|r| r.get::<Uuid,_>("id")).collect();
     let real_ids: Vec<Uuid> = devs.iter().filter(|r| r.get::<String,_>("source") != "scenario").map(|r| r.get::<Uuid,_>("id")).collect();
     let mut evs: Vec<(Uuid, Value, Dt)> = if ids.is_empty() { Vec::new() } else {
-        sqlx::query("SELECT device_id,payload_ref,origin_ts FROM app.events WHERE device_id = ANY($1) AND payload_ref IS NOT NULL ORDER BY origin_ts DESC LIMIT 400")
+        // solo i dati demo «vecchi» (prima di IO-7 la demo scriveva eventi con source='scenario')
+        sqlx::query("SELECT device_id,payload_ref,origin_ts FROM app.events WHERE device_id = ANY($1) AND source='scenario' AND payload_ref IS NOT NULL ORDER BY origin_ts DESC LIMIT 400")
             .bind(&ids).fetch_all(&mut *tx).await.map_err(ise)?.iter()
             .filter_map(|r| Some((r.try_get::<Uuid,_>("device_id").ok()?, r.try_get::<Value,_>("payload_ref").unwrap_or(json!({})), r.get::<Dt,_>("origin_ts")))).collect() };
-    // telemetria reale (time-series nativa): ogni lettura diventa un «payload» {metrica: valore}
-    if !real_ids.is_empty() {
+    // telemetria (time-series nativa) di TUTTI i dispositivi dello scenario: reali e demo (IO-7: la
+    // demo passa dalla pipeline vera). Ogni lettura diventa un «payload» {metrica: valore}.
+    if !ids.is_empty() {
         let tel = sqlx::query("SELECT device_id, COALESCE(metric,key) AS m, num, str, ts FROM app.device_telemetry
-                WHERE device_id = ANY($1) ORDER BY ts DESC LIMIT 800").bind(&real_ids).fetch_all(&mut *tx).await.map_err(ise)?;
+                WHERE device_id = ANY($1) ORDER BY ts DESC LIMIT 800").bind(&ids).fetch_all(&mut *tx).await.map_err(ise)?;
         for r in &tel {
+            // i valori sì/no (es. aerazione) sono salvati come testo «true»/«false»: tornano booleani
             let v = r.try_get::<Option<f64>,_>("num").ok().flatten().map(|n| json!(n))
-                .or_else(|| r.try_get::<Option<String>,_>("str").ok().flatten().map(|x| json!(x))).unwrap_or(Value::Null);
+                .or_else(|| r.try_get::<Option<String>,_>("str").ok().flatten().map(|x| match x.as_str() { "true" => json!(true), "false" => json!(false), _ => json!(x) }))
+                .unwrap_or(Value::Null);
             let mut m = serde_json::Map::new(); m.insert(r.get::<String,_>("m"), v);
             evs.push((r.get("device_id"), Value::Object(m), r.get("ts")));
         }
         evs.sort_by(|a, b| b.2.cmp(&a.2));
     }
+    // IO-7: gli allarmi del cruscotto sono gli alert IoT (sempre alzati dalla pipeline quando una soglia
+    // scatta, anche senza Lone Worker) più gli incidenti di sicurezza non nati da un alert IoT (storici).
     let incs = if ids.is_empty() { Vec::new() } else {
-        sqlx::query("SELECT i.etype,i.state,i.opened_at FROM app.incidents i JOIN app.events e ON e.id=i.event_id
-            WHERE e.device_id = ANY($1) ORDER BY i.opened_at DESC LIMIT 10").bind(&ids).fetch_all(&mut *tx).await.map_err(ise)? };
+        sqlx::query("SELECT etype,state,opened_at FROM (
+              SELECT COALESCE(a.rule_etype,a.kind) AS etype, a.state, a.opened_at FROM app.iot_alerts a WHERE a.device_id = ANY($1)
+              UNION ALL
+              SELECT i.etype, i.state, i.opened_at FROM app.incidents i JOIN app.events e ON e.id=i.event_id
+               WHERE e.device_id = ANY($1) AND e.source='scenario') x
+            ORDER BY opened_at DESC LIMIT 10").bind(&ids).fetch_all(&mut *tx).await.map_err(ise)? };
     let open_inc: i64 = if ids.is_empty() { 0 } else {
-        sqlx::query_scalar("SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id
-            WHERE e.device_id = ANY($1) AND i.state<>'chiuso'").bind(&ids).fetch_one(&mut *tx).await.map_err(ise)? };
+        sqlx::query_scalar("SELECT (SELECT count(*) FROM app.iot_alerts a WHERE a.device_id = ANY($1) AND a.state<>'chiuso')
+             + (SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id
+                 WHERE e.device_id = ANY($1) AND e.source='scenario' AND i.state<>'chiuso')").bind(&ids).fetch_one(&mut *tx).await.map_err(ise)? };
     let ev24: i64 = if ids.is_empty() { 0 } else {
         sqlx::query_scalar("SELECT count(*) FROM app.events WHERE device_id = ANY($1) AND origin_ts > now()-interval '24 hours'")
             .bind(&ids).fetch_one(&mut *tx).await.map_err(ise)? };
@@ -1561,8 +1581,11 @@ pub async fn scenario_dashboard(State(st): State<AppState>, h: HeaderMap, Path(c
 }
 
 #[derive(Deserialize)] pub struct AerationReq { pub device_id: Uuid, pub on: bool }
-/// Aziona l'aerazione di un silo (device dello scenario). Aggiorna lo stato nativo (devices.config)
-/// e inietta un campione di telemetria (così il cruscotto riflette il cambio). operatore/tenant_admin.
+/// Aziona l'aerazione di un silo. IO-7: è un COMANDO vero (app.iot_commands, metodo
+/// `set_aeration`, params {"on":bool}), come «Invia comando» sul dispositivo: un dispositivo reale
+/// lo riceve col pull e risponde con la telemetria `aeration`. I dispositivi demo dello scenario sono
+/// simulati: il core esegue il comando al loro posto e manda lo stato come telemetria dalla pipeline
+/// vera. Nessuna scrittura diretta dello stato.
 pub async fn scenario_aeration_set(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>, Json(b): Json<AerationReq>) -> R {
     let s = require_tenant(&st, &h).await?;
     if !has_cap(&s,"devices.manage") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
@@ -1571,22 +1594,30 @@ pub async fn scenario_aeration_set(State(st): State<AppState>, h: HeaderMap, Pat
     let cat = scenario_catalog(&st).await;
     let _scn = scenario_applied(&st, tid, &code, &cat).await?;
     // device deve appartenere a questo scenario
-    let dev = sqlx::query("SELECT external_id, config FROM app.devices WHERE id=$1 AND tenant_id=$2 AND source='scenario' AND external_id LIKE $3")
-        .bind(b.device_id).bind(tid).bind(format!("scn-{}-%", code)).fetch_optional(&st.owner_pool).await.map_err(ise)?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "device non appartiene allo scenario"))?;
-    let ext: String = dev.get("external_id");
-    let mut cfg: Value = dev.try_get::<Value,_>("config").unwrap_or(json!({}));
-    if let Value::Object(ref mut m) = cfg { m.insert("aeration".into(), json!(b.on)); }
-    sqlx::query("UPDATE app.devices SET config=$2, updated_at=now() WHERE id=$1").bind(b.device_id).bind(&cfg).execute(&st.owner_pool).await.map_err(ise)?;
-    // telemetria: il cruscotto mostra subito il nuovo stato (serie/widget aerazione)
-    let corr = format!("aeration-{}-{}", code, Uuid::new_v4());
-    let _ = persist_ingest(&st, tid, Normalized{
-        source:"scenario".into(), source_event:corr.clone(), idem:corr.clone(), etype:"telemetria".into(),
-        device_external_id:Some(ext), site_name:None, lat:None, lon:None, accuracy_m:None,
-        correlation:corr, payload:json!({"aeration": b.on}), indoor:false, beacon_uid:None, zone:None }).await;
-    // L'azione è nativa (stato + telemetria): nessun server esterno coinvolto.
-    audit(&st, tid, &s.email, "scenario_aeration", json!({"code":code,"device":b.device_id,"on":b.on})).await;
-    Ok(Json(json!({"ok":true,"on":b.on})))
+    // il dispositivo deve essere di questa azienda e collegato a questo scenario (demo o reale)
+    let dev = sqlx::query("SELECT source, external_id FROM app.devices WHERE id=$1 AND tenant_id=$2
+            AND ((source='scenario' AND external_id LIKE $3) OR config->>'scenario'=$4)")
+        .bind(b.device_id).bind(tid).bind(format!("scn-{}-%", code)).bind(&code).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "il dispositivo non fa parte di questo scenario"))?;
+    let simulated = dev.get::<String,_>("source") == "scenario";
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let cid: Uuid = sqlx::query_scalar("INSERT INTO app.iot_commands(tenant_id,device_id,method,params,created_by) VALUES($1,$2,'set_aeration',$3,$4) RETURNING id")
+        .bind(tid).bind(b.device_id).bind(json!({"on": b.on})).bind(s.user_id).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let mut status = "pending";
+    if simulated {
+        // dispositivo simulato: esegue il comando e risponde con la telemetria, come farebbe un silo vero
+        let mut v = serde_json::Map::new(); v.insert("aeration".into(), json!(b.on));
+        let res = persist_telemetry(&st, tid, b.device_id, st.clock.now(), &v, None).await;
+        status = if res.is_ok() { "done" } else { "error" };
+        let mut tx2 = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+        sqlx::query("UPDATE app.iot_commands SET status=$2,result=$3,sent_at=now() WHERE id=$1").bind(cid).bind(status)
+            .bind(if res.is_ok() { "eseguito dal dispositivo simulato dello scenario" } else { "errore nella telemetria simulata" })
+            .execute(&mut *tx2).await.map_err(ise)?;
+        tx2.commit().await.map_err(ise)?;
+    }
+    audit(&st, tid, &s.email, "scenario_aeration", json!({"code":code,"device":b.device_id,"on":b.on,"command_id":cid,"status":status})).await;
+    Ok(Json(json!({"ok":true,"on":b.on,"command_id":cid,"status":status})))
 }
 
 #[derive(Deserialize)]

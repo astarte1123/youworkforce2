@@ -65,9 +65,9 @@ pub const REGISTRY: &[Manifest] = &[
     Manifest{ code:"consuntivi", name:"Ore, spese e consuntivi", kind:"product", requires:&[], provides:&["timesheets"],
         capabilities:&["approve","timesheets.view_all"], widgets:&["timesheets"],
         description:"Ore, spese, consuntivi di lavoro." },
-    Manifest{ code:"giri", name:"Ronde e punzonature", kind:"product", requires:&[], provides:&["patrols","incidents"],
+    Manifest{ code:"giri", name:"Ronde e vigilanza", kind:"product", requires:&[], provides:&["patrols","incidents"],
         capabilities:&["plan","incidents.view","incidents.handle","escalation.manage"], widgets:&["rounds","incidents"],
-        description:"Giri di controllo: checkpoint QR/NFC/beacon/GPS, punzonature, compliance. La ronda pianificata non svolta apre un incidente in Centrale con escalation." },
+        description:"Percorsi di ronda: checkpoint QR/NFC/beacon/GPS, punzonature, compliance. La ronda pianificata non svolta apre un incidente in Centrale con escalation." },
     Manifest{ code:"workforce", name:"Forza lavoro e turni", kind:"product", requires:&[], provides:&["shifts","oncall"],
         capabilities:&["plan"], widgets:&["shifts"],
         description:"Turni, pianificazione, reperibilità." },
@@ -109,6 +109,9 @@ pub const FEATURE_MODULES: &[(&str, &[&str])] = &[
     ("patrol_missed", &["giri"]),
     // CA-21: funzioni di pianificazione condivise
     ("teams",         &["workforce", "cantieri"]),
+    // AR-4 (decisione PO 26/11/2026): dispositivi, piantine, beacon e aree sono un servizio
+    // abilitato dai moduli che li usano (prima «nucleo» sempre disponibile)
+    ("devices",       &["loneworker", "gps", "iot", "giri", "interventi", "cantieri", "workforce"]),
     ("shift_plans",   &["workforce"]),
 ];
 /// Moduli che abilitano una funzione (vuoto = funzione sconosciuta: nessun modulo la abilita).
@@ -123,6 +126,18 @@ pub fn manifest(code: &str) -> Option<&'static Manifest> {
 /// Dipendenze mancanti di `code` dato l'insieme dei moduli attivi.
 pub fn missing_deps(code: &str, active: &std::collections::HashSet<String>) -> Vec<&'static str> {
     manifest(code).map(|m| m.requires.iter().copied().filter(|d| !active.contains(*d)).collect()).unwrap_or_default()
+}
+
+/// AR-3: `codes` più tutte le dipendenze (transitive) dichiarate nel registro.
+pub fn with_deps(codes: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut stack: Vec<String> = codes.to_vec();
+    while let Some(c) = stack.pop() {
+        if out.contains(&c) { continue; }
+        if let Some(mf) = manifest(&c) { for d in mf.requires { stack.push(d.to_string()); } }
+        out.push(c);
+    }
+    out
 }
 
 /// Moduli attivi che dipendono da `code` (per avvisare prima di disattivarlo).
@@ -181,5 +196,16 @@ mod feature_matrix_tests {
             for m in *mods { assert!(manifest(m).is_some(), "{f}: modulo {m} non nel registro"); }
         }
         assert!(feature_modules("sconosciuta").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod deps_tests {
+    use super::*;
+    #[test]
+    fn with_deps_keeps_codes_and_is_idempotent() {
+        let v = with_deps(&["gps".to_string(), "gps".to_string()]);
+        assert_eq!(v.iter().filter(|c| *c == "gps").count(), 1);
+        for mf in REGISTRY { for d in mf.requires { assert!(manifest(d).is_some(), "{} richiede {d} che non esiste", mf.code); } }
     }
 }

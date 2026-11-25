@@ -237,7 +237,7 @@ pub(crate) async fn esc_send_code_native(st: &AppState, kind: &str, value: &str,
     let live_cfg = crate::delivery::TwilioCfg::from_env();
     let ch = esc_channel_from_kind(kind);
     let body = crate::delivery::request_body(ch, &from, value, text, "verify", 0);
-    esc_dispatch(st, ch, value, text, &body, live_cfg.is_some(), live_cfg.as_ref(), &slack_token, &relay, &sink, &public_base).await
+    esc_dispatch(st, ch, value, text, &body, live_cfg.is_some() && crate::delivery::TwilioCfg::live_enabled(), live_cfg.as_ref(), &slack_token, &relay, &sink, &public_base).await
 }
 pub async fn user_cm_verify(State(st): State<AppState>, h: HeaderMap, Path(cmid): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "escalation.manage")?;
@@ -1306,7 +1306,7 @@ pub(crate) async fn esc_send_sms_native(st: &AppState, to: &str, text: &str) -> 
     let slack_token = crate::delivery::chan("YW_ESC_SLACK_TOKEN").unwrap_or_default();
     let public_base = std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_default();
     let live_cfg = crate::delivery::TwilioCfg::from_env();
-    let live_on = live_cfg.is_some();
+    let live_on = live_cfg.is_some() && crate::delivery::TwilioCfg::live_enabled(); // invio reale solo con l'interruttore acceso, come dice lo stato della consegna
     let body = crate::delivery::request_body(Channel::Sms, &from, to, text, "verify", 0);
     esc_dispatch(st, Channel::Sms, to, text, &body, live_on, live_cfg.as_ref(), &slack_token, &relay, &sink, &public_base).await
 }
@@ -1467,6 +1467,32 @@ pub(crate) async fn esc_deliver_step_rungs(
     delivered
 }
 
+/// Regole di notifica personali degli step GIÀ sparati (come in GoAlert): chi è stato avvisato da uno
+/// step continua a ricevere i suoi avvisi ritardati (es. SMS subito, chiamata dopo 5 minuti) finché
+/// nessuno prende in carico, anche se nel frattempo l'escalation è passata allo step successivo.
+/// Prima le regole ritardate di uno step con attesa più breve venivano saltate. Idempotente: la
+/// chiave di esc_delivery_log (step, canale, recapito, giro) evita i doppi invii. L'orario di ogni
+/// step viene dalla cronologia (`esc_delivery`).
+pub(crate) async fn esc_deliver_earlier_rungs(
+    st: &AppState, tid: Uuid, iid: Uuid, gid: Uuid, specs: &[EscStepTarget], ga_opt: Option<(&str, &str)>,
+    skip: Option<(i32, i32)>, now: chrono::DateTime<chrono::Utc>, text: &str, tr: &EscTransport<'_>,
+) -> i64 {
+    let rows = sqlx::query("SELECT (detail->>'step')::int AS step, COALESCE((detail->>'attempt')::int,0) AS attempt, min(at) AS at
+            FROM app.incident_timeline WHERE tenant_id=$1 AND incident_id=$2 AND kind='esc_delivery' AND detail ? 'step'
+            GROUP BY 1,2 ORDER BY 3")
+        .bind(tid).bind(iid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let mut delivered = 0i64;
+    for r in rows {
+        let (step, attempt): (i32, i32) = (r.get("step"), r.get("attempt"));
+        if Some((step, attempt)) == skip { continue; }
+        let Some(spec) = specs.get(step.max(0) as usize).cloned() else { continue };
+        let at: chrono::DateTime<chrono::Utc> = r.get("at");
+        let (oncall, _) = esc_step_recipients(st, tid, gid, &spec, ga_opt, now).await;
+        delivered += esc_deliver_step_rungs(st, tid, iid, step, at, attempt, spec.channel, &oncall, now, text, tr).await;
+    }
+    delivered
+}
+
 /// Consegna idempotente di UNA rung Slack a un canale (target Slack di uno step, o canale del gruppo).
 pub(crate) async fn esc_deliver_slack_rung(st: &AppState, tid: Uuid, iid: Uuid, step: i32, attempt: i32, channel_id: &str, text: &str, tr: &EscTransport<'_>) -> i64 {
     use crate::delivery::Channel;
@@ -1574,6 +1600,7 @@ pub(crate) async fn esc_process_incident(
                 let text = esc_alert_text(st, tid, iid, &etype, short, &tr.public_base).await;
                 delivered += esc_deliver_step_rungs(st, tid, iid, cur_step, fired_at, rc, spec.channel, &oncall, now, &text, tr).await;
                 if let Some(sc) = slack_ch { delivered += esc_deliver_slack_rung(st, tid, iid, cur_step, rc, &sc, &text, tr).await; }
+                delivered += esc_deliver_earlier_rungs(st, tid, iid, gid, &specs, ga_opt, Some((cur_step, rc)), now, &text, tr).await;
             }
         }
         EscAction::FireStep(idx, _) => {
@@ -1613,6 +1640,8 @@ pub(crate) async fn esc_process_incident(
                 .bind(tid).bind(iid).bind(idx as i32).bind(now).bind(new_rc).execute(&st.owner_pool).await;
             let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_delivery',$3)")
                 .bind(tid).bind(iid).bind(json!({"step":idx,"channel":spec.channel.as_str(),"target":spec.kind,"attempt":attempt,"live":live_on,"engine":engine})).execute(&st.owner_pool).await;
+            // avvisi ritardati ancora dovuti degli step precedenti (non si perdono passando di step)
+            delivered += esc_deliver_earlier_rungs(st, tid, iid, gid, &specs, ga_opt, Some((idx as i32, attempt)), now, &text, tr).await;
         }
     }
     delivered
@@ -1678,7 +1707,7 @@ pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i
         .unwrap_or((true,5,0));
     let engine = "native".to_string(); // unico motore: escalation nativa
     // adapter live (Twilio) usati quando configurati
-    let live_on = live_cfg.is_some();
+    let live_on = live_cfg.is_some() && crate::delivery::TwilioCfg::live_enabled(); // invio reale solo con l'interruttore acceso, come dice lo stato della consegna
     // La policy di consegna è PER-GRUPPO (F3): ogni gruppo può avere step personalizzati.
     // Costruita dentro il loop in base al gruppo instradato dell'incidente.
 
@@ -2093,7 +2122,7 @@ pub(crate) async fn esc_apply_ack(st: &AppState, tid: Uuid, iid: Uuid, action: &
 /// Crea un incidente critico INSTRADATO senza device (heartbeat/email/watchdog): usa la catena
 /// persist_ingest, poi fissa il gruppo se richiesto (forced_group_id, override del routing).
 pub(crate) async fn raise_routed_incident(st: &AppState, tid: Uuid, etype: &str, source: &str, correlation: &str, payload: Value, group_id: Option<Uuid>) -> Option<Uuid> {
-    let res = persist_ingest(st, tid, Normalized{
+    let res = persist_ingest(st, tid, Normalized{ device_id: None,
         source: source.into(), source_event: correlation.into(), idem: correlation.into(),
         etype: etype.into(), device_external_id: None, site_name: None,
         lat: None, lon: None, accuracy_m: None, correlation: correlation.into(),

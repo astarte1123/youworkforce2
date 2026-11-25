@@ -348,16 +348,20 @@ pub async fn delete_contract(State(st): State<AppState>, h: HeaderMap, Path(id):
 #[derive(Deserialize)]
 pub struct PlanReq { pub title: String, #[serde(default)] pub client_id: Option<Uuid>, #[serde(default)] pub site_id: Option<Uuid>,
     #[serde(default)] pub contract_id: Option<Uuid>, #[serde(default)] pub every_days: Option<i32>, #[serde(default)] pub next_date: Option<String>,
-    #[serde(default)] pub active: Option<bool> }
+    #[serde(default)] pub active: Option<bool>,
+    #[serde(default)] pub auto_generate: Option<bool>, #[serde(default)] pub lead_days: Option<i32> }
 pub async fn list_plans(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "interventi").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT p.id,p.title,p.every_days,p.next_date,p.active,p.client_id,cl.name AS client_name,p.site_id,si.name AS site FROM app.maintenance_plans p LEFT JOIN app.clients cl ON cl.id=p.client_id LEFT JOIN app.sites si ON si.id=p.site_id ORDER BY p.active DESC,p.next_date").fetch_all(&mut *tx).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT p.id,p.title,p.every_days,p.next_date,p.active,p.auto_generate,p.lead_days,p.last_order,p.last_generated_at,p.client_id,cl.name AS client_name,p.site_id,si.name AS site FROM app.maintenance_plans p LEFT JOIN app.clients cl ON cl.id=p.client_id LEFT JOIN app.sites si ON si.id=p.site_id ORDER BY p.active DESC,p.next_date").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({
         "id":r.get::<Uuid,_>("id"),"title":r.get::<String,_>("title"),"every_days":r.get::<i32,_>("every_days"),
         "next_date":r.get::<chrono::NaiveDate,_>("next_date").to_string(),"active":r.get::<bool,_>("active"),
+        "auto_generate":r.get::<bool,_>("auto_generate"),"lead_days":r.get::<i32,_>("lead_days"),
+        "last_order":r.try_get::<Option<Uuid>,_>("last_order").ok().flatten(),
+        "last_generated_at":r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_generated_at").ok().flatten(),
         "client_id":r.try_get::<Uuid,_>("client_id").ok(),"client_name":r.try_get::<String,_>("client_name").ok(),
         "site_id":r.try_get::<Uuid,_>("site_id").ok(),"site":r.try_get::<String,_>("site").ok() })).collect();
     Ok(Json(json!(out)))
@@ -369,8 +373,10 @@ pub async fn create_plan(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     let ev = b.every_days.unwrap_or(30).max(1);
     let nd = parse_date_opt(&b.next_date).unwrap_or_else(|| st.clock.now().date_naive());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let id: Uuid = sqlx::query_scalar("INSERT INTO app.maintenance_plans(tenant_id,client_id,site_id,contract_id,title,every_days,next_date) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
-        .bind(tid).bind(b.client_id).bind(b.site_id).bind(b.contract_id).bind(b.title.trim()).bind(ev).bind(nd)
+    let lead = b.lead_days.unwrap_or(7);
+    if !(0..=90).contains(&lead) { return Err(err(StatusCode::BAD_REQUEST, "anticipo da 0 a 90 giorni")); }
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.maintenance_plans(tenant_id,client_id,site_id,contract_id,title,every_days,next_date,auto_generate,lead_days) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id")
+        .bind(tid).bind(b.client_id).bind(b.site_id).bind(b.contract_id).bind(b.title.trim()).bind(ev).bind(nd).bind(b.auto_generate.unwrap_or(true)).bind(lead)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":id})))
@@ -381,8 +387,11 @@ pub async fn update_plan(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     if b.title.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "titolo richiesto")); }
     let ev = b.every_days.unwrap_or(30).max(1);
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.maintenance_plans SET title=$2,client_id=$3,site_id=$4,contract_id=$5,every_days=$6,next_date=COALESCE($7,next_date),active=COALESCE($8,active) WHERE id=$1")
+    if b.lead_days.map(|l| !(0..=90).contains(&l)).unwrap_or(false) { return Err(err(StatusCode::BAD_REQUEST, "anticipo da 0 a 90 giorni")); }
+    let n = sqlx::query("UPDATE app.maintenance_plans SET title=$2,client_id=$3,site_id=$4,contract_id=$5,every_days=$6,next_date=COALESCE($7,next_date),active=COALESCE($8,active),
+            auto_generate=COALESCE($9,auto_generate),lead_days=COALESCE($10,lead_days) WHERE id=$1")
         .bind(id).bind(b.title.trim()).bind(b.client_id).bind(b.site_id).bind(b.contract_id).bind(ev).bind(parse_date_opt(&b.next_date)).bind(b.active)
+        .bind(b.auto_generate).bind(b.lead_days)
         .execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "piano non trovato")); }
@@ -396,27 +405,78 @@ pub async fn delete_plan(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
-/// Genera l'appuntamento dalla ricorrenza e avanza la prossima data.
-pub async fn generate_plan_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+/// CA-20: crea l'intervento della prossima scadenza di un piano e avanza la data. Usata da «Genera»
+/// e dal worker. L'ora dell'appuntamento è le 9:00 nel fuso dell'azienda (CA-16), non in UTC.
+/// Se il piano è rimasto indietro (scadenze già passate) crea UN solo intervento e porta la prossima
+/// data alla prima scadenza futura, invece di sommergere di interventi arretrati.
+pub(crate) async fn plan_generate_one(tx: &mut sqlx::PgConnection, tid: Uuid, plan_id: Uuid, actor: Option<Uuid>,
+    today: chrono::NaiveDate, tz: chrono_tz::Tz) -> Result<Option<(Uuid, chrono::NaiveDate)>, (StatusCode, String)> {
     use chrono::TimeZone as _;
-    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
-    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let p = sqlx::query("SELECT title,client_id,site_id,contract_id,every_days,next_date FROM app.maintenance_plans WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
-    let p = match p { Some(r)=>r, None=>{ return Err(err(StatusCode::NOT_FOUND,"piano non trovato")); } };
+    let p = sqlx::query("SELECT title,client_id,site_id,contract_id,every_days,next_date FROM app.maintenance_plans WHERE id=$1 AND tenant_id=$2 FOR UPDATE")
+        .bind(plan_id).bind(tid).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let Some(p) = p else { return Ok(None) };
     let nd: chrono::NaiveDate = p.get("next_date");
-    let start = chrono::Utc.from_utc_datetime(&nd.and_hms_opt(9,0,0).unwrap());
+    let start = tz.from_local_datetime(&nd.and_hms_opt(9,0,0).unwrap()).earliest()
+        .map(|x| x.with_timezone(&chrono::Utc)).unwrap_or_else(|| chrono::Utc.from_utc_datetime(&nd.and_hms_opt(9,0,0).unwrap()));
     let oid: Uuid = sqlx::query_scalar(
         "INSERT INTO app.work_orders(tenant_id,site_id,title,state,created_by,scheduled_start,priority,client_id,contract_id)
          VALUES($1,$2,$3,'bozza',$4,$5,2,$6,$7) RETURNING id")
-        .bind(tid).bind(p.try_get::<Uuid,_>("site_id").ok()).bind(format!("{} (manutenzione)", p.get::<String,_>("title"))).bind(s.user_id)
+        .bind(tid).bind(p.try_get::<Uuid,_>("site_id").ok()).bind(format!("{} (manutenzione)", p.get::<String,_>("title"))).bind(actor)
         .bind(start).bind(p.try_get::<Uuid,_>("client_id").ok()).bind(p.try_get::<Uuid,_>("contract_id").ok())
         .fetch_one(&mut *tx).await.map_err(ise)?;
-    let ev: i32 = p.get("every_days");
-    let next = nd + chrono::Duration::days(ev as i64);
-    sqlx::query("UPDATE app.maintenance_plans SET next_date=$2,last_order=$3 WHERE id=$1").bind(id).bind(next).bind(oid).execute(&mut *tx).await.map_err(ise)?;
+    let ev = (p.get::<i32,_>("every_days").max(1)) as i64;
+    let mut next = nd + chrono::Duration::days(ev);
+    while next < today { next += chrono::Duration::days(ev); }
+    sqlx::query("UPDATE app.maintenance_plans SET next_date=$2,last_order=$3,last_generated_at=now() WHERE id=$1").bind(plan_id).bind(next).bind(oid).execute(&mut *tx).await.map_err(ise)?;
+    Ok(Some((oid, next)))
+}
+async fn tenant_tz(st: &AppState, tid: Uuid) -> chrono_tz::Tz {
+    sqlx::query_scalar::<_,String>("SELECT timezone FROM app.tenants WHERE id=$1").bind(tid)
+        .fetch_optional(&st.owner_pool).await.ok().flatten().and_then(|z| parse_tz(&z)).unwrap_or(chrono_tz::Europe::Rome)
+}
+/// Genera l'appuntamento dalla ricorrenza e avanza la prossima data.
+pub async fn generate_plan_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
+    let tz = tenant_tz(&st, tid).await;
+    let today = st.clock.now().with_timezone(&tz).date_naive();
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let r = plan_generate_one(&mut tx, tid, id, Some(s.user_id), today, tz).await?;
     tx.commit().await.map_err(ise)?;
-    Ok(Json(json!({"id":oid,"next_date":next.to_string()})))
+    match r {
+        Some((oid, next)) => Ok(Json(json!({"id":oid,"next_date":next.to_string()}))),
+        None => Err(err(StatusCode::NOT_FOUND,"piano non trovato")),
+    }
+}
+/// CA-20 (decisione PO): le manutenzioni si generano da sole. Ogni piano attivo con generazione
+/// automatica crea il suo intervento quando mancano `lead_days` giorni alla scadenza. Worker,
+/// all'incirca ogni 10 minuti; più istanze non generano due volte (FOR UPDATE SKIP LOCKED + la
+/// data che avanza nella stessa transazione).
+pub async fn maintenance_autogen(st: &AppState) {
+    let tenants: Vec<Uuid> = match sqlx::query_scalar(
+        "SELECT t.id FROM app.tenants t JOIN app.tenant_modules m ON m.tenant_id=t.id AND m.module_code='interventi' AND m.state='attivo'
+          WHERE t.status='attivo' AND EXISTS (SELECT 1 FROM app.maintenance_plans p WHERE p.tenant_id=t.id AND p.active AND p.auto_generate)")
+        .fetch_all(&st.owner_pool).await { Ok(v) => v, Err(e) => { tracing::warn!("maintenance autogen: {e}"); return; } };
+    for tid in tenants {
+        let tz = tenant_tz(st, tid).await;
+        let today = st.clock.now().with_timezone(&tz).date_naive();
+        let Ok(mut tx) = db::begin_tenant(&st.rt_pool, tid).await else { continue };
+        let due: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM app.maintenance_plans WHERE tenant_id=$1 AND active AND auto_generate AND next_date - lead_days <= $2
+              ORDER BY next_date LIMIT 50 FOR UPDATE SKIP LOCKED").bind(tid).bind(today)
+            .fetch_all(&mut *tx).await.unwrap_or_default();
+        let mut made = 0;
+        for pid in due {
+            match plan_generate_one(&mut tx, tid, pid, None, today, tz).await {
+                Ok(Some((oid, _))) => { made += 1; tracing::info!("manutenzione generata: piano {pid} -> intervento {oid}"); }
+                Ok(None) => {}
+                Err(e) => { tracing::warn!("manutenzione piano {pid}: {:?}", e); }
+            }
+        }
+        if tx.commit().await.is_ok() && made > 0 {
+            crate::api::audit(st, tid, "sistema", "maintenance_autogen", json!({"interventi": made})).await;
+        }
+    }
 }
 // ===== Interventi A5: richieste/ticket =====
 #[derive(Deserialize)]
@@ -1100,9 +1160,10 @@ pub async fn update_line(State(st): State<AppState>, h: HeaderMap, Path((id, lid
     let can_rate = is_approver(&s) || can_see_costs(&s);
     if let Some(r) = b.rate_cents { if r < 0 { return Err(err(StatusCode::BAD_REQUEST, "tariffa negativa")); } }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    // la tariffa cambia solo per chi può fissarla; per gli altri resta quella della riga
+    // la tariffa cambia solo per chi può fissarla E solo se la manda: modificare ore o attività senza
+    // indicare la tariffa non la cancella (prima la console la azzerava a chi approva o vede i costi)
     let n = sqlx::query("UPDATE app.timesheet_lines SET activity=$3,work_date=$4,minutes=$5,currency=$6,
-                         rate_cents=CASE WHEN $7 THEN $8 ELSE rate_cents END WHERE id=$1 AND timesheet_id=$2")
+                         rate_cents=CASE WHEN $7 AND $8::bigint IS NOT NULL THEN $8 ELSE rate_cents END WHERE id=$1 AND timesheet_id=$2")
         .bind(lid).bind(id).bind(&act).bind(wd).bind(minutes).bind(&cur).bind(can_rate).bind(b.rate_cents)
         .execute(&mut *tx).await.map_err(ise)?.rows_affected();
     if n == 0 { let _ = tx.rollback().await; return Err(err(StatusCode::NOT_FOUND, "riga inesistente")); }
@@ -1324,7 +1385,7 @@ pub async fn create_patrol_route(State(st): State<AppState>, h: HeaderMap, Json(
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("INSERT INTO app.patrol_routes(tenant_id,name,site_id,window_minutes,assigned_group,mode,grace_min,manual_code_allowed) VALUES($1,$2,$3,$4,$5,COALESCE($6,'piedi'),COALESCE($7,0),COALESCE($8,true)) RETURNING id")
         .bind(tid).bind(b.name.trim()).bind(b.site_id).bind(b.window_minutes).bind(b.assigned_group).bind(&b.mode).bind(b.grace_min).bind(b.manual_code_allowed)
-        .fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "giro già esistente (nome)"))?;
+        .fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "esiste già un percorso di ronda con questo nome"))?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT,"già esistente"))?.get::<Uuid,_>("id");
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "create_patrol_route", json!({"name":b.name})).await;
@@ -1339,7 +1400,7 @@ pub async fn update_patrol_route(State(st): State<AppState>, h: HeaderMap, Path(
     let n = sqlx::query("UPDATE app.patrol_routes SET name=$2, site_id=$3, window_minutes=$4, active=COALESCE($5,active), assigned_group=CASE WHEN $6 THEN NULL ELSE COALESCE($7,assigned_group) END, mode=COALESCE($8,mode), grace_min=COALESCE($9,grace_min), manual_code_allowed=COALESCE($10,manual_code_allowed) WHERE id=$1")
         .bind(id).bind(b.name.trim()).bind(b.site_id).bind(b.window_minutes).bind(b.active).bind(clear_g).bind(b.assigned_group).bind(&b.mode).bind(b.grace_min).bind(b.manual_code_allowed).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
-    if n==0 { return Err(err(StatusCode::NOT_FOUND, "giro inesistente")); }
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "percorso di ronda inesistente")); }
     Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_patrol_route(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
@@ -1349,7 +1410,7 @@ pub async fn delete_patrol_route(State(st): State<AppState>, h: HeaderMap, Path(
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.patrol_routes WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
-    if n==0 { return Err(err(StatusCode::NOT_FOUND, "giro inesistente")); }
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "percorso di ronda inesistente")); }
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)] pub struct CheckpointReq { pub name: String, pub kind: String, #[serde(default)] pub code: Option<String>, #[serde(default)] pub lat: Option<f64>, #[serde(default)] pub lon: Option<f64>, #[serde(default)] pub radius_m: Option<i32>, #[serde(default)] pub position: Option<i32>,
@@ -1367,7 +1428,7 @@ pub async fn create_checkpoint(State(st): State<AppState>, h: HeaderMap, Path(ri
     let code: Option<String> = if b.kind=="gps" { None } else if generated { Some(patrol_code()) } else { Some(given.clone()) };
     let weak = !generated && b.kind!="gps" && b.kind!="beacon" && given.chars().count() < 10;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.patrol_routes WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"giro inesistente")); }
+    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.patrol_routes WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"percorso di ronda inesistente")); }
     let pos = match b.position { Some(p) => p, None => {
         let m: i32 = sqlx::query_scalar("SELECT COALESCE(MAX(position),0)::int FROM app.patrol_checkpoints WHERE route_id=$1").bind(rid).fetch_one(&mut *tx).await.map_err(ise)?;
         m + 1 } };
@@ -1410,7 +1471,7 @@ pub async fn import_checkpoint(State(st): State<AppState>, h: HeaderMap, Path(ri
     require_module(&st, tid, "giri").await?;
     if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore/admin")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.patrol_routes WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"giro inesistente")); }
+    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.patrol_routes WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"percorso di ronda inesistente")); }
     let src = sqlx::query("SELECT name,kind,code,lat,lon,radius_m FROM app.patrol_checkpoints WHERE id=$1")
         .bind(b.source_checkpoint_id).fetch_optional(&mut *tx).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::NOT_FOUND,"checkpoint sorgente inesistente"))?;
@@ -1471,12 +1532,12 @@ pub async fn start_round(State(st): State<AppState>, h: HeaderMap, Path(rid): Pa
     require_module(&st, tid, "giri").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let rr = sqlx::query("SELECT active, assigned_group FROM app.patrol_routes WHERE id=$1").bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND,"giro inesistente"))?;
-    if !rr.get::<bool,_>("active") { return Err(err(StatusCode::BAD_REQUEST,"giro non attivo")); }
+        .ok_or_else(|| err(StatusCode::NOT_FOUND,"percorso di ronda inesistente"))?;
+    if !rr.get::<bool,_>("active") { return Err(err(StatusCode::BAD_REQUEST,"percorso di ronda non attivo")); }
     // ACL per gruppo: se il giro è assegnato a un gruppo, solo i membri (o il pianificatore) avviano ronde
     if let Some(g) = rr.try_get::<Option<Uuid>,_>("assigned_group").ok().flatten() {
         if !is_planner(&s) && !user_in_group(&st, s.user_id, g).await {
-            return Err(err(StatusCode::FORBIDDEN, "giro riservato a un altro gruppo"));
+            return Err(err(StatusCode::FORBIDDEN, "percorso di ronda riservato a un altro gruppo"));
         }
     }
     // CA-17: una sola ronda in corso per giro (anche con indice unico parziale, mig 0141)
@@ -1484,12 +1545,12 @@ pub async fn start_round(State(st): State<AppState>, h: HeaderMap, Path(rid): Pa
     let row = sqlx::query("INSERT INTO app.patrol_rounds(tenant_id,route_id,user_id)
             SELECT $1,$2,$3 WHERE NOT EXISTS (SELECT 1 FROM app.patrol_rounds WHERE route_id=$2 AND status='in_corso') RETURNING id")
         .bind(tid).bind(rid).bind(s.user_id).fetch_optional(&mut *tx).await
-        .map_err(|e| if e.to_string().contains("patrol_rounds_one_open") { err(StatusCode::CONFLICT, "ronda già in corso su questo giro") } else { ise(e) })?;
+        .map_err(|e| if e.to_string().contains("patrol_rounds_one_open") { err(StatusCode::CONFLICT, "ronda già in corso su questo percorso") } else { ise(e) })?;
     let Some(row) = row else {
         let who = sqlx::query("SELECT u.email, ro.started_at FROM app.patrol_rounds ro JOIN app.users u ON u.id=ro.user_id WHERE ro.route_id=$1 AND ro.status='in_corso' LIMIT 1")
             .bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?;
-        let msg = match who { Some(w) => format!("ronda già in corso su questo giro: avviata da {} alle {}", w.get::<String,_>("email"),
-                w.get::<chrono::DateTime<chrono::Utc>,_>("started_at").format("%H:%M UTC")), None => "ronda già in corso su questo giro".into() };
+        let msg = match who { Some(w) => format!("ronda già in corso su questo percorso: avviata da {} alle {}", w.get::<String,_>("email"),
+                w.get::<chrono::DateTime<chrono::Utc>,_>("started_at").format("%H:%M UTC")), None => "ronda già in corso su questo percorso".into() };
         return Err(err(StatusCode::CONFLICT, &msg));
     };
     let round_id = row.get::<Uuid,_>("id");
@@ -1542,7 +1603,7 @@ pub async fn punch(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid
     let manual_allowed: bool = round.try_get::<bool,_>("manual_code_allowed").unwrap_or(true);
     let cp = sqlx::query("SELECT kind,code,lat,lon,radius_m FROM app.patrol_checkpoints WHERE id=$1 AND route_id=$2")
         .bind(b.checkpoint_id).bind(route_id).fetch_optional(&mut *tx).await.map_err(ise)?
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST,"checkpoint non appartiene al giro"))?;
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST,"il checkpoint non appartiene a questo percorso"))?;
     let kind: String = cp.get("kind");
     // CA-2: come è stato ottenuto il codice. Assente o sconosciuto = manuale.
     let entry: &str = match (kind.as_str(), b.entry.as_deref()) {
@@ -1564,7 +1625,7 @@ pub async fn punch(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid
             let got = got.trim();
             let method = if entry == "manuale" { format!("{kind}_manuale") } else { kind.clone() };
             if entry == "manuale" && !manual_allowed {
-                (false, method, "inserimento manuale non ammesso su questo giro: scansiona il codice o avvicina il tag")
+                (false, method, "inserimento manuale non ammesso su questo percorso: scansiona il codice o avvicina il tag")
             } else {
                 (!exp.is_empty() && exp==got, method, if !exp.is_empty() && exp==got {""} else {"codice non corrispondente"})
             }
@@ -1662,7 +1723,7 @@ pub async fn close_round(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
         }
     }
     if status=="incompleto" {
-        anomalies.push((None, "non_completato", if in_window { format!("Giro incompleto: {done}/{total} tappe") } else { "Giro oltre la finestra di tempo".to_string() }));
+        anomalies.push((None, "non_completato", if in_window { format!("Ronda incompleta: {done}/{total} tappe") } else { "Ronda oltre la durata massima".to_string() }));
     }
     for (cid, kind, detail) in &anomalies {
         sqlx::query("INSERT INTO app.patrol_anomalies(tenant_id,round_id,checkpoint_id,kind,detail) VALUES($1,$2,$3,$4,$5)")
@@ -1847,7 +1908,7 @@ pub async fn patrol_missed_watchdog(st: &AppState) {
             let Some(mid) = claimed else { continue; };
             let rname: String = r.get("route_name");
             let key = format!("ronda-mancata-{sid}-{}", slot.timestamp());
-            let res = persist_ingest(st, tid, Normalized{
+            let res = persist_ingest(st, tid, Normalized{ device_id: None,
                 source: "giri".into(), source_event: key.clone(), idem: key.clone(), etype: "ronda_mancata".into(),
                 device_external_id: None, site_name: r.try_get::<String,_>("site_name").ok(),
                 lat: None, lon: None, accuracy_m: None, correlation: key,
@@ -2645,7 +2706,8 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
           FROM app.commessa_presenze p JOIN app.commesse c ON c.id=p.commessa_id WHERE p.commessa_id=$1 AND p.clock_out IS NOT NULL AND NOT p.auto_closed")
         .bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
     let materials_cost: f64 = sqlx::query_scalar("SELECT COALESCE(sum(amount),0)::float8 FROM app.commessa_costi WHERE commessa_id=$1").bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
-    let diario = sqlx::query("SELECT g.id,g.diary_date,g.weather,g.present_count,g.body,u.email AS author FROM app.commessa_diario g LEFT JOIN app.users u ON u.id=g.created_by WHERE g.commessa_id=$1 ORDER BY g.diary_date DESC,g.created_at DESC LIMIT 100").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    // CA-20: un solo diario (app.diary_entries); qui le note legate al cantiere
+    let diario = sqlx::query("SELECT g.id,g.diary_date,g.weather,g.present_count,g.body,u.email AS author FROM app.diary_entries g LEFT JOIN app.users u ON u.id=g.user_id WHERE g.commessa_id=$1 ORDER BY g.diary_date DESC,g.created_at DESC LIMIT 100").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let fatture = sqlx::query("SELECT f.id,f.number,f.amount::float8 AS amount,f.issue_date,f.status,f.note,f.sal_id FROM app.commessa_fatture f WHERE f.commessa_id=$1 ORDER BY f.issue_date DESC,f.created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let atts = sqlx::query("SELECT id,entity_kind,kind,filename,content_type,caption,created_by,created_at FROM app.commessa_attachments WHERE commessa_id=$1 ORDER BY created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
@@ -2940,8 +3002,9 @@ pub async fn add_commessa_diario(State(st): State<AppState>, h: HeaderMap, Path(
     if b.body.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "testo richiesto")); }
     let d = parse_date_opt(&b.diary_date).unwrap_or_else(|| st.clock.now().date_naive());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let id: Uuid = sqlx::query_scalar("INSERT INTO app.commessa_diario(tenant_id,commessa_id,diary_date,weather,present_count,body,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
-        .bind(tid).bind(cid).bind(d).bind(&b.weather).bind(b.present_count).bind(b.body.trim()).bind(s.user_id)
+    if b.present_count.map(|n| n < 0).unwrap_or(false) { return Err(err(StatusCode::BAD_REQUEST, "numero di presenti non valido")); }
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.diary_entries(tenant_id,user_id,commessa_id,diary_date,weather,present_count,body,source,idem_key) VALUES($1,$2,$3,$4,$5,$6,$7,'cantiere',$8) RETURNING id")
+        .bind(tid).bind(s.user_id).bind(cid).bind(d).bind(&b.weather).bind(b.present_count).bind(b.body.trim()).bind(format!("cantiere:{}", Uuid::new_v4()))
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":id})))
@@ -2950,7 +3013,8 @@ pub async fn delete_commessa_diario(State(st): State<AppState>, h: HeaderMap, Pa
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    sqlx::query("DELETE FROM app.commessa_diario WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    // CA-20: si eliminano da qui solo le note del giornale di cantiere (non quelle di intervento)
+    sqlx::query("DELETE FROM app.diary_entries WHERE id=$1 AND commessa_id IS NOT NULL").bind(id).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
@@ -3092,3 +3156,9 @@ pub async fn delete_shift_plan(State(st): State<AppState>, h: HeaderMap, Path(id
     Ok(Json(json!({"ok":true})))
 }
 
+/// Hook di test (solo TEST_CLOCK): una passata della generazione automatica delle manutenzioni.
+pub async fn test_maintenance_autogen(State(st): State<AppState>) -> R {
+    if !st.clock.test_mode { return Err(err(StatusCode::FORBIDDEN,"test clock disabled")); }
+    maintenance_autogen(&st).await;
+    Ok(Json(json!({"ok":true})))
+}

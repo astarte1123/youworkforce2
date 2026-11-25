@@ -1,18 +1,7 @@
-# Reperibilità e notifiche (YWAlert) — SPOSTATO
+# Reperibilità e notifiche (YWAlert) — spostato in archivio
 
-> **Questo manuale è superato.** Dalla razionalizzazione Worker Safety il motore di escalation è
-> **nativo** di YouWorkforce (default) e YWAlert resta solo come **rete di sicurezza / rollback**.
->
-> La guida aggiornata è in **[escalation-manuale.md](escalation-manuale.md)**: copre motore nativo,
-> policy multi-step, rotazioni (incl. mensile) e pianificazioni temporanee, recapiti e regole di
-> notifica per-utente, dedup, manutenzione con riepilogo, label/ricerca, calendario iCal dai turni
-> calcolati, e il disaccoppiamento dal modulo (l'escalation serve anche IoT/dispositivi GPS).
+Il motore esterno YWAlert/GoAlert è stato **ritirato**: l'escalation di YouWorkforce è solo quella
+nativa. La guida attuale è **[escalation-manuale.md](escalation-manuale.md)**.
 
-## YWAlert come rollback (riferimento rapido)
-
-- **Provisiona YWAlert** (superadmin → Connessioni & integrazioni): crea servizio, escalation policy,
-  chiave e heartbeat per il tenant. Necessario solo se si vuole usare YWAlert come motore.
-- **Motore escalation = YWAlert** (superadmin → scheda tenant): rimette YWAlert come motore al posto
-  del nativo. Da usare solo per tornare indietro.
-- Quando il motore è nativo, YWAlert (se provisionato) viene mantenuto allineato in *best-effort* e
-  usato per il confronto di parità (report shadow), ma non è richiesto perché l'escalation funzioni.
+Il vecchio testo è conservato come documento storico in
+[archivio/ywalert-manuale.md](archivio/ywalert-manuale.md).

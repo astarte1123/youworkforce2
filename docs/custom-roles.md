@@ -1,4 +1,4 @@
-# Ruoli personalizzati per tenant — Fase 3
+# Ruoli personalizzati per tenant — Fase 3 (FATTA)
 
 Un tenant definisce **ruoli propri** = bundle **nominati** di capability (Fase 2), assegnabili a
 **utenti** e/o ai **gruppi di persone condivisi** (Fase 1). **Solo additivi**: aggiungono
@@ -26,7 +26,11 @@ togliere un ruolo custom ha **effetto immediato**, senza re-login.
 Tutte RLS `tenant_isolation` + GRANT app_rt. FK `ON DELETE CASCADE`: cancellare il ruolo rimuove
 capability e assegnazioni; cancellare utente/gruppo rimuove le sue assegnazioni.
 
-## API (tenant_admin)
+## API (permesso `users.manage`)
+
+Tutte le rotte richiedono `users.manage` (l'amministratore lo ha tramite `admin`). Valgono le
+**regole di delega** (TA-1, vedi [capability-layer.md](capability-layer.md#regole-di-delega-ta-1-ta-3)):
+chi non è amministratore crea, modifica e assegna solo ruoli con permessi che possiede già.
 
 | Metodo | Rotta | Azione |
 |---|---|---|
@@ -39,12 +43,17 @@ capability e assegnazioni; cancellare utente/gruppo rimuove le sue assegnazioni.
 | POST | `/api/custom-roles/:id/groups` | assegna `{group_id}` (gruppo condiviso) |
 | DELETE | `/api/custom-roles/:id/groups/:gid` | rimuove assegnazione gruppo |
 
-Validazione: capability fuori catalogo → 400; nome duplicato → 409.
+Validazione: capability fuori catalogo → 400; nome duplicato → 409; capability che chi modifica
+non possiede (creazione, modifica, assegnazione a utente o gruppo) → 403 con l'elenco leggibile.
+Il catalogo valido è quello di [capability-layer.md](capability-layer.md) (19 permessi;
+`sites.manage` in arrivo, decisione PO 26/11/2026).
 
 ## UI
 
-**Utenti e sedi → «Ruoli personalizzati»**: crea/modifica/elimina ruolo (nome, descrizione,
-capability), assegna/rimuovi utenti e gruppi condivisi. `GET /api/me` espone le `caps` effettive.
+**Configurazione → Persone e permessi → «Ruoli personalizzati»**: crea/modifica/elimina ruolo
+(nome, descrizione, elenco di permessi con nome e spiegazione), assegna/rimuovi utenti e gruppi di
+persone. Nel modulo di creazione compaiono i permessi di base e quelli dei moduli attivi.
+`GET /api/me` espone le `caps` effettive.
 
 ## Isolamento e compatibilità
 

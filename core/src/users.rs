@@ -65,24 +65,53 @@ pub async fn set_user_sites(State(st): State<AppState>, h: HeaderMap, Path(id): 
 }
 
 #[derive(Deserialize)]
-pub struct NewUser { pub email: String, pub role: String, pub password: String }
+pub struct NewUser { pub email: String, pub role: String, #[serde(default)] pub password: Option<String> }
+/// TA-8 (decisione PO 26/11/2026): password scelte dalle persone almeno 10 caratteri; quella
+/// iniziale data via API (importazioni, test) almeno 8.
+pub(crate) const MIN_OWN_PASSWORD: usize = 10;
+/// Crea un invito monouso (7 giorni) per l'utente; gli inviti precedenti non usati decadono.
+/// Ritorna il percorso del link (`/invite.html?slug=..&token=..`) e, se la consegna email è
+/// configurata e c'è un indirizzo pubblico, prova a inviarlo per email.
+pub(crate) async fn issue_invite(st: &AppState, tid: Uuid, uid: Uuid, email: &str) -> Result<Value, (StatusCode, String)> {
+    let slug: String = sqlx::query_scalar("SELECT slug FROM app.tenants WHERE id=$1").bind(tid).fetch_one(&st.owner_pool).await.map_err(ise)?;
+    let tok = auth::new_token();
+    let exp = st.clock.now() + chrono::Duration::days(7);
+    sqlx::query("UPDATE app.user_invites SET expires_at=LEAST(expires_at, now()) WHERE tenant_id=$1 AND user_id=$2 AND used_at IS NULL")
+        .bind(tid).bind(uid).execute(&st.owner_pool).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.user_invites(token_hash,tenant_id,user_id,email,expires_at) VALUES($1,$2,$3,$4,$5)")
+        .bind(crate::api::hash_token(&tok)).bind(tid).bind(uid).bind(email).bind(exp).execute(&st.owner_pool).await.map_err(ise)?;
+    let path = format!("/invite.html?slug={}&token={}", slug, tok);
+    let mut emailed = false;
+    let relay = crate::delivery::chan("YW_ESC_SMTP_RELAY_URL").unwrap_or_default();
+    let base = std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_default();
+    if !relay.is_empty() && !base.trim().is_empty() {
+        let link = format!("{}{}", base.trim_end_matches('/'), path);
+        let body = json!({"email": {"to": email, "subject": "Invito a YouWorkforce",
+            "body": format!("Sei stato invitato a YouWorkforce. Per scegliere la tua password e accedere apri questo link (vale 7 giorni, una sola volta):\n{link}")}});
+        emailed = crate::delivery::deliver_email_relay(&st.http, &relay, &body).await.state == "live";
+    }
+    Ok(json!({"invite_path": path, "expires_at": exp.to_rfc3339(), "emailed": emailed}))
+}
 pub async fn create_user(State(st): State<AppState>, h: HeaderMap, Json(b): Json<NewUser>) -> R {
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     let tid = s.tenant_id.unwrap();
     if !USER_ROLES.contains(&b.role.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "ruolo non valido")); }
     // TA-1: il ruolo assegnato non può avere permessi che chi crea non ha
     require_grantable(&s, &effective_caps(&st, tid, &b.role).await)?;
-    if b.password.len() < 4 { return Err(err(StatusCode::BAD_REQUEST, "password troppo corta")); }
+    if let Some(p) = &b.password { if p.len() < 8 { return Err(err(StatusCode::BAD_REQUEST, "password iniziale di almeno 8 caratteri")); } }
     if !valid_email(&b.email) { return Err(err(StatusCode::BAD_REQUEST, "email non valida")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // TA-8: senza password l'utente riceve un invito e la sceglie lui; fino ad allora nessun accesso
+    let pw = b.password.clone().unwrap_or_else(auth::new_token);
     let row = sqlx::query("INSERT INTO app.users(tenant_id,email,pass_hash,role) VALUES($1,$2,$3,$4) RETURNING id")
-        .bind(tid).bind(b.email.trim()).bind(auth::hash_password(&b.password)).bind(&b.role)
+        .bind(tid).bind(b.email.trim()).bind(auth::hash_password(&pw)).bind(&b.role)
         .fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "email gia' presente"))?;
     tx.commit().await.map_err(ise)?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT, "email gia' presente"))?.get::<Uuid,_>("id");
-    audit(&st, tid, &s.email, "create_user", json!({"email":b.email,"role":b.role})).await;
+    let invite = if b.password.is_none() { Some(issue_invite(&st, tid, id, b.email.trim()).await?) } else { None };
+    audit(&st, tid, &s.email, "create_user", json!({"email":b.email,"role":b.role,"invite":invite.is_some()})).await;
     // SA-6: licenze indicative -> l'utente è creato comunque, la risposta riporta l'eventuale superamento
-    Ok(Json(json!({"id":id, "license_warnings": license_overage(&st, tid).await})))
+    Ok(Json(json!({"id":id, "license_warnings": license_overage(&st, tid).await, "invite": invite})))
 }
 
 #[derive(Deserialize)]
@@ -105,7 +134,7 @@ pub async fn update_user(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
         sqlx::query("UPDATE app.users SET role=$2 WHERE id=$1").bind(id).bind(r).execute(&mut *tx).await.map_err(ise)?;
     }
     if let Some(p) = &b.password {
-        if p.len() < 4 { let _=tx.rollback().await; return Err(err(StatusCode::BAD_REQUEST, "password troppo corta")); }
+        if p.len() < 8 { let _=tx.rollback().await; return Err(err(StatusCode::BAD_REQUEST, "password di almeno 8 caratteri")); }
         sqlx::query("UPDATE app.users SET pass_hash=$2 WHERE id=$1").bind(id).bind(auth::hash_password(p)).execute(&mut *tx).await.map_err(ise)?;
     }
     if let Some(ph) = &b.phone {
@@ -119,6 +148,37 @@ pub async fn update_user(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     }
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "update_user", json!({"id":id,"role":b.role})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
+/// TA-8: nuovo link di accesso per un utente (primo accesso non fatto o password dimenticata).
+pub async fn user_invite(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
+    let tid = s.tenant_id.unwrap();
+    let (_role, caps) = user_caps(&st, tid, id).await.ok_or_else(|| err(StatusCode::NOT_FOUND, "utente inesistente"))?;
+    if id != s.user_id { require_grantable(&s, &caps)?; } // TA-1: non si prende il controllo di chi ha più permessi
+    let email: String = sqlx::query_scalar("SELECT email FROM app.users WHERE id=$1 AND tenant_id=$2 AND anonymized_at IS NULL")
+        .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "utente inesistente"))?;
+    let inv = issue_invite(&st, tid, id, &email).await?;
+    audit(&st, tid, &s.email, "user_invite", json!({"user":id,"emailed":inv["emailed"]})).await;
+    Ok(Json(inv))
+}
+#[derive(Deserialize)] pub struct OwnPassword { pub current: String, pub new: String }
+/// TA-8: ognuno cambia la propria password (serve quella attuale); le altre sessioni si chiudono.
+pub async fn change_own_password(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OwnPassword>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    if s.impersonator.is_some() { return Err(err(StatusCode::FORBIDDEN, "durante l'impersonazione non si cambia la password dell'utente")); }
+    if b.new.chars().count() < MIN_OWN_PASSWORD { return Err(err(StatusCode::BAD_REQUEST, &format!("la nuova password deve avere almeno {MIN_OWN_PASSWORD} caratteri"))); }
+    let hash: String = sqlx::query_scalar("SELECT pass_hash FROM app.users WHERE id=$1 AND tenant_id=$2").bind(s.user_id).bind(tid)
+        .fetch_one(&st.owner_pool).await.map_err(ise)?;
+    if !auth::verify_password(&b.current, &hash) { return Err(err(StatusCode::FORBIDDEN, "password attuale errata")); }
+    sqlx::query("UPDATE app.users SET pass_hash=$3 WHERE id=$1 AND tenant_id=$2").bind(s.user_id).bind(tid).bind(auth::hash_password(&b.new))
+        .execute(&st.owner_pool).await.map_err(ise)?;
+    let cur = h.get(axum::http::header::COOKIE).and_then(|v| v.to_str().ok()).unwrap_or("")
+        .split(';').find_map(|c| c.trim().strip_prefix("yw_session=").map(|x| x.to_string())).unwrap_or_default();
+    let _ = sqlx::query("DELETE FROM app.sessions WHERE user_id=$1 AND tenant_id=$2 AND token<>$3").bind(s.user_id).bind(tid).bind(cur)
+        .execute(&st.owner_pool).await;
+    audit(&st, tid, &s.email, "change_own_password", json!({})).await;
     Ok(Json(json!({"ok":true})))
 }
 

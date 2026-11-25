@@ -359,7 +359,7 @@ async function loadOrders(){
   flushDrafts();
 }
 async function oAct(id,act,v){ try{ await api('/orders/'+id+'/'+act,{method:'POST',body:JSON.stringify({version:v})}); toast('Avviato','ok'); loadOrders(); }catch(e){toast(e,'bad');} }
-// ---- ronde (giri) ----
+// ---- ronde (percorsi di ronda) ----
 let PATROL_ROUND=null;
 async function loadPatrols(){
   const sec=$('#patrolsSec'); const box=$('#patrols');
@@ -368,12 +368,18 @@ async function loadPatrols(){
   sec.style.display='block';
   const active=routes.filter(r=>r.active!==false);
   if(PATROL_ROUND){ return renderRound(); }
-  box.innerHTML = active.length? active.map(r=>`<div class="card pad">
+  // una ronda lasciata aperta (app chiusa, «Torna all'elenco») si riprende da qui: il server ne
+  // ammette una sola in corso per percorso
+  const mine=((await api('/patrol-rounds').catch(()=>[]))||[]).filter(x=>x.status==='in_corso'&&ME&&x.email===ME.email);
+  const resume=mine.map(x=>`<div class="card pad"><div class="spread"><b>${esc(x.route_name)}</b><span class="tag">in corso</span></div>
+    <button class="btn block mt-10" onclick="resumeRound('${x.id}')">Riprendi la ronda</button></div>`).join('');
+  box.innerHTML = resume + (active.length? active.filter(r=>!mine.some(x=>x.route_id===r.id)).map(r=>`<div class="card pad">
     <div class="spread"><b>${esc(r.name)}</b><span class="tag">${r.checkpoints.length} punti</span></div>
     <div class="small mut mt-4 mb-10">${r.checkpoints.map(c=>esc(c.name)).join(' → ')||'nessun checkpoint'}</div>
     <button class="btn block" onclick="startRound('${r.id}')">Avvia ronda</button></div>`).join('')
-    : '<div class="card pad mut center">Nessun giro disponibile</div>';
+    : (resume?'':'<div class="card pad mut center">Nessun percorso di ronda disponibile</div>'));
 }
+async function resumeRound(id){ try{ PATROL_ROUND=await api('/patrol-rounds/'+id); renderRound(); }catch(e){toast(e,'bad');} }
 async function startRound(rid){ try{ PATROL_ROUND=await api('/patrol-routes/'+rid+'/rounds',{method:'POST',body:'{}'}); renderRound(); }catch(e){toast(e,'bad');} }
 function renderRound(){ const r=PATROL_ROUND, box=$('#patrols'); if(!r)return loadPatrols();
   box.innerHTML=`<div class="card pad">
@@ -382,7 +388,7 @@ function renderRound(){ const r=PATROL_ROUND, box=$('#patrols'); if(!r)return lo
       <span>${c.position}. <b>${esc(c.name)}</b> <span class="tag">${esc(CP_KIND_LAB[c.kind]||humanizeCode(c.kind))}</span>${c.punched?` <span class="${c.punched.ok?'t-ok':'t-bad'}" role="img" aria-label="${c.punched.ok?'punzonato':'punzonatura non riuscita'}">${c.punched.ok?'✓':'✗'}</span>`:''}</span>
       ${c.punched&&c.punched.ok?'':`<button class="btn small" aria-label="Punzona ${esc(c.name)}" onclick="doPunch('${c.id}','${c.kind}')">punzona</button>`}</div>`).join('')}</div>
     <button class="btn block mt-12" onclick="closeRound()">Chiudi ronda</button>
-    <button class="btn block ghost mt-6" onclick="PATROL_ROUND=null;loadPatrols()">Annulla</button></div>`;
+    <button class="btn block ghost mt-6" onclick="PATROL_ROUND=null;loadPatrols()">Torna all'elenco (la ronda resta aperta)</button></div>`;
 }
 async function doPunch(cid,kind){
   const body={checkpoint_id:cid};
@@ -392,13 +398,13 @@ async function doPunch(cid,kind){
     try{ const pos=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{enableHighAccuracy:true,timeout:10000}));
       body.lat=pos.coords.latitude; body.lon=pos.coords.longitude; }catch(e){ toast('Posizione negata','bad'); return; }
   } else {
-    // CA-2: l'app dichiara COME ha ottenuto il codice; il digitato a mano resta tale (e il giro
+    // CA-2: l'app dichiara COME ha ottenuto il codice; il digitato a mano resta tale (e il percorso
     // può non ammetterlo). Il codice atteso non arriva mai qui.
     let code=null, entry='manuale';
     if(kind==='qr'){ code=await scanQR(); if(code!==null) entry='scansione'; }
     else if(kind==='nfc'){ code=await scanNFC(); if(code!==null) entry='nfc'; }
     if(code===null){
-      if(PATROL_ROUND.manual_code_allowed===false){ toast('Su questo giro serve la scansione: '+(kind==='nfc'?'avvicina il tag NFC':'inquadra il codice QR'),'bad'); return; }
+      if(PATROL_ROUND.manual_code_allowed===false){ toast('Su questo percorso serve la scansione: '+(kind==='nfc'?'avvicina il tag NFC':'inquadra il codice QR'),'bad'); return; }
       code=await askPrompt('Scansione non riuscita: digita il codice scritto sul punto di controllo (verrà registrato come inserimento manuale)');
     }
     if(!code)return; body.code=code; body.entry=entry;

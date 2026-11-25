@@ -55,8 +55,9 @@ Due pagine distinte (amministratore):
   [capability-layer](capability-layer.md)).
 - **Gruppi di persone (condivisi)**: insiemi di persone riusabili da qualunque modulo; si possono
   **importare** nei gruppi di allarme. Vedi [gruppi-condivisi](gruppi-condivisi.md).
-- **Permessi (capability)**: matrice ruolo × capability (`admin`/`plan`/`approve`). Il default
-  riproduce i ruoli storici; si possono aggiungere/togliere permessi per il tenant. Vedi
+- **Permessi (capability)**: matrice ruolo × permesso (19 permessi, da `admin` a
+  `dashboard.manage`; `sites.manage` in arrivo). Il default riproduce i ruoli storici; si possono
+  aggiungere/togliere permessi per il tenant. Vedi
   [capability-layer](capability-layer.md).
 - **Ruoli personalizzati**: bundle di capability definiti dal tenant, assegnabili a utenti e/o
   gruppi (additivi). Vedi [custom-roles](custom-roles.md).
@@ -86,8 +87,8 @@ Due pagine distinte (amministratore):
 
 Pagina a **tab**: Gruppi, Routing (evento→gruppo), Notifiche (fallback vocale, calendario
 reperibilità, manutenzione), Recapiti (con verifica OTP), Assenze & turni, Monitor (diagnostica).
-Motore di escalation **nativo** (parità con YWAlert). Dettagli: [escalation-manuale](escalation-manuale.md),
-[ywalert-manuale](ywalert-manuale.md).
+Motore di escalation **nativo**, unico motore (il motore esterno GoAlert/YWAlert è stato
+ritirato). Dettagli: [escalation-manuale](escalation-manuale.md).
 
 ## 6. Dispositivi e app
 
@@ -485,6 +486,105 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
     `YW_SUPERADMIN_MFA=on`; un account che l'ha attivata la usa sempre. e2e
     `qa/superadmin-mfa-e2e.sh` 20/20, unit test TOTP con i vettori dell'RFC.
 
+## 13-quater. Decisioni PO del 26/11/2026 (prima parte)
+
+- **Inviti (TA-8).** «Invita utente» crea l'utente senza password e genera un invito monouso (7
+  giorni, `POST /api/users`, senza `password`); `POST /api/users/:id/invite` dà un nuovo link (gli
+  inviti precedenti non usati decadono); `POST /api/me/password` cambia la propria password
+  (attuale + nuova di almeno 10 caratteri, chiude le altre sessioni). Le password scelte dalle
+  persone (invito, cambio) hanno almeno 10 caratteri; quella iniziale passata dall'API (importazioni,
+  test) almeno 8. L'invito parte per email solo se c'è il relay email e `YW_ESC_PUBLIC_BASE`.
+  e2e `qa/user-invite-e2e.sh` 13/13.
+- **Sedi e asset (TA-17).** Nuovo permesso `sites.manage` (di default pianificatore; l'admin li ha
+  tutti); vale ancora `users.manage` per chi lo aveva.
+- **Moduli (AR-3, AR-5, mig `0159`).** Due soli stati, attivo e non attivo. Un solo percorso di
+  attivazione (pannello superadmin, creazione del tenant, scenari) che attiva anche le dipendenze
+  dichiarate; dal pannello si chiede conferma (409 «serve attivare anche…» finché non si conferma).
+  Non si spegne un modulo finché un altro attivo ne ha bisogno.
+- **Dispositivi (AR-4).** Anagrafica dispositivi, piantine, beacon e aree sono disponibili solo
+  con un modulo che li usa (Lone Worker, GPS, IoT, Ronde, Interventi, Cantieri, Forza lavoro):
+  riga `devices` della matrice in `modules::FEATURE_MODULES`.
+- **Badge Teltonika (SL-16).** Allarme solo quando l'IO dell'evento è attivo (il record del rilascio
+  del pulsante non apre un secondo allarme); un record con posizione 0,0 (nessun fix GPS) conta
+  come contatto ma non come posizione; la mappa IO → allarme si rilegge ogni minuto. Da verificare
+  con il GH-5200 reale.
+- **Invio reale (escalation).** SMS e chiamate partono con Twilio solo se le credenziali ci sono
+  **e** l'interruttore «Invio reale» è acceso, come mostra lo stato della consegna (prima bastavano
+  le credenziali, e la console diceva «di prova» mentre gli SMS partivano).
+- **Ruoli personalizzati.** Per eliminare un ruolo bisogna avere tutti i suoi permessi (come per
+  modificarlo o assegnarlo).
+- **Ripetizione delle notifiche.** Il campo «Ripetizione notifica SOS» dei Trigger non aveva effetto
+  ed è stato tolto: le ripetizioni si impostano nella policy di ogni gruppo.
+- **Membri dai gruppi di persone (TA-7, mig `0160`).** Gruppi di escalation e profili di protezione
+  possono collegare uno o più gruppi di persone (`alarm_group_sources`, `protection_profile_sources`;
+  API `POST/DELETE /api/groups/:id/sources[/:ug]` e `/api/safety/profiles/:id/sources[/:ug]`,
+  permesso `escalation.manage`). Trigger nel DB tengono i membri sempre allineati
+  (`via_user_group` sul membro; quelli a mano hanno NULL e non vengono toccati); nei gruppi di
+  escalation i nuovi entrano in coda alla rotazione; nei profili chi ha già un profilo resta lì.
+  Togliere a mano un membro arrivato da un gruppo dà 409 con spiegazione. e2e
+  `qa/member-sources-e2e.sh`.
+- **Catalogo dei tipi di evento (SL-15, mig `0161`).** `app.event_types` è l'unica fonte di nome,
+  famiglia (soccorso, connessione, area, dispositivo, veicolo, sensori, ronde, altro) e spiegazione
+  di ogni codice evento. Il core lo tiene in memoria (`catalogs.rs`, caricato all'avvio e dopo ogni
+  modifica; `devices::etype_label` lo usa, con i nomi predefiniti di riserva); la console lo legge
+  da `GET /api/event-types`. Il superadmin lo modifica (`PUT /api/superadmin/event-types/:code`,
+  scheda Cataloghi). Critico e salva-vita NON sono nel catalogo: restano `api::CRITICAL` /
+  `LIFE_SAFETY` (più i codici `*_critico`) e vengono solo mostrati, così un allarme salva-vita non
+  si declassa da un'interfaccia. Le quattro forme di «non comunica» (device_offline,
+  perdita_contatto, heartbeat_down, dispositivo_inattivo) e quelle di «area» hanno una famiglia
+  comune; i codici non cambiano. Con più istanze del core il nome nuovo arriva alle altre al loro
+  riavvio.
+- **Catalogo dei pacchetti (SA-10, mig `0161`).** `app.plans_catalog` sostituisce l'elenco fisso nel
+  codice: `GET/POST /api/superadmin/plans`, `PUT/DELETE /api/superadmin/plans/:code`,
+  `GET /api/superadmin/modules-catalog`. I moduli devono esistere nel catalogo moduli; i
+  predefiniti si disattivano ma non si eliminano; creare un tenant con un pacchetto disattivato o
+  inesistente dà 400 (prima veniva ignorato in silenzio). e2e `qa/catalogs-e2e.sh`.
+- **Un solo diario e manutenzioni automatiche (CA-20, mig `0162`).** Il giornale di cantiere è
+  confluito in `app.diary_entries` (colonne `commessa_id`, `diary_date`, `weather`,
+  `present_count`; `source='cantiere'`; `user_id` ora può essere vuoto per le note di un utente
+  eliminato); `app.commessa_diario` è stata copiata ed eliminata. Le API del giornale
+  (`POST /api/commesse/:id/diario`, `DELETE /api/commessa-diario/:id`) restano e cancellano solo
+  note di cantiere. I piani di manutenzione hanno `auto_generate` (default sì) e `lead_days`
+  (0–90, default 7): il worker (`field::maintenance_autogen`, ~10 min) crea l'intervento quando
+  `next_date - lead_days <= oggi` nel fuso dell'azienda; «Genera» e il worker usano la stessa
+  funzione (`plan_generate_one`, ora 9:00 locale invece che UTC; piano arretrato: un intervento e
+  data portata alla prima scadenza futura; `FOR UPDATE SKIP LOCKED` contro i doppioni tra istanze).
+  Hook di test `POST /api/_test/maintenance-autogen` (solo TEST_CLOCK). e2e
+  `qa/diary-maintenance-e2e.sh`.
+- **Scenari dalla pipeline vera (IO-7).** La demo di uno scenario
+  (`POST /api/superadmin/tenants/:id/scenarios/:code/demo`) invia i campioni con
+  `persist_telemetry` ai dispositivi demo (serie, ultimo stato, regole, alert IoT; incidente di
+  sicurezza solo con Lone Worker attivo, come per un sensore vero). Senza modulo IoT o senza
+  dispositivi demo: 409 con spiegazione. Risposta `events`/`alerts`/`incidents`. L'aerazione
+  (`POST /api/scenarios/:code/aeration`) crea un comando `set_aeration` {"on":…} in
+  `iot_commands`; un dispositivo reale lo prende col pull, quello demo (source `scenario`) viene
+  eseguito dal core che risponde con la telemetria `aeration`. Non si scrive più `devices.config`.
+  Il cruscotto dello scenario legge la telemetria di tutti i dispositivi (anche demo) e mostra come
+  allarmi gli alert IoT (più gli incidenti storici della vecchia demo); i valori sì/no salvati come
+  testo tornano booleani. e2e `qa/scenario-pipeline-e2e.sh`.
+- **Allarmi da telemetria legati al dispositivo.** L'incidente aperto da una soglia (con Lone Worker
+  attivo) cercava il dispositivo con sorgente `iot`: un sensore registrato con altra sorgente
+  (demo, LoRaWAN, MQTT…) restava senza dispositivo, quindi senza sede, lavoratore assegnato e
+  instradamento per profilo. Ora `Normalized.device_id` porta il dispositivo già noto.
+- **Cruscotto per permessi (IO-16).** Widget filtrati per modulo + permesso (non più per ruolo);
+  nuovo widget «Dispositivi IoT» (`/api/iot/monitor`); nuovo permesso `work.own` (lavoratore). Vedi
+  [capability-layer](capability-layer.md). e2e `qa/dashboard-caps-e2e.sh`.
+- **Correzioni dalla revisione dei manuali di ronde e consuntivi.** Modificare la propria riga di
+  consuntivo senza indicare la tariffa non la cancella più (prima la console la azzerava a chi
+  approva o vede i costi). Nell'app del lavoratore una ronda lasciata con «Torna all'elenco» si
+  riprende (prima restava aperta sul server e il percorso dava 409). Nome del modulo nel registro
+  `modules.rs`: «Ronde e vigilanza» (come nel DB). Mig `0163`: spiegazione di «Ronda mancata»
+  senza «giro».
+- **Avvisi personali ritardati (escalation).** Le regole di notifica personali con ritardo degli step
+  già sparati continuano fino alla presa in carico anche quando l'escalation passa allo step
+  successivo (`oncall::esc_deliver_earlier_rungs`; orario di ogni step dalla cronologia
+  `esc_delivery`; idempotenza di `esc_delivery_log`). Prima una «chiamata dopo 5 minuti» veniva
+  saltata se lo step aspettava meno. e2e `qa/escalation-personal-delay-e2e.sh`.
+- **Glossario unico (AR-7).** [glossario](glossario.md): gruppo di persone / gruppo di escalation;
+  turno pianificato / in servizio / di reperibilità; percorso di ronda e ronda (mai «giro»);
+  reperibile (non «on-call»), sostituzione (non «override»). Solo testi di console, messaggi del
+  core e manuali: API e tabelle invariate. `qa/glossary-check.sh` (in run-all) blocca i nomi vecchi.
+
 ## 13-bis. Privacy e audit (GDPR + registro attività)
 
 Voce menu **«Privacy e audit»** (Configurazione, solo `tenant_admin`): export dei dati personali
@@ -498,7 +598,7 @@ Vedi [gdpr-privacy-audit](gdpr-privacy-audit.md).
 | Area | Manuale |
 |---|---|
 | Console (UI, ricerca, mappe, tema, responsive, i18n) | [console-ui-manuale.md](console-ui-manuale.md) |
-| Escalation e reperibilità | [escalation-manuale.md](escalation-manuale.md) · [ywalert-manuale.md](ywalert-manuale.md) |
+| Escalation e reperibilità | [escalation-manuale.md](escalation-manuale.md) (storico: [archivio/ywalert-manuale.md](archivio/ywalert-manuale.md)) |
 | Dispositivi GPS e badge | [dispositivi-gps.md](dispositivi-gps.md) |
 | IoT nativo (telemetria/attributi/comandi/regole) | [iot-nativo.md](iot-nativo.md) |
 | Gruppi di persone condivisi | [gruppi-condivisi.md](gruppi-condivisi.md) |
