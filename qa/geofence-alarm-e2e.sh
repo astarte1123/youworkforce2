@@ -18,12 +18,12 @@ A -X POST "$BASE/api/modules/gps/tools/alarm_map" -d '{"config":{"sos_as":"sos",
 DID=$(A -X POST "$BASE/api/devices" -d "{\"external_id\":\"$EXT\",\"source\":\"gps\",\"label\":\"Geo $RUN\"}" | jget 'd["id"]')
 pos(){ curl -s -X POST "$BASE/api/ingress/gps/position?token=$TOK" -H 'content-type: application/json' \
   -d "{\"device\":{\"uniqueId\":\"$EXT\"},\"position\":{\"id\":\"$1\",\"latitude\":$2,\"longitude\":$3,\"fixTime\":\"$4\"}}"; }
-cnt_uscita(){ sql "SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE i.tenant_id=$TIDQ AND i.etype='geofence_uscita' AND e.source='geofence'"; }
+cnt_uscita(){ sql "SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE i.tenant_id=$TIDQ AND i.etype='geofence_uscita' AND e.payload_ref->>'channel'='geofence'"; }
 cnt_ingresso(){ sql "SELECT count(*) FROM app.incidents i WHERE i.tenant_id=$TIDQ AND i.etype='geofence_ingresso'"; }
 cleanup(){
   sql "DELETE FROM app.geofences WHERE tenant_id=$TIDQ AND name LIKE 'E2E-GF-$RUN%'" >/dev/null 2>&1 || true
   # chiudi gli incidenti di test (il device resta): evita carico sul worker escalation
-  sql "UPDATE app.incidents SET state='chiuso' WHERE tenant_id=$TIDQ AND event_id IN (SELECT id FROM app.events WHERE source='geofence' AND device_id=(SELECT id FROM app.devices WHERE tenant_id=$TIDQ AND external_id='$EXT'))" >/dev/null 2>&1 || true
+  sql "UPDATE app.incidents SET state='chiuso' WHERE tenant_id=$TIDQ AND event_id IN (SELECT id FROM app.events WHERE payload_ref->>'channel'='geofence' AND device_id=(SELECT id FROM app.devices WHERE tenant_id=$TIDQ AND external_id='$EXT'))" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -44,19 +44,22 @@ sleep 1
 [ "$(cnt_uscita)" -eq "$((B+1))" ] && ok "uscita da area sicura -> allarme geofence_uscita (incidente)" || no "allarme uscita non generato" "$B -> $(cnt_uscita)"
 
 # l'incidente porta la geofence nella zona (posizione esplicativa)
-Z=$(sql "SELECT e.zone FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE i.etype='geofence_uscita' AND e.source='geofence' ORDER BY i.opened_at DESC LIMIT 1")
+# SL-7 (25/11/2026): l'allarme porta il dispositivo reale (prima sorgente «geofence» = nessun badge)
+GD=$(sql "SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE i.tenant_id=$TIDQ AND i.etype='geofence_uscita' AND e.payload_ref->>'channel'='geofence' AND e.device_id='$DID'")
+[ "${GD:-0}" -ge 1 ] && ok "allarme geofence legato al dispositivo che ha attraversato" || no "device mancante" "$GD"
+Z=$(sql "SELECT e.zone FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE i.etype='geofence_uscita' AND e.payload_ref->>'channel'='geofence' ORDER BY i.opened_at DESC LIMIT 1")
 echo "$Z" | grep -q "E2E-GF-$RUN-safe" && ok "incidente geofence riporta il nome area nella zona" || no "zona non valorizzata" "$Z"
 
 # --- ZONA VIETATA (alert su INGRESSO) con etype configurato (sos) ---
 GID2=$(A -X POST "$BASE/api/geofences" -d "{\"name\":\"E2E-GF-$RUN-vietata\",\"kind\":\"circle\",\"geom\":{\"lat\":46.00,\"lon\":9.00,\"radius\":300}}" | jget 'd["id"]')
 A -X PUT "$BASE/api/geofences/$GID2/alert" -d '{"alert_on":"enter"}' >/dev/null
 # fuori -> dentro: ingresso in zona vietata
-BSOS=$(sql "SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE i.etype='geofence_ingresso' AND e.source='geofence'")
+BSOS=$(sql "SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE i.etype='geofence_ingresso' AND e.payload_ref->>'channel'='geofence'")
 pos "far-$RUN" 45.0000 9.0000 "2026-11-10T12:00:00Z" >/dev/null   # lontano da entrambe
 sleep 1
 pos "enter-$RUN" 46.0000 9.0000 "2026-11-10T20:00:00Z" >/dev/null # dentro la vietata (8h dopo)
 sleep 1
-A2=$(sql "SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE i.etype='geofence_ingresso' AND e.source='geofence'")
+A2=$(sql "SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE i.etype='geofence_ingresso' AND e.payload_ref->>'channel'='geofence'")
 [ "$A2" -eq "$((BSOS+1))" ] && ok "ingresso in zona vietata -> allarme geofence_ingresso" || no "allarme ingresso non generato" "$BSOS -> $A2"
 
 echo "== $PASS passed, $FAIL failed =="

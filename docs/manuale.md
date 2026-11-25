@@ -114,6 +114,10 @@ e2e: `qa/checkin-sos-attribution-e2e.sh`.
   il badge è collegato adesso o se viene rifiutato e perché. Il superadmin vede tutti i badge
   rifiutati in *Sistema → Dispositivi rifiutati*.
 
+- **Gruppo scelto nell'onboarding (SL-11):** con il profilo di protezione il gruppo vale solo
+  per quel lavoratore. Senza profilo si instradano al gruppo solo i tipi di allarme che non hanno
+  ancora un gruppo. Prima l'onboarding **sovrascriveva** l'instradamento di tutta l'azienda: gli
+  SOS di tutti finivano al gruppo del nuovo badge. La guida finale elenca i tipi rimasti invariati.
 - **Device Onboarding Kit (DOK)**: crea in un colpo tutto ciò che serve per un dispositivo (o N
   dispositivi via CSV), per tipologia d'uso.
 - **Canali di ricezione dati**:
@@ -122,6 +126,11 @@ e2e: `qa/checkin-sos-attribution-e2e.sh`.
     direttamente dal tracker. Nel dettaglio device: pannello telemetria IO + invio comando GPRS.
     Vedi [Dispositivi GPS e badge](dispositivi-gps.md).
 - **Mappa dispositivi**: posizioni live, geofence, presenza. Condivisa fra Sicurezza e Campo.
+  **Allarmi di area (geofence, SL-7):** l'allarme di ingresso o uscita porta il dispositivo e il
+  lavoratore reali. Prima la sorgente «geofence» non trovava il badge e l'allarme non diceva chi
+  soccorrere. Se l'area ha dispositivi associati, scatta solo per quelli. Gli attraversamenti
+  ripetuti al confine confluiscono nell'allarme ancora aperto (una correlazione per area,
+  dispositivo e direzione), senza raffiche. e2e `qa/geofence-alarm-e2e.sh` 7/7.
 - **Piantine indoor**: posizionamento beacon/dispositivi, allarmi indoor agganciati alle zone.
 
 ## 7. Lavoro sul campo — interventi

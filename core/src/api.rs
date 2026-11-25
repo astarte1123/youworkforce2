@@ -2795,16 +2795,23 @@ pub async fn dok_build(st: &AppState, tid: Uuid, actor: &str, b: DokReq) -> Resu
         .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "dispositivo gia' presente (uniqueId)"))?;
     let dev_id = drow.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id");
     if b.user_id.is_some() { record_device_assignment(&mut tx, tid, dev_id, None, b.user_id, now).await.map_err(ise)?; }
-    // 2) routing degli etype -> gruppo (se fornito)
+    // 2) gruppo di escalation (se fornito). SL-11 (25/11/2026): prima si SOVRASCRIVEVA il routing di
+    // tutto il tenant per quei tipi di allarme (gli SOS di tutti finivano al gruppo del nuovo badge).
+    // Ora: se si crea il profilo del lavoratore il gruppo vale solo per lui (profilo); altrimenti si
+    // instradano solo i tipi che non hanno ancora un gruppo, senza toccare quelli già instradati.
     let mut routed: Vec<String> = vec![];
+    let mut routing_kept: Vec<String> = vec![];
+    let will_profile = plan.suggest_profile && b.make_profile.unwrap_or(false) && b.user_id.is_some();
     if let Some(g) = b.group_id {
         let okg = sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1 AND tenant_id=$2").bind(g).bind(tid).fetch_optional(&mut *tx).await.map_err(ise)?.is_some();
         if !okg { return Err(err(StatusCode::BAD_REQUEST, "gruppo inesistente")); }
-        for et in &etypes {
-            sqlx::query("INSERT INTO app.alarm_routing(tenant_id,etype,group_id) VALUES($1,$2,$3)
-                 ON CONFLICT (tenant_id,etype) DO UPDATE SET group_id=EXCLUDED.group_id")
-                .bind(tid).bind(et).bind(g).execute(&mut *tx).await.map_err(ise)?;
-            routed.push(et.clone());
+        if !will_profile {
+            for et in &etypes {
+                let n = sqlx::query("INSERT INTO app.alarm_routing(tenant_id,etype,group_id) VALUES($1,$2,$3)
+                     ON CONFLICT (tenant_id,etype) DO NOTHING")
+                    .bind(tid).bind(et).bind(g).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+                if n > 0 { routed.push(et.clone()); } else { routing_kept.push(et.clone()); }
+            }
         }
     }
     // 3) profilo di protezione (device personali/smartphone, se richiesto e con lavoratore)
@@ -2848,6 +2855,7 @@ pub async fn dok_build(st: &AppState, tid: Uuid, actor: &str, b: DokReq) -> Resu
         "manufacturer": manufacturer, "model_name": model_name, "protocol": protocol,
         "category": category, "category_label": plan.label, "capabilities": caps,
         "etypes": etypes, "routed_etypes": routed, "routed_group": b.group_id, "profile_id": profile_id,
+        "routing_kept": routing_kept,
         "token": secret, "handle": handle,
         // Dati per la guida di collegamento (la console costruisce i passi per protocollo).
         "server_host": host, "teltonika_port": tport,
@@ -7754,18 +7762,29 @@ pub async fn geofence_crossing_alarm(st: &AppState, tid: Uuid, gid: Uuid, dev_id
     let dir = if inside { "enter" } else { "exit" };
     if alert_on.as_deref() != Some(dir) { return; }
     let name: String = g.try_get("name").unwrap_or_default();
-    let ext: String = match sqlx::query_scalar::<_,String>("SELECT external_id FROM app.devices WHERE id=$1").bind(dev_id)
-        .fetch_optional(&st.owner_pool).await.ok().flatten() { Some(e)=>e, None=>return };
+    // SL-7: se l'area ha dispositivi associati, l'allarme vale solo per quelli
+    let assoc: Vec<Uuid> = sqlx::query_scalar("SELECT device_id FROM app.geofence_devices WHERE tenant_id=$1 AND geofence_id=$2")
+        .bind(tid).bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    if !assoc.is_empty() && !assoc.contains(&dev_id) { return; }
+    // SL-7: sorgente REALE del dispositivo (prima "geofence": il dispositivo non veniva ritrovato e
+    // l'allarme usciva senza badge né lavoratore)
+    let dev = match sqlx::query("SELECT external_id, source FROM app.devices WHERE id=$1 AND tenant_id=$2").bind(dev_id).bind(tid)
+        .fetch_optional(&st.owner_pool).await.ok().flatten() { Some(r)=>r, None=>return };
+    let (ext, source): (String, String) = (dev.get("external_id"), dev.get("source"));
     let mut etypes: Vec<String> = sqlx::query_scalar("SELECT etype FROM app.geofence_events WHERE geofence_id=$1")
         .bind(gid).fetch_all(&st.owner_pool).await.unwrap_or_default();
     if etypes.is_empty() { etypes.push(if inside { "geofence_ingresso".into() } else { "geofence_uscita".into() }); }
+    let at = st.clock.now();
     for et in etypes {
-        let corr = format!("gf-{}-{}-{}", gid, dir, Uuid::new_v4());
+        // SL-7 isteresi: correlazione STABILE per (area, dispositivo, direzione, evento): finché
+        // l'incidente è aperto, gli attraversamenti ripetuti al confine confluiscono in quello
+        let corr = format!("gf-{gid}-{dev_id}-{dir}-{et}");
+        let ev = format!("{corr}-{}", at.timestamp_millis());
         let _ = persist_ingest(st, tid, Normalized{
-            source: "geofence".into(), source_event: corr.clone(), idem: corr.clone(), etype: et,
+            source: source.clone(), source_event: ev.clone(), idem: ev, etype: et,
             device_external_id: Some(ext.clone()), site_name: None,
             lat, lon, accuracy_m: None, correlation: corr,
-            payload: json!({"geofence": name, "direction": dir}),
+            payload: json!({"geofence": name, "direction": dir, "channel": "geofence"}),
             indoor: false, beacon_uid: None, zone: Some(name.clone()),
         }).await;
     }

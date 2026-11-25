@@ -3680,7 +3680,10 @@ async function wizardKit(model_code){
       <div class="card pad"><div class="spread"><b>${esc(r.manufacturer||'')} ${esc(r.model_name||'')}</b><span class="chip">${esc(r.category_label||r.category)}</span></div>
         <div class="small mut" style="margin-top:var(--s-4)">Identificativo <span class="mono">${esc(r.external_id)}</span> · già registrato in YouWorkforce</div>
         <div class="row" style="flex-wrap:wrap;gap:var(--s-4);margin-top:var(--s-6)">${et}</div>
-        ${r.routed_group?`<div class="small mut" style="margin-top:var(--s-4)">Allarmi instradati al gruppo selezionato.</div>`:'<div class="small mut" style="margin-top:var(--s-4)">Allarmi su routing globale/default.</div>'}
+        ${!r.routed_group?'<div class="small mut" style="margin-top:var(--s-4)">Allarmi con l\'instradamento già configurato per l\'azienda.</div>'
+          :(r.profile_id?'<div class="small mut" style="margin-top:var(--s-4)">Gli allarmi di questo lavoratore vanno al gruppo scelto (profilo di protezione). L\'instradamento degli altri non cambia.</div>'
+          :`<div class="small mut" style="margin-top:var(--s-4)">${(r.routed_etypes||[]).length?'Tipi di allarme senza gruppo ora instradati al gruppo scelto: '+r.routed_etypes.map(e=>esc(ETYPE_LAB[e]||e)).join(', ')+'.':''}
+             ${(r.routing_kept||[]).length?' Già instradati a un gruppo (invariati, valgono per tutta l\'azienda): '+r.routing_kept.map(e=>esc(ETYPE_LAB[e]||e)).join(', ')+'. Per mandare solo questo lavoratore al gruppo scelto crea il profilo di protezione.':''}</div>`)}
         ${r.profile_id?`<div class="small" style="margin-top:var(--s-4);color:var(--ok,green)">✓ Profilo di protezione creato/aggiornato.</div>`:''}</div>
       <div class="card pad" style="border-left:4px solid var(--ok,green)">
         <b>${esc(S.title||'Come collegarlo')}</b>
