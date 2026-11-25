@@ -8,6 +8,22 @@ raccomandazione e cosa cambia per chi usa YouWorkforce.
 
 ## CA-4 · Una sola fonte del tempo lavorato
 
+> **FATTO (decisione PO 25/11/2026, opzione 1, mig `0158`).** Il registro unico è la vista
+> `app.work_hours` (security_invoker, quindi isolata per tenant dall'RLS) su quattro fonti, sempre
+> allineata senza copie: **intervento** completato (fatturabile), **ronda** chiusa (non le ronde chiuse
+> d'ufficio), **presenza di cantiere** chiusa (non quelle chiuse d'ufficio), **turno** svolto.
+> Decisioni sui punti aperti: (a) precedenza **intervento › ronda › presenza › turno**: una
+> registrazione conta solo per la parte non coperta dall'unione delle fonti più specifiche, e la
+> sovrapposizione resta visibile; (b) le ronde entrano nel registro ma **non nel consuntivo**;
+> (c) il turno svolto è **presenza in servizio, non fatturabile**.
+> Pagina **Ore lavorate** (`GET /api/work-hours?from&to[&user_id]`, al massimo 62 giorni): ore per
+> persona e giorno (contate, fatturabili, sovrapposte), dettaglio delle registrazioni e **turni
+> pianificati confrontati con quelli svolti** (ritardo d'inizio, turno senza lavoro registrato). Chi
+> approva, pianifica o vede tutti i consuntivi vede tutti; il lavoratore solo sé stesso.
+> Il consuntivo resta generato dagli interventi (fatturabili) e i costi di commessa dalle presenze
+> (CA-6): non contano due volte lo stesso tempo, perché misurano cose diverse (ricavo e costo).
+> e2e `qa/work-hours-e2e.sh` 8/8.
+
 **Problema.** Oggi lo stesso lavoro può essere registrato in quattro posti che non si parlano:
 
 | Dove | Chi lo scrive | Cosa misura |

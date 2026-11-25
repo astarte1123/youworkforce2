@@ -11027,6 +11027,82 @@ async fn ts_expense_validate(st: &AppState, tid: Uuid, desc: &str, amount: i64, 
 /// CA-14: chi consuntiva non sceglie la propria tariffa. La tariffa indicata vale solo per chi
 /// approva, pianifica o vede i costi; per gli altri si usa la tariffa oraria di manodopera del
 /// listino (prima voce attiva «manodopera» a ore), altrimenti resta da valorizzare (NULL).
+// ---------------- CA-4: registro unico delle ore (vista app.work_hours, mig 0158) ----------------
+/// Ore lavorate per persona e giorno da tutte le fonti (intervento, ronda, presenza, turno), con le
+/// sovrapposizioni: una registrazione coperta da una fonte più specifica conta solo per la parte
+/// non coperta (`effective_min`). In più: turni pianificati confrontati con il lavoro registrato.
+/// Chi approva, pianifica o vede tutti i consuntivi vede tutti; gli altri solo sé stessi.
+pub async fn work_hours_report(State(st): State<AppState>, h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_any_module(&st, tid, &["consuntivi","workforce","cantieri","giri","interventi"]).await?;
+    let day = |k: &str| q.get(k).and_then(|v| chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d").ok());
+    let today = st.clock.now().date_naive();
+    let to = day("to").unwrap_or(today);
+    let from = day("from").unwrap_or(to - chrono::Duration::days(6));
+    if from > to || (to - from).num_days() > 62 { return Err(err(StatusCode::BAD_REQUEST, "periodo non valido (al massimo 62 giorni)")); }
+    let all = is_approver(&s) || is_planner(&s) || has_cap(&s, "timesheets.view_all");
+    let who: Option<Uuid> = if all { q.get("user_id").and_then(|v| Uuid::parse_str(v).ok()) } else { Some(s.user_id) };
+    let (t0, t1) = (from.and_hms_opt(0,0,0).unwrap().and_utc(), (to + chrono::Duration::days(1)).and_hms_opt(0,0,0).unwrap().and_utc());
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT w.kind,w.prio,w.source_id,w.user_id,u.email,w.started_at,w.ended_at,w.billable,w.work_order_id,w.commessa_id,w.label
+            FROM app.work_hours w JOIN app.users u ON u.id=w.user_id
+           WHERE w.started_at < $2 AND w.ended_at > $1 AND ($3::uuid IS NULL OR w.user_id=$3)
+           ORDER BY u.email, w.started_at")
+        .bind(t0).bind(t1).bind(who).fetch_all(&mut *tx).await.map_err(ise)?;
+    let plans = sqlx::query("SELECT p.id,p.user_id,u.email,p.starts_at,p.ends_at,
+              (SELECT min(w.started_at) FROM app.work_hours w WHERE w.user_id=p.user_id AND w.started_at<p.ends_at AND w.ended_at>p.starts_at) AS first_start,
+              (SELECT COALESCE(sum(EXTRACT(EPOCH FROM (LEAST(p.ends_at,w.ended_at)-GREATEST(p.starts_at,w.started_at)))/60.0),0)::float8
+                 FROM app.work_hours w WHERE w.user_id=p.user_id AND w.kind='turno' AND w.started_at<p.ends_at AND w.ended_at>p.starts_at) AS worked
+            FROM app.shift_plans p JOIN app.users u ON u.id=p.user_id
+           WHERE p.state<>'annullato' AND p.starts_at < $2 AND p.ends_at > $1 AND p.ends_at <= $4 AND ($3::uuid IS NULL OR p.user_id=$3)
+           ORDER BY p.starts_at")
+        .bind(t0).bind(t1).bind(who).bind(st.clock.now()).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    // sovrapposizioni: per ogni registrazione, l'UNIONE degli intervalli delle fonti più specifiche
+    // della stessa persona (così un intervento dentro una presenza dentro un turno non si sottrae due volte)
+    let iv: Vec<(Uuid, i32, Dt, Dt)> = rows.iter().map(|r| (r.get("user_id"), r.get("prio"), r.get("started_at"), r.get("ended_at"))).collect();
+    let covered = |i: usize| -> f64 {
+        let (u, p, a, b) = iv[i];
+        let mut segs: Vec<(Dt, Dt)> = iv.iter().filter(|(u2, p2, a2, b2)| *u2 == u && *p2 < p && *a2 < b && *b2 > a)
+            .map(|(_, _, a2, b2)| ((*a2).max(a), (*b2).min(b))).collect();
+        segs.sort();
+        let (mut tot, mut cur): (i64, Option<(Dt, Dt)>) = (0, None);
+        for (x, y) in segs { match cur { Some((cx, cy)) if x <= cy => cur = Some((cx, cy.max(y))), Some((cx, cy)) => { tot += (cy - cx).num_seconds(); cur = Some((x, y)); } None => cur = Some((x, y)) } }
+        if let Some((cx, cy)) = cur { tot += (cy - cx).num_seconds(); }
+        tot as f64 / 60.0
+    };
+    let mut by_day: std::collections::BTreeMap<(String, chrono::NaiveDate), (f64, f64, f64)> = Default::default();
+    let entries: Vec<Value> = rows.iter().enumerate().map(|(i, r)| {
+        let minutes: f64 = (iv[i].3 - iv[i].2).num_seconds() as f64 / 60.0;
+        let overlap: f64 = covered(i);
+        let eff = (minutes - overlap).max(0.0);
+        let started: Dt = r.get("started_at");
+        let email: String = r.get("email"); let billable: bool = r.get("billable");
+        let e = by_day.entry((email.clone(), started.date_naive())).or_default();
+        e.0 += eff; if billable { e.1 += eff; } e.2 += overlap.min(minutes);
+        json!({"kind": r.get::<String,_>("kind"), "source_id": r.get::<Uuid,_>("source_id"), "user_id": r.get::<Uuid,_>("user_id"),
+               "email": email, "started_at": started.to_rfc3339(), "ended_at": r.get::<Dt,_>("ended_at").to_rfc3339(),
+               "minutes": minutes.round() as i64, "effective_min": eff.round() as i64, "overlap_min": overlap.min(minutes).round() as i64,
+               "billable": billable, "label": r.try_get::<Option<String>,_>("label").ok().flatten(),
+               "work_order_id": r.try_get::<Option<Uuid>,_>("work_order_id").ok().flatten(), "commessa_id": r.try_get::<Option<Uuid>,_>("commessa_id").ok().flatten()})
+    }).collect();
+    let days: Vec<Value> = by_day.iter().map(|((email, d), (eff, bill, ov))| json!({"email": email, "day": d,
+        "effective_min": eff.round() as i64, "billable_min": bill.round() as i64, "overlap_min": ov.round() as i64})).collect();
+    let plan_out: Vec<Value> = plans.iter().map(|r| {
+        let starts: Dt = r.get("starts_at"); let ends: Dt = r.get("ends_at");
+        let first: Option<Dt> = r.try_get("first_start").ok().flatten();
+        let worked: f64 = r.try_get::<f64,_>("worked").unwrap_or(0.0);
+        let planned = (ends - starts).num_minutes();
+        json!({"id": r.get::<Uuid,_>("id"), "email": r.get::<String,_>("email"), "starts_at": starts.to_rfc3339(), "ends_at": ends.to_rfc3339(),
+               "planned_min": planned, "worked_min": worked.round() as i64,
+               "late_min": first.map(|f| (f - starts).num_minutes().max(0)),
+               "missing": first.is_none()})
+    }).collect();
+    Ok(Json(json!({"from": from, "to": to, "all": all, "entries": entries, "days": days, "plans": plan_out,
+        "rules": "intervento > ronda > presenza > turno; ronde e turni non fatturabili"})))
+}
+
 /// CA-6 (PO 25/11 sera): la tariffa viene dal listino unico per QUALIFICA della persona, valida in
 /// quel giorno (app.yw_labor_rate_cents: prima la qualifica, poi la voce per tutti).
 async fn ts_line_rate(st: &AppState, s: &Session, asked: Option<i64>, worker: Uuid, day: chrono::NaiveDate) -> Result<Option<i64>,(StatusCode,String)> {

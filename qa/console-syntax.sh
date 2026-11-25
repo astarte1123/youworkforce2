@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sintassi JavaScript della console: ogni <script> inline di app.html, superadmin.html e
-# worker/index.html, più app.js, deve essere JavaScript valido e senza funzioni definite due volte. Un apostrofo non escapato in una
+# worker/index.html, più app.js, deve essere JavaScript valido, senza funzioni definite due volte né const/let di pagina ripetute. Un apostrofo non escapato in una
 # stringa (25/11/2026, commit 77a5d87) bastava a non far partire l'intera console.
 # Non richiede il core: solo node.
 set -uo pipefail
@@ -17,6 +17,15 @@ for (const f of ['console/static/app.html', 'console/static/superadmin.html', 'c
   while ((m = re.exec(h))) { i++; n++;
     try { new vm.Script(m[1], { filename: `${f}#script${i}` }); }
     catch (e) { bad++; console.log(`FAIL  ${f} script ${i}: ${String(e.stack).split('\n').slice(0, 2).join(' | ').slice(0, 300)}`); } }
+}
+// const/let di primo livello dichiarate due volte (anche tra app.js e la pagina) bloccano l'intero
+// script con «Identifier has already been declared» (25/11/2026: fmtMin in app.js e in app.html)
+const top = src => [...src.matchAll(/^(?:const|let)\s+([A-Za-z0-9_$]+)\s*=/gm)].map(x => x[1]);
+const appjs = top(fs.readFileSync('console/static/app.js', 'utf8'));
+for (const f of ['console/static/app.html', 'console/static/superadmin.html', 'console/static/worker/index.html']) {
+  const names = [...appjs, ...top(fs.readFileSync(f, 'utf8'))]; const c = {};
+  for (const k of names) c[k] = (c[k] || 0) + 1;
+  for (const [k, v] of Object.entries(c)) if (v > 1) { bad++; console.log(`FAIL  ${f}: «${k}» dichiarata ${v} volte a livello di pagina (anche con app.js)`); }
 }
 try { new vm.Script(fs.readFileSync('console/static/app.js', 'utf8'), { filename: 'app.js' }); n++; }
 catch (e) { bad++; console.log('FAIL  app.js: ' + e.message); }

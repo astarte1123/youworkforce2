@@ -128,6 +128,7 @@ const NAV = [
   {k:'ronde',     t:'Ronde', ico:'route', roles:['pianificatore','tenant_admin','lavoratore','auditor'], cap:'plan', mod:['giri'], grp:'work'},
   {k:'vigilanza', t:'Cruscotto vigilanza', ico:'shield', roles:['pianificatore','tenant_admin','operatore','auditor'], cap:'plan', mod:['giri'], grp:'work'},
   {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], cap:['approve','timesheets.view_all'], mod:['consuntivi'], grp:'work'},
+  {k:'ore',       t:'Ore lavorate', ico:'clock', roles:['lavoratore','responsabile','pianificatore','tenant_admin','auditor'], cap:['approve','timesheets.view_all','plan'], mod:['consuntivi','workforce','cantieri','giri','interventi'], grp:'work'},
   {k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], cap:'plan', mod:['workforce'], grp:'work'},
   {k:'setup',     t:'Configurazione', ico:'check', roles:['tenant_admin'], cap:'settings.manage', grp:'cfg'},
   {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'cfg'},
@@ -479,7 +480,7 @@ function route(){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'iot-monitor':vIotMonitor,'iot-alerts':vIotAlerts,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,ore:vOre,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
   if(['centrale','miei-allarmi','gruppi'].includes(k)) deliveryBanner(k);
 }
 
@@ -2814,6 +2815,32 @@ async function commesseCSV(){ const C=await api('/commesse').catch(()=>[]);
 async function interventiCSV(){ const O=await api('/orders').catch(()=>[]);
   downloadCSV('interventi.csv',[['Titolo','Cliente','Sede','Assegnatario','Quando','Priorità','Stato'],...O.map(o=>[o.title,o.client_name||'',o.site||'',o.assignee||o.group_name||'',o.scheduled_start?new Date(o.scheduled_start).toLocaleString('it-IT'):'',o.priority,o.state])]); toast('CSV interventi scaricato','ok'); }
 let QUALS=[];
+// ---------------- CA-4: registro unico delle ore ----------------
+const ORE_KIND={intervento:'Intervento',ronda:'Ronda',presenza:'Presenza in cantiere',turno:'Turno in servizio'};
+const oreMin=m=>{ m=Math.round(m||0); return `${Math.floor(m/60)} h ${String(m%60).padStart(2,'0')}′`; };
+async function vOre(v,from,to){
+  const d0=new Date(); const iso=x=>x.toISOString().slice(0,10);
+  to=to||iso(d0); from=from||iso(new Date(d0.getTime()-6*864e5));
+  let d; try{ d=await api(`/work-hours?from=${from}&to=${to}`); }catch(e){ return pageLoadError(v,'Ore lavorate',e); }
+  const dayRows=(d.days||[]).map(x=>`<tr><td>${esc(x.email)}</td><td>${new Date(x.day+'T12:00:00').toLocaleDateString('it-IT',{weekday:'short',day:'2-digit',month:'2-digit'})}</td>
+      <td style="text-align:right"><b>${oreMin(x.effective_min)}</b></td><td style="text-align:right">${oreMin(x.billable_min)}</td>
+      <td style="text-align:right">${x.overlap_min?`<span class="chip s-da_correggere" title="Tempo registrato due volte: conta una sola volta, vince la registrazione più specifica">${oreMin(x.overlap_min)} sovrapposte</span>`:'<span class="mut">—</span>'}</td></tr>`).join('')
+    ||emptyRow(5, ICON.clock||'', 'Nessuna ora nel periodo', 'Le ore arrivano da interventi completati, ronde, presenze di cantiere e turni svolti.');
+  const entRows=(d.entries||[]).map(x=>`<tr><td class="small">${esc(x.email)}</td><td class="small">${esc(ORE_KIND[x.kind]||humanizeCode(x.kind))}${x.label?` · <span class="mut">${esc(x.label)}</span>`:''}</td>
+      <td class="small">${dtLocal(x.started_at)} → ${dtLocal(x.ended_at)}</td><td class="small" style="text-align:right">${oreMin(x.effective_min)}${x.overlap_min?` <span class="mut">(${oreMin(x.overlap_min)} già contati)</span>`:''}</td>
+      <td class="small">${x.billable?'fatturabile':'<span class="mut">non fatturabile</span>'}</td></tr>`).join('');
+  const planRows=(d.plans||[]).map(x=>`<tr><td class="small">${esc(x.email)}</td><td class="small">${dtLocal(x.starts_at)} → ${dtLocal(x.ends_at)}</td>
+      <td class="small" style="text-align:right">${oreMin(x.planned_min)}</td><td class="small" style="text-align:right">${oreMin(x.worked_min)}</td>
+      <td class="small">${x.missing?'<span class="chip s-da_correggere">nessun lavoro registrato</span>':(x.late_min>5?`<span class="chip">inizio con ${x.late_min} min di ritardo</span>`:'<span class="chip s-attivo">in orario</span>')}</td></tr>`).join('');
+  v.innerHTML=`<div class="page-h"><div><h1>Ore lavorate</h1><div class="mut">registro unico: interventi, ronde, presenze di cantiere e turni${d.all?'':' · solo le tue'}</div></div>
+    <div class="row" style="gap:var(--s-6)"><input type="date" id="oreFrom" value="${esc(String(d.from))}"><input type="date" id="oreTo" value="${esc(String(d.to))}">
+      <button class="btn ghost" onclick="vOre($('#view'),$('#oreFrom').value,$('#oreTo').value)">Mostra</button></div></div>
+  <div class="small mut" style="margin:-4px 0 var(--s-12)">⏱️ Lo stesso tempo può essere registrato in più modi (per esempio un intervento durante una presenza di cantiere): conta una volta sola, vince la registrazione più specifica (<b>intervento › ronda › presenza › turno</b>). Sono fatturabili solo le ore degli interventi; ronde e turni contano come ore di servizio.</div>
+  <div class="card"><div class="card-h"><h2>Per persona e giorno</h2></div><table class="table" data-export="ore-giorno"><thead><tr><th>Persona</th><th>Giorno</th><th style="text-align:right">Ore</th><th style="text-align:right">Fatturabili</th><th style="text-align:right">Sovrapposizioni</th></tr></thead><tbody>${dayRows}</tbody></table></div>
+  ${planRows?`<div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Turni pianificati e svolti</h2></div><table class="table" data-export="ore-turni"><thead><tr><th>Persona</th><th>Pianificato</th><th style="text-align:right">Previste</th><th style="text-align:right">Svolte</th><th>Esito</th></tr></thead><tbody>${planRows}</tbody></table></div>`:''}
+  <details class="card" style="margin-top:var(--s-16)"><summary class="card-h" style="cursor:pointer"><h2>Dettaglio registrazioni (${(d.entries||[]).length})</h2></summary>
+    <table class="table" data-export="ore-dettaglio"><thead><tr><th>Persona</th><th>Origine</th><th>Quando</th><th style="text-align:right">Ore contate</th><th></th></tr></thead><tbody>${entRows||emptyRow(5,'','Nessuna registrazione','')}</tbody></table></details>`;
+}
 async function vListino(v){
   const P=await api('/price-items').catch(()=>[]);
   // CA-6: qualifiche (modulo Qualifiche) per le tariffe di manodopera
