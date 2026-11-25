@@ -218,6 +218,11 @@ Modulo **assistant**.
 
 ## 12. Console: usabilità, lingua, responsive
 
+- **Stati vuoti guidati (FE-4):** le tabelle vuote mostrano di nuovo titolo, spiegazione e
+  azione. Prima una seconda funzione `emptyRow` con lo stesso nome li sostituiva con il numero di
+  colonne («3»). Nel superadmin la ricerca dei tenant rispetta di nuovo i filtri per stato.
+  `qa/console-syntax.sh` segnala le funzioni definite due volte.
+
 - **Combo con ricerca** ovunque, ricerche full-text (Dispositivi, Centrale), mappe separate,
   tema chiaro/scuro.
 - **Lingua IT/EN**: selettore in alto a destra; le schermate chiave sono tradotte, le altre

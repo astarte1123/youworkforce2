@@ -38,7 +38,11 @@ const can = (r, c) => !!ME && (r.includes(ME.role) || (!!c && hasCap(c)));
 // Empty-state GUIDATO per una tabella: icona + titolo + spiegazione + (opz.) azione per iniziare.
 // Uso: emptyRow(colspan, ICON.x, 'Nessuna commessa', 'Crea la prima per…', {fn:"comNew()",label:"+ Nuova"})
 // L'azione si passa solo se l'utente ha i permessi (il chiamante decide). Pattern unico per tutte le liste.
+// FE-4 (25/11/2026): UNA sola funzione. Prima ne esisteva una seconda omonima, emptyRow(testo), che
+// sovrascriveva questa: gli stati vuoti guidati mostravano il numero di colonne («3») invece della
+// spiegazione. Forme ammesse: emptyRow('testo') oppure emptyRow(colonne, icona, titolo, aiuto, azione).
 function emptyRow(colspan, icon, title, hint, cta){
+  if(typeof colspan!=='number') return `<tr><td colspan="99" class="empty" style="padding:var(--s-24)">${colspan??''}</td></tr>`;
   return `<tr><td colspan="${colspan}" class="empty">${icon||''}<div class="empty-t">${title}</div>`+
     `${hint?`<div class="empty-h">${hint}</div>`:''}`+
     `${cta?`<button class="btn small" style="margin-top:var(--s-12)" onclick="${cta.fn}">${cta.label}</button>`:''}</td></tr>`;
@@ -777,7 +781,6 @@ function kpi(ico,label,n,cls='',small){return `<div class="kpi"><div class="ico"
 function card(title,inner,gotoK){return `<div class="card"><div class="card-h"><h2>${title}</h2>
   ${gotoK?`<a onclick="location.hash='#/${gotoK}'">apri →</a>`:''}</div>
   <table class="table"><tbody>${inner}</tbody></table></div>`;}
-function emptyRow(t){return `<tr><td class="empty" style="padding:var(--s-24)">${t}</td></tr>`;}
 function incRow(i){return `<tr class="clk" data-inc="${i.id}"><td><b>${esc(i.etype)}</b><div class="small mut">${esc(i.site||'—')}</div></td>
   <td>${chip(i.state)}</td></tr>`;}
 function ordRow(o){return `<tr class="clk-card" data-ord="${o.id}"><td><b>${esc(o.title)}</b><div class="small mut">${esc(o.site||'—')} · ${esc(o.assignee||'non assegnato')}</div></td>
