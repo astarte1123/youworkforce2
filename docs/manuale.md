@@ -299,6 +299,22 @@ Le **soglie e i destinatari** (email/SMS) sono configurabili **dal pannello** (s
 «Configurazione monitoring»): `GET/POST /api/superadmin/system/settings` (tabella `app.system_settings`,
 mig 0122); un campo vuoto usa il default env/prodotto. e2e: `qa/system-monitoring-e2e.sh` (9/9).
 
+**Consegna allarmi: reale, di prova o simulata (SA-3, 25/11/2026).** Prima, senza
+configurazione, gli avvisi di escalation finivano solo nel log e nessuno se ne accorgeva. Ora
+`delivery::delivery_status()` ricava dalla configurazione il modo di consegna:
+- **reale**: SMS e chiamate via Twilio (`YW_ESC_TWILIO_LIVE=1` e credenziali `YW_ESC_TWILIO_*`);
+- **prova**: verso il ricevitore di test `YW_ESC_SINK_URL`, non verso i telefoni;
+- **simulata**: nessun canale configurato, nessun reperibile viene avvisato.
+
+Email (relay `YW_ESC_SMTP_RELAY_URL`) e Slack (`YW_ESC_SLACK_TOKEN`) sono indicati a parte.
+- Scheda **Sistema**: riquadro «Consegna allarmi» e controllo `delivery`. Il controllo è giallo
+  se la consegna è di prova; se è simulata è **rosso** con l'orologio reale (giallo con
+  TEST_CLOCK). Il watchdog avvisa il superadmin e chiude l'avviso quando la consegna torna reale.
+- **Tenant**: chi segue gli allarmi (`incidents.view`/`handle` o `escalation.manage`) vede in
+  Centrale, I miei allarmi ed Escalation un avviso «Gli allarmi non arrivano ai reperibili» (o
+  «di prova»). L'avviso usa `GET /api/delivery-status`.
+- e2e `qa/delivery-status-e2e.sh` (5/5).
+
 **Cruscotto superadmin (usabilità con molti tenant).** La home mostra in cima un **riepilogo** a tile
 (tenant totali, operativi, da configurare, sospesi, utenti, dispositivi, incidenti aperti, inviti in
 sospeso) calcolato da `list_tenants` (che ora espone anche `incidents_open`). Sotto, i tenant sono

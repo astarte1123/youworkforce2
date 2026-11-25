@@ -439,6 +439,19 @@ function setActive(k){ $$('#nav a').forEach(a=>a.classList.toggle('active',a.dat
   const grp = n ? (n.grp || (n.grps&&n.grps[0]) || '') : '';
   try{ document.body.dataset.navgrp = grp; }catch(e){} }
 
+// SA-3: avviso quando gli allarmi NON arrivano davvero ai reperibili (consegna di prova o simulata).
+let DELIVERY=null;
+async function deliveryBanner(k){
+  if(!DELIVERY){ try{ DELIVERY=await api('/delivery-status'); }catch(e){ return; } }
+  if(!DELIVERY||DELIVERY.real) return;
+  const v=$('#view'); if(!v) return;
+  for(let i=0;i<40 && !v.querySelector('.page-h'); i++) await new Promise(r=>setTimeout(r,50)); // vista ancora in caricamento
+  if(location.hash.replace('#/','')!==k || v.querySelector('.delivery-banner')) return;
+  const bad=DELIVERY.mode==='simulata';
+  const d=document.createElement('div'); d.className='card pad delivery-banner';
+  d.style.cssText=`margin-bottom:var(--s-12);border-left:4px solid var(--${bad?'bad':'warn'});background:var(--${bad?'bad':'warn'}-soft)`;
+  d.innerHTML=`<b>${bad?'⚠ Gli allarmi non arrivano ai reperibili':'⚠ Consegna degli allarmi di prova'}</b><div class="small" style="margin-top:var(--s-4)">${esc(DELIVERY.label)} Avvisa l'amministratore di sistema.</div>`;
+  v.prepend(d); }
 function route(){
   let k=(location.hash.replace('#/','')||'dashboard');
   if(!visibleNav().some(n=>n.k===k)) k=visibleNav()[0].k;
@@ -447,6 +460,7 @@ function route(){
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,centrale:vCentrale,'iot-monitor':vIotMonitor,'iot-alerts':vIotAlerts,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
     setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+  if(['centrale','miei-allarmi','gruppi'].includes(k)) deliveryBanner(k);
 }
 
 // ---------------- Export unificato (CSV / Excel / PDF / Markdown) ----------------

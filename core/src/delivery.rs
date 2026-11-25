@@ -97,6 +97,27 @@ pub async fn deliver_to_sink(http: &reqwest::Client, sink_url: &str, body: &Valu
 // --------------------------- Adapter LIVE (carrier reali) ---------------------------
 // Attivi solo col gate `YW_ESC_TWILIO_LIVE=1` (Twilio) / token presente (Slack). Default OFF:
 // in shadow non si tocca nessun carrier. Account Twilio NATIVO (env), separato dalla config
+/// SA-3 (25/11/2026): come vengono consegnati DAVVERO gli avvisi di escalation, dalla config.
+/// - `reale`: SMS e chiamate partono con Twilio (YW_ESC_TWILIO_LIVE=1 + credenziali);
+/// - `prova`: vanno a un ricevitore di prova (YW_ESC_SINK_URL), non ai telefoni;
+/// - `simulata`: nessun canale, solo log: NESSUN reperibile viene avvisato.
+/// Pura su variabili d'ambiente: la usano il pannello di sistema e l'avviso in Centrale.
+pub fn delivery_status() -> Value {
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    let twilio = TwilioCfg::live_enabled() && TwilioCfg::from_env().is_some();
+    let sink = env("YW_ESC_SINK_URL").is_some();
+    let phone = if twilio { "reale" } else if sink { "prova" } else { "simulata" };
+    let email = if env("YW_ESC_SMTP_RELAY_URL").is_some() { "reale" } else if sink { "prova" } else { "simulata" };
+    let slack = if env("YW_ESC_SLACK_TOKEN").is_some() { "reale" } else { "spento" };
+    let overall = phone;
+    let label = match overall {
+        "reale" => "Consegna allarmi reale: SMS e chiamate partono verso i reperibili.",
+        "prova" => "Consegna allarmi DI PROVA: SMS e chiamate vanno a un ricevitore di test, non ai telefoni dei reperibili.",
+        _ => "Consegna allarmi SIMULATA: nessun SMS né chiamata parte, i reperibili NON vengono avvisati.",
+    };
+    json!({"mode": overall, "sms_voice": phone, "email": email, "slack": slack, "label": label, "real": overall == "reale"})
+}
+
 // YWAlert per-tenant: un solo numero/credenziali per il motore nativo durante il pilota.
 
 /// Credenziali Twilio del motore nativo, da env. `None` se non configurate → live non disponibile.

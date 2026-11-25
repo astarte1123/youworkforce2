@@ -247,6 +247,12 @@ function sysGridHtml(){
       <div class="srow"><span class="k">Dimensione DB</span><span class="v">${fmtBytes(db.size_bytes)}</span></div>
       <div class="srow"><span class="k">Connessioni DB</span><span class="v">${db.connections??'—'}/${db.max_connections||'?'}</span></div>
       <div class="srow"><span class="k">Worker</span><span class="v">${(w.heartbeat_age_secs>=0)?(w.heartbeat_age_secs+'s fa'):'<span class="dot bad"></span>fermo'}</span></div></div>
+    <div class="sys-card"><h3>Consegna allarmi</h3>
+      <div class="srow"><span class="k">Modo</span><span class="v">${(s.delivery||{}).mode==='reale'?'<span class="dot ok"></span>reale':((s.delivery||{}).mode==='prova'?'<span class="dot warn"></span>di prova':'<span class="dot bad"></span>simulata')}</span></div>
+      <div class="srow"><span class="k">SMS e chiamate</span><span class="v">${esc((s.delivery||{}).sms_voice||'—')}</span></div>
+      <div class="srow"><span class="k">Email</span><span class="v">${esc((s.delivery||{}).email||'—')}</span></div>
+      <div class="srow"><span class="k">Slack</span><span class="v">${esc((s.delivery||{}).slack||'—')}</span></div>
+      <div class="small mut" style="margin-top:6px">${esc((s.delivery||{}).label||'')}</div></div>
     <div class="sys-card"><h3>Code &amp; carico</h3>
       <div class="srow"><span class="k">Tenant</span><span class="v">${q.tenants??'—'}</span></div>
       <div class="srow"><span class="k">Utenti</span><span class="v">${q.users??'—'}</span></div>

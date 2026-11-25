@@ -651,9 +651,18 @@ pub async fn system_snapshot(st: &AppState) -> Value {
         add("esc_backlog", if esc_active_max>=esc_bad {"bad"} else {"warn"},
             format!("{} incidenti in escalation attiva su un tenant (coda consegna)", esc_active_max));
     }
+    // SA-3: consegna degli allarmi reale, di prova o simulata. In produzione (orologio reale)
+    // «simulata» è critico; il check «ok» quando reale chiude l'alert aperto.
+    let delivery = crate::delivery::delivery_status();
+    match delivery["mode"].as_str().unwrap_or("simulata") {
+        "reale" => add("delivery", "ok", "consegna allarmi reale".to_string()),
+        "prova" => add("delivery", "warn", delivery["label"].as_str().unwrap_or("").to_string()),
+        _ => add("delivery", if st.clock.test_mode {"warn"} else {"bad"}, delivery["label"].as_str().unwrap_or("").to_string()),
+    }
     let overall = if checks.iter().any(|c| c["severity"]=="bad") {"bad"} else if checks.iter().any(|c| c["severity"]=="warn") {"warn"} else {"ok"};
     json!({
         "status": overall,
+        "delivery": delivery,
         "app": {"version": env!("CARGO_PKG_VERSION"), "uptime_secs": st.started.elapsed().as_secs(), "test_clock": st.clock.test_mode},
         "server": hw,
         "db": {"reachable": db_ok, "size_bytes": db_size, "connections": db_conns, "max_connections": db_max},
@@ -664,6 +673,15 @@ pub async fn system_snapshot(st: &AppState) -> Value {
         "thresholds": {"disk_max_pct": disk_max, "mem_max_pct": mem_max, "cpu_max_pct": cpu_max, "worker_stale_secs": worker_stale},
         "checks": checks,
     })
+}
+/// SA-3: stato della consegna allarmi per chi segue gli allarmi o configura l'escalation nel
+/// tenant (avviso in Centrale ed Escalation quando non è reale).
+pub async fn delivery_status_get(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !has_cap(&s, "incidents.view") && !has_cap(&s, "incidents.handle") && !has_cap(&s, "escalation.manage") {
+        return Err(err(StatusCode::FORBIDDEN, "permesso richiesto: vedere gli allarmi"));
+    }
+    Ok(Json(crate::delivery::delivery_status()))
 }
 pub async fn super_system(State(st): State<AppState>, h: HeaderMap) -> R {
     require_super(&st, &h).await?;
