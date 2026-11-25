@@ -28,6 +28,9 @@ say "2 lista piani contiene il nuovo"
 echo "$(curl -s -b "$J/pl" -H 'x-tenant-slug: acme' $BASE/api/patrol-schedules)" | grep -q "$RN" && ok || no "not listed"
 
 say "3 cruscotto: slot dovuti + mancanti>0"
+# il cruscotto (come il watchdog) conta le ronde dovute solo da quando il piano esiste ed è attivo
+# (mig 0164): il piano appena creato viene retrodatato di 2 giorni perché gli slot di oggi contino
+docker exec ywdb psql -U postgres -d youworkforce -qc "UPDATE app.patrol_schedules SET created_at=created_at-interval '2 days', active_since=active_since-interval '2 days' WHERE id='$SID'" >/dev/null
 # DETERMINISTICO a qualsiasi ora del giorno: porta il test-clock esattamente alle 12:00:00Z di OGGI
 # (stesso giorno di 'now'), così gli slot 00:00..10:00 risultano scaduti e non punzonati -> mancanti.
 # Evita il caso 'now appena dopo mezzanotte' (nessuno slot ancora scaduto) del vecchio +2h.

@@ -363,7 +363,8 @@ function renderLogin(){
           <span class="tag sim" id="demoTag" style="margin-left:auto;display:none" title="Ambiente dimostrativo con dati di prova">DEMO</span></div>
         <div class="divider" style="margin:var(--s-14) 0 var(--s-16)"></div>
         <div class="col">
-          <div class="field"><label>${t('login_tenant','Tenant')}${store.slugFromHost?' <span class="small mut">'+t('login_tenant_host','(dal dominio)')+'</span>':''}</label><input id="slug" value="${store.slug}" ${store.slugFromHost?'readonly':''}></div>
+          <div class="field"><label>${t('login_tenant','Tenant')}${store.slugFromHost?' <span class="small mut">'+t('login_tenant_host','(dal dominio)')+'</span>':''}</label><input id="slug" value="${esc(store.slug)}" autocapitalize="off" spellcheck="false" aria-describedby="slugHint">
+            ${store.slugFromHost?`<div class="small mut" id="slugHint">L'azienda è indicata dall'indirizzo della pagina. Per entrare in un'altra azienda scrivi il suo nome e premi Accedi: si apre il suo indirizzo.</div>`:''}</div>
           <div class="field"><label>${t('login_email','Email')}</label><input id="email" type="email" autocomplete="username" placeholder="nome@azienda.it"></div>
           <div class="field"><label>${t('login_password','Password')}</label><input id="pw" type="password" autocomplete="current-password"></div>
           <button class="btn block lg" id="go">${t('login_signin','Accedi')}</button>
@@ -392,7 +393,15 @@ function renderLogin(){
 }
 function quick(u){ $('#email').value = u+'@acme.loneworker.eu'; $('#pw').value='demo'; doLogin(); }
 async function doLogin(){
-  store.slug=$('#slug').value.trim();
+  const want=$('#slug').value.trim().toLowerCase();
+  // tenant preso dal sottodominio (acme.dominio): un nome diverso si apre al SUO indirizzo,
+  // perché sessione e cookie appartengono all'indirizzo dell'azienda
+  if(store.slugFromHost && want && want!==store.slug){
+    if(!/^[a-z0-9][a-z0-9-]{0,39}$/.test(want)){ $('#msg').textContent='Nome dell\'azienda non valido: usa lettere minuscole, cifre e trattino.'; return; }
+    const rest=location.host.split('.').slice(1).join('.');
+    location.href=location.protocol+'//'+want+'.'+rest+location.pathname; return;
+  }
+  store.slug=want;
   try{ await api('/login',{method:'POST',body:JSON.stringify({email:$('#email').value.trim(),password:$('#pw').value})});
     ME = await api('/me'); await loadCtx();
     document.body.classList.remove('login-bg'); renderShell();
@@ -2256,8 +2265,9 @@ async function vVigilanza(v){
         :`<span class="chip" style="${col}" title="${esc(lab)}">${esc(s.local_time||new Date(s.at).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'}))}</span>`;}).join('')}</div></div>`).join('')
     ||'<div class="small mut">Nessuna ronda pianificata per oggi. Crea un piano qui sotto.</div>';
   const schRows=(scheds||[]).map(s=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin:var(--s-4) 0">
-    <div><b class="small">${esc(s.route_name)}</b><div class="small mut">${DOW_V.filter((_,i)=>s.days_mask[i]==='1').join(' ')} · ${esc(s.from_time)}–${esc(s.to_time)} · ogni ${s.every_minutes} min</div></div>
-    <button class="btn-ico btn ghost" onclick="schDel('${s.id}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">Nessun piano. Le ronde dovute si calcolano dai piani.</div>';
+    <div><b class="small">${esc(s.route_name)}</b>${s.active===false?' <span class="chip">sospeso</span>':''}<div class="small mut">${DOW_V.filter((_,i)=>s.days_mask[i]==='1').join(' ')} · ${esc(s.from_time)}–${esc(s.to_time)} · ogni ${s.every_minutes} min</div></div>
+    <span class="row" style="gap:var(--s-4)"><button class="btn ghost small" onclick="schToggle('${s.id}',${s.active===false})" title="${s.active===false?'Le ronde dovute ripartono da adesso':'Nessuna ronda dovuta finché è sospeso'}">${s.active===false?'riattiva':'sospendi'}</button>
+    <button class="btn-ico btn ghost" onclick="schDel('${s.id}')" aria-label="Elimina il piano">${ICON.x}</button></span></div>`).join('')||'<div class="small mut">Nessun piano. Le ronde dovute si calcolano dai piani.</div>';
   const liveGeo=(d&&d.live||[]).filter(r=>r.dev_lat!=null&&r.dev_lon!=null);
   v.innerHTML=`<div class="page-h"><div><h1>Cruscotto vigilanza</h1><div class="mut">ronde in corso, dovute di oggi e anomalie</div></div></div>
     <div class="row" style="gap:var(--s-10);flex-wrap:wrap;margin-bottom:var(--s-14)">${tile(sm.svolte,'svolte oggi','var(--ok,#16a34a)')}${tile(sm.mancanti,'mancanti','var(--bad)')}${tile(sm.attese,'attese')}${tile(sm.anomalie_oggi,'anomalie oggi','var(--bad)')}</div>
@@ -2290,6 +2300,8 @@ async function schSave(){ const m=$('.cfg-msg'); let mask=''; for(let i=0;i<7;i+
   const b={route_id:$('#scR').value,days_mask:mask,from_time:$('#scF').value,to_time:$('#scT').value,every_minutes:parseInt($('#scE').value||'60')};
   try{await api('/patrol-schedules',{method:'POST',body:JSON.stringify(b)}); toast('Piano creato','ok'); closeDrawer(); route();}catch(e){m.textContent=friendlyError(e);m.style.color='var(--bad)';}
 }
+async function schToggle(id,on){ try{ await api('/patrol-schedules/'+id,{method:'POST',body:JSON.stringify({active:on})});
+  toast(on?'Piano riattivato: le ronde dovute ripartono da adesso':'Piano sospeso: nessuna ronda dovuta né allarme di ronda mancata','ok'); route(); }catch(e){ toast(e,'bad'); } }
 async function schDel(id){ if(!await askConfirm('Eliminare il piano?'))return; try{await api('/patrol-schedules/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e,'bad');} }
 // Assistenza / manutenzione a visite: appuntamenti dal cliente, rapporto, firma, (listino/consuntivo).
 let ORD_CACHE=[]; let ORD_TAB='agenda';

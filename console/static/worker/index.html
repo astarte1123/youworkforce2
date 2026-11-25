@@ -110,13 +110,18 @@ function login(){
     <div class="row gap-10 jc-center mb-18"><div class="logo">${ICON.logomark}</div>
       <h1 class="w-title">App lavoratore</h1></div>
     <div class="card"><div class="card-b col">
-      <div class="field"><label for="slug">Tenant${store.slugFromHost?' <span class="small mut">(dal dominio)</span>':''}</label><input id="slug" value="${store.slug}" autocapitalize="none" ${store.slugFromHost?'readonly':''}></div>
+      <div class="field"><label for="slug">Tenant${store.slugFromHost?' <span class="small mut">(dal dominio)</span>':''}</label><input id="slug" value="${esc(store.slug)}" autocapitalize="none" spellcheck="false" aria-describedby="slugHint">
+        ${store.slugFromHost?`<div class="small mut" id="slugHint">L'azienda è indicata dall'indirizzo. Per un'altra azienda scrivi il suo nome e premi Accedi.</div>`:''}</div>
       <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="username" placeholder="nome@azienda.it"></div>
       <div class="field"><label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password"></div>
       <button class="btn block lg" id="go">Accedi</button>
       <div class="small center msg-err" id="msg" role="alert"></div>
     </div></div></main>`;
-  $('#go').onclick=async()=>{ store.slug=$('#slug').value.trim(); try{
+  $('#go').onclick=async()=>{ const want=$('#slug').value.trim().toLowerCase();
+    if(store.slugFromHost && want && want!==store.slug){ // tenant dal sottodominio: si apre l'indirizzo dell'altra azienda
+      if(!/^[a-z0-9][a-z0-9-]{0,39}$/.test(want)){ toast('Nome dell\'azienda non valido','bad'); return; }
+      location.href=location.protocol+'//'+want+'.'+location.host.split('.').slice(1).join('.')+location.pathname; return; }
+    store.slug=want; try{
     await api('/login',{method:'POST',body:JSON.stringify({email:$('#email').value.trim(),password:$('#pw').value})});
     ME=await api('/me'); await loadMods();
     try{ const A=await api('/ai/features'); AIVOICE=!!(A&&A.features&&A.features.voice_diary); AIAGENT=!!(A&&A.features&&A.features.agent); }catch(e){}

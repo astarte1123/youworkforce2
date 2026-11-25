@@ -19,7 +19,8 @@ Nomi: vedi [glossario](glossario.md). Nel codice e nelle API il percorso resta `
 
 Ogni punto può avere anche dei tempi (mig `0104`): `expected_min` (tempo atteso dalla tappa
 precedente) e `max_min` (tempo massimo; oltre, con la tolleranza del percorso, è «tratta in
-ritardo»). `dwell_max_min` (permanenza massima) è salvato ma non ancora usato.
+ritardo»). `dwell_max_min` (permanenza massima) è riservato e non usato: con una sola punzonatura per punto
+non si sa quando la guardia se ne va.
 
 ## Integrità delle punzonature (mig `0134`, CA-2/CA-3)
 
@@ -118,7 +119,8 @@ Pianificazione e cruscotto:
 |---|---|---|
 | GET | `/api/patrol-schedules` | elenco dei piani (modulo `giri`) |
 | POST | `/api/patrol-schedules` | crea `{route_id, days_mask?, from_time?, to_time?, every_minutes?}` (capability `plan`; default tutti i giorni, 22:00–06:00, ogni 60 min, minimo 5) |
-| DELETE | `/api/patrol-schedules/:id` | elimina un piano (capability `plan`) |
+| POST | `/api/patrol-schedules/:id` | sospende o riattiva `{active}`: riattivato, le ronde dovute ripartono da adesso (mig `0164`, capability `plan`) |
+| DELETE | `/api/patrol-schedules/:id` | elimina un piano (capability `plan`; 404 se non esiste) |
 | GET | `/api/patrol-dashboard` | cruscotto vigilanza (solo a chi supervisiona: `incidents.view`, `plan`, `devices.manage`, `devices.admin` o `iot.manage`) |
 | GET/PUT | `/api/settings/timezone` | fuso orario dell'azienda `{timezone}` (modifica: `settings.manage`) |
 
@@ -237,5 +239,5 @@ altri moduli campo.
 persone** (`assigned_group`). In tal caso solo i membri (o il pianificatore) lo vedono e possono
 avviare la ronda; i percorsi senza gruppo restano aperti a tutti. Dettaglio: `campo-gruppi.md`.
 
-Prossimo possibile: modifica e sospensione dei piani, uso di `dwell_max_min`, finestra per fascia
+Prossimo possibile: modifica dei piani, finestra per fascia
 oraria o turno.

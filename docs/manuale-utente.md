@@ -243,10 +243,12 @@ Ogni cosa ha un solo nome in tutta YW (elenco completo in [glossario](glossario.
 ## 2. Primo accesso e configurazione guidata
 
 ### Accedere
-- **Console**: email e password sul dominio della tua azienda. In un ambiente locale si indica
-  l'azienda nella pagina di accesso.
+- **Console**: email e password sul dominio della tua azienda (es. `acme.…`): l'azienda è quella
+  dell'indirizzo. Per entrare in un'altra azienda scrivi il suo nome nel campo **Tenant** e premi
+  **Accedi**: si apre l'indirizzo di quell'azienda. In un ambiente locale senza sottodominio
+  (`localhost`) l'azienda si scrive nel campo e resta ricordata.
 - Il **primo amministratore** riceve dal superadmin un **link di attivazione** (valido 7 giorni,
-  usabile una volta): lo apre, sceglie la propria password (almeno 8 caratteri) e accede. Nessuno
+  usabile una volta): lo apre, sceglie la propria password (almeno 10 caratteri) e accede. Nessuno
   conosce la sua password.
 - **Tentativi sbagliati**: dopo 5 errori in 5 minuti dallo stesso indirizzo, quell'utenza è
   bloccata da quell'indirizzo per 5 minuti. Dopo 20 errori in 5 minuti sulla stessa utenza, da
@@ -997,7 +999,9 @@ punti critici usa NFC o punti GPS.
 **Ronde pianificate e ronda mancata.** Gli orari dei piani sono nell'ora locale della sede del percorso
 (o dell'azienda: il fuso si imposta in **Sedi e asset**). Se all'orario previsto nessuno avvia la
 ronda, si apre l'allarme **Ronda mancata** in Centrale, con escalation ai reperibili. Non è
-salva-vita: la manutenzione lo sospende. Creare o riattivare un piano non genera allarmi arretrati.
+salva-vita: la manutenzione lo sospende. Un piano si può **sospendere** (nessuna ronda dovuta, nessun
+allarme) e **riattivare** dal Cruscotto vigilanza. Creare o riattivare un piano non genera allarmi
+arretrati: le ronde dovute partono da quel momento.
 
 **Revisione**: nel dettaglio della ronda, esito per punto, modo di punzonatura, distanza,
 tentativi e motivo dell'ultimo fallito.

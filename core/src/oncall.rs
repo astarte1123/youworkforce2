@@ -1477,7 +1477,10 @@ pub(crate) async fn esc_deliver_earlier_rungs(
     st: &AppState, tid: Uuid, iid: Uuid, gid: Uuid, specs: &[EscStepTarget], ga_opt: Option<(&str, &str)>,
     skip: Option<(i32, i32)>, now: chrono::DateTime<chrono::Utc>, text: &str, tr: &EscTransport<'_>,
 ) -> i64 {
-    let rows = sqlx::query("SELECT (detail->>'step')::int AS step, COALESCE((detail->>'attempt')::int,0) AS attempt, min(at) AS at
+    // orario dello step secondo l'orologio del core (fired_at, come esc_alert_state); `at` della
+    // cronologia è l'ora del DB e si usa solo per le righe scritte prima che fired_at esistesse
+    let rows = sqlx::query("SELECT (detail->>'step')::int AS step, COALESCE((detail->>'attempt')::int,0) AS attempt,
+                min(COALESCE((detail->>'fired_at')::timestamptz, at)) AS at
             FROM app.incident_timeline WHERE tenant_id=$1 AND incident_id=$2 AND kind='esc_delivery' AND detail ? 'step'
             GROUP BY 1,2 ORDER BY 3")
         .bind(tid).bind(iid).fetch_all(&st.owner_pool).await.unwrap_or_default();
@@ -1639,7 +1642,7 @@ pub(crate) async fn esc_process_incident(
             let _ = sqlx::query("INSERT INTO app.esc_alert_state(tenant_id,incident_id,step,step_fired_at,repeat_count,status) VALUES($1,$2,$3,$4,$5,'unack') ON CONFLICT (tenant_id,incident_id) DO UPDATE SET step=$3,step_fired_at=$4,repeat_count=$5,updated_at=now()")
                 .bind(tid).bind(iid).bind(idx as i32).bind(now).bind(new_rc).execute(&st.owner_pool).await;
             let _ = sqlx::query("INSERT INTO app.incident_timeline(tenant_id,incident_id,kind,detail) VALUES($1,$2,'esc_delivery',$3)")
-                .bind(tid).bind(iid).bind(json!({"step":idx,"channel":spec.channel.as_str(),"target":spec.kind,"attempt":attempt,"live":live_on,"engine":engine})).execute(&st.owner_pool).await;
+                .bind(tid).bind(iid).bind(json!({"step":idx,"channel":spec.channel.as_str(),"target":spec.kind,"attempt":attempt,"live":live_on,"engine":engine,"fired_at":now})).execute(&st.owner_pool).await;
             // avvisi ritardati ancora dovuti degli step precedenti (non si perdono passando di step)
             delivered += esc_deliver_earlier_rungs(st, tid, iid, gid, &specs, ga_opt, Some((idx as i32, attempt)), now, &text, tr).await;
         }

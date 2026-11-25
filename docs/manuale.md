@@ -587,6 +587,16 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   disponibile con Interventi **o** Consuntivi (`PRICE_MODS`; anche la voce di menu). Modifica di un
   percorso di ronda: nome vuoto rifiutato (400). e2e `qa/field-local-time-e2e.sh`;
   `listino-qualifica-e2e` non dipende più dall'ora in cui gira.
+- **Campo Tenant nella pagina di accesso.** Con l'azienda presa dal sottodominio (`acme.…`) il
+  campo era in sola lettura senza spiegazione e sembrava rotto. Ora è modificabile: un nome
+  diverso apre l'indirizzo di quell'azienda (console e app del lavoratore; cache dell'app `yw-shell-v8`).
+- **Piani di ronda sospendibili (mig `0164`).** `POST /api/patrol-schedules/:id` `{active}`; alla
+  riattivazione le ronde dovute ripartono da adesso (`active_since`, usato da watchdog e cruscotto:
+  niente ronde mancate arretrate del periodo sospeso né prima della creazione del piano).
+  Eliminare o sospendere un piano inesistente: 404. `dwell_max_min` è riservato e non usato (con
+  una sola punzonatura per punto la permanenza non si misura). Il tempo di ogni step di escalation
+  nella cronologia (`fired_at`) è quello del core, come lo stato dell'escalation. e2e
+  `qa/patrol-schedule-suspend-e2e.sh`.
 - **Glossario unico (AR-7).** [glossario](glossario.md): gruppo di persone / gruppo di escalation;
   turno pianificato / in servizio / di reperibilità; percorso di ronda e ronda (mai «giro»);
   reperibile (non «on-call»), sostituzione (non «override»). Solo testi di console, messaggi del

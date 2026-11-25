@@ -817,7 +817,8 @@ pub(crate) fn materials_note(m: &Value) -> Option<String> {
 
 /// Ponte intervento -> consuntivo (Slice 2): genera (o riusa) una BOZZA di consuntivo per
 /// l'assegnatario dell'ordine, prefillata con una riga "labor" dai minuti lavorati dell'intervento
-/// (tariffa da valorizzare finché non c'è il listino). Idempotente: ri-eseguire non duplica la riga
+/// (tariffa dal listino per la qualifica di chi ha lavorato; senza voce resta da valorizzare in
+/// revisione). Idempotente: ri-eseguire non duplica la riga
 /// (vincolo univoco per ordine+utente+labor). I materiali finiscono nella nota. Un solo inserimento:
 /// il tecnico non ricompila ore/materiali a mano.
 pub async fn generate_timesheet_from_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
@@ -861,7 +862,7 @@ pub async fn generate_timesheet_from_order(State(st): State<AppState>, h: Header
             (tsid, true)
         }
     };
-    // Riga labor idempotente dall'ordine (tariffa NULL = da valorizzare; listino = Slice 3).
+    // Riga labor idempotente dall'ordine (tariffa dal listino; NULL = da valorizzare in revisione).
     let ins = sqlx::query(
         "INSERT INTO app.timesheet_lines(tenant_id,timesheet_id,activity,work_date,minutes,rate_cents,currency,source_order_id,source_user_id,source_kind)
          VALUES($1,$2,$3,$4,$5,$9,$6,$7,$8,'labor')
@@ -1073,9 +1074,6 @@ pub(crate) async fn ts_expense_validate(st: &AppState, tid: Uuid, desc: &str, am
     if amount <= 0 { return Err(err(StatusCode::BAD_REQUEST, "importo della spesa maggiore di zero")); }
     Ok((d.to_string(), amount, ts_currency(st, tid, cur).await?))
 }
-/// CA-14: chi consuntiva non sceglie la propria tariffa. La tariffa indicata vale solo per chi
-/// approva, pianifica o vede i costi; per gli altri si usa la tariffa oraria di manodopera del
-/// listino (prima voce attiva «manodopera» a ore), altrimenti resta da valorizzare (NULL).
 // ---------------- CA-4: registro unico delle ore (vista app.work_hours, mig 0158) ----------------
 /// Ore lavorate per persona e giorno da tutte le fonti (intervento, ronda, presenza, turno), con le
 /// sovrapposizioni: una registrazione coperta da una fonte più specifica conta solo per la parte
@@ -1431,7 +1429,9 @@ pub async fn delete_patrol_route(State(st): State<AppState>, h: HeaderMap, Path(
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)] pub struct CheckpointReq { pub name: String, pub kind: String, #[serde(default)] pub code: Option<String>, #[serde(default)] pub lat: Option<f64>, #[serde(default)] pub lon: Option<f64>, #[serde(default)] pub radius_m: Option<i32>, #[serde(default)] pub position: Option<i32>,
-    #[serde(default)] pub expected_min: Option<i32>, #[serde(default)] pub max_min: Option<i32>, #[serde(default)] pub dwell_max_min: Option<i32> }
+    #[serde(default)] pub expected_min: Option<i32>, #[serde(default)] pub max_min: Option<i32>,
+    /// riservato, non usato: con una sola punzonatura per punto la permanenza non si misura (mig 0164)
+    #[serde(default)] pub dwell_max_min: Option<i32> }
 pub async fn create_checkpoint(State(st): State<AppState>, h: HeaderMap, Path(rid): Path<Uuid>, Json(b): Json<CheckpointReq>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "giri").await?;
@@ -1557,7 +1557,7 @@ pub async fn start_round(State(st): State<AppState>, h: HeaderMap, Path(rid): Pa
             return Err(err(StatusCode::FORBIDDEN, "percorso di ronda riservato a un altro gruppo"));
         }
     }
-    // CA-17: una sola ronda in corso per giro (anche con indice unico parziale, mig 0141)
+    // CA-17: una sola ronda in corso per percorso (anche con indice unico parziale, mig 0141)
     // started_at = now() SQL come le punzonature (ritardi e finestra si misurano sullo stesso orologio)
     let row = sqlx::query("INSERT INTO app.patrol_rounds(tenant_id,route_id,user_id)
             SELECT $1,$2,$3 WHERE NOT EXISTS (SELECT 1 FROM app.patrol_rounds WHERE route_id=$2 AND status='in_corso') RETURNING id")
@@ -1706,7 +1706,7 @@ pub async fn close_round(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     let status = if total>0 && done==total && in_window { "completato" } else { "incompleto" };
     sqlx::query("UPDATE app.patrol_rounds SET ended_at=$2, status=$3 WHERE id=$1")
         .bind(id).bind(chrono::Utc::now()).bind(status).execute(&mut *tx).await.map_err(ise)?;
-    // ---- V1 vigilanza: rileva anomalie (tappa saltata, tratta in ritardo, giro non completato) ----
+    // ---- V1 vigilanza: rileva anomalie (tappa saltata, tratta in ritardo, ronda non completata) ----
     let grace: i32 = round.try_get::<i32,_>("grace_min").unwrap_or(0);
     let cps = sqlx::query("SELECT c.id,c.name,c.position,c.max_min,c.radius_m, p.punched_at, p.ok, p.entry, p.distance_m FROM app.patrol_checkpoints c
                  LEFT JOIN app.patrol_punches p ON p.checkpoint_id=c.id AND p.round_id=$1
@@ -1763,14 +1763,15 @@ pub async fn list_patrol_schedules(State(st): State<AppState>, h: HeaderMap) -> 
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "giri").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT sc.id,sc.route_id,rt.name AS route_name,sc.days_mask,sc.from_time,sc.to_time,sc.every_minutes,sc.active FROM app.patrol_schedules sc JOIN app.patrol_routes rt ON rt.id=sc.route_id ORDER BY rt.name").fetch_all(&mut *tx).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT sc.id,sc.route_id,rt.name AS route_name,sc.days_mask,sc.from_time,sc.to_time,sc.every_minutes,sc.active,sc.active_since FROM app.patrol_schedules sc JOIN app.patrol_routes rt ON rt.id=sc.route_id ORDER BY rt.name").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({
         "id":r.get::<Uuid,_>("id"),"route_id":r.get::<Uuid,_>("route_id"),"route_name":r.get::<String,_>("route_name"),
         "days_mask":r.get::<String,_>("days_mask"),
         "from_time":r.get::<chrono::NaiveTime,_>("from_time").format("%H:%M").to_string(),
         "to_time":r.get::<chrono::NaiveTime,_>("to_time").format("%H:%M").to_string(),
-        "every_minutes":r.get::<i32,_>("every_minutes"),"active":r.get::<bool,_>("active") })).collect();
+        "every_minutes":r.get::<i32,_>("every_minutes"),"active":r.get::<bool,_>("active"),
+        "active_since":r.get::<chrono::DateTime<chrono::Utc>,_>("active_since").to_rfc3339() })).collect();
     Ok(Json(json!(out)))
 }
 pub async fn create_patrol_schedule(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ScheduleReq>) -> R {
@@ -1790,9 +1791,25 @@ pub async fn delete_patrol_schedule(State(st): State<AppState>, h: HeaderMap, Pa
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "giri").await?; if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN,"solo pianificatore/admin")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    sqlx::query("DELETE FROM app.patrol_schedules WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    let n = sqlx::query("DELETE FROM app.patrol_schedules WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
+    if n == 0 { return Err(err(StatusCode::NOT_FOUND, "piano di ronda non trovato")); }
     Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)] pub struct ScheduleActiveReq { pub active: bool }
+/// Sospende o riattiva un piano di ronda. Alla riattivazione le ronde dovute ripartono da adesso
+/// (active_since, mig 0164): gli orari del periodo sospeso non diventano ronde mancate.
+pub async fn set_patrol_schedule_active(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<ScheduleActiveReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "giri").await?; if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN,"solo pianificatore/admin")); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.patrol_schedules SET active=$2,
+            active_since=CASE WHEN $2 AND NOT active THEN $3 ELSE active_since END WHERE id=$1")
+        .bind(id).bind(b.active).bind(st.clock.now()).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    tx.commit().await.map_err(ise)?;
+    if n == 0 { return Err(err(StatusCode::NOT_FOUND, "piano di ronda non trovato")); }
+    audit(&st, tid, &s.email, if b.active {"patrol_schedule_resume"} else {"patrol_schedule_suspend"}, json!({"schedule":id})).await;
+    Ok(Json(json!({"ok":true,"active":b.active})))
 }
 /// CA-16: fuso orario valido (nome IANA, es. Europe/Rome).
 pub(crate) fn parse_tz(name: &str) -> Option<chrono_tz::Tz> { name.trim().parse::<chrono_tz::Tz>().ok() }
@@ -1852,7 +1869,7 @@ pub async fn patrol_dashboard(State(st): State<AppState>, h: HeaderMap) -> R {
     let missed = sqlx::query("SELECT schedule_id,slot_at,incident_id FROM app.patrol_missed WHERE slot_at >= $1").bind(win_start).fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let scheds = sqlx::query("SELECT sc.id,sc.route_id,rt.name AS route_name,sc.days_mask,sc.from_time,sc.to_time,sc.every_minutes,
-            COALESCE(si.timezone,t.timezone) AS tz
+            sc.active_since, COALESCE(si.timezone,t.timezone) AS tz
           FROM app.patrol_schedules sc JOIN app.patrol_routes rt ON rt.id=sc.route_id JOIN app.tenants t ON t.id=sc.tenant_id
           LEFT JOIN app.sites si ON si.id=rt.site_id WHERE sc.active AND sc.tenant_id=$1")
         .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
@@ -1870,7 +1887,9 @@ pub async fn patrol_dashboard(State(st): State<AppState>, h: HeaderMap) -> R {
         let rid: Uuid = sc.get("route_id"); let rname: String = sc.get("route_name");
         let step = Duration::minutes(ev.max(5) as i64);
         let today = now.with_timezone(&tz).date_naive();
+        let since: chrono::DateTime<chrono::Utc> = sc.get("active_since");
         for slot in patrol_slots_for_day(&dm, ft, tt, ev, tz, today) {
+            if slot + step <= since { continue; } // orari passati quando il piano era sospeso
             let covered = patrol_slot_covered(&round_times, rid, slot, step);
             let status = if covered { done_n+=1; "svolta" } else if slot + step < now { miss_n+=1; "mancante" } else { up_n+=1; "attesa" };
             let inc = missed_inc.get(&(sid, slot.timestamp())).cloned().flatten();
@@ -1895,7 +1914,7 @@ pub async fn patrol_missed_watchdog(st: &AppState) {
     use chrono::Duration;
     let now = st.clock.now();
     let rows = sqlx::query("SELECT sc.id, sc.tenant_id, sc.route_id, rt.name AS route_name, si.name AS site_name,
-            sc.days_mask, sc.from_time, sc.to_time, sc.every_minutes, sc.created_at, COALESCE(si.timezone,t.timezone) AS tz
+            sc.days_mask, sc.from_time, sc.to_time, sc.every_minutes, GREATEST(sc.created_at, sc.active_since) AS created_at, COALESCE(si.timezone,t.timezone) AS tz
           FROM app.patrol_schedules sc
           JOIN app.patrol_routes rt ON rt.id=sc.route_id AND rt.active
           JOIN app.tenants t ON t.id=sc.tenant_id AND t.status<>'sospeso'
