@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::state::AppState;
-use crate::api::{R, require_tenant, require_cap, has_cap, require_grantable, user_caps, effective_caps, license_overage, ise, err, audit, USER_ROLES, is_e164};
+use crate::api::{conflict_or, R, require_tenant, require_cap, has_cap, require_grantable, user_caps, effective_caps, license_overage, ise, err, audit, USER_ROLES, is_e164};
 use crate::{db, auth};
 
 /// TA-10 (25/11/2026): prima ogni utente (anche un lavoratore) leggeva email, ruolo e telefono di
@@ -77,7 +77,7 @@ pub async fn create_user(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("INSERT INTO app.users(tenant_id,email,pass_hash,role) VALUES($1,$2,$3,$4) RETURNING id")
         .bind(tid).bind(b.email.trim()).bind(auth::hash_password(&b.password)).bind(&b.role)
-        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "email gia' presente"))?;
+        .fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "email gia' presente"))?;
     tx.commit().await.map_err(ise)?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT, "email gia' presente"))?.get::<Uuid,_>("id");
     audit(&st, tid, &s.email, "create_user", json!({"email":b.email,"role":b.role})).await;

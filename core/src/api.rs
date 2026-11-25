@@ -424,7 +424,7 @@ pub async fn create_tenant(State(st): State<AppState>, h: HeaderMap, Json(b): Js
     let mut tx = st.owner_pool.begin().await.map_err(ise)?;
     let trow = sqlx::query("INSERT INTO app.tenants(slug,name,brand_primary,brand_ink,brand_soft,brand_accent) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
         .bind(&slug).bind(b.name.trim()).bind(bp).bind(bi).bind(bs).bind(ba).fetch_one(&mut *tx).await
-        .map_err(|_| err(StatusCode::CONFLICT, "slug già esistente"))?;
+        .map_err(|e| conflict_or(e, "slug già esistente"))?;
     let tid: Uuid = trow.get("id");
     // L'admin è sempre creato; la password è quella fornita (demo) o una random inutilizzabile finché
     // l'admin non accetta l'invito e imposta la propria (produzione: nessuna password nota al superadmin).
@@ -807,7 +807,7 @@ async fn close_tenant_sessions(st: &AppState, tid: Uuid) -> u64 {
 /// attivo, l'amministratore vede l'avviso con data e note, alla data il worker la applica.
 /// 'attivo' riattiva e annulla una sospensione programmata.
 pub async fn set_tenant_status(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<TenantStatusReq>) -> R {
-    require_super(&st, &h).await?;
+    let sa_ = require_super(&st, &h).await?;
     if !["attivo","sospeso"].contains(&b.status.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "stato non valido")); }
     let note = b.note.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| s.chars().take(500).collect::<String>());
     let now = st.clock.now();
@@ -824,7 +824,7 @@ pub async fn set_tenant_status(State(st): State<AppState>, h: HeaderMap, Path(ti
     let closed = if b.status == "sospeso" && !scheduled { close_tenant_sessions(&st, tid).await } else { 0 };
     let eff = if scheduled { "sospensione_programmata" } else { b.status.as_str() };
     let at = if scheduled { b.at } else { None };
-    audit(&st, tid, "superadmin", "tenant_status", json!({"status":eff,"at":at,"note":note,"sessions_closed":closed})).await;
+    audit(&st, tid, &format!("superadmin:{}", sa_.email), "tenant_status", json!({"status":eff,"at":at,"note":note,"sessions_closed":closed})).await;
     Ok(Json(json!({"ok":true,"status": if scheduled {"attivo"} else {b.status.as_str()},
         "suspend_at": at, "sessions_closed": closed})))
 }
@@ -1043,13 +1043,13 @@ pub(crate) fn logo_kind(b: &[u8]) -> Option<&'static str> {
 }
 const LOGO_MAX_BYTES: usize = 512 * 1024;
 pub async fn super_set_logo(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, body: axum::body::Bytes) -> R {
-    require_super(&st, &h).await?;
+    let sa_ = require_super(&st, &h).await?;
     if body.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "file vuoto")); }
     if body.len() > LOGO_MAX_BYTES { return Err(err(StatusCode::PAYLOAD_TOO_LARGE, "logo troppo grande: massimo 512 KB")); }
     let ct = logo_kind(&body).ok_or_else(|| err(StatusCode::UNSUPPORTED_MEDIA_TYPE, "formato non ammesso: carica un'immagine PNG, JPEG o WebP"))?;
     sqlx::query("UPDATE app.tenants SET logo=$1, logo_ct=$2 WHERE id=$3")
         .bind(body.as_ref()).bind(ct).bind(tid).execute(&st.owner_pool).await.map_err(ise)?;
-    audit(&st, tid, "superadmin", "tenant_logo", json!({"type":ct,"bytes":body.len()})).await;
+    audit(&st, tid, &format!("superadmin:{}", sa_.email), "tenant_logo", json!({"type":ct,"bytes":body.len()})).await;
     Ok(Json(json!({"ok":true,"type":ct})))
 }
 pub async fn super_del_logo(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
@@ -1158,7 +1158,7 @@ pub async fn super_list_modules(State(st): State<AppState>, h: HeaderMap, Path(t
 pub struct SetModule { pub module_code: String, pub state: String }
 
 pub async fn set_module(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetModule>) -> R {
-    require_super(&st, &h).await?;
+    let sa_ = require_super(&st, &h).await?;
     let valid = ["non_abilitato","da_configurare","attivo","degradato","in_disattivazione"];
     if !valid.contains(&b.state.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "bad state")); }
     // Ritiro connettori esterni: un modulo non disponibile nel prodotto (available=false) non può
@@ -1195,7 +1195,7 @@ pub async fn set_module(State(st): State<AppState>, h: HeaderMap, Path(tid): Pat
         let dep = crate::modules::dependents_active(&b.module_code, &active);
         if !dep.is_empty() { warning = Some(format!("moduli attivi che dipendono da questo: {}", dep.join(", "))); }
     }
-    audit(&st, tid, "superadmin", "set_module", json!({"module":b.module_code,"state":b.state})).await;
+    audit(&st, tid, &format!("superadmin:{}", sa_.email), "set_module", json!({"module":b.module_code,"state":b.state})).await;
     Ok(Json(json!({"ok":true,"warning":warning})))
 }
 
@@ -1658,7 +1658,7 @@ fn demo_normal_value(op: &str, thr: Option<f64>) -> Value {
 /// percorso del push (eval_sensor_rules -> persist_ingest). Così lo scenario mostra subito
 /// incidenti reali nella centrale.
 pub async fn super_scenario_demo(State(st): State<AppState>, h: HeaderMap, Path((tid,code)): Path<(Uuid,String)>) -> R {
-    require_super(&st, &h).await?;
+    let sa_ = require_super(&st, &h).await?;
     let cat = scenario_catalog(&st).await;
     let scn = cat.iter().find(|s| s.code==code).ok_or_else(|| err(StatusCode::BAD_REQUEST, "scenario sconosciuto"))?;
     // nomi device demo (se lo scenario non ha device demo, usa un nome sintetico)
@@ -1727,7 +1727,7 @@ pub async fn super_scenario_demo(State(st): State<AppState>, h: HeaderMap, Path(
             indoor:false, beacon_uid:None, zone:None }).await;
         events += 1; if is_crit { incidents += 1; }
     }
-    audit(&st, tid, "superadmin", "scenario_demo", json!({"code":scn.code,"events":events,"incidents":incidents})).await;
+    audit(&st, tid, &format!("superadmin:{}", sa_.email), "scenario_demo", json!({"code":scn.code,"events":events,"incidents":incidents})).await;
     Ok(Json(json!({"ok":true,"events":events,"incidents":incidents})))
 }
 
@@ -2039,7 +2039,7 @@ pub async fn scenario_ai_analysis(State(st): State<AppState>, h: HeaderMap, Path
 
 // ======================= youworker.ai — piattaforma AI di YouCo =======================
 // Integrazione AI DI TUTTA la suite, configurata DA YouWorkforce (mai da sistemi a monte).
-// - Connessione per-tenant (base URL + API key cifrata enc:v1) impostata dal superadmin.
+// - Connessione per-tenant (base URL + API key cifrata enc:v2) impostata dal superadmin.
 // - Abilitazione per-processo pilotata dall'admin del tenant (app.ai_features).
 // - Provider intercambiabile: contratto OpenAI-compatibile parametrico (path/model).
 // Invarianti di sicurezza: tenant/identita' SEMPRE dal contesto autenticato (mai dal
@@ -2153,7 +2153,7 @@ fn ai_provider_defaults(p: &str) -> (&'static str, &'static str, &'static str) {
 }
 
 pub async fn super_set_ai(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<SetAiConn>) -> R {
-    require_super(&st, &h).await?;
+    let sa_ = require_super(&st, &h).await?;
     let provider = b.provider.map(|p| p.trim().to_lowercase()).filter(|p| AI_PROVIDERS.contains(&p.as_str())).unwrap_or_else(|| "youworker".into());
     let (dm, dc, ds) = ai_provider_defaults(&provider);
     let base = b.base_url.trim_end_matches('/').to_string();
@@ -2171,7 +2171,7 @@ pub async fn super_set_ai(State(st): State<AppState>, h: HeaderMap, Path(tid): P
             ON CONFLICT (tenant_id) DO UPDATE SET provider=EXCLUDED.provider,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,model=EXCLUDED.model,chat_path=EXCLUDED.chat_path,stt_path=EXCLUDED.stt_path,updated_at=now()")
             .bind(tid).bind(&provider).bind(&base).bind(&enc).bind(&model).bind(&chat).bind(&stt).execute(&st.owner_pool).await.map_err(ise)?;
     }
-    audit(&st, tid, "superadmin", "set_ai_conn", json!({"provider":provider,"base_url":base,"model":model})).await;
+    audit(&st, tid, &format!("superadmin:{}", sa_.email), "set_ai_conn", json!({"provider":provider,"base_url":base,"model":model})).await;
     Ok(Json(json!({"ok":true})))
 }
 
@@ -2189,10 +2189,10 @@ pub async fn super_get_ai(State(st): State<AppState>, h: HeaderMap, Path(tid): P
 
 /// Verifica collegamento youworker.ai: ping chat minimale, reachable-aware.
 pub async fn ai_verify(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
-    require_super(&st, &h).await?;
+    let sa_ = require_super(&st, &h).await?;
     let c = ai_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "connessione youworker.ai non configurata"))?;
     match ai_chat(&st, &c, "Rispondi con una sola parola: ok.", "ping").await {
-        Ok(ans) => { audit(&st, tid, "superadmin", "ai_verify", json!({"model":c.model})).await;
+        Ok(ans) => { audit(&st, tid, &format!("superadmin:{}", sa_.email), "ai_verify", json!({"model":c.model})).await;
             Ok(Json(json!({"reachable":true,"verdict":"collegato","sample":ans.chars().take(40).collect::<String>()}))) }
         Err(e) => Ok(Json(json!({"reachable":false,"verdict":e}))),
     }
@@ -2606,7 +2606,7 @@ pub async fn create_device(State(st): State<AppState>, h: HeaderMap, Json(b): Js
          VALUES($1,$2,$3,$4,$5,$6,COALESCE($7,true),COALESCE($8,'{}'::jsonb)) RETURNING id")
         .bind(tid).bind(b.external_id.trim()).bind(&b.source).bind(&b.label).bind(b.site_id).bind(b.assigned_user)
         .bind(b.enabled).bind(b.config.clone())
-        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "dispositivo gia' presente (source+external_id)"))?;
+        .fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "dispositivo gia' presente (source+external_id)"))?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT, "dispositivo gia' presente"))?.get::<Uuid,_>("id");
     if b.assigned_user.is_some() { record_device_assignment(&mut tx, tid, id, None, b.assigned_user, st.clock.now()).await.map_err(ise)?; }
     tx.commit().await.map_err(ise)?;
@@ -2971,7 +2971,7 @@ pub async fn dok_build(st: &AppState, tid: Uuid, actor: &str, b: DokReq) -> Resu
         "INSERT INTO app.devices(tenant_id,external_id,source,label,site_id,assigned_user,enabled,config,model_code)
          VALUES($1,$2,'gps',$3,$4,$5,true,$6,$7) RETURNING id")
         .bind(tid).bind(b.external_id.trim()).bind(&label).bind(b.site_id).bind(b.user_id).bind(&dcfg).bind(&b.model_code)
-        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "dispositivo gia' presente (uniqueId)"))?;
+        .fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "dispositivo gia' presente (uniqueId)"))?;
     let dev_id = drow.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id");
     if b.user_id.is_some() { record_device_assignment(&mut tx, tid, dev_id, None, b.user_id, now).await.map_err(ise)?; }
     // 2) gruppo di escalation (se fornito). SL-11 (25/11/2026): prima si SOVRASCRIVEVA il routing di
@@ -3002,7 +3002,7 @@ pub async fn dok_build(st: &AppState, tid: Uuid, actor: &str, b: DokReq) -> Resu
                 "man_down": etypes.iter().any(|e|e=="man_down"),
                 "immobilita": etypes.iter().any(|e|e=="immobilita"),
                 "mancato_checkin": plan.needs_checkin,
-                "geofence": false });
+                "geofence": true }); // SL-18: allarmi di area attivi come gli altri trigger
             let pname = format!("DOK {} · {}", plan.label, label);
             let prow = sqlx::query("INSERT INTO app.protection_profiles(tenant_id,name,descr,escalation_group_id,triggers,checkin_minutes,enabled)
                  VALUES($1,$2,$3,$4,$5,$6,true)
@@ -3137,7 +3137,7 @@ pub async fn provision_device(State(st): State<AppState>, h: HeaderMap, Json(b):
          VALUES($1,$2,'gps',$3,$4,$5,$6,true,$7,$8) RETURNING id")
         .bind(tid).bind(b.external_id.trim()).bind(&b.label).bind(b.site_id).bind(b.user_id).bind(b.asset_id)
         .bind(&dcfg).bind(&b.model_code)
-        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "dispositivo gia' presente (uniqueId)"))?;
+        .fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "dispositivo gia' presente (uniqueId)"))?;
     let dev_id = drow.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id");
     if b.user_id.is_some() { record_device_assignment(&mut tx, tid, dev_id, None, b.user_id, st.clock.now()).await.map_err(ise)?; }
     tx.commit().await.map_err(ise)?;
@@ -3206,7 +3206,7 @@ pub async fn create_group(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("INSERT INTO app.alarm_groups(tenant_id,name) VALUES($1,$2) RETURNING id")
-        .bind(tid).bind(b.name.trim()).fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "gruppo gia' presente"))?;
+        .bind(tid).bind(b.name.trim()).fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "gruppo gia' presente"))?;
     tx.commit().await.map_err(ise)?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT, "gruppo gia' presente"))?.get::<Uuid,_>("id");
     Ok(Json(json!({"id":id})))
@@ -3671,7 +3671,7 @@ pub async fn create_patrol_route(State(st): State<AppState>, h: HeaderMap, Json(
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("INSERT INTO app.patrol_routes(tenant_id,name,site_id,window_minutes,assigned_group,mode,grace_min,manual_code_allowed) VALUES($1,$2,$3,$4,$5,COALESCE($6,'piedi'),COALESCE($7,0),COALESCE($8,true)) RETURNING id")
         .bind(tid).bind(b.name.trim()).bind(b.site_id).bind(b.window_minutes).bind(b.assigned_group).bind(&b.mode).bind(b.grace_min).bind(b.manual_code_allowed)
-        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "giro già esistente (nome)"))?;
+        .fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "giro già esistente (nome)"))?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT,"già esistente"))?.get::<Uuid,_>("id");
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "create_patrol_route", json!({"name":b.name})).await;
@@ -4260,7 +4260,7 @@ pub async fn create_team(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("INSERT INTO app.teams(tenant_id,name) VALUES($1,$2) RETURNING id")
-        .bind(tid).bind(b.name.trim()).fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "squadra gia' presente"))?;
+        .bind(tid).bind(b.name.trim()).fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "squadra gia' presente"))?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":row.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id")})))
 }
@@ -4429,7 +4429,7 @@ pub async fn create_qualification(State(st): State<AppState>, h: HeaderMap, Json
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("INSERT INTO app.qualifications(tenant_id,name,note) VALUES($1,$2,$3) RETURNING id")
         .bind(tid).bind(b.name.trim()).bind(&b.note)
-        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "qualifica già esistente"))?;
+        .fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "qualifica già esistente"))?;
     tx.commit().await.map_err(ise)?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT,"già esistente"))?.get::<Uuid,_>("id");
     audit(&st, tid, &s.email, "create_qualification", json!({"name":b.name})).await;
@@ -6002,7 +6002,7 @@ pub async fn create_geofence(State(st): State<AppState>, h: HeaderMap, Json(b): 
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("INSERT INTO app.geofences(tenant_id,name,kind,geom,site_id,floorplan_id,color,alert_on) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id")
         .bind(tid).bind(b.name.trim()).bind(&b.kind).bind(&b.geom).bind(b.site_id).bind(b.floorplan_id).bind(&color).bind(alert_on)
-        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "nome gia' presente"))?;
+        .fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "nome gia' presente"))?;
     tx.commit().await.map_err(ise)?;
     let id = row.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id");
     audit(&st, tid, &s.email, "create_geofence", json!({"name":b.name,"kind":b.kind})).await;
@@ -6034,7 +6034,7 @@ pub async fn update_geofence(State(st): State<AppState>, h: HeaderMap, Path(id):
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("UPDATE app.geofences SET name=COALESCE($2,name), geom=COALESCE($3,geom), color=COALESCE($4,color) WHERE id=$1")
         .bind(id).bind(&name).bind(&b.geom).bind(&color).execute(&mut *tx).await
-        .map_err(|_| err(StatusCode::CONFLICT, "nome gia' presente"))?.rows_affected();
+        .map_err(|e| conflict_or(e, "nome gia' presente"))?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "geofence inesistente")); }
     audit(&st, tid, &s.email, "update_geofence", json!({"id":id,"renamed":name.is_some(),"moved":b.geom.is_some(),"recolored":color.is_some()})).await;
@@ -6745,7 +6745,11 @@ pub async fn ingest_osmand(
             "fixTime": ts_rfc.clone(), "source": dev_source});
         // process_gps_position filtra source='gps': per device con quella sorgente aggiorna,
         // altrimenti ignora (la posizione resta comunque nel payload dell'eventuale allarme).
-        if dev_source=="gps" { position = process_gps_position(&st, tid, &pos, &ext).await.map_err(ise)?; }
+        if dev_source=="gps" {
+            let prev_batt = device_last_battery(&st, tid, &dev_source, &ext).await;
+            if alarm.is_none() { gps_battery_check(&st, tid, &dev_source, &ext, prev_batt, battery, lat, lon, ts_rfc.as_deref()).await; }
+            position = process_gps_position(&st, tid, &pos, &ext).await.map_err(ise)?;
+        }
         else { position = json!({"skipped":"sorgente_non_gps"}); }
     }
     // 2) allarme -> incidente (etype mappato; orario affidabile -> attribuzione temporale)
@@ -7084,9 +7088,12 @@ pub async fn iot_activate(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     audit(&st, tid, &s.email, "iot_activate", json!({"blueprint":bp_code,"model_code":model_code,"device":dev_id,"external_id":ext})).await;
     // istruzioni di collegamento per protocollo (il segreto va nell'URL/credenziale)
     let connect = match protocol.as_str() {
+        // IO-13: il segreto va in un'intestazione HTTP (non nell'URL, che finisce nei log); il
+        // parametro ?token= resta accettato per i dispositivi già configurati
         "lorawan" => json!({"protocol":"lorawan",
-            "webhook_url": format!("/api/ingress/lorawan?token={secret}"),
-            "note":"Imposta questo URL come webhook di uplink su TTN/ChirpStack (serve un decoder a monte che produca il payload decodificato)."}),
+            "webhook_url": "/api/ingress/lorawan",
+            "header_name": "x-ingest-token", "header_value": secret,
+            "note":"Imposta questo URL come webhook di uplink su TTN/ChirpStack e aggiungi l'intestazione indicata (serve un decoder a monte che produca il payload decodificato)."}),
         "mqtt" => json!({"protocol":"mqtt",
             "host": "il server YouWorkforce", "port": 1883,
             "topic": format!("yw/{tid}/{ext}/telemetry"),
@@ -7159,6 +7166,12 @@ pub async fn iot_command_post(State(st): State<AppState>, h: HeaderMap, Path(dev
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "iot").await?; require_cap(&s,"devices.manage")?;
     if b.method.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST,"metodo richiesto")); }
+    // IO-12: metodo non più libero. Per i dispositivi IoT un nome di metodo (lettere, cifre, _ . : -,
+    // max 64) e parametri contenuti; il testo GPRS grezzo verso i badge resta riservato a devices.admin.
+    let m = b.method.trim();
+    let gps_text_ok = m.len() <= 200 && !m.chars().any(|c| c.is_control());
+    let rpc_ok = m.len() <= 64 && m.chars().all(|c| c.is_ascii_alphanumeric() || "_.:-".contains(c));
+    if b.params.as_ref().map(|v| v.to_string().len()).unwrap_or(0) > 4096 { return Err(err(StatusCode::BAD_REQUEST, "parametri troppo grandi (max 4 KB)")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let drow = sqlx::query("SELECT source,external_id FROM app.devices WHERE id=$1").bind(dev).fetch_optional(&mut *tx).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::NOT_FOUND,"device inesistente"))?;
@@ -7166,6 +7179,9 @@ pub async fn iot_command_post(State(st): State<AppState>, h: HeaderMap, Path(dev
     // un device GPS riceve il metodo come comando GPRS grezzo: stesso permesso del comando libero
     if src == "gps" && !has_cap(&s, "devices.admin") {
         return Err(err(StatusCode::FORBIDDEN, "i comandi verso dispositivi GPS richiedono l'amministrazione dispositivi"));
+    }
+    if (src == "gps" && !gps_text_ok) || (src != "gps" && !rpc_ok) {
+        return Err(err(StatusCode::BAD_REQUEST, "metodo non valido: usa un nome di comando (lettere, cifre, _ . : -)"));
     }
     let id: Uuid = sqlx::query_scalar("INSERT INTO app.iot_commands(tenant_id,device_id,method,params,created_by) VALUES($1,$2,$3,$4,$5) RETURNING id")
         .bind(tid).bind(dev).bind(b.method.trim()).bind(&b.params).bind(s.user_id).fetch_one(&mut *tx).await.map_err(ise)?;
@@ -7181,6 +7197,7 @@ pub async fn iot_command_post(State(st): State<AppState>, h: HeaderMap, Path(dev
         sqlx::query("UPDATE app.iot_commands SET status=$2,result=$3,sent_at=now() WHERE id=$1").bind(id).bind(status).bind(&result).execute(&mut *tx2).await.map_err(ise)?;
         tx2.commit().await.map_err(ise)?;
     }
+    audit(&st, tid, &s.email, "iot_command", json!({"device":dev,"command_id":id,"method":m,"status":status})).await; // IO-12
     Ok(Json(json!({"id":id,"status":status,"result":result})))
 }
 pub async fn iot_commands_list(State(st): State<AppState>, h: HeaderMap, Path(dev): Path<Uuid>) -> R {
@@ -7684,6 +7701,8 @@ pub async fn teltonika_ingest_one(st: &AppState, tid: Uuid, ext: &str, source: &
     lat: f64, lon: f64, speed: Option<f64>, course: Option<f64>, battery: Option<f64>, alarm: Option<String>,
     io_attrs: Value) {
     if source == "gps" {
+        let prev_batt = device_last_battery(st, tid, source, ext).await;
+        if alarm.is_none() { gps_battery_check(st, tid, source, ext, prev_batt, battery, Some(lat), Some(lon), Some(ts_rfc)).await; }
         let mut attrs = match io_attrs { Value::Object(m) => m, _ => serde_json::Map::new() };
         attrs.insert("batteryLevel".into(), json!(battery));
         let pos = json!({"latitude":lat,"longitude":lon,"speed":speed,"course":course,
@@ -7742,6 +7761,35 @@ pub async fn stale_open_watchdog(st: &AppState) {
         let tid: Uuid = p.get("tenant_id");
         audit(st, tid, "sistema", "presenza_auto_close", json!({"presenza_id":p.get::<Uuid,_>("id"),"user_id":p.get::<Uuid,_>("user_id")})).await;
     }
+}
+/// SL-17 (25/11/2026): soglia batteria valutata su OGNI record di posizione (Teltonika, OsmAnd),
+/// non solo sugli allarmi espliciti del dispositivo. Segnala una volta per discesa: solo quando il
+/// valore passa da sopra (o ignoto) a sotto la soglia `battery_min`; la policy `battery_as`
+/// (off / warning / critico) decide se è un evento o un allarme con escalation.
+pub async fn gps_battery_check(st: &AppState, tid: Uuid, source: &str, ext: &str, prev: Option<f64>, battery: Option<f64>,
+    lat: Option<f64>, lon: Option<f64>, ts: Option<&str>) {
+    let Some(b) = battery else { return };
+    // l'ultimo valore letto si salva SEMPRE (i filtri di movimento della posizione possono non
+    // aggiornarlo se il badge è fermo): serve a riconoscere la discesa sotto soglia una volta sola
+    let _ = sqlx::query("UPDATE app.devices SET last_battery=$4 WHERE tenant_id=$1 AND source=$2 AND external_id=$3")
+        .bind(tid).bind(source).bind(ext).bind(b).execute(&st.owner_pool).await;
+    let amap = tool_config(st, tid, "gps", "alarm_map").await;
+    let min = amap.get("battery_min").and_then(|v| v.as_i64()).unwrap_or(15) as f64;
+    if !(b > 0.0 && b < min) { return; }
+    if let Some(p) = prev { if p > 0.0 && p < min { return; } } // era già sotto: già segnalato
+    let etype = map_gps_etype(&amap, "", None, Some(b));
+    if etype == "device_event" || etype == "ignore" { return; }
+    let corr = format!("batt-{ext}");
+    let ev = format!("batt-{ext}-{}", ts.map(|x| x.to_string()).unwrap_or_else(|| st.clock.now().timestamp_millis().to_string()));
+    let _ = persist_ingest(st, tid, Normalized{
+        source: source.into(), source_event: ev.clone(), idem: ev, etype,
+        device_external_id: Some(ext.into()), site_name: None, lat, lon, accuracy_m: None, correlation: corr,
+        payload: json!({"channel":"batteria","battery":b,"soglia":min,"occurred_at":ts}),
+        indoor: false, beacon_uid: None, zone: None }).await;
+}
+async fn device_last_battery(st: &AppState, tid: Uuid, source: &str, ext: &str) -> Option<f64> {
+    sqlx::query_scalar::<_, Option<f64>>("SELECT last_battery FROM app.devices WHERE tenant_id=$1 AND source=$2 AND external_id=$3")
+        .bind(tid).bind(source).bind(ext).fetch_optional(&st.owner_pool).await.ok().flatten().flatten()
 }
 /// Vigilanza: auto-punzonatura da posizione device. Se il device (dev_id) è assegnato a una
 /// guardia con una ronda in corso, e la posizione cade nel raggio di un checkpoint GPS non ancora
@@ -8645,7 +8693,17 @@ pub async fn test_advance(State(st): State<AppState>, Json(b): Json<AdvanceReq>)
 }
 
 // small helpers
-pub(crate) fn ise<E: std::fmt::Display>(e: E) -> (StatusCode, String) { (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()) }
+/// Errore di scrittura che di solito è un duplicato (vincolo UNIQUE): se invece è un riferimento a un
+/// dato di un'altra azienda (TA-11, mig 0144) lo dice, invece di un fuorviante «già presente».
+pub(crate) fn conflict_or<E: std::fmt::Display>(e: E, msg: &str) -> (StatusCode, String) {
+    if e.to_string().contains("YW_TENANT_MISMATCH") { ise(e) } else { (StatusCode::CONFLICT, msg.to_string()) }
+}
+pub(crate) fn ise<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
+    let m = e.to_string();
+    // TA-11/CA-19 (mig 0144): riferimento a un dato di un'altra azienda -> richiesta non valida
+    if m.contains("YW_TENANT_MISMATCH") { return (StatusCode::BAD_REQUEST, "riferimento non valido: il dato indicato non appartiene alla tua azienda".into()); }
+    (StatusCode::INTERNAL_SERVER_ERROR, m)
+}
 fn ise_resp() -> axum::response::Response { (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"db"}))).into_response() }
 
 /// Host -> tenant slug. Control host returns None.
@@ -8850,7 +8908,7 @@ pub async fn ui_features_set(State(st): State<AppState>, h: HeaderMap, Json(b): 
     sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'gps','alarm_map',$2,NULL)
          ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config=EXCLUDED.config, updated_at=now()")
         .bind(tid).bind(&cfg).execute(&st.owner_pool).await.map_err(ise)?;
-    audit(&st, tid, "tenant_admin", "geofence_alarms_set", json!({"geofence_alarms":b.geofence_alarms})).await;
+    audit(&st, tid, &s.email, "geofence_alarms_set", json!({"geofence_alarms":b.geofence_alarms})).await;
     Ok(Json(json!({"ok":true,"geofence_alarms":b.geofence_alarms})))
 }
 
@@ -8864,7 +8922,7 @@ pub async fn super_map_visibility_get(State(st): State<AppState>, h: HeaderMap, 
 }
 #[derive(Deserialize)] pub struct MapVisibility { pub map_outdoor: bool, pub map_indoor: bool }
 pub async fn super_map_visibility_set(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>, Json(b): Json<MapVisibility>) -> R {
-    require_super(&st, &h).await?;
+    let sa_ = require_super(&st, &h).await?;
     // merge preservando gli altri campi del tool alarm_map
     let existing: Option<Value> = sqlx::query_scalar("SELECT config FROM app.tenant_module_config WHERE tenant_id=$1 AND module_code='gps' AND tool_code='alarm_map'")
         .bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
@@ -8875,7 +8933,7 @@ pub async fn super_map_visibility_set(State(st): State<AppState>, h: HeaderMap, 
     sqlx::query("INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config,updated_by) VALUES($1,'gps','alarm_map',$2,NULL)
          ON CONFLICT (tenant_id,module_code,tool_code) DO UPDATE SET config=EXCLUDED.config, updated_at=now()")
         .bind(tid).bind(&cfg).execute(&st.owner_pool).await.map_err(ise)?;
-    audit(&st, tid, "superadmin", "map_visibility_set", json!({"map_outdoor":b.map_outdoor,"map_indoor":b.map_indoor})).await;
+    audit(&st, tid, &format!("superadmin:{}", sa_.email), "map_visibility_set", json!({"map_outdoor":b.map_outdoor,"map_indoor":b.map_indoor})).await;
     Ok(Json(json!({"ok":true,"map_outdoor":b.map_outdoor,"map_indoor":b.map_indoor})))
 }
 
@@ -9059,7 +9117,7 @@ pub async fn protection_profile_create(State(st): State<AppState>, h: HeaderMap,
     if name.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome obbligatorio")); }
     group_belongs(&st, tid, b.escalation_group_id).await?;
     validate_immobility(&b)?;
-    let triggers = b.triggers.clone().unwrap_or_else(|| json!({"sos":true,"man_down":true,"immobilita":true,"mancato_checkin":true,"geofence":false}));
+    let triggers = b.triggers.clone().unwrap_or_else(|| json!({"sos":true,"man_down":true,"immobilita":true,"mancato_checkin":true,"geofence":true}));
     let row = sqlx::query(
         "INSERT INTO app.protection_profiles(tenant_id,name,descr,escalation_group_id,triggers,checkin_minutes,enabled,
             immobility_enabled,immobility_after_s,immobility_prewarn_s,immobility_min_move_m,immobility_shift_only)
@@ -9082,7 +9140,7 @@ pub async fn protection_profile_update(State(st): State<AppState>, h: HeaderMap,
     if name.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome obbligatorio")); }
     group_belongs(&st, tid, b.escalation_group_id).await?;
     validate_immobility(&b)?;
-    let triggers = b.triggers.clone().unwrap_or_else(|| json!({"sos":true,"man_down":true,"immobilita":true,"mancato_checkin":true,"geofence":false}));
+    let triggers = b.triggers.clone().unwrap_or_else(|| json!({"sos":true,"man_down":true,"immobilita":true,"mancato_checkin":true,"geofence":true}));
     let n = sqlx::query(
         "UPDATE app.protection_profiles SET name=$3,descr=$4,escalation_group_id=$5,triggers=$6,checkin_minutes=$7,enabled=$8,
             immobility_enabled=$9,immobility_after_s=$10,immobility_prewarn_s=$11,immobility_min_move_m=$12,immobility_shift_only=$13,updated_at=now()
@@ -9153,7 +9211,8 @@ pub(crate) async fn trigger_suppressed(st: &AppState, tid: Uuid, worker: Option<
         "man_down" => "man_down",
         "immobilita" => "immobilita",
         "mancato_checkin" => "mancato_checkin",
-        "attraversamento_geofence" => "geofence",
+        // SL-18: tipi REALI degli allarmi di area (prima «attraversamento_geofence», inesistente)
+        "geofence_ingresso" | "geofence_uscita" | "ingresso_sito" | "uscita_sito" | "attraversamento_geofence" => "geofence",
         _ => return false, // etype non riconducibile a un trigger di profilo → mai soppresso
     };
     // lavoratore: esplicito, oppure assegnatario del device dell'evento

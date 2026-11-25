@@ -3567,7 +3567,8 @@ async function iotActivateRun(){
   try{ const r=await api('/iot/activate',{method:'POST',body:JSON.stringify({blueprint,model_code,external_id,label:label||undefined})});
     const c=r.connect||{}; const origin=location.origin;
     let how='';
-    if(c.protocol==='lorawan'){ how=`<div class="small">Imposta su TTN/ChirpStack il <b>webhook di uplink</b>:</div><code class="small" style="display:block;word-break:break-all;margin:var(--s-3) 0;padding:var(--s-4) var(--s-6);background:var(--panel2,#0002);border-radius:4px">${origin}${esc(c.webhook_url)}</code>`; }
+    if(c.protocol==='lorawan'){ how=`<div class="small">Imposta su TTN/ChirpStack il <b>webhook di uplink</b>:</div><code class="small" style="display:block;word-break:break-all;margin:var(--s-3) 0;padding:var(--s-4) var(--s-6);background:var(--panel2,#0002);border-radius:4px">${origin}${esc(c.webhook_url)}</code>
+      ${c.header_name?`<div class="small">e aggiungi l'<b>intestazione HTTP</b> (il segreto non va nell'indirizzo):</div><code class="small" style="display:block;word-break:break-all;margin:var(--s-3) 0;padding:var(--s-4) var(--s-6);background:var(--panel2,#0002);border-radius:4px">${esc(c.header_name)}: ${esc(c.header_value)}</code>`:''}`; }
     else if(c.protocol==='mqtt'){ how=`<div class="small">Broker MQTT nativo YW (porta 1883). Pubblica <code>{"values":{…}}</code>.</div>
         <div class="small">Topic: <code>${esc(c.topic)}</code><br>Username: <code>${esc(c.username)}</code></div>`; }
     else { how=`<div class="small">Invia una <b>POST JSON</b> ad ogni misura:</div><code class="small" style="display:block;word-break:break-all;margin:var(--s-3) 0;padding:var(--s-4) var(--s-6);background:var(--panel2,#0002);border-radius:4px">${origin}${esc(c.url)}</code>

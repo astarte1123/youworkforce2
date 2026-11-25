@@ -139,6 +139,24 @@ aprire un nuovo incidente: l'escalation prosegue senza raffiche di avvisi. Dopo 
 allarme apre un nuovo incidente. Vale anche per OsmAnd quando la richiesta porta l'orario del
 dispositivo. e2e: `qa/telt-retransmit-e2e.sh`.
 
+### Batteria sotto soglia su ogni record (SL-17, 25/11/2026)
+
+Prima la soglia `battery_min` valeva solo per gli allarmi espliciti del dispositivo. I normali
+record di posizione di Teltonika e OsmAnd non la controllavano: un badge poteva scaricarsi senza
+alcun avviso. Ora ogni record con la batteria viene valutato. Si segnala **una volta per
+discesa**, quando il valore passa da sopra (o sconosciuto) a sotto la soglia. Con la policy
+`battery_as` (off / warning / critico) si sceglie tra evento e allarme con escalation. L'ultimo
+valore letto viene sempre salvato, anche se il badge è fermo e la posizione non cambia. e2e
+`qa/hardening-audit-devices-e2e.sh`.
+
+### Profili di protezione: trigger «geofence» (SL-18)
+
+Il trigger «geofence» del profilo era legato a un tipo di allarme inesistente e non aveva mai
+effetto. Ora vale per gli allarmi di area reali (ingresso/uscita geofence e sito). La migrazione
+`0145` lo accende nei profili esistenti e nei nuovi: comportamento invariato, gli allarmi di area
+continuano ad arrivare. Spegnerlo in un profilo ora sopprime davvero quegli allarmi per i suoi
+lavoratori.
+
 ### Silenzio del dispositivo → Perdita di contatto
 
 Un badge **in servizio** che non trasmette da più della soglia apre un incidente

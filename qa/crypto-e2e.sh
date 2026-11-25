@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Encryption-at-rest dei segreti. YouWorkforce non si collega a sistemi esterni: l'unico segreto
 # esterno è la chiave del provider AI. Verifica su un tenant usa-e-getta che la chiave:
-#   1) sia salvata cifrata (enc:v1:...) e mai in chiaro nel DB;
+#   1) sia salvata cifrata (enc:v2:..., chiave Argon2id) e mai in chiaro nel DB;
 #   2) non venga mai restituita dall'API (solo il flag has_api_key);
 #   3) venga rimossa insieme al tenant.
 # Richiede core avviato con YW_SECRET_KEY.
@@ -26,7 +26,7 @@ sapi -X POST "$BASE/api/superadmin/tenants/$TID/ai" -d "{\"base_url\":\"http://l
 
 STORED=$(sql "SELECT api_key FROM app.ai_connections WHERE tenant_id='$TID'")
 case "$STORED" in
-  enc:v1:*) ok "chiave AI cifrata a riposo (enc:v1:)";;
+  enc:v2:*) ok "chiave AI cifrata a riposo (enc:v2:, Argon2id)";;
   *)        no "chiave AI NON cifrata" "${STORED:0:12}";;
 esac
 [ "$(sql "SELECT count(*) FROM app.ai_connections WHERE api_key LIKE '%$SECRET%'")" = "0" ] \

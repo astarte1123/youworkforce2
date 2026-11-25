@@ -341,6 +341,22 @@ sospeso) calcolato da `list_tenants` (che ora espone anche `incidents_open`). So
 al click** per mostrare toggle moduli e gestione — così non si scorre una lista infinita di
 attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + ricerca per nome/slug.
 
+## 13-ter. Sicurezza dei dati tra aziende e dei segreti (25/11/2026)
+
+- **Dati di un'altra azienda (TA-11, CA-19, mig `0144`).** Un riferimento deve puntare a un dato
+  della stessa azienda: un utente in un gruppo, un tecnico o una sede su un ordine, la sede di un
+  giro, e così via. Prima bastava conoscere l'id di un dato altrui per collegarlo. Ora il database
+  lo verifica su tutte le tabelle collegate (88 tabelle) e per ogni via di scrittura. La richiesta
+  viene rifiutata con «riferimento non valido: il dato indicato non appartiene alla tua azienda»
+  (HTTP 400). e2e `qa/cross-tenant-refs-e2e.sh` 12/12.
+- **Registro attività (TA-13).** Ci finiscono anche membri dei gruppi, ruoli personalizzati
+  assegnati, sedi e asset, sempre con l'utente reale. Per le azioni del superadmin l'attore è
+  `superadmin:<email>`, non più la sola parola «superadmin».
+- **Chiave dei segreti (IO-13).** Il core **non parte** senza `YW_SECRET_KEY` di almeno 16
+  caratteri. In sviluppo si può aggirare con `YW_ALLOW_PLAINTEXT_SECRETS=1`. Le chiavi dei
+  provider AI sono cifrate con una chiave derivata con **Argon2id** (formato `enc:v2`). I valori
+  nel vecchio formato `enc:v1` o in chiaro vengono ricifrati all'avvio.
+
 ## 13-bis. Privacy e audit (GDPR + registro attività)
 
 Voce menu **«Privacy e audit»** (Configurazione, solo `tenant_admin`): export dei dati personali

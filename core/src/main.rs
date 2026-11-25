@@ -23,14 +23,17 @@ use sqlx::Row;
 use state::{AppState, TenantEvent};
 
 /// Cifra a riposo i segreti ancora in chiaro (percorso di migrazione idempotente: salta ciò
-/// che è già "enc:v1:"). L'unico segreto esterno è la chiave del provider AI. Richiede YW_SECRET_KEY.
+/// che è già cifrato). L'unico segreto esterno è la chiave del provider AI. Richiede YW_SECRET_KEY.
 async fn crypto_migrate(st: &AppState) -> anyhow::Result<()> {
-    let rows = sqlx::query("SELECT tenant_id,api_key FROM app.ai_connections WHERE api_key<>'' AND api_key NOT LIKE 'enc:v1:%'")
+    // IO-13: plaintext legacy e formato v1 (chiave senza KDF) -> v2 (Argon2id)
+    let rows = sqlx::query("SELECT tenant_id,api_key FROM app.ai_connections WHERE api_key<>'' AND api_key NOT LIKE 'enc:v2:%'")
         .fetch_all(&st.owner_pool).await?;
     for r in rows {
         let tid: Uuid = r.get("tenant_id");
-        let enc = st.secrets.encrypt(&r.get::<String,_>("api_key"));
-        if !enc.starts_with("enc:v1:") { continue; }   // YW_SECRET_KEY assente: resta in chiaro
+        let plain = st.secrets.decrypt(&r.get::<String,_>("api_key"));
+        if plain.starts_with("enc:") { continue; } // non decifrabile con questa chiave: lascia com'è
+        let enc = st.secrets.encrypt(&plain);
+        if !enc.starts_with("enc:v2:") { continue; }   // YW_SECRET_KEY assente: resta in chiaro
         sqlx::query("UPDATE app.ai_connections SET api_key=$2 WHERE tenant_id=$1")
             .bind(tid).bind(enc).execute(&st.owner_pool).await?;
     }
@@ -170,6 +173,13 @@ async fn run() -> anyhow::Result<()> {
         .connect(&rt_url).await?;
 
     let (bus, _) = broadcast::channel(256);
+    // IO-13: senza chiave i segreti (chiavi dei provider AI) finirebbero in chiaro nel DB.
+    // Avvio rifiutato, salvo deroga esplicita per sviluppo (YW_ALLOW_PLAINTEXT_SECRETS=1).
+    let sk = std::env::var("YW_SECRET_KEY").unwrap_or_default();
+    if sk.len() < crypto::MIN_KEY_LEN && env("YW_ALLOW_PLAINTEXT_SECRETS", "0") != "1" {
+        anyhow::bail!("YW_SECRET_KEY mancante o più corta di {} caratteri: imposta una chiave lunga e segreta \
+            (o YW_ALLOW_PLAINTEXT_SECRETS=1 solo in sviluppo)", crypto::MIN_KEY_LEN);
+    }
     let st = AppState {
         owner_pool, rt_pool,
         // SICUREZZA: test clock OFF di default. /api/_test/advance (CSRF-exempt, non autenticato)

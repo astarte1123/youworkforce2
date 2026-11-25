@@ -35,6 +35,9 @@ sha1 = "0.10.6"
 base64 = "0.22.1"
 # monitoring sistema (CPU/RAM/disco/host) per il cruscotto superadmin
 sysinfo = "0.33.1"
+# IO-11: MQTT su TLS (porta 8883) con le stesse librerie TLS già usate da reqwest/sqlx (ring)
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls-pki-types = { version = "1", features = ["std"] }
 
 # debuginfo ridotto: evita lo STATUS_STACK_BUFFER_OVERRUN di rustc in codegen su Windows
 # (crate binaria grande + debuginfo=2) e velocizza il build. Line-tables bastano per i panic.

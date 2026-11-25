@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::state::AppState;
-use crate::api::{R, require_tenant, require_cap, ise, err, audit, is_planner};
+use crate::api::{conflict_or, R, require_tenant, require_cap, ise, err, audit, is_planner};
 use crate::db;
 
 // --- Sedi ---
@@ -54,6 +54,7 @@ pub async fn update_site(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
         .execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "sede inesistente")); }
+    audit(&st, tid, &s.email, "update_site", json!({"id":id,"name":b.name})).await; // TA-13
     Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_site(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
@@ -67,6 +68,7 @@ pub async fn delete_site(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
         })?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "sede inesistente")); }
+    audit(&st, tid, &s.email, "delete_site", json!({"id":id})).await; // TA-13
     Ok(Json(json!({"ok":true})))
 }
 
@@ -93,8 +95,9 @@ pub async fn create_asset(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("INSERT INTO app.assets(tenant_id,name,kind,identifier,site_id,note) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
         .bind(tid).bind(b.name.trim()).bind(&kind).bind(&b.identifier).bind(b.site_id).bind(&b.note)
-        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "nome gia' presente"))?;
+        .fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "nome gia' presente"))?;
     tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "create_asset", json!({"name":b.name})).await; // TA-13
     Ok(Json(json!({"id":row.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id")})))
 }
 pub async fn update_asset(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<AssetReq>) -> R {
@@ -107,6 +110,7 @@ pub async fn update_asset(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
         .execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "asset inesistente")); }
+    audit(&st, tid, &s.email, "update_asset", json!({"id":id})).await; // TA-13
     Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_asset(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
@@ -119,6 +123,8 @@ pub async fn delete_asset(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
         })?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "asset inesistente")); }
+    let tid = s.tenant_id.unwrap();
+    audit(&st, tid, &s.email, "delete_asset", json!({"id":id})).await; // TA-13
     Ok(Json(json!({"ok":true})))
 }
 

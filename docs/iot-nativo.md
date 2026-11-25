@@ -151,6 +151,26 @@ combaciare con l'`{ext}` del topic (difesa in profondità).
 Perimetro volutamente ristretto (no QoS 2, no messaggi *retained*/persistenza, no *will*): copre
 l'ingest dei sensori e il downlink dei comandi. Disattivabile con `YW_MQTT_PORT=off`.
 
+**Robustezza e cifratura (IO-11, 25/11/2026).**
+- **TLS**: con `YW_MQTT_TLS_CERT` e `YW_MQTT_TLS_KEY` (file PEM) si apre la porta cifrata
+  `YW_MQTTS_PORT` (default **8883**). Così il token, che è lo username, non viaggia in chiaro.
+  `YW_MQTT_PLAIN=off` chiude la porta in chiaro 1883.
+- **Limiti**: al massimo `YW_MQTT_MAX_CONN` connessioni contemporanee (default 500). La CONNECT
+  deve arrivare entro 10 s. Il keepalive del client viene applicato (1,5 × il valore; senza
+  keepalive 10 minuti di inattività).
+- **Conferme vere**: il PUBACK dei QoS 1 parte solo se il dato è stato accettato. Un dato scartato
+  chiude la connessione: prima veniva confermato anche ciò che non entrava.
+- **Comandi**: consegnati anche mentre il client resta collegato (controllo ogni 5 s), non più
+  solo al momento della SUBSCRIBE.
+
+**Comandi IoT (IO-12).** Il metodo di un comando RPC verso un sensore è un nome (lettere, cifre,
+`_ . : -`, al massimo 64 caratteri). I parametri sono al massimo 4 KB. Il testo GPRS libero verso
+i badge resta riservato a `devices.admin`. Ogni comando è nel registro attività (`iot_command`).
+
+**LoRaWAN (IO-13).** L'attivazione fornisce l'URL del webhook **senza segreto** e l'intestazione
+`x-ingest-token`: l'URL finisce nei log di TTN e ChirpStack, l'intestazione no. Il parametro
+`?token=` resta accettato per i dispositivi già configurati.
+
 ## Perimetro / integrazione
 
 - Vive nel modulo **`iot`** (product). Autonomo: telemetria/attributi/comandi/soglie funzionano

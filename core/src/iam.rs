@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::state::AppState;
-use crate::api::{R, require_tenant, require_cap, require_grantable, ise, err, audit, CAPABILITIES, USER_ROLES, default_role_caps, effective_caps, cap_modules};
+use crate::api::{conflict_or, R, require_tenant, require_cap, require_grantable, ise, err, audit, CAPABILITIES, USER_ROLES, default_role_caps, effective_caps, cap_modules};
 use crate::db;
 
 /// Insieme dei moduli attivi del tenant (per annotare la rilevanza delle capability).
@@ -129,7 +129,7 @@ pub async fn create_custom_role(State(st): State<AppState>, h: HeaderMap, Json(b
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("INSERT INTO app.custom_roles(tenant_id,name,description) VALUES($1,$2,$3) RETURNING id")
         .bind(tid).bind(b.name.trim()).bind(b.description.as_deref())
-        .fetch_optional(&mut *tx).await.map_err(|_| err(StatusCode::CONFLICT, "ruolo già esistente (nome)"))?;
+        .fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "ruolo già esistente (nome)"))?;
     let rid = row.ok_or_else(|| err(StatusCode::CONFLICT,"già esistente"))?.get::<Uuid,_>("id");
     set_role_caps(&mut tx, tid, rid, &b.capabilities).await?;
     tx.commit().await.map_err(ise)?;
@@ -174,6 +174,7 @@ pub async fn custom_role_assign_user(State(st): State<AppState>, h: HeaderMap, P
     sqlx::query("INSERT INTO app.user_custom_roles(tenant_id,user_id,role_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
         .bind(tid).bind(b.user_id).bind(rid).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "custom_role_assign_user", json!({"role":rid,"user":b.user_id})).await; // TA-13
     Ok(Json(json!({"ok":true})))
 }
 pub async fn custom_role_unassign_user(State(st): State<AppState>, h: HeaderMap, Path((rid,uid)): Path<(Uuid,Uuid)>) -> R {
@@ -182,6 +183,7 @@ pub async fn custom_role_unassign_user(State(st): State<AppState>, h: HeaderMap,
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.user_custom_roles WHERE role_id=$1 AND user_id=$2").bind(rid).bind(uid).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "custom_role_unassign_user", json!({"role":rid,"user":uid})).await; // TA-13
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)] pub struct AssignGroupReq { pub group_id: Uuid }
@@ -197,6 +199,7 @@ pub async fn custom_role_assign_group(State(st): State<AppState>, h: HeaderMap, 
     sqlx::query("INSERT INTO app.user_group_custom_roles(tenant_id,group_id,role_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
         .bind(tid).bind(b.group_id).bind(rid).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "custom_role_assign_group", json!({"role":rid,"group":b.group_id})).await; // TA-13
     Ok(Json(json!({"ok":true})))
 }
 pub async fn custom_role_unassign_group(State(st): State<AppState>, h: HeaderMap, Path((rid,gid)): Path<(Uuid,Uuid)>) -> R {
@@ -205,6 +208,7 @@ pub async fn custom_role_unassign_group(State(st): State<AppState>, h: HeaderMap
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.user_group_custom_roles WHERE role_id=$1 AND group_id=$2").bind(rid).bind(gid).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "custom_role_unassign_group", json!({"role":rid,"group":gid})).await; // TA-13
     Ok(Json(json!({"ok":true})))
 }
 

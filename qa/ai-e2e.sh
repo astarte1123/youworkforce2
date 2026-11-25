@@ -35,7 +35,7 @@ echo "$G" | grep -q '"configured":true' && ok "get: configurata" || no "get non 
 echo "$G" | grep -q '"has_api_key":true' && ok "get: api key mascherata (flag, nessun valore)" || no "api key non mascherata" "$G"
 echo "$G" | grep -q 'sk-e2e-secret' && no "api key in chiaro nel get!" "$G" || ok "api key NON esposta nel get"
 # 3) cifrata a riposo
-[ "$(sql "SELECT left(api_key,7) FROM app.ai_connections WHERE tenant_id=$TIDQ")" = "enc:v1:" ] && ok "api key cifrata a riposo (enc:v1)" || no "api key non cifrata" "-"
+[ "$(sql "SELECT left(api_key,7) FROM app.ai_connections WHERE tenant_id=$TIDQ")" = "enc:v2:" ] && ok "api key cifrata a riposo (enc:v2, Argon2id)" || no "api key non cifrata" "-"
 # 4) base URL normalizzato
 [ "$(sql "SELECT base_url FROM app.ai_connections WHERE tenant_id=$TIDQ")" = "http://localhost:9099" ] && ok "base URL normalizzato (no slash finale)" || no "slash non rimosso" "-"
 # 5) verify reachable-aware (nessun server AI qui)
