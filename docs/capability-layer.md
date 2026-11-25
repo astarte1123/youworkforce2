@@ -56,13 +56,14 @@ toccare il codice. Additivo e non distruttivo; i ruoli restano, le capability li
 ### Elenco utenti (TA-10, 25/11/2026)
 
 `GET /api/users` restituiva a chiunque email, ruolo e telefono di tutti. Ora:
-- **telefono** solo a chi ha `users.manage`, `escalation.manage` o `incidents.handle` (chi
-  gestisce gli allarmi deve poter chiamare il lavoratore);
+- **telefono** solo a chi ha `users.manage`, `escalation.manage`, `incidents.handle` (chi
+  gestisce gli allarmi deve poter chiamare il lavoratore) o `plan` (contattare un tecnico sul
+  campo, decisione PO 25/11/2026);
 - **elenco con email e ruolo** a chi coordina (`plan`, `incidents.view`, `approve`,
   `timesheets.view_all`, `orders.view_all`, `devices.*`, `iot.manage`, `audit.view`,
   `gdpr.manage`, `settings.manage`, `dashboard.manage`, `config.view`);
 - chi non ha nessuna di queste capability vede **solo sé stesso**.
-- e2e `qa/users-privacy-e2e.sh` 4/4.
+- e2e `qa/users-privacy-e2e.sh` 5/5.
 
 ### Campo: ordini, costi, posizioni e sedi (CA-9/10/11, 25/11/2026)
 

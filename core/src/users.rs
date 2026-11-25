@@ -14,13 +14,14 @@ use crate::{db, auth};
 
 /// TA-10 (25/11/2026): prima ogni utente (anche un lavoratore) leggeva email, ruolo e telefono di
 /// tutti. Ora:
-/// - telefono: solo a chi gestisce utenti o escalation, o gestisce gli allarmi (deve poter
-///   chiamare il lavoratore in emergenza);
+/// - telefono: solo a chi gestisce utenti o escalation, gestisce gli allarmi (deve poter
+///   chiamare il lavoratore in emergenza) o pianifica (contattare un tecnico sul campo);
 /// - elenco (email e ruolo): a chi coordina (pianifica, segue allarmi, approva, amministra…);
 /// - chi non ha nessuna di queste capability vede solo sé stesso.
 pub async fn list_users(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
-    let phones = ["users.manage","escalation.manage","incidents.handle"].iter().any(|c| has_cap(&s, c));
+    // decisione PO 25/11/2026: anche chi pianifica vede i telefoni (contattare un tecnico sul campo)
+    let phones = ["users.manage","escalation.manage","incidents.handle","plan"].iter().any(|c| has_cap(&s, c));
     let directory = phones || ["plan","incidents.view","approve","timesheets.view_all","orders.view_all","devices.admin",
         "devices.manage","iot.manage","audit.view","gdpr.manage","settings.manage","dashboard.manage","config.view"]
         .iter().any(|c| has_cap(&s, c));

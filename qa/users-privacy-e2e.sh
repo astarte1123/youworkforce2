@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # TA-10: l'elenco utenti non espone più a tutti email, ruolo e telefono dei colleghi.
 #  - lavoratore senza permessi: vede solo sé stesso
-#  - chi coordina (pianificatore): elenco senza telefoni
-#  - chi gestisce gli allarmi (operatore) o gli utenti (admin): elenco con telefoni
+#  - chi coordina senza pianificare (auditor): elenco senza telefoni
+#  - chi pianifica, gestisce gli allarmi (operatore) o gli utenti (admin): elenco con telefoni
 # Tenant usa-e-getta.
 set -uo pipefail
 BASE="${BASE:-http://localhost:8080}"
@@ -23,13 +23,16 @@ call(){ local c; c=$(awk '$6=="yw_csrf"{print $7}' "$J/$1" | tail -1)
   curl -s -b "$J/$1" -H "x-tenant-slug: $SLUG" -H "x-csrf-token: $c" -H 'content-type: application/json' -X "$2" "$BASE$3" ${4:+-d "$4"}; }
 login A "a@$SLUG.test" DirectPass9
 mk(){ call A POST /api/users "{\"email\":\"$1@$SLUG.test\",\"role\":\"$2\",\"password\":\"WorkPass9\"}" | py "d['id']"; }
-UW=$(mk w lavoratore); UP=$(mk p pianificatore); UO=$(mk o operatore)
+UW=$(mk w lavoratore); UP=$(mk p pianificatore); UO=$(mk o operatore); UA=$(mk au auditor)
 docker exec -i ywdb psql -U postgres -d youworkforce -qc "UPDATE app.users SET phone='+393330000001' WHERE tenant_id='$TID'" >/dev/null
-for u in w p o; do login $u "$u@$SLUG.test" WorkPass9; done
+for u in w p o au; do login $u "$u@$SLUG.test" WorkPass9; done
 L=$(call w GET /api/users); echo "$L" | py "len(d)==1 and d[0]['email']=='w@$SLUG.test' and d[0]['phone'] is not None" | grep -q True \
   && ok "lavoratore: vede solo sé stesso (con il proprio telefono)" || no "lavoratore" "$L"
-L=$(call p GET /api/users); echo "$L" | py "len(d)>=4 and all(u['phone'] is None for u in d if u['email']!='p@$SLUG.test')" | grep -q True \
-  && ok "pianificatore: elenco per assegnare, senza telefoni dei colleghi" || no "pianificatore" "$(echo "$L" | head -c 200)"
+L=$(call p GET /api/users); echo "$L" | py "len(d)>=4 and all(u['phone'] for u in d)" | grep -q True \
+  && ok "pianificatore: elenco con telefoni (contattare un tecnico sul campo, decisione PO)" || no "pianificatore" "$(echo "$L" | head -c 200)"
+# chi coordina senza pianificare (es. auditor): elenco senza telefoni
+L=$(call au GET /api/users); echo "$L" | py "len(d)>=4 and all(u['phone'] is None for u in d if u['email']!='au@$SLUG.test')" | grep -q True \
+  && ok "auditor: elenco senza telefoni dei colleghi" || no "auditor" "$(echo "$L" | head -c 200)"
 L=$(call o GET /api/users); echo "$L" | py "len(d)>=4 and all(u['phone'] for u in d)" | grep -q True \
   && ok "operatore di centrale: telefoni visibili (deve poter chiamare chi è in pericolo)" || no "operatore" "-"
 L=$(call A GET /api/users); echo "$L" | py "len(d)>=4 and all(u['phone'] for u in d)" | grep -q True && ok "amministratore: elenco completo" || no "admin" "-"
