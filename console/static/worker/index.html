@@ -7,31 +7,81 @@
 <link rel="manifest" href="/worker/manifest.webmanifest">
 <link rel="stylesheet" href="/app.css">
 <style>
+  /* App usata SOLO da telefono (verificata a 360px). FE-13: spaziature/colori dai token di app.css; restano
+     in px solo misure senza token (raggi, pulsante SOS, miniature). Il rosso SOS è volutamente fisso
+     (identico in tema chiaro e scuro): definito una volta qui sotto.
+     FE-15: bersagli tattili >= 44px, righe che vanno a capo, aree sicure dei telefoni con notch.
+     FE-16: focus visibile, finestre con ruolo dialog, Esc chiude. */
+  :root{--sos:#d81e36;--sos-hi:#ff5468}
   body{background:var(--bg)}
-  .wrap{max-width:460px;margin:0 auto;padding:14px 14px 30px}
-  .whead{position:sticky;top:0;z-index:10;background:var(--bg);padding:12px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line)}
-  .sosbtn{width:100%;border:none;border-radius:20px;background:linear-gradient(160deg,#ff5468,#d81e36);color:#fff;
+  .wrap{max-width:460px;margin:0 auto;padding:var(--s-14) var(--s-14) calc(30px + env(safe-area-inset-bottom))}
+  .wrap.w-login{min-height:100vh;display:flex;flex-direction:column;justify-content:center}
+  .whead{position:sticky;top:0;z-index:10;background:var(--bg);padding:var(--s-12) var(--s-14);padding-top:max(var(--s-12),env(safe-area-inset-top));
+    display:flex;align-items:center;gap:var(--s-10);border-bottom:1px solid var(--line)}
+  .whead strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .logo.logo-sm{width:26px;height:26px}
+  .w-title{font-size:18px}
+  .btn{min-height:44px} .btn-ico{width:44px;height:44px}
+  .btn.mini{padding:0 var(--s-6);min-width:40px;min-height:40px;justify-content:center}
+  .spread{flex-wrap:wrap}
+  .sosbtn{width:100%;min-height:88px;border:none;border-radius:var(--r-lg);background:linear-gradient(160deg,var(--sos-hi),var(--sos));color:#fff;
     padding:26px;font-size:22px;font-weight:800;letter-spacing:.02em;cursor:pointer;box-shadow:0 10px 30px rgba(216,30,54,.4);
-    display:flex;align-items:center;justify-content:center;gap:12px}
+    display:flex;align-items:center;justify-content:center;gap:var(--s-12)}
   .sosbtn:active{transform:scale(.98)}
   .sosbtn svg{width:30px;height:30px}
+  .sos-note{margin-top:calc(-1 * var(--s-6))}
   .count{font-size:34px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.02em}
-  .act{display:flex;align-items:center;gap:12px;width:100%;padding:16px;border:1px solid var(--line);background:var(--surface);
-    border-radius:14px;font-weight:600;cursor:pointer;color:var(--fg);text-align:left}
+  .act{display:flex;align-items:center;gap:var(--s-12);width:100%;padding:var(--s-16);border:1px solid var(--line);background:var(--surface);
+    border-radius:var(--r);font:inherit;font-weight:600;cursor:pointer;color:var(--fg);text-align:left}
   .act:active{background:var(--surface2)} .act svg{width:22px;height:22px;color:var(--brand-ink)}
   .act .ic{width:42px;height:42px;border-radius:12px;background:var(--brand-soft);display:flex;align-items:center;justify-content:center;flex:none}
-  .tag.warn{background:rgba(245,158,11,.18);color:#b45309}
-  .chip.warn{background:rgba(245,158,11,.18);color:#b45309}
+  .tag.warn{background:var(--warn-soft);color:var(--warn)}
+  .chip.warn{background:var(--warn-soft);color:var(--warn)}
   .modal{position:fixed;inset:0;z-index:50;background:rgba(2,6,23,.55);display:flex;align-items:flex-end;justify-content:center}
-  .sheet{width:100%;max-width:460px;background:var(--surface);border-radius:18px 18px 0 0;padding:16px 16px 26px;
+  .sheet{width:100%;max-width:460px;background:var(--surface);border-radius:18px 18px 0 0;padding:var(--s-16) var(--s-16) calc(26px + env(safe-area-inset-bottom));
     border-top:1px solid var(--line);max-height:88vh;overflow:auto}
-  .sheet textarea{width:100%;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--fg);padding:10px;font:inherit;resize:vertical}
+  .sheet:focus{outline:none}
+  .sheet textarea{width:100%;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--fg);padding:var(--s-10);font:inherit;resize:vertical}
   #micBtn.on{background:var(--bad);color:#fff;border-color:transparent}
   .scan-ov{position:fixed;inset:0;z-index:60;background:#000;display:flex;align-items:center;justify-content:center}
-  .scan-box{position:relative;width:100%;max-width:460px;display:flex;flex-direction:column;align-items:center;gap:12px;padding:16px}
+  .scan-box{position:relative;width:100%;max-width:460px;display:flex;flex-direction:column;align-items:center;gap:var(--s-12);padding:var(--s-16)}
   .scan-box video{width:100%;max-height:70vh;border-radius:12px;object-fit:cover;background:#111}
-  .scan-frame{position:absolute;top:50%;left:50%;transform:translate(-50%,-60%);width:62%;aspect-ratio:1;border:3px solid #16a34a;border-radius:16px;box-shadow:0 0 0 2000px rgba(0,0,0,.25);pointer-events:none}
+  .scan-frame{position:absolute;top:50%;left:50%;transform:translate(-50%,-60%);width:62%;aspect-ratio:1;border:3px solid var(--ok);border-radius:16px;box-shadow:0 0 0 2000px rgba(0,0,0,.25);pointer-events:none}
   .scan-cancel{max-width:460px}
+  /* SOS non consegnato + preavviso immobilità */
+  .sos-pend{position:fixed;left:var(--s-12);right:var(--s-12);bottom:calc(var(--s-12) + env(safe-area-inset-bottom));z-index:50;background:var(--sos);color:#fff;
+    border-radius:16px;padding:var(--s-14);box-shadow:0 8px 30px rgba(0,0,0,.35)}
+  .sos-pend .msg{margin:var(--s-6) 0 var(--s-10);font-size:14px}
+  .sos-call{display:block;text-align:center;background:#fff;color:var(--sos);border-radius:12px;padding:var(--s-12);min-height:44px;font-weight:700;text-decoration:none}
+  .imm-ov{position:fixed;inset:0;z-index:60;background:rgba(216,30,54,.96);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:var(--s-24);text-align:center}
+  .imm-t{font-size:30px;font-weight:800;margin-bottom:var(--s-10)}
+  .imm-d{font-size:16px;margin-bottom:var(--s-24)}
+  .imm-ok{width:100%;max-width:360px;min-height:64px;padding:22px;border:none;border-radius:18px;background:#fff;color:var(--sos);font:inherit;font-size:22px;font-weight:800;cursor:pointer}
+  /* intervento, ronde, diario */
+  .sec-h{margin:var(--s-4) var(--s-2) var(--s-10)}
+  .nav-link{display:inline-flex;align-items:center;min-height:40px;margin-bottom:var(--s-8)}
+  .access-note{background:var(--warn-soft);border-left:3px solid var(--warn);margin:var(--s-6) 0}
+  .cp-item{border:1px solid var(--line);border-radius:8px;padding:var(--s-8);gap:var(--s-8)}
+  .cl-item{gap:var(--s-8);margin:var(--s-2) 0;min-height:40px}
+  .mat-item{display:flex;gap:var(--s-6);align-items:center}
+  .att-thumb{width:44px;height:44px;object-fit:cover;border-radius:6px;margin:var(--s-2)}
+  .ta-60{width:100%;height:60px}
+  .flbl{font-size:13px;font-weight:inherit;color:var(--mut)} /* etichetta di campo con l'aspetto di .small.mut */
+  .lbl{font-size:12.5px;font-weight:600;color:var(--mut)}
+  .msg-err{color:var(--bad);min-height:var(--s-16)}
+  .t-bad{color:var(--bad)} .t-ok{color:var(--ok)} .t-warn{color:var(--warn)}
+  .mt-2{margin-top:var(--s-2)} .mt-4{margin-top:var(--s-4)} .mt-6{margin-top:var(--s-6)} .mt-8{margin-top:var(--s-8)}
+  .mt-10{margin-top:var(--s-10)} .mt-12{margin-top:var(--s-12)}
+  .mb-2{margin-bottom:var(--s-2)} .mb-6{margin-bottom:var(--s-6)} .mb-8{margin-bottom:var(--s-8)} .mb-10{margin-bottom:var(--s-10)} .mb-18{margin-bottom:var(--s-18)}
+  .my-4{margin-top:var(--s-4);margin-bottom:var(--s-4)} .my-6{margin-top:var(--s-6);margin-bottom:var(--s-6)}
+  .my-8{margin-top:var(--s-8);margin-bottom:var(--s-8)} .my-10{margin-top:var(--s-10);margin-bottom:var(--s-10)} .my-14{margin-top:var(--s-14);margin-bottom:var(--s-14)}
+  .gap-4{gap:var(--s-4)} .gap-6{gap:var(--s-6)} .gap-8{gap:var(--s-8)} .gap-10{gap:var(--s-10)} .gap-16{gap:var(--s-16)}
+  .jc-center{justify-content:center} .jc-end{justify-content:flex-end} .blk{display:block} .flex-0{flex:0} .minw-0{min-width:0}
+  .w-60{width:60px} .w-90{width:90px} .fs-12{font-size:12px}
+  /* FE-16: focus sempre visibile da tastiera / lettore di schermo */
+  .btn:focus-visible,.act:focus-visible,a:focus-visible,input[type=checkbox]:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+  .sosbtn:focus-visible{outline:3px solid var(--fg);outline-offset:3px}
+  .imm-ok:focus-visible,.sos-call:focus-visible{outline:3px solid #fff;outline-offset:3px}
 </style></head><body>
 <div id="root"></div>
 <script src="/app.js"></script>
@@ -47,17 +97,25 @@ function fieldDiary(){ return MODS.has('workforce')||MODS.has('interventi'); }
   if(ME){ await loadMods(); try{ const A=await api('/ai/features'); AIVOICE=!!(A&&A.features&&A.features.voice_diary); AIAGENT=!!(A&&A.features&&A.features.agent); }catch(e){ AIVOICE=false; AIAGENT=false; } }
   ME?app():login(); })();
 
+// FE-16: finestra a scheda (bottom-sheet) accessibile: ruolo dialog, fuoco dentro la scheda, Esc chiude.
+function wDialog(m,label,onEsc){
+  const sh=m.querySelector('.sheet')||m;
+  sh.setAttribute('role','dialog'); sh.setAttribute('aria-modal','true'); sh.setAttribute('aria-label',label); sh.tabIndex=-1;
+  if(onEsc) m.addEventListener('keydown',e=>{ if(e.key==='Escape'){ e.preventDefault(); onEsc(); } });
+  setTimeout(()=>{ if(!sh.contains(document.activeElement)) try{ sh.focus(); }catch(e){} },0);
+}
+
 function login(){
-  $('#root').innerHTML=`<div class="wrap" style="min-height:100vh;display:flex;flex-direction:column;justify-content:center">
-    <div class="row" style="gap:10px;justify-content:center;margin-bottom:18px"><div class="logo">${ICON.logomark}</div>
-      <strong style="font-size:18px">App lavoratore</strong></div>
+  $('#root').innerHTML=`<main class="wrap w-login">
+    <div class="row gap-10 jc-center mb-18"><div class="logo">${ICON.logomark}</div>
+      <h1 class="w-title">App lavoratore</h1></div>
     <div class="card"><div class="card-b col">
-      <div class="field"><label>Tenant${store.slugFromHost?' <span class="small mut">(dal dominio)</span>':''}</label><input id="slug" value="${store.slug}" ${store.slugFromHost?'readonly':''}></div>
-      <div class="field"><label>Email</label><input id="email" type="email" autocomplete="username" placeholder="nome@azienda.it"></div>
-      <div class="field"><label>Password</label><input id="pw" type="password" autocomplete="current-password"></div>
+      <div class="field"><label for="slug">Tenant${store.slugFromHost?' <span class="small mut">(dal dominio)</span>':''}</label><input id="slug" value="${store.slug}" autocapitalize="none" ${store.slugFromHost?'readonly':''}></div>
+      <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="username" placeholder="nome@azienda.it"></div>
+      <div class="field"><label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password"></div>
       <button class="btn block lg" id="go">Accedi</button>
-      <div class="small center" id="msg" style="color:var(--bad);min-height:16px"></div>
-    </div></div></div>`;
+      <div class="small center msg-err" id="msg" role="alert"></div>
+    </div></div></main>`;
   $('#go').onclick=async()=>{ store.slug=$('#slug').value.trim(); try{
     await api('/login',{method:'POST',body:JSON.stringify({email:$('#email').value.trim(),password:$('#pw').value})});
     ME=await api('/me'); await loadMods();
@@ -71,34 +129,34 @@ function login(){
 
 function app(){
   $('#root').innerHTML=`
-  <div class="whead"><div class="logo" style="width:26px;height:26px">${ICON.logomark}</div>
+  <header class="whead"><div class="logo logo-sm">${ICON.logomark}</div>
     <strong class="grow">Ciao, ${esc(ME.email.split('@')[0])}</strong>
-    <button class="btn-ico btn ghost" onclick="toggleTheme()">${ICON.moon}</button>
-    <button class="btn-ico btn ghost" onclick="out()">${ICON.logout}</button></div>
-  <div class="wrap col" style="gap:16px">
-    ${safetyWorker()?`<button class="sosbtn" onclick="sos()">${ICON.sos} SOS</button>
-    <div class="small mut center" style="margin-top:-6px">Il canale SOS è indipendente da dettatura e documenti.</div>
+    <button class="btn-ico btn ghost" onclick="toggleTheme()" title="Tema" aria-label="Cambia tema chiaro/scuro">${ICON.moon}</button>
+    <button class="btn-ico btn ghost" onclick="out()" title="Esci" aria-label="Esci">${ICON.logout}</button></header>
+  <main class="wrap col gap-16">
+    ${safetyWorker()?`<button type="button" class="sosbtn" onclick="sos()" aria-label="SOS: invia una richiesta di soccorso alla centrale" aria-describedby="sosNote">${ICON.sos} SOS</button>
+    <div class="small mut center sos-note" id="sosNote">Il canale SOS è indipendente da dettatura e documenti.</div>
 
-    <div class="card"><div class="card-b" id="trackBox"></div></div>
+    <section class="card" aria-label="Condivisione posizione"><div class="card-b" id="trackBox"></div></section>
 
-    <div class="card"><div class="card-b" id="ciBox"></div></div>`:''}
+    <section class="card" aria-label="Check-in sicurezza"><div class="card-b" id="ciBox"></div></section>`:''}
 
-    ${MODS.has('workforce')?`<div><h3 style="margin:4px 2px 10px">Turno</h3><div class="card"><div class="card-b" id="shiftBox"></div></div></div>`:''}
-    ${MODS.has('workforce')?`<div><h3 style="margin:4px 2px 10px">Turni pianificati</h3><div id="plansBox" class="col"></div></div>`:''}
+    ${MODS.has('workforce')?`<section><h3 class="sec-h">Turno</h3><div class="card"><div class="card-b" id="shiftBox" aria-live="polite"></div></div></section>`:''}
+    ${MODS.has('workforce')?`<section><h3 class="sec-h">Turni pianificati</h3><div id="plansBox" class="col"></div></section>`:''}
 
-    ${MODS.has('interventi')?`<div><h3 style="margin:4px 2px 10px">Oggi · ordini assegnati</h3><div id="orders" class="col"></div></div>`:''}
+    ${MODS.has('interventi')?`<section><h3 class="sec-h">Oggi · ordini assegnati</h3><div id="orders" class="col"></div></section>`:''}
 
-    <div id="patrolsSec" style="display:none"><h3 style="margin:4px 2px 10px">Ronde</h3><div id="patrols" class="col"></div></div>
+    <section id="patrolsSec" style="display:none"><h3 class="sec-h">Ronde</h3><div id="patrols" class="col"></div></section>
 
-    ${fieldDiary()?`<div><h3 style="margin:4px 2px 10px">Azioni</h3><div class="col" style="gap:10px">
-      <button class="act" onclick="openNote()"><span class="ic">${ICON.mic}</span>
+    ${fieldDiary()?`<section><h3 class="sec-h">Azioni</h3><div class="col gap-10">
+      <button type="button" class="act" onclick="openNote()"><span class="ic" aria-hidden="true">${ICON.mic}</span>
         <span class="grow">Detta una nota di lavoro</span><span class="tag" id="noteBadge"></span></button>
-      ${AIAGENT?`<button class="act" onclick="openAgent()"><span class="ic">✦</span>
+      ${AIAGENT?`<button type="button" class="act" onclick="openAgent()"><span class="ic" aria-hidden="true">✦</span>
         <span class="grow">Assistente AI sul campo</span><span class="tag">agente</span></button>`:''}
     </div>
-    <div class="small mut center" style="margin-top:8px">Input manuale sempre disponibile. La dettatura usa il riconoscimento vocale del browser; se assente o negato, scrivi a mano.</div>
-    <div id="diaryList" class="col" style="gap:8px;margin-top:10px"></div></div>`:''}
-  </div>`;
+    <div class="small mut center mt-8">Input manuale sempre disponibile. La dettatura usa il riconoscimento vocale del browser; se assente o negato, scrivi a mano.</div>
+    <div id="diaryList" class="col gap-8 mt-10" aria-live="polite"></div></section>`:''}
+  </main>`;
   if(safetyWorker()){ renderCheckin(); renderTracking(); restoreCI(); immPoll(); hbTick(); }
   if(MODS.has('interventi')) loadOrders();
   if(MODS.has('workforce')){ renderShift(); loadPlans(); } // turno nell'app solo con Gestione turni (PO 25/11)
@@ -113,15 +171,15 @@ const PLAN_ST_LAB={pianificato:'Pianificato (da confermare)',confermato:'Conferm
 const CP_KIND_LAB={qr:'QR',nfc:'NFC',beacon:'Beacon',gps:'GPS'};
 async function loadPlans(){
   const b=$('#plansBox'); if(!b)return;
-  const P=await api('/shift-plans').catch(()=>[]);
+  let P; try{ P=await api('/shift-plans'); }catch(e){ b.innerHTML=errorBox(e,'loadPlans()'); return; }
   const fut=P.filter(p=>p.state!=='annullato').slice(0,6);
   if(!fut.length){ b.innerHTML='<div class="card"><div class="card-b small mut">Nessun turno pianificato</div></div>'; return; }
   const dt=iso=>new Date(iso).toLocaleString('it-IT',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
   b.innerHTML=fut.map(p=>`<div class="card"><div class="card-b">
     <div class="spread"><b>${dt(p.starts_at)} → ${new Date(p.ends_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}</b>
       <span class="chip ${p.state==='confermato'?'s-attivo':''}">${esc(PLAN_ST_LAB[p.state]||humanizeCode(p.state))}</span></div>
-    <div class="small mut" style="margin-top:4px">${esc(p.site||'—')}${p.note?' · '+esc(p.note):''}</div>
-    ${p.state==='pianificato'?`<button class="btn block" style="margin-top:10px" onclick="planConfirm('${p.id}')">Conferma turno</button>`:''}
+    <div class="small mut mt-4">${esc(p.site||'—')}${p.note?' · '+esc(p.note):''}</div>
+    ${p.state==='pianificato'?`<button class="btn block mt-10" onclick="planConfirm('${p.id}')">Conferma turno</button>`:''}
   </div></div>`).join('');
 }
 async function planConfirm(id){ try{ await api('/shift-plans/'+id,{method:'POST',body:JSON.stringify({action:'confirm'})}); toast('Turno confermato','ok'); loadPlans(); }catch(e){toast(e,'bad');} }
@@ -136,14 +194,18 @@ const SOS_KEY='yw_sos_pending', EMERGENCY_NUMBER='112';
 let SOS_TIMER=null;
 function sosPending(){ try{ return JSON.parse(localStorage.getItem(SOS_KEY)||'null'); }catch(e){ return null; } }
 function sosSave(p){ try{ p?localStorage.setItem(SOS_KEY,JSON.stringify(p)):localStorage.removeItem(SOS_KEY); }catch(e){} }
+// FE-16: avviso con ruolo alertdialog (non modale: l'app resta usabile); al primo comparire il fuoco va
+// sul pulsante di chiamata. I ritentativi aggiornano solo il contatore, senza ricreare l'avviso.
 function sosBanner(p){
   let b=document.getElementById('sosPend');
   if(!p){ if(b) b.remove(); return; }
-  if(!b){ b=document.createElement('div'); b.id='sosPend'; b.setAttribute('role','alert');
-    b.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;z-index:50;background:#d81e36;color:#fff;border-radius:16px;padding:14px;box-shadow:0 8px 30px rgba(0,0,0,.35)';
-    document.body.appendChild(b); }
-  b.innerHTML=`<b>SOS non ancora consegnato</b><div style="margin:6px 0 10px;font-size:14px">Riprovo in automatico (tentativo ${p.tries||1}). Se sei in pericolo chiama subito i soccorsi.</div>
-    <a href="tel:${EMERGENCY_NUMBER}" style="display:block;text-align:center;background:#fff;color:#d81e36;border-radius:12px;padding:12px;font-weight:700;text-decoration:none">Chiama ${EMERGENCY_NUMBER}</a>`;
+  if(!b){ b=document.createElement('div'); b.id='sosPend'; b.className='sos-pend';
+    b.setAttribute('role','alertdialog'); b.setAttribute('aria-modal','false');
+    b.setAttribute('aria-labelledby','sosPendT'); b.setAttribute('aria-describedby','sosPendD');
+    b.innerHTML=`<b id="sosPendT">SOS non ancora consegnato</b><div class="msg" id="sosPendD">Riprovo in automatico (tentativo <span id="sosTries">${p.tries||1}</span>). Se sei in pericolo chiama subito i soccorsi.</div>
+    <a class="sos-call" href="tel:${EMERGENCY_NUMBER}">Chiama ${EMERGENCY_NUMBER}</a>`;
+    document.body.appendChild(b); const a=b.querySelector('.sos-call'); if(a) try{ a.focus(); }catch(e){} }
+  else { const t=document.getElementById('sosTries'); if(t) t.textContent=p.tries||1; }
 }
 async function sosSend(){
   const p=sosPending(); if(!p) return;
@@ -151,9 +213,22 @@ async function sosSend(){
     sosSave(null); sosBanner(null); clearTimeout(SOS_TIMER); SOS_TIMER=null;
     toast('SOS inviato → centrale allertata','bad');
   }catch(e){
+    // rifiuto definitivo (es. SOS non attivo per l'azienda, 400/403): ritentare non serve, si dice
+    // chiaramente di chiamare i soccorsi. Rete assente, server giù o sessione da rinnovare: si ritenta.
+    if(e && (e.status===400 || e.status===403)){ sosSave(null); clearTimeout(SOS_TIMER); SOS_TIMER=null; sosRefused(e); return; }
     p.tries=(p.tries||1)+1; sosSave(p); sosBanner(p);
     clearTimeout(SOS_TIMER); SOS_TIMER=setTimeout(sosSend, Math.min(30000, 3000*p.tries));
   }
+}
+function sosRefused(e){
+  let b=document.getElementById('sosPend'); if(b) b.remove();
+  b=document.createElement('div'); b.id='sosPend'; b.className='sos-pend';
+  b.setAttribute('role','alertdialog'); b.setAttribute('aria-modal','false');
+  b.setAttribute('aria-labelledby','sosPendT'); b.setAttribute('aria-describedby','sosPendD');
+  b.innerHTML=`<b id="sosPendT">SOS non inviato</b><div class="msg" id="sosPendD">${esc(friendlyError(e))}. Se sei in pericolo chiama subito i soccorsi.</div>
+    <a class="sos-call" href="tel:${EMERGENCY_NUMBER}">Chiama ${EMERGENCY_NUMBER}</a>
+    <button class="btn ghost block mt-10" onclick="this.closest('#sosPend').remove()">Chiudi</button>`;
+  document.body.appendChild(b); const a=b.querySelector('.sos-call'); if(a) try{ a.focus(); }catch(x){}
 }
 async function sos(){
   if(sosPending()){ sosSend(); return; }           // già in coda: nessun secondo SOS, si ritenta subito
@@ -171,12 +246,16 @@ function immBeep(){ try{ const c=new (window.AudioContext||window.webkitAudioCon
   o.frequency.value=880; o.connect(g); g.connect(c.destination); g.gain.value=0.25; o.start(); o.stop(c.currentTime+0.4); }catch(e){} }
 function immShow(sec){
   let m=document.getElementById('immModal');
-  if(!m){ m=document.createElement('div'); m.id='immModal'; m.setAttribute('role','alertdialog');
-    m.style.cssText='position:fixed;inset:0;z-index:60;background:rgba(216,30,54,.96);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center';
-    document.body.appendChild(m); }
-  m.innerHTML=`<div style="font-size:30px;font-weight:800;margin-bottom:10px">Stai bene?</div>
-    <div style="font-size:16px;margin-bottom:24px">Sei fermo da tempo. Se non rispondi, tra <b id="immSec">${sec}</b> secondi la centrale riceve un allarme.</div>
-    <button onclick="immOk()" style="width:100%;max-width:360px;padding:22px;border:none;border-radius:18px;background:#fff;color:#d81e36;font-size:22px;font-weight:800">Sto bene</button>`;
+  if(!m){ m=document.createElement('div'); m.id='immModal'; m.className='imm-ov';
+    m.setAttribute('role','alertdialog'); m.setAttribute('aria-modal','true');
+    m.setAttribute('aria-labelledby','immT'); m.setAttribute('aria-describedby','immD');
+    m.innerHTML=`<div class="imm-t" id="immT">Stai bene?</div>
+    <div class="imm-d" id="immD">Sei fermo da tempo. Se non rispondi, tra <b id="immSec">${sec}</b> secondi la centrale riceve un allarme.</div>
+    <button type="button" class="imm-ok" onclick="immOk()">Sto bene</button>`;
+    document.body.appendChild(m);
+    const ok=m.querySelector('.imm-ok'); m.addEventListener('keydown',e=>{ if(e.key==='Tab'){ e.preventDefault(); ok.focus(); } });
+    try{ ok.focus(); }catch(e){} }
+  else { const s=document.getElementById('immSec'); if(s) s.textContent=sec; }
   if(!IMM_SHOWN){ immBeep(); try{ navigator.vibrate&&navigator.vibrate([400,200,400,200,400]); }catch(e){} }
   IMM_SHOWN=true;
 }
@@ -191,7 +270,7 @@ async function hbTick(){
   clearTimeout(HB_TIMER); HB_TIMER=setTimeout(hbTick,60000);
 }
 function hbNote(){ const h=HB_STATE; if(!h||!h.monitored) return '';
-  return `<div class="small mut" style="margin-top:6px">🛡 Durante il turno l'app è sorvegliata: tienila aperta e il telefono acceso. Se tace per più di ${Math.round(h.silence_after_s/60)} min parte un allarme di perdita di contatto.</div>`; }
+  return `<div class="small mut mt-6">🛡 Durante il turno l’app è sorvegliata: tienila aperta e il telefono acceso. Se tace per più di ${Math.round(h.silence_after_s/60)} min parte un allarme di perdita di contatto.</div>`; }
 async function immPoll(){
   try{ const r=await api('/worker/immobility');
     if(r.state==='preavviso'){ immShow(r.alarm_in_s); const s=document.getElementById('immSec'); if(s) s.textContent=r.alarm_in_s; }
@@ -230,21 +309,21 @@ function renderTracking(){
   const b=$('#trackBox'); if(!b)return;
   const on=trackingOn();
   b.innerHTML=`<div class="spread"><b>Condivisione posizione</b>
-    <span class="chip ${on?'s-attivo':''}">${on?'attiva':'spenta'}</span></div>
-    <div class="small mut" style="margin:6px 0 10px">${on?'La centrale vede la tua posizione in tempo reale durante il lavoro.':'Attivala per farti localizzare in caso di emergenza.'}</div>
-    <button class="btn ${on?'ghost':''} block" onclick="toggleTracking()">${on?'Interrompi condivisione':ICON.shield+' Condividi posizione'}</button>`;
+    <span class="chip ${on?'s-attivo':''}" role="status">${on?'attiva':'spenta'}</span></div>
+    <div class="small mut mt-6 mb-10">${on?'La centrale vede la tua posizione in tempo reale durante il lavoro.':'Attivala per farti localizzare in caso di emergenza.'}</div>
+    <button class="btn ${on?'ghost':''} block" aria-pressed="${on?'true':'false'}" onclick="toggleTracking()">${on?'Interrompi condivisione':'<span aria-hidden="true">'+ICON.shield+'</span> Condividi posizione'}</button>`;
 }
 
 // ---- check-in ----
 function renderCheckin(){
   const b=$('#ciBox');
-  if(!CI){ b.innerHTML=`<div class="spread" style="margin-bottom:10px"><b>Check-in sicurezza</b>${ICON.shield}</div>
-    <div class="row"><div class="field grow"><label>Scadenza (min)</label><input id="min" type="number" value="5" min="1"></div>
-      <div class="field" style="flex:0"><label>&nbsp;</label><button class="btn" onclick="startCI()">Avvia</button></div></div>`;
+  if(!CI){ b.innerHTML=`<div class="spread mb-10"><b>Check-in sicurezza</b><span aria-hidden="true">${ICON.shield}</span></div>
+    <div class="row"><div class="field grow"><label for="min">Scadenza (min)</label><input id="min" type="number" inputmode="numeric" value="5" min="1"></div>
+      <div class="field flex-0"><span class="lbl" aria-hidden="true">&nbsp;</span><button class="btn" onclick="startCI()">Avvia</button></div></div>`;
     return; }
   b.innerHTML=`<div class="spread"><b>Check-in attivo</b><span class="chip s-attivo">in corso</span></div>
-    <div class="center" style="margin:14px 0"><div class="count" id="cd">--:--</div><div class="small mut">tempo rimanente</div></div>
-    <button class="btn ok block" onclick="confirmCI()">${ICON.check} Conferma presenza</button>`;
+    <div class="center my-14"><div class="count" id="cd" role="timer" aria-describedby="cdLbl">--:--</div><div class="small mut" id="cdLbl">tempo rimanente</div></div>
+    <button class="btn ok block" onclick="confirmCI()"><span aria-hidden="true">${ICON.check}</span> Conferma presenza</button>`;
   tickCI();
 }
 async function startCI(){ try{ const r=await api('/checkins',{method:'POST',body:JSON.stringify({minutes:Number($('#min').value)})});
@@ -265,16 +344,16 @@ async function confirmCI(){ if(!CI)return; try{ const r=await api('/checkins/'+C
 
 // ---- orders ----
 async function loadOrders(){
-  const box=$('#orders'); const O=await api('/orders').catch(()=>[]); ORDERS=O;
+  const box=$('#orders'); let O; try{ O=await api('/orders'); }catch(e){ box.innerHTML=errorBox(e,'loadOrders()'); return; } ORDERS=O;
   const mine=O.filter(o=>['assegnato','in_corso'].includes(o.state));
   if(!mine.length){ box.innerHTML='<div class="card pad mut center">Nessun ordine per oggi</div>'; return; }
   const sched=o=>o.scheduled_start?new Date(o.scheduled_start).toLocaleString('it-IT',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):null;
   box.innerHTML=mine.map(o=>`<div class="card pad">
     <div class="spread"><b>${esc(o.title)}</b>${chip(o.state)}</div>
-    ${sched(o)?`<div class="small" style="margin-top:4px">🕑 ${sched(o)}${o.priority>=3?' · <b style="color:var(--bad,#c0392b)">priorità alta</b>':''}</div>`:''}
-    <div class="small mut" style="margin:4px 0 10px">${esc(o.site||'—')}${o.site_address?' · '+esc(o.site_address):''} ${o.instructions?'· '+esc(o.instructions):''}</div>
-    ${navUrl(o)?`<a class="small" href="${navUrl(o)}" target="_blank" rel="noopener" style="display:inline-block;margin-bottom:8px">🧭 Naviga</a>`:''}
-    ${localStorage.getItem('yw_draft_'+o.id)?'<div class="small" style="color:var(--warn,#b45309);margin-bottom:6px">⏳ bozza in attesa di invio</div>':''}
+    ${sched(o)?`<div class="small mt-4"><span aria-hidden="true">🕑</span> ${sched(o)}${o.priority>=3?' · <b class="t-bad">priorità alta</b>':''}</div>`:''}
+    <div class="small mut mt-4 mb-10">${esc(o.site||'—')}${o.site_address?' · '+esc(o.site_address):''} ${o.instructions?'· '+esc(o.instructions):''}</div>
+    ${navUrl(o)?`<a class="small nav-link" href="${navUrl(o)}" target="_blank" rel="noopener"><span aria-hidden="true">🧭</span>&nbsp;Naviga</a>`:''}
+    ${localStorage.getItem('yw_draft_'+o.id)?'<div class="small t-warn mb-6">⏳ bozza in attesa di invio</div>':''}
     <button class="btn block" onclick='openOrderExec(${jattr(o)})'>Apri intervento</button>
   </div>`).join('');
   flushDrafts();
@@ -291,19 +370,19 @@ async function loadPatrols(){
   if(PATROL_ROUND){ return renderRound(); }
   box.innerHTML = active.length? active.map(r=>`<div class="card pad">
     <div class="spread"><b>${esc(r.name)}</b><span class="tag">${r.checkpoints.length} punti</span></div>
-    <div class="small mut" style="margin:4px 0 10px">${r.checkpoints.map(c=>esc(c.name)).join(' → ')||'nessun checkpoint'}</div>
+    <div class="small mut mt-4 mb-10">${r.checkpoints.map(c=>esc(c.name)).join(' → ')||'nessun checkpoint'}</div>
     <button class="btn block" onclick="startRound('${r.id}')">Avvia ronda</button></div>`).join('')
     : '<div class="card pad mut center">Nessun giro disponibile</div>';
 }
 async function startRound(rid){ try{ PATROL_ROUND=await api('/patrol-routes/'+rid+'/rounds',{method:'POST',body:'{}'}); renderRound(); }catch(e){toast(e,'bad');} }
 function renderRound(){ const r=PATROL_ROUND, box=$('#patrols'); if(!r)return loadPatrols();
   box.innerHTML=`<div class="card pad">
-    <div class="spread"><b>${esc(r.route_name)}</b><span class="tag">${r.done}/${r.total}</span></div>
-    <div class="col" style="gap:8px;margin-top:10px">${r.checkpoints.map(c=>`<div class="spread" style="border:1px solid var(--line,#ddd);border-radius:8px;padding:8px">
-      <span>${c.position}. <b>${esc(c.name)}</b> <span class="tag">${esc(CP_KIND_LAB[c.kind]||humanizeCode(c.kind))}</span>${c.punched?` <span style="color:${c.punched.ok?'var(--ok,#16a34a)':'var(--bad,#c0392b)'}">${c.punched.ok?'✓':'✗'}</span>`:''}</span>
-      ${c.punched&&c.punched.ok?'':`<button class="btn small" onclick="doPunch('${c.id}','${c.kind}')">punzona</button>`}</div>`).join('')}</div>
-    <button class="btn block" style="margin-top:12px" onclick="closeRound()">Chiudi ronda</button>
-    <button class="btn block ghost" style="margin-top:6px" onclick="PATROL_ROUND=null;loadPatrols()">Annulla</button></div>`;
+    <div class="spread"><b>${esc(r.route_name)}</b><span class="tag" title="punti fatti su totale">${r.done}/${r.total}</span></div>
+    <div class="col gap-8 mt-10">${r.checkpoints.map(c=>`<div class="spread cp-item">
+      <span>${c.position}. <b>${esc(c.name)}</b> <span class="tag">${esc(CP_KIND_LAB[c.kind]||humanizeCode(c.kind))}</span>${c.punched?` <span class="${c.punched.ok?'t-ok':'t-bad'}" role="img" aria-label="${c.punched.ok?'punzonato':'punzonatura non riuscita'}">${c.punched.ok?'✓':'✗'}</span>`:''}</span>
+      ${c.punched&&c.punched.ok?'':`<button class="btn small" aria-label="Punzona ${esc(c.name)}" onclick="doPunch('${c.id}','${c.kind}')">punzona</button>`}</div>`).join('')}</div>
+    <button class="btn block mt-12" onclick="closeRound()">Chiudi ronda</button>
+    <button class="btn block ghost mt-6" onclick="PATROL_ROUND=null;loadPatrols()">Annulla</button></div>`;
 }
 async function doPunch(cid,kind){
   const body={checkpoint_id:cid};
@@ -339,12 +418,15 @@ async function scanQR(){
   const det=new BarcodeDetector({formats:['qr_code','code_128','ean_13','data_matrix']});
   return await new Promise(resolve=>{
     const ov=document.createElement('div'); ov.className='scan-ov';
-    ov.innerHTML='<div class="scan-box"><video playsinline></video><div class="scan-frame"></div><button class="btn block ghost scan-cancel">Annulla / digita</button></div>';
+    ov.setAttribute('role','dialog'); ov.setAttribute('aria-modal','true'); ov.setAttribute('aria-label','Inquadra il codice QR del punto di controllo');
+    ov.innerHTML='<div class="scan-box"><video playsinline aria-label="Anteprima della fotocamera"></video><div class="scan-frame" aria-hidden="true"></div><button class="btn block ghost scan-cancel">Annulla / digita</button></div>';
     document.body.appendChild(ov);
     const video=ov.querySelector('video'); video.srcObject=stream; video.play();
     let done=false;
     const finish=v=>{ if(done)return; done=true; try{stream.getTracks().forEach(t=>t.stop());}catch(e){} ov.remove(); resolve(v); };
     ov.querySelector('.scan-cancel').onclick=()=>finish(null);
+    ov.addEventListener('keydown',e=>{ if(e.key==='Escape') finish(null); });
+    try{ ov.querySelector('.scan-cancel').focus(); }catch(e){}
     const tick=async()=>{ if(done)return;
       try{ const codes=await det.detect(video); if(codes&&codes.length){ return finish(codes[0].rawValue); } }catch(e){}
       requestAnimationFrame(tick); };
@@ -384,34 +466,34 @@ function openOrderExec(o){
   const m=document.createElement('div'); m.className='modal'; m.onclick=e=>{ if(e.target===m) m.remove(); };
   const cl=o.checklist||[];
   const exec=(o.state==='in_corso'||o.state==='completato');
-  m.innerHTML=`<div class="sheet" style="max-height:88vh;overflow:auto">
+  m.innerHTML=`<div class="sheet">
     <div class="spread"><b>${esc(o.title)}</b>${chip(o.state)}</div>
-    <div class="small mut" style="margin:4px 0">${esc(o.site||'—')}${o.site_address?' · '+esc(o.site_address):''}</div>
-    ${navUrl(o)?`<a class="btn block" style="margin:4px 0" href="${navUrl(o)}" target="_blank" rel="noopener">🧭 Naviga verso il luogo</a>`:''}
-    ${o.site_access?`<div class="card pad" style="background:#fdf0d4;border-left:3px solid #c7820a;margin:6px 0"><b class="small">🔑 Accesso</b><div class="small">${esc(o.site_access)}</div></div>`:''}
-    ${o.instructions?`<div class="small" style="margin:6px 0"><b>Istruzioni:</b> ${esc(o.instructions)}</div>`:''}
-    <div class="row" style="gap:6px;margin:8px 0">
-      <button class="btn ghost" ${o.arrived_at?'disabled':''} onclick="oArrive('${o.id}')">${o.arrived_at?'✓ Arrivato':'📍 Registra arrivo'}</button>
+    <div class="small mut my-4">${esc(o.site||'—')}${o.site_address?' · '+esc(o.site_address):''}</div>
+    ${navUrl(o)?`<a class="btn block my-4" href="${navUrl(o)}" target="_blank" rel="noopener"><span aria-hidden="true">🧭</span> Naviga verso il luogo</a>`:''}
+    ${o.site_access?`<div class="card pad access-note"><b class="small"><span aria-hidden="true">🔑</span> Accesso</b><div class="small">${esc(o.site_access)}</div></div>`:''}
+    ${o.instructions?`<div class="small my-6"><b>Istruzioni:</b> ${esc(o.instructions)}</div>`:''}
+    <div class="row gap-6 my-8">
+      <button class="btn ghost" ${o.arrived_at?'disabled':''} onclick="oArrive('${o.id}')">${o.arrived_at?'✓ Arrivato':'<span aria-hidden="true">📍</span> Registra arrivo'}</button>
       ${o.state==='assegnato'?`<button class="btn" onclick="oStartExec('${o.id}',${o.version})">▶ Avvia lavoro</button>`:''}</div>
     ${exec?`
-      <div class="small mut">Checklist</div>
-      <div id="exCl">${cl.map((c,i)=>`<label class="row" style="gap:8px;align-items:center;margin:2px 0"><input type="checkbox" data-i="${i}" ${c.done?'checked':''}> <span class="small">${esc(c.label)}</span></label>`).join('')||'<span class="small mut">nessuna</span>'}</div>
-      <div class="small mut" style="margin-top:8px">Note / report</div>
-      <textarea id="exReport" style="width:100%;height:60px">${esc(o.report||'')}</textarea>
-      <div class="row" style="gap:6px;margin-top:6px;align-items:center"><span class="small mut">Ore (minuti)</span><input id="exMin" type="number" value="${o.work_minutes||''}" style="width:90px"></div>
-      <div class="small mut" style="margin-top:8px">Materiali</div>
-      <div id="exMat"></div>
-      <div class="row" style="gap:4px"><input id="exMd" placeholder="materiale" style="flex:1"><input id="exMq" type="number" placeholder="q" style="width:60px"><button class="btn ghost" onclick="exMatAdd()">+</button></div>
-      <div class="small mut" style="margin-top:8px">Foto (online)</div>
+      <div class="small mut" id="exClH">Checklist</div>
+      <div id="exCl" role="group" aria-labelledby="exClH">${cl.map((c,i)=>`<label class="row cl-item"><input type="checkbox" data-i="${i}" ${c.done?'checked':''}> <span class="small">${esc(c.label)}</span></label>`).join('')||'<span class="small mut">nessuna</span>'}</div>
+      <label class="flbl blk mt-8" for="exReport">Note / report</label>
+      <textarea id="exReport" class="ta-60">${esc(o.report||'')}</textarea>
+      <div class="row gap-6 mt-6"><label class="flbl" for="exMin">Ore (minuti)</label><input id="exMin" type="number" inputmode="numeric" value="${o.work_minutes||''}" class="w-90"></div>
+      <div class="small mut mt-8" id="exMatH">Materiali</div>
+      <div id="exMat" aria-live="polite"></div>
+      <div class="row gap-4" role="group" aria-labelledby="exMatH"><input id="exMd" placeholder="materiale" aria-label="Materiale" class="grow minw-0"><input id="exMq" type="number" inputmode="decimal" placeholder="q" aria-label="Quantità" class="w-60"><button class="btn ghost" onclick="exMatAdd()" aria-label="Aggiungi materiale">+</button></div>
+      <label class="flbl blk mt-8" for="exFile">Foto (online)</label>
       <div id="exAtt" class="small mut">—</div>
-      <div class="row" style="gap:6px"><input type="file" id="exFile" accept="image/*" capture="environment" style="font-size:12px;flex:1"><button class="btn ghost" onclick="exPhoto('${o.id}')">⬆</button></div>
-      <div class="row" style="gap:6px;margin-top:10px;align-items:center"><span class="small mut">Esito</span>
-        <select id="exOutcome" style="flex:1"><option value="completato">completato</option><option value="parziale">parziale</option><option value="cliente_assente">cliente assente</option><option value="accesso_impedito">accesso impedito</option><option value="ritorno">ritorno da programmare</option></select></div>
-      <div class="row" style="gap:6px;margin-top:10px"><button class="btn ghost" onclick="exSave('${o.id}',false)">💾 Salva bozza</button><button class="btn ok" onclick="exSave('${o.id}',true)">✓ Invia rapporto</button></div>
-      ${(typeof MODS!=='undefined' && MODS.has('consuntivi'))?`<button class="btn ghost block" style="margin-top:6px" onclick="oGenTimesheet('${o.id}')">🧾 Genera consuntivo dall'intervento</button><div class="small mut" style="margin-top:2px">Precompila ore e materiali; la tariffa la valorizzi nel consuntivo.</div>`:''}
+      <div class="row gap-6"><input type="file" id="exFile" accept="image/*" capture="environment" class="fs-12 grow minw-0"><button class="btn ghost" onclick="exPhoto('${o.id}')" title="Carica la foto" aria-label="Carica la foto selezionata">⬆</button></div>
+      <div class="row gap-6 mt-10"><label class="flbl" for="exOutcome">Esito</label>
+        <select id="exOutcome" class="grow minw-0"><option value="completato">completato</option><option value="parziale">parziale</option><option value="cliente_assente">cliente assente</option><option value="accesso_impedito">accesso impedito</option><option value="ritorno">ritorno da programmare</option></select></div>
+      <div class="row gap-6 mt-10"><button class="btn ghost" onclick="exSave('${o.id}',false)">💾 Salva bozza</button><button class="btn ok" onclick="exSave('${o.id}',true)">✓ Invia rapporto</button></div>
+      ${(typeof MODS!=='undefined' && MODS.has('consuntivi'))?`<button class="btn ghost block mt-6" onclick="oGenTimesheet('${o.id}')">🧾 Genera consuntivo dall’intervento</button><div class="small mut mt-2">Precompila ore e materiali; la tariffa la valorizzi nel consuntivo.</div>`:''}
     `:''}
-    <button class="btn ghost block" style="margin-top:12px" onclick="this.closest('.modal').remove()">Chiudi</button></div>`;
-  document.body.appendChild(m); if(exec){ exMatRender(); exAttLoad(o.id); }
+    <button class="btn ghost block mt-12" onclick="this.closest('.modal').remove()">Chiudi</button></div>`;
+  document.body.appendChild(m); wDialog(m,'Intervento: '+(o.title||''),()=>m.remove()); if(exec){ exMatRender(); exAttLoad(o.id); }
 }
 async function oArrive(id){ try{ await api('/orders/'+id+'/arrive',{method:'POST',body:'{}'}); toast('Arrivo registrato','ok'); const m=document.querySelector('.modal'); if(m)m.remove(); loadOrders(); }catch(e){toast(e,'bad');} }
 async function oStartExec(id,v){ try{ await api('/orders/'+id+'/start',{method:'POST',body:JSON.stringify({version:v})}); toast('Lavoro avviato','ok'); const m=document.querySelector('.modal'); if(m)m.remove(); loadOrders(); }catch(e){toast(e,'bad');} }
@@ -419,7 +501,7 @@ async function oStartExec(id,v){ try{ await api('/orders/'+id+'/start',{method:'
 async function oGenTimesheet(id){ try{ const r=await api('/orders/'+id+'/timesheet',{method:'POST',body:'{}'});
     toast(r.created?'Bozza consuntivo creata dall\'intervento':(r.line_added?'Riga aggiunta al consuntivo':'Consuntivo già presente (nessun duplicato)'),'ok');
   }catch(e){ toast('Consuntivo: '+friendlyError(e),'bad'); } }
-function exMatRender(){ const el=$('#exMat'); if(el) el.innerHTML=_exMat.map((mm,i)=>`<div class="small" style="display:flex;gap:6px;align-items:center">• ${esc(mm.descr||'')} ${mm.qta||''}${esc(mm.unita||'')} <button class="btn ghost" style="padding:0 6px" onclick="exMatDel(${i})">×</button></div>`).join('')||'<span class="small mut">—</span>'; }
+function exMatRender(){ const el=$('#exMat'); if(el) el.innerHTML=_exMat.map((mm,i)=>`<div class="small mat-item">• ${esc(mm.descr||'')} ${mm.qta||''}${esc(mm.unita||'')} <button class="btn ghost mini" aria-label="Togli ${esc(mm.descr||'materiale')}" onclick="exMatDel(${i})">×</button></div>`).join('')||'<span class="small mut">—</span>'; }
 function exMatAdd(){ const d=$('#exMd').value.trim(); if(!d)return; _exMat.push({descr:d,qta:Number($('#exMq').value)||1,unita:'pz'}); $('#exMd').value='';$('#exMq').value=''; exMatRender(); }
 function exMatDel(i){ _exMat.splice(i,1); exMatRender(); }
 function exCollect(){ const cl=[...document.querySelectorAll('#exCl input[type=checkbox]')].map((c,i)=>({label:c.parentNode.innerText.trim(),done:c.checked}));
@@ -436,7 +518,7 @@ async function exSave(id,send){ const body=exCollect();
 async function flushDrafts(){ for(const o of (ORDERS||[])){ const k='yw_draft_'+o.id; let d=null; try{ d=localStorage.getItem(k); }catch(e){}
   if(d){ try{ await api('/orders/'+o.id+'/report',{method:'POST',body:d}); localStorage.removeItem(k); }catch(e){} } } }
 async function exAttLoad(id){ const el=$('#exAtt'); if(!el)return; try{ const A=await api('/orders/'+id+'/attachments');
-  el.innerHTML=(A||[]).filter(a=>a.kind!=='signature').map(a=>`<a href="/api/orders/attachments/${a.id}" target="_blank">${a.content_type&&a.content_type.startsWith('image/')?`<img src="/api/orders/attachments/${a.id}" style="width:44px;height:44px;object-fit:cover;border-radius:6px;margin:2px">`:'📄'}</a>`).join('')||'<span class="small mut">nessuna</span>'; }catch(e){ el.textContent='—'; } }
+  el.innerHTML=(A||[]).filter(a=>a.kind!=='signature').map(a=>`<a href="/api/orders/attachments/${a.id}" target="_blank" ${a.content_type&&a.content_type.startsWith('image/')?'':'aria-label="Documento allegato"'}>${a.content_type&&a.content_type.startsWith('image/')?`<img src="/api/orders/attachments/${a.id}" class="att-thumb" alt="Foto allegata">`:'📄'}</a>`).join('')||'<span class="small mut">nessuna</span>'; }catch(e){ el.textContent='—'; } }
 async function exPhoto(id){ const f=$('#exFile'); const file=f&&f.files&&f.files[0]; if(!file){ toast('Scegli una foto','bad'); return; }
   try{ const res=await fetch('/api/orders/'+id+'/attachments?'+new URLSearchParams({kind:'photo',filename:file.name}),{method:'POST',credentials:'include',headers:{'x-tenant-slug':store.slug,'x-csrf-token':csrfToken(),'content-type':file.type||'image/jpeg'},body:file});
     if(!res.ok) throw new Error('HTTP '+res.status); f.value=''; toast('Foto caricata','ok'); exAttLoad(id);
@@ -444,14 +526,14 @@ async function exPhoto(id){ const f=$('#exFile'); const file=f&&f.files&&f.files
 // Prompt non-bloccante (window.prompt è bloccato in alcune webview): bottom-sheet con Promise.
 function askPrompt(msg,val){ return new Promise(res=>{
   const m=document.createElement('div'); m.className='modal';
-  m.onclick=e=>{ if(e.target===m) res(null); };
-  m.innerHTML=`<div class="sheet"><b>${esc(msg)}</b>
-    <input id="_wpIn" value="${esc(val||'')}" style="width:100%;margin:10px 0">
-    <div class="row" style="gap:8px;justify-content:flex-end"><button class="btn ghost" data-no>Annulla</button><button class="btn" data-yes>OK</button></div></div>`;
+  m.onclick=e=>{ if(e.target===m){ try{m.remove();}catch(x){} res(null); } };
+  m.innerHTML=`<div class="sheet"><b id="_wpMsg">${esc(msg)}</b>
+    <input id="_wpIn" value="${esc(val||'')}" class="my-10" aria-labelledby="_wpMsg">
+    <div class="row gap-8 jc-end"><button class="btn ghost" data-no>Annulla</button><button class="btn" data-yes>OK</button></div></div>`;
   const inp=m.querySelector('#_wpIn'); const done=v=>{ try{m.remove();}catch(e){} res(v); };
   m.querySelector('[data-no]').onclick=()=>done(null); m.querySelector('[data-yes]').onclick=()=>done(inp.value);
   inp.addEventListener('keydown',e=>{ if(e.key==='Enter')done(inp.value); if(e.key==='Escape')done(null); });
-  document.body.appendChild(m); inp.focus(); inp.select();
+  document.body.appendChild(m); wDialog(m,msg); inp.focus(); inp.select();
 }); }
 async function oComplete(id,v){ const o=await askPrompt('Esito intervento?','completato'); if(o==null)return;
   try{ await api('/orders/'+id+'/complete',{method:'POST',body:JSON.stringify({version:v,outcome:o})}); toast('Completato','ok'); loadOrders(); }catch(e){toast(e,'bad');} }
@@ -462,13 +544,13 @@ async function renderShift(){
   if(s&&s.active){
     const t=new Date(s.started_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
     const el=s.elapsed_minutes||0, h=Math.floor(el/60), m=el%60;
-    const warn=s.over_max?`<div class="small" style="color:var(--bad,#c0392b);margin:6px 0 0">⚠ Oltre il massimo di ${s.max_hours}h — considera la chiusura</div>`:'';
+    const warn=s.over_max?`<div class="small t-bad mt-6" role="alert">⚠ Oltre il massimo di ${s.max_hours}h — considera la chiusura</div>`:'';
     b.innerHTML=`<div class="spread"><b>Turno in corso</b><span class="chip ${s.over_max?'':'s-attivo'}">${s.over_max?'oltre soglia':'confermato dal server'}</span></div>
-      <div class="small mut" style="margin:6px 0 2px">Iniziato alle ${t} · ${h}h ${m}m (max ${s.max_hours}h)</div>${warn}<div id="hbNote">${hbNote()}</div>
-      <button class="btn block" style="margin-top:12px" onclick="shiftEnd()">${ICON.stop} Termina turno</button>`;
+      <div class="small mut mt-6 mb-2">Iniziato alle ${t} · ${h}h ${m}m (max ${s.max_hours}h)</div>${warn}<div id="hbNote">${hbNote()}</div>
+      <button class="btn block mt-12" onclick="shiftEnd()"><span aria-hidden="true">${ICON.stop}</span> Termina turno</button>`;
   } else {
     b.innerHTML=`<div class="spread"><b>Turno</b><span class="chip">non iniziato</span></div>
-      <button class="btn block" style="margin-top:10px" onclick="shiftStart()">${ICON.play} Inizia turno</button>`;
+      <button class="btn block mt-10" onclick="shiftStart()"><span aria-hidden="true">${ICON.play}</span> Inizia turno</button>`;
   }
 }
 async function shiftStart(){ try{ const r=await api('/shifts/start',{method:'POST',body:'{}'});
@@ -485,17 +567,17 @@ function openNote(){
   const m=document.createElement('div'); m.className='modal'; m.id='noteModal';
   m.onclick=(e)=>{ if(e.target===m) closeNote(); };
   m.innerHTML=`<div class="sheet">
-    <div class="spread"><b>Nota di lavoro</b><button class="btn-ico btn ghost" onclick="closeNote()">✕</button></div>
-    <div class="field" style="margin-top:8px"><label>Testo (voce o manuale)</label>
+    <div class="spread"><b>Nota di lavoro</b><button class="btn-ico btn ghost" onclick="closeNote()" title="Chiudi" aria-label="Chiudi">✕</button></div>
+    <div class="field mt-8"><label for="noteBody">Testo (voce o manuale)</label>
       <textarea id="noteBody" rows="4" placeholder="Scrivi o usa il microfono…"></textarea></div>
-    <div class="row" style="gap:8px;align-items:center;margin-bottom:6px">
-      <button class="btn ghost" id="micBtn" onclick="toggleDictation()">${ICON.mic} Detta</button>
-      ${AIVOICE?`<button class="btn ghost" id="srvBtn" onclick="toggleServerRec()">${ICON.mic} Detta (AI)</button>`:''}
-      <span class="small mut grow" id="micState"></span></div>
-    ${(ORDERS||[]).length?`<div class="field"><label>Collega a ordine (opzionale)</label><select id="noteOrder"><option value="">—</option>${opts}</select></div>`:''}
-    <button class="btn block lg" style="margin-top:10px" onclick="saveNote()">Salva nota</button>
+    <div class="row gap-8 mb-6">
+      <button class="btn ghost" id="micBtn" onclick="toggleDictation()"><span aria-hidden="true">${ICON.mic}</span> Detta</button>
+      ${AIVOICE?`<button class="btn ghost" id="srvBtn" onclick="toggleServerRec()"><span aria-hidden="true">${ICON.mic}</span> Detta (AI)</button>`:''}
+      <span class="small mut grow" id="micState" role="status" aria-live="polite"></span></div>
+    ${(ORDERS||[]).length?`<div class="field"><label for="noteOrder">Collega a ordine (opzionale)</label><select id="noteOrder"><option value="">—</option>${opts}</select></div>`:''}
+    <button class="btn block lg mt-10" onclick="saveNote()">Salva nota</button>
   </div>`;
-  document.body.appendChild(m);
+  document.body.appendChild(m); wDialog(m,'Nota di lavoro',closeNote);
 }
 function closeNote(){ stopDictation(); const m=$('#noteModal'); if(m)m.remove(); }
 // Agente AI sul campo: analizza e registra (diario/consuntivo). Sensibili -> conferma.
@@ -503,23 +585,23 @@ function openAgent(){
   const m=document.createElement('div'); m.className='modal'; m.id='agModal';
   m.onclick=(e)=>{ if(e.target===m) m.remove(); };
   m.innerHTML=`<div class="sheet">
-    <div class="spread"><b>Assistente AI</b><button class="btn-ico btn ghost" onclick="document.getElementById('agModal').remove()">✕</button></div>
-    <div class="field" style="margin-top:8px"><label>Cosa ti serve?</label>
+    <div class="spread"><b>Assistente AI</b><button class="btn-ico btn ghost" onclick="document.getElementById('agModal').remove()" title="Chiudi" aria-label="Chiudi">✕</button></div>
+    <div class="field mt-8"><label for="agGoal">Cosa ti serve?</label>
       <textarea id="agGoal" rows="3" placeholder="es. «registra nota: impianto verificato, tutto ok», «quanti miei ordini sono aperti?»"></textarea></div>
     <button class="btn block lg" onclick="agentGo(this)">✦ Esegui</button>
-    <div id="agOut" style="margin-top:10px"></div></div>`;
-  document.body.appendChild(m);
+    <div id="agOut" class="mt-10" aria-live="polite"></div></div>`;
+  document.body.appendChild(m); wDialog(m,'Assistente AI',()=>m.remove());
 }
 async function agentGo(btn){
   const goal=($('#agGoal').value||'').trim(); if(!goal)return toast('Scrivi una richiesta','warn');
   const box=$('#agOut'); btn.disabled=true; box.innerHTML='<div class="small mut">L\'agente lavora…</div>';
   try{ const r=await api('/ai/agent',{method:'POST',body:JSON.stringify({goal})});
-    let h=''; if(r.answer) h+=`<div class="card pad" style="margin-bottom:8px">${esc(r.answer)}</div>`;
+    let h=''; if(r.answer) h+=`<div class="card pad mb-8">${esc(r.answer)}</div>`;
     (r.actions||[]).forEach(a=>{ h+=`<div class="small">${a.error?'⚠ ':'✓ '}${esc(a.name)}${a.wrote?' — salvato':''}${a.error?' ('+esc(a.error)+')':''}</div>`; });
-    (r.pending||[]).forEach(p=>{ h+=`<div class="card pad" style="margin-top:6px"><div class="small">Confermi: <b>${esc(p.name)}</b>?</div>
+    (r.pending||[]).forEach(p=>{ h+=`<div class="card pad mt-6"><div class="small">Confermi: <b>${esc(p.name)}</b>?</div>
       <button class="btn block" onclick='agentConf(this,${jattr(p)})'>Conferma</button></div>`; });
     box.innerHTML=h||'<div class="small mut">Nessuna azione.</div>'; loadDiary();
-  }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(friendlyError(e))}</div>`; }
+  }catch(e){ box.innerHTML=`<div class="small t-bad" role="alert">${esc(friendlyError(e))}</div>`; }
   finally{ btn.disabled=false; }
 }
 async function agentConf(btn,p){ btn.disabled=true;
@@ -580,10 +662,11 @@ async function flushNotes(){ let a=pend(); if(!a.length)return; const keep=[];
 function updateNoteBadge(){ const b=$('#noteBadge'); if(!b)return; const n=pend().length; b.textContent=n?n+' offline':''; b.className='tag'+(n?' warn':''); }
 async function loadDiary(){
   const box=$('#diaryList'); if(!box)return;
-  const server=await api('/diary').catch(()=>[]);
+  // le note offline restano sempre visibili; se il server non risponde lo si dice
+  let server=[], srvErr=null; try{ server=await api('/diary'); }catch(e){ srvErr=e; }
   const off=pend().map(n=>`<div class="card pad"><div class="spread"><span class="small">${esc(n.body.slice(0,60))}</span><span class="chip warn">in attesa (offline)</span></div></div>`).join('');
   const sv=server.slice(0,5).map(e=>`<div class="card pad"><div class="spread"><span class="small">${esc(e.body.slice(0,60))}</span><span class="chip ${e.source==='voce'?'s-attivo':''}">${e.source} · salvata</span></div></div>`).join('');
-  box.innerHTML=off+sv; updateNoteBadge();
+  box.innerHTML=off+(srvErr?errorBox(srvErr,'loadDiary()'):sv); updateNoteBadge();
 }
 window.addEventListener('online', flushNotes);
 

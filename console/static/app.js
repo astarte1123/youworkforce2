@@ -195,6 +195,9 @@ function enhanceSelect(sel){
   const inp=document.createElement('input'); inp.type='text'; inp.className='combo-input';
   inp.autocomplete='off'; inp.spellcheck=false; inp.setAttribute('role','combobox');
   if(sel.disabled)inp.disabled=true; if(sel.title)inp.title=sel.title;
+  // FE-16: la casella di ricerca prende il nome del menu a tendina che sostituisce
+  { const lab = sel.getAttribute('aria-label') || (sel.labels&&sel.labels[0] ? sel.labels[0].textContent.trim() : '') || sel.title || sel.getAttribute('name') || 'Scegli';
+    inp.setAttribute('aria-label', lab.slice(0,80)); }
   const panel=document.createElement('div'); panel.className='combo-panel'; panel.hidden=true;
   sel.parentNode.insertBefore(wrap, sel);
   wrap.appendChild(inp); wrap.appendChild(panel); wrap.appendChild(sel);

@@ -332,6 +332,16 @@ stessa cosa sono diventate **schede** di una sola voce (barra sotto il titolo, `
 - **Lingua (FE-14).** Tutte le voci del menu hanno la traduzione inglese; date e ore seguono la
   lingua scelta (`UI_LOCALE()`: it-IT / en-GB). Il resto delle pagine resta in italiano con la
   traduzione automatica delle frasi più comuni.
+- **Superadmin e app del lavoratore.** Stessi criteri anche lì: niente px e colori scritti a mano
+  (classi sui token), schede vere con tastiera (frecce, Home/Fine), dialoghi accessibili (focus,
+  Esc), tutti i campi con etichetta, pulsanti di almeno 44 px nell'app, nessuno scorrimento
+  orizzontale a 360 px (verificato). Le caselle di ricerca dei menu a tendina prendono il nome del
+  menu che sostituiscono. Nell'app: un SOS **rifiutato dal server** (es. SOS non attivo per
+  l'azienda) non viene più ritentato all'infinito ma dice di chiamare i soccorsi; gli elenchi (turni,
+  interventi, diario) mostrano «Impossibile caricare» con «Riprova» invece di sembrare vuoti; le note
+  offline restano visibili. Cache offline dell'app `yw-shell-v7` (i telefoni scaricano la versione nuova).
+- **Sessione scaduta.** Se la sessione scade durante l'uso compare «Sessione scaduta» e si torna alla
+  pagina di accesso.
 - **Stile (FE-13).** I colori scritti a mano negli stili delle pagine sono diventati i colori del tema
   (`--bad`, `--ok`, `--warn`, `--info`, `--mut`, `--surface`, …): seguono anche il tema scuro.
 
