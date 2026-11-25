@@ -185,6 +185,9 @@ ADV(){ code -X POST "$BASE/api/_test/advance" -H 'content-type: application/json
 WD(){ code -X POST "$BASE/api/_test/gps-silence-watchdog" >/dev/null; }
 NPC(){ one "SELECT count(*) FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE e.device_id='$DJ' AND i.etype='perdita_contatto'"; }
 # il watchdog vale solo per i badge IN SERVIZIO (mig 0128): messa in servizio esplicita
+# Q4 (25/11/2026): e solo durante il turno -> turno aperto per il lavoratore (chiuso a fine test)
+SHIFT_J=$(one "INSERT INTO app.shifts(tenant_id,user_id,started_at) SELECT '$TA','$UA','2000-01-01T00:00:00Z'
+               WHERE NOT EXISTS (SELECT 1 FROM app.shifts WHERE tenant_id='$TA' AND user_id='$UA' AND state='in_corso') RETURNING id")
 C=$(A -o /dev/null -w '%{http_code}' -X POST "$BASE/api/devices/$DJ/service" -d '{"state":"in_servizio"}')
 [ "$C" = "200" ] && ok "badge JSON messo in servizio" || no "messa in servizio" "$C"
 POS0=$(one "SELECT last_pos_at FROM app.devices WHERE id='$DJ'")
@@ -199,6 +202,8 @@ ADV 200; WD
 [ "$(NPC)" = "1" ] && ok "heartbeat oltre 600s -> UN perdita_contatto" || no "watchdog contatto" "$(NPC)"
 PL=$(one "SELECT (e.payload_ref->>'last_pos_at')::timestamptz < (e.payload_ref->>'last_seen_at')::timestamptz FROM app.incidents i JOIN app.events e ON e.id=i.event_id WHERE e.device_id='$DJ' AND i.etype='perdita_contatto'")
 [ "$PL" = "t" ] && ok "l'allarme riporta età posizione e età ultimo contatto distinte" || no "payload" "$PL"
+
+[ -n "${SHIFT_J:-}" ] && sql "DELETE FROM app.shifts WHERE id='$SHIFT_J'" >/dev/null
 
 # ============ 4) configurazione strumento + scheda dispositivo ===================================
 sql "INSERT INTO app.tenant_module_config(tenant_id,module_code,tool_code,config) VALUES('$TA','gps','alarm_map','{\"events\":{\"deviceOverspeed\":\"critico\"}}')

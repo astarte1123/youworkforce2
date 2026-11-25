@@ -16,17 +16,18 @@ no(){ echo "FAIL  $1  ($2)"; FAIL=$((FAIL+1)); }
 q(){ docker exec -i ywdb psql -U postgres -d youworkforce -tAc "$1" | head -1 | tr -d '[:space:]'; }
 qq(){ docker exec -i ywdb psql -U postgres -d youworkforce -qc "$1" >/dev/null; }
 py(){ python -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
-adv(){ curl -s -X POST "$BASE/api/_test/advance" -H 'content-type: application/json' -d "{\"seconds\":$1}" | py "d.get('now','')" 2>/dev/null; }
+adv(){ [ -n "${ADVF:-}" ] && echo $(( $(cat "$ADVF") + $1 )) > "$ADVF"; curl -s -X POST "$BASE/api/_test/advance" -H 'content-type: application/json' -d "{\"seconds\":$1}" | py "d.get('now','')" 2>/dev/null; }
 NOW=$(adv 0); [ -n "$NOW" ] || { echo "SKIP: core senza TEST_CLOCK=1"; exit 0; }
 WD(){ curl -s -o /dev/null -X POST "$BASE/api/_test/gps-silence-watchdog"; }
-J=$(mktemp -d)
+J=$(mktemp -d); ADVF="$J/adv"; echo 0 > "$ADVF"
 curl -s -o /dev/null -c "$J/sa" -X POST "$BASE/api/superadmin/login" -H 'content-type: application/json' \
   -d '{"email":"admin@loneworker.eu","password":"admin"}'
 SC=$(awk '$6=="yw_csrf"{print $7}' "$J/sa" | tail -1)
 R=$(python -c 'import random;print(random.randint(100000,999999))'); SLUG="ss$R"
 TID=$(curl -s -b "$J/sa" -H "x-csrf-token: $SC" -H 'content-type: application/json' -X POST "$BASE/api/superadmin/tenants" \
   -d "{\"slug\":\"$SLUG\",\"name\":\"Ss $R\",\"admin_email\":\"a@$SLUG.test\",\"admin_password\":\"DirectPass9\",\"modules\":[\"gps\",\"loneworker\"]}" | py "d.get('id','')")
-trap 'curl -s -o /dev/null -b "$J/sa" -H "x-csrf-token: $SC" -H "content-type: application/json" -X DELETE "$BASE/api/superadmin/tenants/$TID" -d "{\"slug\":\"$SLUG\"}"; rm -rf "$J"' EXIT
+# l'orologio di test torna indietro a fine prova (adv gira anche in subshell: totale su file)
+trap 'curl -s -o /dev/null -X POST "$BASE/api/_test/advance" -H "content-type: application/json" -d "{\"seconds\":-$(cat "$ADVF" 2>/dev/null || echo 0)}"; curl -s -o /dev/null -b "$J/sa" -H "x-csrf-token: $SC" -H "content-type: application/json" -X DELETE "$BASE/api/superadmin/tenants/$TID" -d "{\"slug\":\"$SLUG\"}"; rm -rf "$J"' EXIT
 [ -n "$TID" ] || { echo "FAIL crea tenant"; exit 1; }
 login(){ curl -s -o /dev/null -c "$J/$1" -X POST "$BASE/api/login" -H 'content-type: application/json' -H "x-tenant-slug: $SLUG" -d "{\"email\":\"$2\",\"password\":\"$3\"}"; }
 call(){ local c; c=$(awk '$6=="yw_csrf"{print $7}' "$J/$1" | tail -1)

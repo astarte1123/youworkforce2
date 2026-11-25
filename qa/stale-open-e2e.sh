@@ -23,7 +23,8 @@ SC=$(awk '$6=="yw_csrf"{print $7}' "$J/sa" | tail -1)
 R=$(python -c 'import random;print(random.randint(100000,999999))'); SLUG="so$R"
 TID=$(curl -s -b "$J/sa" -H "x-csrf-token: $SC" -H 'content-type: application/json' -X POST "$BASE/api/superadmin/tenants" \
   -d "{\"slug\":\"$SLUG\",\"name\":\"So $R\",\"admin_email\":\"a@$SLUG.test\",\"admin_password\":\"DirectPass9\",\"modules\":[\"giri\",\"cantieri\"]}" | py "d.get('id','')")
-trap 'curl -s -o /dev/null -b "$J/sa" -H "x-csrf-token: $SC" -H "content-type: application/json" -X DELETE "$BASE/api/superadmin/tenants/$TID" -d "{\"slug\":\"$SLUG\"}"; rm -rf "$J"' EXIT
+# l'orologio di test torna indietro a fine prova (gli altri test usano l'ora reale per le finestre)
+trap 'curl -s -o /dev/null -X POST "$BASE/api/_test/advance" -H "content-type: application/json" -d "{\"seconds\":-57700}"; curl -s -o /dev/null -b "$J/sa" -H "x-csrf-token: $SC" -H "content-type: application/json" -X DELETE "$BASE/api/superadmin/tenants/$TID" -d "{\"slug\":\"$SLUG\"}"; rm -rf "$J"' EXIT
 [ -n "$TID" ] || { echo "FAIL crea tenant"; exit 1; }
 login(){ curl -s -o /dev/null -c "$J/$1" -X POST "$BASE/api/login" -H 'content-type: application/json' -H "x-tenant-slug: $SLUG" -d "{\"email\":\"$2\",\"password\":\"$3\"}"; }
 call(){ local c; c=$(awk '$6=="yw_csrf"{print $7}' "$J/$1" | tail -1)

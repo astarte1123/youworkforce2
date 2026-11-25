@@ -89,6 +89,10 @@ A "$BASE/api/devices/$DID/commands" | grep -q '"status_code":502' && ok "esito c
 # silenzio "vecchio" sia come ultimo contatto sia come armamento (0127: il watchdog conta da
 # GREATEST(last_seen_at, silence_armed_at), così un upgrade o una consegna non generano allarmi)
 sql "UPDATE app.devices SET service_state='in_servizio', last_seen_at='2000-01-01T00:00:00Z', silence_armed_at='2000-01-01T00:00:00Z' WHERE id='$DID'" >/dev/null
+# Q4 (25/11/2026): il silenzio è sorvegliato durante il turno -> turno aperto per il lavoratore
+# assegnato (se non ne ha già uno), chiuso al teardown
+SHIFT=$(one "INSERT INTO app.shifts(tenant_id,user_id,started_at) SELECT '$TID','$UID_W','2000-01-01T00:00:00Z'
+             WHERE NOT EXISTS (SELECT 1 FROM app.shifts WHERE tenant_id='$TID' AND user_id='$UID_W' AND state='in_corso') RETURNING id")
 WC=$(code -X POST "$BASE/api/_test/gps-silence-watchdog")
 if [ "$WC" = "200" ]; then
   code -X POST "$BASE/api/_test/gps-silence-watchdog" >/dev/null
@@ -101,6 +105,7 @@ if [ "$WC" = "200" ]; then
 else sk "watchdog silenzio" "hook di test non disponibile (TEST_CLOCK off, HTTP $WC)"; fi
 
 # --- teardown ----------------------------------------------------------------------------------
+[ -n "${SHIFT:-}" ] && sql "DELETE FROM app.shifts WHERE id='$SHIFT'" >/dev/null 2>&1
 sql "DELETE FROM app.incidents i USING app.events e WHERE i.event_id=e.id AND e.device_id='$DID'" >/dev/null 2>&1
 sql "DELETE FROM app.events WHERE device_id='$DID'" >/dev/null 2>&1
 sql "DELETE FROM app.devices WHERE id='$DID'" >/dev/null 2>&1
