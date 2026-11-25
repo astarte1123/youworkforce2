@@ -87,7 +87,7 @@ wait_wd
 [ "$(q "SELECT count(*) FROM app.incidents i JOIN app.patrol_missed m ON m.incident_id=i.id WHERE i.tenant_id='$TID' AND i.site_id='$SITE' AND m.route_id='$RT'")" = "1" ] \
   && ok "incidente collegato allo slot e attribuito alla sede del giro" || no "sede/collegamento" "-"
 [ "$(q "SELECT count(*) FROM app.patrol_missed WHERE tenant_id='$TID' AND route_id='$RT2'")" = "0" ] \
-  && ok "giro svolto in tempo: nessun allarme" || no "falso allarme" "-"
+  && ok "giro svolto in tempo: nessun allarme" || no "falso allarme" "$(docker exec -i ywdb psql -U postgres -d youworkforce -tAc "SELECT 'slot='||m.slot_at||' deadline='||m.deadline_at||' ronde='||(SELECT string_agg(r.started_at::text||'/'||r.status,',') FROM app.patrol_rounds r WHERE r.route_id='$RT2')||' sched='||(SELECT string_agg(from_time||'-'||to_time||'/'||every_minutes||' created '||created_at,',') FROM app.patrol_schedules WHERE route_id='$RT2')||' NOW=$NOW' FROM app.patrol_missed m WHERE m.route_id='$RT2'" | tr '\n' ' ')"
 wait_wd
 [ "$(nmiss)" = "1" ] && ok "nessun doppione al controllo successivo" || no "doppio" "$(nmiss)"
 call A GET /api/incidents | py "len([i for i in (d if isinstance(d,list) else d.get('incidents',[])) if i.get('etype')=='ronda_mancata'])" | grep -q "^1$" \

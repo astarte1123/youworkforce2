@@ -54,10 +54,10 @@ curl -s -c "$G" -X POST "$BASE/api/login" -H 'content-type: application/json' -H
 GC=$(curl -s -o /dev/null -w "%{http_code}" -b "$G" -H 'x-tenant-slug: globex' -H "x-csrf-token: $(csrfh "$G")" -X POST "$BASE/api/diary" -H 'content-type: application/json' -d '{"body":"x"}')
 [ "$GC" = "200" ] && ok "diario disponibile su globex (interventi attivo) -> 200" || no "module gating" "$GC"
 GS=$(curl -s -o /dev/null -w "%{http_code}" -b "$G" -H 'x-tenant-slug: globex' -H "x-csrf-token: $(csrfh "$G")" -X POST "$BASE/api/shifts/start" -H 'content-type: application/json' -d '{}')
-# Q4 (25/11/2026): il turno serve anche alla sicurezza -> si apre con workforce OPPURE loneworker
-GLW=$(docker exec -i ywdb psql -U postgres -d youworkforce -tAc "SELECT count(*) FROM app.tenant_modules m JOIN app.tenants t ON t.id=m.tenant_id WHERE t.slug='globex' AND m.module_code IN ('workforce','loneworker') AND m.state='attivo'" | tr -d '[:space:]')
-if [ "$GLW" = "0" ]; then [ "$GS" = "403" ] && ok "turni bloccati su globex (né workforce né loneworker) -> 403" || no "shift gating" "$GS"
-else [ "$GS" = "200" ] && ok "turni disponibili su globex (Lone Worker attivo) -> 200" || no "shift gating" "$GS"
+# Decisione PO 25/11 sera: il turno nell'app esiste SOLO con Gestione turni (workforce)
+GLW=$(docker exec -i ywdb psql -U postgres -d youworkforce -tAc "SELECT count(*) FROM app.tenant_modules m JOIN app.tenants t ON t.id=m.tenant_id WHERE t.slug='globex' AND m.module_code='workforce' AND m.state='attivo'" | tr -d '[:space:]')
+if [ "$GLW" = "0" ]; then [ "$GS" = "403" ] && ok "turni bloccati su globex (senza Gestione turni) -> 403" || no "shift gating" "$GS"
+else [ "$GS" = "200" ] && ok "turni disponibili su globex (Gestione turni attiva) -> 200" || no "shift gating" "$GS"
   curl -s -o /dev/null -b "$G" -H 'x-tenant-slug: globex' -H "x-csrf-token: $(csrfh "$G")" -X POST "$BASE/api/shifts/end"; fi
 
 echo "== $PASS passed, $FAIL failed =="
