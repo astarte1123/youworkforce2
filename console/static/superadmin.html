@@ -396,6 +396,7 @@ async function tdetToggle(tid){
     det.innerHTML='<div class="small mut" style="padding:10px 0">Carico…</div>';
     const t=TENANTS.find(x=>x.id===tid)||{};
     const mods=await api('/superadmin/tenants/'+tid+'/modules').catch(()=>[]);
+    (mods||[]).forEach(m=>{ MOD_NAMES[m.code]=m.name; });
     det.innerHTML=tenantDetailHtml(t,mods); det.dataset.filled='1';
     if(typeof armDropzones==='function') armDropzones(det);
   }
@@ -404,14 +405,16 @@ function refreshRowHead(tid){ const t=TENANTS.find(x=>x.id===tid); const h=docum
   if(t&&h){ h.innerHTML=rowHeadInner(t); } const r=document.getElementById('trow_'+tid); if(r&&t) r.dataset.cat=catOf(t); }
 // Moduli raggruppati per PERIMETRO di prodotto (distingue nettamente le aree funzionali).
 const PERIMETRI=[
-  ['Sicurezza lavoratore',['loneworker']],
-  ['Lavoro sul campo',['interventi','cantieri','giri','consuntivi','workforce']],
+  ['Sicurezza lavoratore',['loneworker','gps']],
+  ['Lavoro sul campo',['interventi','cantieri','giri','consuntivi','workforce','qualifiche','prevenzione']],
   ['IoT',['iot']],
   ['Assistente AI',['assistant']],
 ];
-function modTile(tid,m){ return `<div class="row" style="justify-content:space-between;padding:8px 10px;border:1px solid var(--line);border-radius:10px">
+let MOD_NAMES={};
+function modName(code){ return MOD_NAMES[code]||code; }
+function modTile(tid,m){ MOD_NAMES[m.code]=m.name; return `<div class="row" style="justify-content:space-between;padding:8px 10px;border:1px solid var(--line);border-radius:10px">
   <div style="min-width:0"><div style="font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis">${esc(m.name)}</div>
-    <div class="small faint">${chip(m.state)}</div></div>
+    <div class="small faint" data-modstate="${tid}_${m.code}">${chip(m.state)}</div></div>
   <label class="switch"><input type="checkbox" ${m.state==='attivo'?'checked':''}
     onchange="toggle('${tid}','${m.code}',this)"><span class="sl"></span></label></div>`; }
 function modGroupsHtml(tid,mods){
@@ -604,7 +607,8 @@ async function impersonate(tid){
 async function toggle(tid,code,cb){
   const state=cb.checked?'attivo':'non_abilitato';
   try{ await api('/superadmin/tenants/'+tid+'/modules',{method:'POST',body:JSON.stringify({module_code:code,state})});
-    toast(code+' → '+state,'ok');
+    toast(modName(code)+(cb.checked?' attivato':' disattivato'),'ok');
+    const st=document.querySelector(`[data-modstate="${tid}_${code}"]`); if(st) st.innerHTML=chip(state);
     // aggiorna conteggi locali senza ricaricare (la riga resta aperta)
     const t=TENANTS.find(x=>x.id===tid); if(t){ t.mods_active=Math.max(0,(t.mods_active||0)+(cb.checked?1:-1)); renderKpis(TENANTS); refreshRowHead(tid); }
   }catch(e){ cb.checked=!cb.checked; toast('Bloccato: '+e.message,'bad'); }
@@ -617,7 +621,7 @@ async function openTools(tid,btn){
   const tools=await api('/superadmin/tenants/'+tid+'/tools').catch(()=>[]);
   const groups={}; tools.forEach(t=>{(groups[t.module_code]=groups[t.module_code]||[]).push(t);});
   box.innerHTML=Object.keys(groups).map(mc=>`<div style="border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-top:6px">
-    <div class="small mut mono">${esc(mc)}</div>
+    <div class="small mut">${esc(modName(mc))}</div>
     ${groups[mc].map(t=>`<div class="row" style="justify-content:space-between;margin-top:4px">
       <div class="small">${esc(t.name)}</div>
       <label class="switch"><input type="checkbox" ${t.enabled?'checked':''}

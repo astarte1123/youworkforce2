@@ -20,18 +20,18 @@ SC=$(awk '$6=="yw_csrf"{print $7}' "$J/sa" | tail -1)
 R=$(python -c 'import random;print(random.randint(100000,999999))')
 mk(){ curl -s -b "$J/sa" -H "x-csrf-token: $SC" -H 'content-type: application/json' -X POST "$BASE/api/superadmin/tenants" \
   -d "{\"slug\":\"$1\",\"name\":\"Da $1\",\"admin_email\":\"a@$1.test\",\"admin_password\":\"DirectPass9\",\"modules\":[$2]}" | py "d.get('id','')"; }
-A="da$R"; B="db$R"; C="dc$R"
-TA=$(mk "$A" '"gps"'); TB=$(mk "$B" '"gps"'); TC=$(mk "$C" '"interventi"')
+SA_="da$R"; SB_="db$R"; SC_="dc$R"
+TA=$(mk "$SA_" '"gps"'); TB=$(mk "$SB_" '"gps"'); TC=$(mk "$SC_" '"interventi"')
 del(){ curl -s -o /dev/null -b "$J/sa" -H "x-csrf-token: $SC" -H "content-type: application/json" -X DELETE "$BASE/api/superadmin/tenants/$1" -d "{\"slug\":\"$2\"}"; }
 IMEI1=$(python -c "import random;print('357'+str(random.randint(10**11,10**12-1)))")
 IMEI2=$(python -c "import random;print('358'+str(random.randint(10**11,10**12-1)))")
 IMEI3=$(python -c "import random;print('359'+str(random.randint(10**11,10**12-1)))")
-trap 'del "$TA" "$A"; del "$TB" "$B"; del "$TC" "$C"; docker exec -i ywdb psql -U postgres -d youworkforce -qc "DELETE FROM app.device_connect_attempts WHERE identity IN ('"'"'$IMEI1'"'"','"'"'$IMEI2'"'"','"'"'$IMEI3'"'"')" >/dev/null; rm -rf "$J"' EXIT
+trap 'del "$TA" "$SA_"; del "$TB" "$SB_"; del "$TC" "$SC_"; docker exec -i ywdb psql -U postgres -d youworkforce -qc "DELETE FROM app.device_connect_attempts WHERE identity IN ('"'"'$IMEI1'"'"','"'"'$IMEI2'"'"','"'"'$IMEI3'"'"')" >/dev/null; rm -rf "$J"' EXIT
 [ -n "$TA" ] && [ -n "$TB" ] && [ -n "$TC" ] || { echo "FAIL crea tenant"; exit 1; }
 login(){ curl -s -o /dev/null -c "$J/$1" -X POST "$BASE/api/login" -H 'content-type: application/json' -H "x-tenant-slug: $1" -d "{\"email\":\"a@$1.test\",\"password\":\"DirectPass9\"}"; }
 call(){ local c; c=$(awk '$6=="yw_csrf"{print $7}' "$J/$1" | tail -1)
   curl -s -b "$J/$1" -H "x-tenant-slug: $1" -H "x-csrf-token: $c" -H 'content-type: application/json' "$BASE$2"; }
-login "$A"
+login "$SA_"
 export TPORT THOST
 # handshake: stampa l'esito (01/00); con HOLD=s tiene aperta la connessione s secondi
 hs(){ IMEI="$1" HOLD="${2:-0}" python - <<'PY'
@@ -53,7 +53,7 @@ hs "$IMEI1" >/dev/null
 L=$(curl -s -b "$J/sa" "$BASE/api/superadmin/device-attempts")
 echo "$L" | py "[r for r in d if r['identity']=='$IMEI1'][0]['reason_label']" | grep -q "non censito" \
   && ok "superadmin vede il tentativo con motivo leggibile" || no "superadmin lista" "$(echo "$L" | head -c 200)"
-C=$(curl -s -o /dev/null -w "%{http_code}" -b "$J/$A" -H "x-tenant-slug: $A" "$BASE/api/superadmin/device-attempts")
+C=$(curl -s -o /dev/null -w "%{http_code}" -b "$J/$SA_" -H "x-tenant-slug: $SA_" "$BASE/api/superadmin/device-attempts")
 [ "$C" = "401" ] || [ "$C" = "403" ] && ok "admin del tenant non vede il registro di sistema ($C)" || no "acl" "$C"
 
 echo "== censito e collegato =="
@@ -63,10 +63,10 @@ HP=$!
 sleep 2
 [ "$(head -1 "$J/hold.out")" = "01" ] && ok "IMEI censito accettato" || no "accept" "$(cat "$J/hold.out")"
 [ -z "$(row "$IMEI1")" ] && ok "accettato: il tentativo rifiutato sparisce" || no "pulizia" "$(row "$IMEI1")"
-call "$A" /api/devices | py "[x for x in d if x['id']=='$DID'][0]['connected_since'] is not None" | grep -q True \
+call "$SA_" /api/devices | py "[x for x in d if x['id']=='$DID'][0]['connected_since'] is not None" | grep -q True \
   && ok "scheda: collegato adesso (connessione aperta)" || no "live" "-"
 wait $HP; sleep 1
-call "$A" /api/devices | py "[x for x in d if x['id']=='$DID'][0]['connected_since'] is None" | grep -q True \
+call "$SA_" /api/devices | py "[x for x in d if x['id']=='$DID'][0]['connected_since'] is None" | grep -q True \
   && ok "connessione chiusa: non più «collegato adesso»" || no "live off" "-"
 
 echo "== IMEI conteso (dato storico: dal mig 0128 il DB impedisce i duplicati) =="
@@ -77,9 +77,9 @@ INSERT INTO app.devices(tenant_id,external_id,label,source) VALUES('$TB','$IMEI2
 SQL
 [ "$(hs "$IMEI2")" = "00" ] && ok "IMEI in due aziende rifiutato" || no "conteso" "-"
 [ "$(row "$IMEI2")" = "conteso:1" ] && ok "registrato come conteso" || no "conteso reg" "$(row "$IMEI2")"
-call "$A" /api/devices | py "[x for x in d if x['external_id']=='$IMEI2'][0]['rejected']['reason']" | grep -q "^conteso$" \
+call "$SA_" /api/devices | py "[x for x in d if x['external_id']=='$IMEI2'][0]['rejected']['reason']" | grep -q "^conteso$" \
   && ok "l'admin vede sul proprio badge il rifiuto e il motivo" || no "rejected scheda" "-"
-curl -s -b "$J/sa" "$BASE/api/superadmin/device-attempts" | py "[r for r in d if r['identity']=='$IMEI2'][0]['tenants']" | grep -q "Da $A" \
+curl -s -b "$J/sa" "$BASE/api/superadmin/device-attempts" | py "[r for r in d if r['identity']=='$IMEI2'][0]['tenants']" | grep -q "Da $SA_" \
   && ok "superadmin vede in quali aziende è censito" || no "tenants" "-"
 
 echo "== azienda senza modulo dispositivi =="

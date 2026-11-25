@@ -297,6 +297,11 @@ e2e: `qa/tenant-invite-e2e.sh` (15/15: invito, validazioni, pacchetto, licenze, 
 e2e: `qa/tenant-lifecycle-e2e.sh` (10/10: sospendi/riattiva/login, stato in lista, readiness,
 elimina con conferma slug + cascade, audit).
 
+**Dettaglio tenant (25/11/2026).** I moduli sono raggruppati per perimetro: *Localizzazione GPS e
+badge* sta in Sicurezza lavoratore, *Qualifiche* e *Prevenzione* in Lavoro sul campo (prima
+finivano in «Altro»). Messaggi e intestazioni usano il nome del modulo, non il codice. Dopo
+l'attivazione o disattivazione di un modulo l'etichetta di stato si aggiorna subito.
+
 **Console superadmin a schede.** **Panoramica** (KPI tenant + stato sistema sintetico + alert recenti),
 **Tenant** (lista + filtri; il form "Crea tenant" è dietro il bottone **+ Nuovo tenant**), **Sistema**
 (monitoring infrastrutturale completo).
