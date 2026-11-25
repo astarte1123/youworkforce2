@@ -76,6 +76,9 @@ C=$(code P GET /api/patrol-dashboard); [ "$C" = "200" ] && ok "cruscotto vigilan
 
 echo "== CA-9 consuntivi =="
 call T POST "/api/orders/$O1/report" '{"work_minutes":60}' >/dev/null
+V1(){ q "SELECT version FROM app.work_orders WHERE id='$O1'"; }
+call T POST "/api/orders/$O1/start" "{\"version\":$(V1)}" >/dev/null
+call T POST "/api/orders/$O1/complete" "{\"version\":$(V1),\"outcome\":\"ok\"}" >/dev/null
 TS1=$(call T POST "/api/orders/$O1/timesheet" '{}' | py "d['timesheet_id']")
 call T POST "/api/timesheets/$TS1/submit" '{}' >/dev/null
 call A POST "/api/users/$UR/sites" "{\"site_ids\":[\"$S2\"]}" >/dev/null; login RS "resp@$SLUG.test" WorkPass9

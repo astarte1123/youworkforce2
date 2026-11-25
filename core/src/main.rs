@@ -94,6 +94,10 @@ fn extra_routes() -> Router<AppState> {
     Router::new()
         // #7 GDPR
         .route("/api/gdpr/export/:uid", get(privacy::gdpr_export))
+        // CA-8/CA-14: correzione dei consuntivi
+        .route("/api/timesheets/:id/lines/:lid", post(api::update_line).delete(api::delete_line))
+        .route("/api/timesheets/:id/lines/:lid/rate", post(api::set_line_rate))
+        .route("/api/timesheets/:id/expenses/:eid", post(api::update_expense).delete(api::delete_expense))
         .route("/api/worker/heartbeat", post(api::worker_heartbeat))
         .route("/api/gdpr/anonymize/:uid", post(privacy::gdpr_anonymize))
         .route("/api/dashboard/layout", get(dashboard::dashboard_layout_get).put(dashboard::dashboard_layout_set))

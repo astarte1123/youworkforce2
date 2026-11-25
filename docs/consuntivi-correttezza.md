@@ -22,6 +22,30 @@ migrazioni additive (`0079_timesheet_correctness.sql`): nessun listino ancora (q
   (oltre a submit/approve/request_changes).
 - **Stati vincolati.** `CHECK` su `timesheets.state` (`bozza|in_revisione|da_correggere|approvato`).
 
+## Correzione, tariffe e ponte dall'intervento (CA-8, CA-14, CA-18 · mig `0139`, 25/11/2026)
+
+- **Correzione (CA-8).** Un consuntivo in *bozza* o *da correggere* si corregge dal proprietario:
+  `POST/DELETE /api/timesheets/:id/lines/:lid`, `POST/DELETE /api/timesheets/:id/expenses/:eid`
+  (versione +1 e voce nello storico). La nota di chi rimanda va in `review_note` (prima
+  sovrascriveva `note`, che porta anche i materiali dell'intervento); lo **storico**
+  (`history`: creazione, righe, invio, correzioni richieste con la nota, tariffe, approvazione)
+  è nel dettaglio e nella console.
+- **Tariffe (CA-14).** Chi consuntiva **non sceglie la propria tariffa**: la tariffa indicata vale
+  solo per chi approva, pianifica o vede i costi; per gli altri si usa la tariffa oraria di
+  manodopera del **listino** (prima voce attiva «manodopera» a ore, anche per la riga generata
+  dall'intervento), altrimenti la riga resta *da valorizzare* e **chi approva la fissa** durante la
+  revisione (`POST /api/timesheets/:id/lines/:lid/rate`, separazione dei compiti). Modificare una
+  riga non ne cambia la tariffa se non la si può fissare.
+- **Valori (CA-14).** Minuti 1–1440, spese > 0, valuta di 3 lettere; vincoli anche nel DB
+  (`NOT VALID` se esistono righe storiche fuori regola, validati quando possibile). Il **totale è
+  nella valuta del tenant**; altre valute restano a parte (`total.by_currency`,
+  `total.mixed_currency`), mai sommate.
+- **Ponte dall'intervento (CA-18).** Il consuntivo si genera solo a intervento **completato**
+  (409 altrimenti); se i minuti dell'intervento cambiano e il consuntivo è ancora modificabile la
+  riga si riallinea (`line_updated`).
+- Prove: `qa/timesheet-corrections-e2e.sh` **22/22**; aggiornati `consuntivi-bridge-e2e` (6/6),
+  `consuntivi-correttezza-e2e` (5/5), `smoke.sh` (35/35): la tariffa la fissa chi approva.
+
 ## Invarianti mantenute
 
 - `work_order_id` resta facoltativo: si consuntiva anche senza ordine.

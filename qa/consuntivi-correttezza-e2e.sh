@@ -20,15 +20,19 @@ echo "== Consuntivi correttezza (Slice 1) =="
 req POST /api/login "$J/m"  '{"email":"mario@acme.loneworker.eu","password":"demo"}' >/dev/null
 req POST /api/login "$J/rs" '{"email":"responsabile@acme.loneworker.eu","password":"demo"}' >/dev/null
 
-# 1) ARROTONDAMENTO half-up: 15 min @ 3350 cent/h -> 50250/60 = 837.5 -> 838 (non 837 troncato)
-say "1 arrotondamento half-up (838, non 837)"
+# 1) VERSIONING: create=1, dopo una riga=2
+say "1 versioning incrementa (v2 dopo add_line)"
 TS=$(req POST /api/timesheets "$J/m" '{}' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-req POST "/api/timesheets/$TS/lines" "$J/m" '{"activity":"x","work_date":"2026-11-10","minutes":15,"rate_cents":3350}' >/dev/null
-req GET "/api/timesheets/$TS" "$J/m" | grep -q '"total_cents":838' && ok || no "$(req GET /api/timesheets/$TS "$J/m" | grep -o '"total_cents":[0-9]*')"
-
-# 2) VERSIONING: create=1, dopo una riga=2
-say "2 versioning incrementa (v2 dopo add_line)"
+req POST "/api/timesheets/$TS/lines" "$J/m" '{"activity":"x","work_date":"2026-11-10","minutes":15}' >/dev/null
 req GET "/api/timesheets/$TS" "$J/m" | grep -q '"version":2' && ok || no "$(req GET /api/timesheets/$TS "$J/m" | grep -o '"version":[0-9]*')"
+
+# 2) ARROTONDAMENTO half-up: 15 min @ 3350 cent/h -> 50250/60 = 837.5 -> 838 (non 837 troncato).
+#    CA-14 (25/11/2026): la tariffa non la sceglie il lavoratore: la fissa chi approva in revisione.
+say "2 arrotondamento half-up (838, non 837)"
+req POST "/api/timesheets/$TS/submit" "$J/m" >/dev/null
+LID=$(req GET "/api/timesheets/$TS" "$J/m" | python -c "import sys,json;print(json.load(sys.stdin)['lines'][0]['id'])")
+req POST "/api/timesheets/$TS/lines/$LID/rate" "$J/rs" '{"rate_cents":3350}' >/dev/null
+req GET "/api/timesheets/$TS" "$J/m" | grep -q '"total_cents":838' && ok || no "$(req GET /api/timesheets/$TS "$J/m" | grep -o '"total_cents":[0-9]*')"
 
 # 3) SELF-APPROVAL bloccato: responsabile crea il PROPRIO consuntivo, invia, prova ad approvarlo -> 403
 say "3 self-approval bloccato (403)"
@@ -40,7 +44,6 @@ c=$(code POST "/api/timesheets/$TS2/approve" "$J/rs")
 
 # 4) APPROVAZIONE da terzo con cap approve: responsabile approva il consuntivo di mario (diverso owner)
 say "4 approvazione da approver diverso (ok)"
-req POST "/api/timesheets/$TS/submit" "$J/m" >/dev/null
 req POST "/api/timesheets/$TS/approve" "$J/rs" | grep -q approvato && ok || no "approve altrui"
 
 # 5) POST-APPROVAZIONE immutabile: l'owner non può aggiungere righe a un approvato -> 409

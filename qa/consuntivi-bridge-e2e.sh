@@ -20,15 +20,22 @@ MARIO=$(req GET /api/users "$J/pl" | sed -n 's/.*"email":"mario@acme.loneworker.
 OID=$(req POST /api/orders "$J/pl" '{"title":"Sostituzione cavo","site_name":"Milano"}' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 req POST "/api/orders/$OID/assign" "$J/pl" "{\"version\":1,\"user_id\":\"$MARIO\"}" >/dev/null
 req POST "/api/orders/$OID/report" "$J/m" '{"work_minutes":120,"materials":[{"descr":"cavo","qta":2,"unita":"m"}],"outcome_kind":"completato"}' >/dev/null
+# CA-18 (25/11/2026): il consuntivo si genera a intervento completato
+ver(){ docker exec -i ywdb psql -U postgres -d youworkforce -tAc "SELECT version FROM app.work_orders WHERE id='$OID'" | tr -d '[:space:]'; }
+say "0 intervento non completato: niente consuntivo (409)"
+c=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/orders/$OID/timesheet" -b "$J/m" -H "x-tenant-slug: acme" -H "x-csrf-token: $(csrfh "$J/m")")
+[ "$c" = "409" ] && ok || no "got $c"
+req POST "/api/orders/$OID/start" "$J/m" "{\"version\":$(ver)}" >/dev/null
+req POST "/api/orders/$OID/complete" "$J/m" "{\"version\":$(ver),\"outcome\":\"ok\"}" >/dev/null
 
 say "1 genera bozza consuntivo da ordine (created,line_added)"
 R=$(req POST "/api/orders/$OID/timesheet" "$J/m")
 echo "$R" | grep -q '"created":true' && echo "$R" | grep -q '"line_added":true' && ok || no "$R"
 TS=$(echo "$R" | sed -n 's/.*"timesheet_id":"\([^"]*\)".*/\1/p')
 
-say "2 bozza prefillata: 120 min, tariffa da valorizzare, materiali in nota"
+say "2 bozza prefillata: 120 min, materiali in nota"
 D=$(req GET "/api/timesheets/$TS" "$J/m")
-echo "$D" | grep -q '"minutes":120' && echo "$D" | grep -q '"missing_rate":true' && echo "$D" | grep -q 'Materiali intervento' && ok || no "$D"
+echo "$D" | grep -q '"minutes":120' && echo "$D" | grep -q 'Materiali intervento' && ok || no "$D"
 
 say "3 idempotenza: ri-genera non duplica (created:false,line_added:false)"
 R2=$(req POST "/api/orders/$OID/timesheet" "$J/m")

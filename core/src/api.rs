@@ -9865,11 +9865,16 @@ pub async fn generate_timesheet_from_order(State(st): State<AppState>, h: Header
     if !module_active(&st, tid, "interventi").await { return Err(err(StatusCode::FORBIDDEN, "modulo interventi non abilitato")); }
     if !module_active(&st, tid, "consuntivi").await { return Err(err(StatusCode::FORBIDDEN, "modulo consuntivi non abilitato")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let o = sqlx::query("SELECT title,assigned_user,work_minutes,work_started_at,arrived_at,materials FROM app.work_orders WHERE id=$1")
+    let o = sqlx::query("SELECT title,state,assigned_user,work_minutes,work_started_at,arrived_at,materials FROM app.work_orders WHERE id=$1")
         .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "ordine non trovato"))?;
+    let labor_rate = ts_line_rate(&st, &s, None).await?;
     let owner: Uuid = o.try_get::<Uuid,_>("assigned_user").map_err(|_| err(StatusCode::BAD_REQUEST, "ordine non assegnato a una persona"))?;
     // Autorizzazione: l'assegnatario stesso o un pianificatore.
     if owner != s.user_id && !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo l'assegnatario o il pianificatore")); }
+    // CA-18: si consuntiva un intervento finito, non uno in corso
+    if o.get::<String,_>("state") != "completato" {
+        return Err(err(StatusCode::CONFLICT, "l'intervento non è ancora completato: il consuntivo si genera a lavoro finito"));
+    }
     let wm: i32 = o.try_get::<i32,_>("work_minutes").ok().filter(|m| *m > 0)
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "nessuna esecuzione da consuntivare (minuti lavorati mancanti)"))?;
     let title: String = o.get("title");
@@ -9898,20 +9903,37 @@ pub async fn generate_timesheet_from_order(State(st): State<AppState>, h: Header
     // Riga labor idempotente dall'ordine (tariffa NULL = da valorizzare; listino = Slice 3).
     let ins = sqlx::query(
         "INSERT INTO app.timesheet_lines(tenant_id,timesheet_id,activity,work_date,minutes,rate_cents,currency,source_order_id,source_user_id,source_kind)
-         VALUES($1,$2,$3,$4,$5,NULL,$6,$7,$8,'labor')
+         VALUES($1,$2,$3,$4,$5,$9,$6,$7,$8,'labor')
          ON CONFLICT (tenant_id,source_order_id,source_user_id,source_kind) WHERE source_order_id IS NOT NULL DO NOTHING
          RETURNING id")
-        .bind(tid).bind(ts_id).bind(&title).bind(wd).bind(wm).bind(&def_cur).bind(id).bind(owner)
+        // CA-14: tariffa dal listino (manodopera a ore); senza listino resta da valorizzare in revisione
+        .bind(tid).bind(ts_id).bind(&title).bind(wd).bind(wm).bind(&def_cur).bind(id).bind(owner).bind(labor_rate)
         .fetch_optional(&mut *tx).await.map_err(ise)?;
     let line_added = ins.is_some();
+    // CA-18: riga già presente (consuntivo generato prima di una correzione dei minuti): se il
+    // consuntivo è ancora modificabile, minuti e data si riallineano all'intervento.
+    let mut line_updated = false;
+    if !line_added {
+        let n = sqlx::query("UPDATE app.timesheet_lines l SET minutes=$4, work_date=$5
+             FROM app.timesheets t WHERE t.id=l.timesheet_id AND t.state IN ('bozza','da_correggere')
+               AND l.tenant_id=$1 AND l.source_order_id=$2 AND l.source_user_id=$3 AND l.source_kind='labor'
+               AND (l.minutes<>$4 OR l.work_date<>$5)")
+            .bind(tid).bind(id).bind(owner).bind(wm).bind(wd).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+        if n > 0 {
+            line_updated = true;
+            sqlx::query("UPDATE app.timesheets SET version=version+1,updated_at=now() WHERE id=$1").bind(ts_id).execute(&mut *tx).await.map_err(ise)?;
+            sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'edit_line',$3)")
+                .bind(tid).bind(ts_id).bind(json!({"by":s.email,"source":"order","order_id":id,"minutes":wm})).execute(&mut *tx).await.map_err(ise)?;
+        }
+    }
     if line_added {
         sqlx::query("UPDATE app.timesheets SET version=version+1,updated_at=now() WHERE id=$1").bind(ts_id).execute(&mut *tx).await.map_err(ise)?;
         sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'add_line',$3)")
             .bind(tid).bind(ts_id).bind(json!({"by":s.email,"source":"order","order_id":id,"minutes":wm})).execute(&mut *tx).await.map_err(ise)?;
     }
     tx.commit().await.map_err(ise)?;
-    audit(&st, tid, &s.email, "timesheet_from_order", json!({"order_id":id,"timesheet_id":ts_id,"created":created,"line_added":line_added})).await;
-    Ok(Json(json!({"timesheet_id":ts_id,"created":created,"line_added":line_added})))
+    audit(&st, tid, &s.email, "timesheet_from_order", json!({"order_id":id,"timesheet_id":ts_id,"created":created,"line_added":line_added,"line_updated":line_updated})).await;
+    Ok(Json(json!({"timesheet_id":ts_id,"created":created,"line_added":line_added,"line_updated":line_updated})))
 }
 
 pub async fn list_timesheets(State(st): State<AppState>, h: HeaderMap) -> R {
@@ -9949,7 +9971,7 @@ pub async fn list_timesheets(State(st): State<AppState>, h: HeaderMap) -> R {
 
 async fn timesheet_detail(st: &AppState, tid: Uuid, id: Uuid) -> Result<Value, (StatusCode,String)> {
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let head = sqlx::query("SELECT t.id,t.state,t.note,t.user_id,t.version,o.site_id,u.email AS owner,o.title AS order_title
+    let head = sqlx::query("SELECT t.id,t.state,t.note,t.review_note,t.user_id,t.version,o.site_id,u.email AS owner,o.title AS order_title
         FROM app.timesheets t JOIN app.users u ON u.id=t.user_id LEFT JOIN app.work_orders o ON o.id=t.work_order_id WHERE t.id=$1")
         .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "non trovato"))?;
@@ -9957,25 +9979,35 @@ async fn timesheet_detail(st: &AppState, tid: Uuid, id: Uuid) -> Result<Value, (
         .bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let exps = sqlx::query("SELECT id,description,amount_cents,currency,has_receipt FROM app.expenses WHERE timesheet_id=$1")
         .bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    // CA-8: storico (invio, correzioni richieste con la nota, approvazione, modifiche)
+    let evs = sqlx::query("SELECT kind,detail,at FROM app.timesheet_events WHERE timesheet_id=$1 ORDER BY at")
+        .bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    let history: Vec<Value> = evs.iter().map(|r| json!({"kind": r.get::<String,_>("kind"),
+        "detail": r.try_get::<Value,_>("detail").unwrap_or(json!(null)),
+        "at": r.get::<chrono::DateTime<chrono::Utc>,_>("at").to_rfc3339()})).collect();
     // Per-tenant billing policy (consuntivi/rates): round billed minutes up, default currency.
     let rates = tool_config(st, tid, "consuntivi", "rates").await;
     let round = rates.get("round_minutes").and_then(|v| v.as_i64()).unwrap_or(15).max(1);
     let currency = rates.get("currency").and_then(|v| v.as_str()).unwrap_or("EUR").to_string();
     let mut minutes = 0i64; let mut billed = 0i64; let mut labor = 0i64; let mut missing_rate = false;
+    // CA-14: i totali non sommano valute diverse: il totale è nella valuta del tenant, le altre a parte
+    let mut by_cur: std::collections::BTreeMap<String,(i64,i64)> = std::collections::BTreeMap::new();
     let jl: Vec<Value> = lines.iter().map(|r| {
         let m = r.get::<i32,_>("minutes") as i64; minutes += m;
         let bm = if m > 0 { ((m + round - 1) / round) * round } else { 0 }; billed += bm;
         let rate: Option<i64> = r.try_get("rate_cents").ok();
+        let lc: String = r.get("currency");
         // arrotondamento al centesimo (half-up) per riga: evita il troncamento della divisione intera
-        match rate { Some(rc) => labor += (bm * rc + 30) / 60, None => missing_rate = true }
+        match rate { Some(rc) => { let a = (bm * rc + 30) / 60; by_cur.entry(lc.clone()).or_default().0 += a; if lc == currency { labor += a; } }, None => missing_rate = true }
         json!({"id":r.get::<Uuid,_>("id"),"activity":r.get::<String,_>("activity"),
             "work_date":r.get::<chrono::NaiveDate,_>("work_date").to_string(),
             "minutes":m,"billed_minutes":bm,"rate_cents":rate,"currency":r.get::<String,_>("currency")})
     }).collect();
     let mut exp_total = 0i64;
     let je: Vec<Value> = exps.iter().map(|r| {
-        let a = r.get::<i64,_>("amount_cents"); exp_total += a;
+        let a = r.get::<i64,_>("amount_cents"); let ec: String = r.get("currency");
+        by_cur.entry(ec.clone()).or_default().1 += a; if ec == currency { exp_total += a; }
         json!({"id":r.get::<Uuid,_>("id"),"description":r.get::<String,_>("description"),
             "amount_cents":a,"currency":r.get::<String,_>("currency"),"has_receipt":r.get::<bool,_>("has_receipt")})
     }).collect();
@@ -9984,8 +10016,11 @@ async fn timesheet_detail(st: &AppState, tid: Uuid, id: Uuid) -> Result<Value, (
         "owner": head.get::<String,_>("owner"), "owner_id": head.get::<Uuid,_>("user_id"),
         "site_id": head.try_get::<Uuid,_>("site_id").ok(),
         "order_title": head.try_get::<String,_>("order_title").ok(), "note": head.try_get::<String,_>("note").ok(),
+        "review_note": head.try_get::<String,_>("review_note").ok(), "history": history,
         "lines": jl, "expenses": je, "currency": currency, "round_minutes": round,
-        "total": {"minutes":minutes,"billed_minutes":billed,"labor_cents":labor,"expense_cents":exp_total,"total_cents":labor+exp_total,"missing_rate":missing_rate}
+        "total": {"minutes":minutes,"billed_minutes":billed,"labor_cents":labor,"expense_cents":exp_total,"total_cents":labor+exp_total,"missing_rate":missing_rate,
+            "mixed_currency": by_cur.keys().any(|c| *c != currency),
+            "by_currency": by_cur.iter().map(|(c,(l,e))| (c.clone(), json!({"labor_cents":l,"expense_cents":e,"total_cents":l+e}))).collect::<serde_json::Map<String,Value>>()}
     }))
 }
 
@@ -10030,12 +10065,12 @@ pub async fn add_line(State(st): State<AppState>, h: HeaderMap, Path(id): Path<U
     let tid = s.tenant_id.unwrap();
     guard_owner_editable(&st, tid, id, s.user_id).await?;
     let wd = chrono::NaiveDate::parse_from_str(&b.work_date, "%Y-%m-%d").map_err(|_| err(StatusCode::BAD_REQUEST, "data non valida"))?;
-    let def_cur = tool_config(&st, tid, "consuntivi", "rates").await
-        .get("currency").and_then(|v| v.as_str()).unwrap_or("EUR").to_string();
+    let (act, minutes, cur) = ts_line_validate(&st, tid, &b.activity, b.minutes, b.currency.as_deref()).await?;
+    let rate = ts_line_rate(&st, &s, b.rate_cents).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.timesheet_lines(tenant_id,timesheet_id,activity,work_date,minutes,rate_cents,currency) VALUES($1,$2,$3,$4,$5,$6,$7)")
-        .bind(tid).bind(id).bind(&b.activity).bind(wd).bind(b.minutes).bind(b.rate_cents)
-        .bind(b.currency.clone().unwrap_or(def_cur)).execute(&mut *tx).await.map_err(ise)?;
+        .bind(tid).bind(id).bind(&act).bind(wd).bind(minutes).bind(rate)
+        .bind(&cur).execute(&mut *tx).await.map_err(ise)?;
     sqlx::query("UPDATE app.timesheets SET version=version+1,updated_at=now() WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'add_line',$3)")
         .bind(tid).bind(id).bind(json!({"by":s.email,"activity":b.activity,"minutes":b.minutes})).execute(&mut *tx).await.map_err(ise)?;
@@ -10049,12 +10084,11 @@ pub async fn add_expense(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     guard_owner_editable(&st, tid, id, s.user_id).await?;
-    let def_cur = tool_config(&st, tid, "consuntivi", "rates").await
-        .get("currency").and_then(|v| v.as_str()).unwrap_or("EUR").to_string();
+    let (desc, amount, cur) = ts_expense_validate(&st, tid, &b.description, b.amount_cents, b.currency.as_deref()).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.expenses(tenant_id,timesheet_id,description,amount_cents,currency,has_receipt) VALUES($1,$2,$3,$4,$5,$6)")
-        .bind(tid).bind(id).bind(&b.description).bind(b.amount_cents)
-        .bind(b.currency.clone().unwrap_or(def_cur)).bind(b.has_receipt.unwrap_or(false)).execute(&mut *tx).await.map_err(ise)?;
+        .bind(tid).bind(id).bind(&desc).bind(amount)
+        .bind(&cur).bind(b.has_receipt.unwrap_or(false)).execute(&mut *tx).await.map_err(ise)?;
     sqlx::query("UPDATE app.timesheets SET version=version+1,updated_at=now() WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'add_expense',$3)")
         .bind(tid).bind(id).bind(json!({"by":s.email,"description":b.description,"amount_cents":b.amount_cents})).execute(&mut *tx).await.map_err(ise)?;
@@ -10062,6 +10096,112 @@ pub async fn add_expense(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     Ok(Json(json!({"ok":true})))
 }
 
+// ---- CA-8 / CA-14: correzione di un consuntivo, valori validati, tariffa dal listino ----
+async fn ts_currency(st: &AppState, tid: Uuid, c: Option<&str>) -> Result<String,(StatusCode,String)> {
+    let def = tool_config(st, tid, "consuntivi", "rates").await.get("currency").and_then(|v| v.as_str()).unwrap_or("EUR").to_string();
+    let c = c.map(|x| x.trim().to_ascii_uppercase()).filter(|x| !x.is_empty()).unwrap_or(def);
+    if c.len() == 3 && c.chars().all(|ch| ch.is_ascii_uppercase()) { Ok(c) } else { Err(err(StatusCode::BAD_REQUEST, "valuta non valida (es. EUR)")) }
+}
+async fn ts_line_validate(st: &AppState, tid: Uuid, activity: &str, minutes: i32, cur: Option<&str>) -> Result<(String,i32,String),(StatusCode,String)> {
+    let a = activity.trim(); if a.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "attività richiesta")); }
+    if !(1..=1440).contains(&minutes) { return Err(err(StatusCode::BAD_REQUEST, "minuti tra 1 e 1440 (24 ore)")); }
+    Ok((a.to_string(), minutes, ts_currency(st, tid, cur).await?))
+}
+async fn ts_expense_validate(st: &AppState, tid: Uuid, desc: &str, amount: i64, cur: Option<&str>) -> Result<(String,i64,String),(StatusCode,String)> {
+    let d = desc.trim(); if d.is_empty() { return Err(err(StatusCode::BAD_REQUEST, "descrizione richiesta")); }
+    if amount <= 0 { return Err(err(StatusCode::BAD_REQUEST, "importo della spesa maggiore di zero")); }
+    Ok((d.to_string(), amount, ts_currency(st, tid, cur).await?))
+}
+/// CA-14: chi consuntiva non sceglie la propria tariffa. La tariffa indicata vale solo per chi
+/// approva, pianifica o vede i costi; per gli altri si usa la tariffa oraria di manodopera del
+/// listino (prima voce attiva «manodopera» a ore), altrimenti resta da valorizzare (NULL).
+async fn ts_line_rate(st: &AppState, s: &Session, asked: Option<i64>) -> Result<Option<i64>,(StatusCode,String)> {
+    if let Some(r) = asked { if r < 0 { return Err(err(StatusCode::BAD_REQUEST, "tariffa negativa")); } }
+    if asked.is_some() && (is_approver(s) || can_see_costs(s)) { return Ok(asked); }
+    Ok(sqlx::query_scalar::<_, i64>("SELECT round(unit_price*100)::bigint FROM app.price_list_items
+            WHERE tenant_id=$1 AND active AND category='manodopera' AND unit='ora' ORDER BY created_at LIMIT 1")
+        .bind(s.tenant_id.unwrap()).fetch_optional(&st.owner_pool).await.map_err(ise)?)
+}
+async fn ts_touch(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, tid: Uuid, id: Uuid, kind: &str, detail: Value) -> Result<(),(StatusCode,String)> {
+    sqlx::query("UPDATE app.timesheets SET version=version+1,updated_at=now() WHERE id=$1 AND tenant_id=$2").bind(id).bind(tid).execute(&mut **tx).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,$3,$4)")
+        .bind(tid).bind(id).bind(kind).bind(detail).execute(&mut **tx).await.map_err(ise)?;
+    Ok(())
+}
+pub async fn update_line(State(st): State<AppState>, h: HeaderMap, Path((id, lid)): Path<(Uuid, Uuid)>, Json(b): Json<NewLine>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    guard_owner_editable(&st, tid, id, s.user_id).await?;
+    let wd = chrono::NaiveDate::parse_from_str(&b.work_date, "%Y-%m-%d").map_err(|_| err(StatusCode::BAD_REQUEST, "data non valida"))?;
+    let (act, minutes, cur) = ts_line_validate(&st, tid, &b.activity, b.minutes, b.currency.as_deref()).await?;
+    let can_rate = is_approver(&s) || can_see_costs(&s);
+    if let Some(r) = b.rate_cents { if r < 0 { return Err(err(StatusCode::BAD_REQUEST, "tariffa negativa")); } }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // la tariffa cambia solo per chi può fissarla; per gli altri resta quella della riga
+    let n = sqlx::query("UPDATE app.timesheet_lines SET activity=$3,work_date=$4,minutes=$5,currency=$6,
+                         rate_cents=CASE WHEN $7 THEN $8 ELSE rate_cents END WHERE id=$1 AND timesheet_id=$2")
+        .bind(lid).bind(id).bind(&act).bind(wd).bind(minutes).bind(&cur).bind(can_rate).bind(b.rate_cents)
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    if n == 0 { let _ = tx.rollback().await; return Err(err(StatusCode::NOT_FOUND, "riga inesistente")); }
+    ts_touch(&mut tx, tid, id, "edit_line", json!({"by":s.email,"line_id":lid,"activity":act,"minutes":minutes})).await?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_line(State(st): State<AppState>, h: HeaderMap, Path((id, lid)): Path<(Uuid, Uuid)>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    guard_owner_editable(&st, tid, id, s.user_id).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("DELETE FROM app.timesheet_lines WHERE id=$1 AND timesheet_id=$2 RETURNING activity,minutes")
+        .bind(lid).bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let Some(row) = row else { let _ = tx.rollback().await; return Err(err(StatusCode::NOT_FOUND, "riga inesistente")); };
+    ts_touch(&mut tx, tid, id, "delete_line", json!({"by":s.email,"activity":row.get::<String,_>("activity"),"minutes":row.get::<i32,_>("minutes")})).await?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn update_expense(State(st): State<AppState>, h: HeaderMap, Path((id, eid)): Path<(Uuid, Uuid)>, Json(b): Json<NewExpense>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    guard_owner_editable(&st, tid, id, s.user_id).await?;
+    let (desc, amount, cur) = ts_expense_validate(&st, tid, &b.description, b.amount_cents, b.currency.as_deref()).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let n = sqlx::query("UPDATE app.expenses SET description=$3,amount_cents=$4,currency=$5,has_receipt=COALESCE($6,has_receipt) WHERE id=$1 AND timesheet_id=$2")
+        .bind(eid).bind(id).bind(&desc).bind(amount).bind(&cur).bind(b.has_receipt).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    if n == 0 { let _ = tx.rollback().await; return Err(err(StatusCode::NOT_FOUND, "spesa inesistente")); }
+    ts_touch(&mut tx, tid, id, "edit_expense", json!({"by":s.email,"expense_id":eid,"description":desc,"amount_cents":amount})).await?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+pub async fn delete_expense(State(st): State<AppState>, h: HeaderMap, Path((id, eid)): Path<(Uuid, Uuid)>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    guard_owner_editable(&st, tid, id, s.user_id).await?;
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("DELETE FROM app.expenses WHERE id=$1 AND timesheet_id=$2 RETURNING description,amount_cents")
+        .bind(eid).bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let Some(row) = row else { let _ = tx.rollback().await; return Err(err(StatusCode::NOT_FOUND, "spesa inesistente")); };
+    ts_touch(&mut tx, tid, id, "delete_expense", json!({"by":s.email,"description":row.get::<String,_>("description"),"amount_cents":row.get::<i64,_>("amount_cents")})).await?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)] pub struct LineRateReq { pub rate_cents: i64 }
+/// CA-14: chi approva valorizza le righe senza tariffa durante la revisione (separazione dei compiti).
+pub async fn set_line_rate(State(st): State<AppState>, h: HeaderMap, Path((id, lid)): Path<(Uuid, Uuid)>, Json(b): Json<LineRateReq>) -> R {
+    let s = require_tenant(&st, &h).await?;
+    if !is_approver(&s) { return Err(err(StatusCode::FORBIDDEN, "solo chi approva")); }
+    let tid = s.tenant_id.unwrap();
+    guard_timesheet_review(&st, &s, id).await?;
+    if b.rate_cents < 0 { return Err(err(StatusCode::BAD_REQUEST, "tariffa negativa")); }
+    let allow_self = tool_config(&st, tid, "consuntivi", "approval").await
+        .get("allow_self_approve").and_then(|v| v.as_bool()).unwrap_or(false);
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let row = sqlx::query("SELECT user_id,state FROM app.timesheets WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "non trovato"))?;
+    if row.get::<Uuid,_>("user_id") == s.user_id && !allow_self { let _ = tx.rollback().await; return Err(err(StatusCode::FORBIDDEN, "non puoi valorizzare il tuo consuntivo (separazione dei compiti)")); }
+    if row.get::<String,_>("state") != "in_revisione" { let _ = tx.rollback().await; return Err(err(StatusCode::CONFLICT, "la tariffa si fissa durante la revisione")); }
+    let n = sqlx::query("UPDATE app.timesheet_lines SET rate_cents=$3 WHERE id=$1 AND timesheet_id=$2").bind(lid).bind(id).bind(b.rate_cents)
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    if n == 0 { let _ = tx.rollback().await; return Err(err(StatusCode::NOT_FOUND, "riga inesistente")); }
+    ts_touch(&mut tx, tid, id, "set_rate", json!({"by":s.email,"line_id":lid,"rate_cents":b.rate_cents})).await?;
+    tx.commit().await.map_err(ise)?;
+    Ok(Json(json!({"ok":true})))
+}
 async fn guard_owner_editable(st: &AppState, tid: Uuid, id: Uuid, uid: Uuid) -> Result<(),(StatusCode,String)> {
     if !module_active(st, tid, "consuntivi").await { return Err(err(StatusCode::FORBIDDEN, "modulo consuntivi non abilitato")); } // CA-9
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -10128,7 +10268,7 @@ pub async fn request_changes(State(st): State<AppState>, h: HeaderMap, Path(id):
     if owner == s.user_id && !allow_self {
         let _=tx.rollback().await; return Err(err(StatusCode::FORBIDDEN,"non puoi revisionare il tuo consuntivo (separazione dei compiti)"));
     }
-    let n = sqlx::query("UPDATE app.timesheets SET state='da_correggere',note=$2,version=version+1,updated_at=now() WHERE id=$1 AND state='in_revisione'")
+    let n = sqlx::query("UPDATE app.timesheets SET state='da_correggere',review_note=$2,version=version+1,updated_at=now() WHERE id=$1 AND state='in_revisione'")
         .bind(id).bind(&b.note).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     if n==0 { let _=tx.rollback().await; return Err(err(StatusCode::CONFLICT,"non in revisione")); }
     sqlx::query("INSERT INTO app.timesheet_events(tenant_id,timesheet_id,kind,detail) VALUES($1,$2,'request_changes',$3)")
@@ -10660,9 +10800,9 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
             guard_owner_editable(st, tid, id, s.user_id).await.map_err(|e| e.1)?;
             let wd = chrono::NaiveDate::parse_from_str(&gs("work_date").unwrap_or_default(), "%Y-%m-%d").map_err(|_| "data non valida (YYYY-MM-DD)")?;
             let act = gs("activity").unwrap_or_default(); if act.trim().is_empty() { return Err("attivita' richiesta".into()); }
-            let minutes = gi("minutes").unwrap_or(0) as i32; if minutes<=0 { return Err("minuti > 0".into()); }
-            let rate_cents = gf("rate_eur").map(|r| (r*100.0).round() as i64);
-            let cur = tool_config(st, tid, "consuntivi", "rates").await.get("currency").and_then(|v| v.as_str()).unwrap_or("EUR").to_string();
+            let minutes = gi("minutes").unwrap_or(0) as i32;
+            let (_, minutes, cur) = ts_line_validate(st, tid, &act, minutes, None).await.map_err(|e| e.1)?; // CA-14
+            let rate_cents = ts_line_rate(st, s, gf("rate_eur").map(|r| (r*100.0).round() as i64)).await.map_err(|e| e.1)?;
             let mut t = tx!();
             sqlx::query("INSERT INTO app.timesheet_lines(tenant_id,timesheet_id,activity,work_date,minutes,rate_cents,currency) VALUES($1,$2,$3,$4,$5,$6,$7)")
                 .bind(tid).bind(id).bind(act.trim()).bind(wd).bind(minutes).bind(rate_cents).bind(cur).execute(&mut *t).await.map_err(|e| e.to_string())?;
@@ -10675,7 +10815,7 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
             guard_owner_editable(st, tid, id, s.user_id).await.map_err(|e| e.1)?;
             let desc = gs("description").unwrap_or_default(); if desc.trim().is_empty() { return Err("descrizione richiesta".into()); }
             let amt = gf("amount_eur").ok_or("importo non valido")?; let cents=(amt*100.0).round() as i64;
-            let cur = tool_config(st, tid, "consuntivi", "rates").await.get("currency").and_then(|v| v.as_str()).unwrap_or("EUR").to_string();
+            let (_, cents, cur) = ts_expense_validate(st, tid, &desc, cents, None).await.map_err(|e| e.1)?; // CA-14
             let mut t = tx!();
             sqlx::query("INSERT INTO app.expenses(tenant_id,timesheet_id,description,amount_cents,currency,has_receipt) VALUES($1,$2,$3,$4,$5,false)")
                 .bind(tid).bind(id).bind(desc.trim()).bind(cents).bind(cur).execute(&mut *t).await.map_err(|e| e.to_string())?;

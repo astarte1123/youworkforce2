@@ -109,10 +109,15 @@ say "T14 mario creates timesheet + line + expense"
 TS=$(req POST /api/timesheets "$J/m" "{\"work_order_id\":\"$OID\"}" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 req POST "/api/timesheets/$TS/lines" "$J/m" '{"activity":"riparazione","work_date":"2026-11-08","minutes":90,"rate_cents":3500}' | grep -q ok && \
 req POST "/api/timesheets/$TS/expenses" "$J/m" '{"description":"ricambi","amount_cents":1250,"has_receipt":true}' | grep -q ok && ok || no "lines"
+say "T14 submit"
+req POST "/api/timesheets/$TS/submit" "$J/m" | grep -q in_revisione && ok || no "submit"
+# CA-14 (25/11/2026): la tariffa non la sceglie il lavoratore (vale il listino): chi approva la
+# fissa in revisione; qui 35 EUR/h per un totale deterministico.
+LID=$(req GET "/api/timesheets/$TS" "$J/m" | python -c "import sys,json;print(json.load(sys.stdin)['lines'][0]['id'])")
+req POST "/api/timesheets/$TS/lines/$LID/rate" "$J/rs" '{"rate_cents":3500}' >/dev/null
 say "T13 deterministic total (90m@35e/h + 12.50 = 65.00)"
-req GET "/api/timesheets/$TS" "$J/m" | grep -q '"total_cents":6500' && ok || no "$(req GET /api/timesheets/$TS "$J/m")"
-say "T14 submit + approve"
-req POST "/api/timesheets/$TS/submit" "$J/m" | grep -q in_revisione && \
+req GET "/api/timesheets/$TS" "$J/m" | grep -q '"total_cents":6500' && ok || no "$(req GET /api/timesheets/$TS "$J/m" | head -c 300)"
+say "T14 approve"
 req POST "/api/timesheets/$TS/approve" "$J/rs" | grep -q approvato && ok || no "approve"
 say "T14 double approval blocked"
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/timesheets/$TS/approve" -b "$J/rs" -H "x-csrf-token: $(csrfh "$J/rs")")

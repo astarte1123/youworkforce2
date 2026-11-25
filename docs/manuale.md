@@ -160,6 +160,10 @@ Modulo **giri**: giri di controllo per guardie/manutentori.
 ## 9. Consuntivi e turni
 
 - **Consuntivi** (modulo consuntivi): ore, spese, approvazione (responsabile).
+  Un consuntivo rimandato si corregge (righe e spese modificabili o eliminabili) e conserva lo
+  storico delle note. La tariffa non la sceglie chi lavora: viene dal listino (manodopera a ore) o
+  la fissa chi approva. Il consuntivo dell'intervento si genera a lavoro completato. Valute diverse
+  non si sommano. Vedi [consuntivi-correttezza](consuntivi-correttezza.md).
 - **Turni** (modulo workforce): pianificazione, squadre, reperibilità; conferma turni da PWA.
 
 ## 10. IoT e scenari

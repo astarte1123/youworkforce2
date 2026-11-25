@@ -3145,13 +3145,15 @@ async function openTimesheet(id){
   const d=await api('/timesheets/'+id);
   const owner = d.owner===ME.email; const approver=can(['responsabile','tenant_admin'],'approve');
   const editable = owner && ['bozza','da_correggere'].includes(d.state);
-  const t=d.total;
+  const canRate = approver || hasCap('plan') || hasCap('costs.view'); // CA-14: chi consuntiva non sceglie la tariffa
+  const rateNow = approver && d.state==='in_revisione' && !owner;
+  const t=d.total; TS_CUR=d;
   let lineForm = editable ? `
     <div class="divider"></div><h3 style="margin:var(--s-8) 0">Aggiungi riga</h3>
     <div class="row"><div class="field grow"><label>Attività</label><input id="l_act"></div>
       <div class="field" style="flex:0 0 130px"><label>Data</label><input id="l_date" type="date" value="${new Date().toISOString().slice(0,10)}"></div></div>
     <div class="row"><div class="field"><label>Minuti</label><input id="l_min" type="number" value="60"></div>
-      <div class="field"><label>Tariffa €/h</label><input id="l_rate" type="number" step="0.01" placeholder="es. 35.00"></div>
+      ${canRate?`<div class="field"><label>Tariffa €/h</label><input id="l_rate" type="number" step="0.01" placeholder="es. 35.00"></div>`:`<div class="field"><label>Tariffa</label><div class="small mut">dal listino (manodopera a ore) o fissata da chi approva</div></div>`}
       <div class="field" style="flex:0"><label>&nbsp;</label><button class="btn" onclick="addLine('${id}')">+ riga</button></div></div>
     <div class="row"><div class="field grow"><label>Spesa (descr.)</label><input id="e_desc"></div>
       <div class="field"><label>Importo €</label><input id="e_amt" type="number" step="0.01"></div>
@@ -3163,17 +3165,22 @@ async function openTimesheet(id){
   acts+=`<a class="btn ghost block center" href="/api/timesheets/${id}/export.csv" target="_blank">Esporta CSV</a>`;
   drawer('Consuntivo · '+esc(d.owner.split('@')[0]), `
     <div class="row" style="margin-bottom:var(--s-14)">${chip(d.state)}${d.order_title?`<span class="chip">${esc(d.order_title)}</span>`:''}</div>
-    ${d.note?`<div class="card pad" style="background:var(--warn-soft);margin-bottom:var(--s-14)"><b>Nota responsabile:</b> ${esc(d.note)}</div>`:''}
-    <table class="table"><thead><tr><th>Attività</th><th>Data</th><th>Min</th><th>€/h</th></tr></thead>
-    <tbody>${d.lines.map(l=>`<tr><td>${esc(l.activity)}</td><td class="small">${l.work_date}</td><td>${l.minutes}</td>
-      <td>${l.rate_cents==null?'<span class="chip s-da_correggere">no tariffa</span>':fmtEUR(l.rate_cents)}</td></tr>`).join('')||emptyRow('nessuna riga')}</tbody></table>
+    ${d.review_note?`<div class="card pad" style="background:var(--warn-soft);margin-bottom:var(--s-14)"><b>Correzioni richieste:</b> ${esc(d.review_note)}</div>`:''}
+    ${d.note?`<div class="small mut" style="margin-bottom:var(--s-10);white-space:pre-wrap">${esc(d.note)}</div>`:''}
+    <table class="table"><thead><tr><th>Attività</th><th>Data</th><th>Min</th><th>€/h</th>${editable?'<th></th>':''}</tr></thead>
+    <tbody>${d.lines.map(l=>`<tr><td>${esc(l.activity)}${l.currency!==d.currency?` <span class="tag">${esc(l.currency)}</span>`:''}</td><td class="small">${l.work_date}</td><td>${l.minutes}</td>
+      <td>${l.rate_cents==null?(rateNow?`<button class="btn ghost small" onclick="tsSetRate('${id}','${l.id}')">fissa tariffa</button>`:'<span class="chip s-da_correggere">no tariffa</span>'):fmtEUR(l.rate_cents)}</td>
+      ${editable?`<td class="nowrap" style="text-align:right"><button class="btn-ico btn ghost" title="Modifica" onclick="tsLineEdit('${id}','${l.id}')">✎</button><button class="btn-ico btn ghost" title="Elimina" onclick="tsLineDel('${id}','${l.id}')">${ICON.x}</button></td>`:''}</tr>`).join('')||emptyRow('nessuna riga')}</tbody></table>
     ${d.expenses.length?`<h3 style="margin:var(--s-14) 0 var(--s-8)">Spese</h3><table class="table"><tbody>${d.expenses.map(e=>
-      `<tr><td>${esc(e.description)} ${e.has_receipt?'📎':''}</td><td class="nowrap">${fmtEUR(e.amount_cents)}</td></tr>`).join('')}</tbody></table>`:''}
+      `<tr><td>${esc(e.description)} ${e.has_receipt?'📎':''}</td><td class="nowrap">${fmtEUR(e.amount_cents)}${e.currency!==d.currency?' '+esc(e.currency):''}</td>
+      ${editable?`<td class="nowrap" style="text-align:right"><button class="btn-ico btn ghost" title="Modifica" onclick="tsExpEdit('${id}','${e.id}')">✎</button><button class="btn-ico btn ghost" title="Elimina" onclick="tsExpDel('${id}','${e.id}')">${ICON.x}</button></td>`:''}</tr>`).join('')}</tbody></table>`:''}
     <div class="card pad" style="margin-top:var(--s-14)"><div class="spread"><span class="mut">Ore</span><b>${fmtMin(t.minutes)}</b></div>
       <div class="spread"><span class="mut">Manodopera</span><b>${fmtEUR(t.labor_cents)}</b></div>
       <div class="spread"><span class="mut">Spese</span><b>${fmtEUR(t.expense_cents)}</b></div>
       <div class="divider"></div><div class="spread"><b>Totale</b><b style="font-size:18px">${fmtEUR(t.total_cents)}</b></div>
-      ${t.missing_rate?`<div class="small" style="color:var(--warn);margin-top:var(--s-6)">⚠ Alcune righe senza tariffa: nessun costo attribuito.</div>`:''}</div>
+      ${t.missing_rate?`<div class="small" style="color:var(--warn);margin-top:var(--s-6)">⚠ Alcune righe senza tariffa: nessun costo attribuito.</div>`:''}
+      ${t.mixed_currency?`<div class="small" style="color:var(--warn);margin-top:var(--s-6)">⚠ Valute diverse: il totale è in ${esc(d.currency)}; ${Object.entries(t.by_currency||{}).filter(([c])=>c!==d.currency).map(([c,v])=>esc(c)+' '+(v.total_cents/100).toFixed(2)).join(', ')} a parte.</div>`:''}</div>
+    ${(d.history||[]).length?`<details style="margin-top:var(--s-12)"><summary class="small mut">Storico (${d.history.length})</summary><div class="small" style="margin-top:var(--s-6)">${d.history.map(ev=>`<div>${new Date(ev.at).toLocaleString('it-IT')} · ${esc(TS_EV_LAB[ev.kind]||ev.kind)}${ev.detail&&ev.detail.by?' · '+esc(ev.detail.by):''}${ev.detail&&ev.detail.note?' — «'+esc(ev.detail.note)+'»':''}</div>`).join('')}</div></details>`:''}
     ${lineForm}
     <div class="col" style="margin-top:var(--s-16)">${acts}</div>
     ${AI_FEAT.consuntivi_summary?`<div class="row" style="gap:var(--s-6);margin-top:var(--s-12)"><button class="btn ghost small" onclick="aiTsSummary('${id}',this)">✦ Sintesi AI</button></div><div id="aiTsOut"></div>`:''}`);
@@ -3181,13 +3188,32 @@ async function openTimesheet(id){
 async function aiTsSummary(id,btn){ const box=$('#aiTsOut'); if(!box)return; btn.disabled=true; box.innerHTML='<div class="small mut" style="margin-top:var(--s-6)">youworker.ai…</div>';
   try{ const r=await api('/timesheets/'+id+'/ai-summary'); box.innerHTML=`<div class="card pad" style="margin-top:var(--s-6);background:var(--brand-soft)"><div class="small mut">✦ youworker.ai</div><div style="white-space:pre-wrap;margin-top:var(--s-4)">${esc(r.summary)}</div></div>`; }
   catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad);margin-top:var(--s-6)">${esc(e.message)}</div>`; } finally{ btn.disabled=false; } }
-async function addLine(id){ const rate=$('#l_rate').value; try{
+async function addLine(id){ const rate=$('#l_rate'); try{
   await api('/timesheets/'+id+'/lines',{method:'POST',body:JSON.stringify({activity:$('#l_act').value,work_date:$('#l_date').value,
-    minutes:Number($('#l_min').value),rate_cents:rate?Math.round(Number(rate)*100):null})});
+    minutes:Number($('#l_min').value),rate_cents:(rate&&rate.value)?Math.round(Number(rate.value)*100):null})});
   toast('Riga aggiunta','ok'); openTimesheet(id);}catch(e){toast(e.message,'bad');} }
 async function addExp(id){ try{
   await api('/timesheets/'+id+'/expenses',{method:'POST',body:JSON.stringify({description:$('#e_desc').value,amount_cents:Math.round(Number($('#e_amt').value)*100)})});
   toast('Spesa aggiunta','ok'); openTimesheet(id);}catch(e){toast(e.message,'bad');} }
+// CA-8: correzione di un consuntivo (bozza o da correggere)
+let TS_CUR=null;
+const TS_EV_LAB={create:'creato',add_line:'riga aggiunta',edit_line:'riga modificata',delete_line:'riga eliminata',add_expense:'spesa aggiunta',edit_expense:'spesa modificata',delete_expense:'spesa eliminata',submit:'inviato in revisione',request_changes:'correzioni richieste',approve:'approvato',set_rate:'tariffa fissata'};
+async function tsLineEdit(id,lid){ const l=(TS_CUR.lines||[]).find(x=>x.id===lid); if(!l) return;
+  const act=await askPrompt('Attività',l.activity); if(act==null) return;
+  const min=await askPrompt('Minuti',String(l.minutes)); if(min==null) return;
+  try{ await api('/timesheets/'+id+'/lines/'+lid,{method:'POST',body:JSON.stringify({activity:act,work_date:l.work_date,minutes:Number(min),currency:l.currency})});
+    toast('Riga aggiornata','ok'); openTimesheet(id); }catch(e){ toast(e.message,'bad'); } }
+async function tsLineDel(id,lid){ if(!await askConfirm('Eliminare la riga?')) return;
+  try{ await api('/timesheets/'+id+'/lines/'+lid,{method:'DELETE'}); toast('Riga eliminata','ok'); openTimesheet(id); }catch(e){ toast(e.message,'bad'); } }
+async function tsExpEdit(id,eid){ const e=(TS_CUR.expenses||[]).find(x=>x.id===eid); if(!e) return;
+  const d=await askPrompt('Descrizione',e.description); if(d==null) return;
+  const a=await askPrompt('Importo €',(e.amount_cents/100).toFixed(2)); if(a==null) return;
+  try{ await api('/timesheets/'+id+'/expenses/'+eid,{method:'POST',body:JSON.stringify({description:d,amount_cents:Math.round(Number(a)*100),currency:e.currency})});
+    toast('Spesa aggiornata','ok'); openTimesheet(id); }catch(err){ toast(err.message,'bad'); } }
+async function tsExpDel(id,eid){ if(!await askConfirm('Eliminare la spesa?')) return;
+  try{ await api('/timesheets/'+id+'/expenses/'+eid,{method:'DELETE'}); toast('Spesa eliminata','ok'); openTimesheet(id); }catch(e){ toast(e.message,'bad'); } }
+async function tsSetRate(id,lid){ const r=await askPrompt('Tariffa €/h per questa riga',''); if(r==null||r==='') return;
+  try{ await api('/timesheets/'+id+'/lines/'+lid+'/rate',{method:'POST',body:JSON.stringify({rate_cents:Math.round(Number(r)*100)})}); toast('Tariffa fissata','ok'); openTimesheet(id); }catch(e){ toast(e.message,'bad'); } }
 async function tsSubmit(id){ try{await api('/timesheets/'+id+'/submit',{method:'POST'}); toast('Inviato in revisione','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 async function tsApprove(id){ try{await api('/timesheets/'+id+'/approve',{method:'POST'}); toast('Approvato','ok'); closeDrawer(); route();}catch(e){toast(e.message,'bad');} }
 async function tsReqChanges(id){ const n=await askPrompt('Cosa correggere?'); if(n==null)return;
