@@ -164,6 +164,9 @@ Modulo **giri**: giri di controllo per guardie/manutentori.
   🕒 fuso orario*). Se all'orario previsto nessuno avvia la ronda, si apre l'allarme **«Ronda
   mancata»** in Centrale, con escalation ai reperibili; per questo il modulo Ronde include la
   Centrale anche senza Sicurezza Lavoratore.
+- **Ronde dimenticate**: una sola ronda in corso per giro; una ronda mai chiusa viene chiusa dal
+  sistema come «abbandonata» (con anomalia) e il giro torna avviabile. Le presenze di cantiere
+  aperte da oltre 16 ore si chiudono senza ore conteggiate, da verificare.
 - **Revisione** in console: esito per checkpoint, modo di punzonatura, tentativi. Vedi [ronde-manuale](ronde-manuale.md).
 
 ## 9. Consuntivi e turni

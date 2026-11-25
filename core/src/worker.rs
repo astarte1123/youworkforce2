@@ -33,6 +33,7 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     if n % 5 == 4 { Box::pin(api::immobility_watchdog(st)).await; }
     // CA-12: ronde pianificate non svolte -> incidente «Ronda mancata» (~ogni 30 s)
     if n % 15 == 13 { Box::pin(api::patrol_missed_watchdog(st)).await; }
+    if n % 30 == 23 { Box::pin(api::stale_open_watchdog(st)).await; } // CA-17
     // #7 ritenzione GDPR (opt-in YW_RETENTION_DAYS): ~ogni ora (1800 tick * 2s)
     if n % 1800 == 0 { Box::pin(privacy::purge_retention(st)).await; }
     if n % 1800 == 900 { api::purge_connect_attempts(st).await; }

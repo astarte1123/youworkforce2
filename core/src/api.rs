@@ -3621,8 +3621,19 @@ pub async fn start_round(State(st): State<AppState>, h: HeaderMap, Path(rid): Pa
             return Err(err(StatusCode::FORBIDDEN, "giro riservato a un altro gruppo"));
         }
     }
-    let row = sqlx::query("INSERT INTO app.patrol_rounds(tenant_id,route_id,user_id) VALUES($1,$2,$3) RETURNING id")
-        .bind(tid).bind(rid).bind(s.user_id).fetch_one(&mut *tx).await.map_err(ise)?;
+    // CA-17: una sola ronda in corso per giro (anche con indice unico parziale, mig 0141)
+    // started_at = now() SQL come le punzonature (ritardi e finestra si misurano sullo stesso orologio)
+    let row = sqlx::query("INSERT INTO app.patrol_rounds(tenant_id,route_id,user_id)
+            SELECT $1,$2,$3 WHERE NOT EXISTS (SELECT 1 FROM app.patrol_rounds WHERE route_id=$2 AND status='in_corso') RETURNING id")
+        .bind(tid).bind(rid).bind(s.user_id).fetch_optional(&mut *tx).await
+        .map_err(|e| if e.to_string().contains("patrol_rounds_one_open") { err(StatusCode::CONFLICT, "ronda già in corso su questo giro") } else { ise(e) })?;
+    let Some(row) = row else {
+        let who = sqlx::query("SELECT u.email, ro.started_at FROM app.patrol_rounds ro JOIN app.users u ON u.id=ro.user_id WHERE ro.route_id=$1 AND ro.status='in_corso' LIMIT 1")
+            .bind(rid).fetch_optional(&mut *tx).await.map_err(ise)?;
+        let msg = match who { Some(w) => format!("ronda già in corso su questo giro: avviata da {} alle {}", w.get::<String,_>("email"),
+                w.get::<chrono::DateTime<chrono::Utc>,_>("started_at").format("%H:%M UTC")), None => "ronda già in corso su questo giro".into() };
+        return Err(err(StatusCode::CONFLICT, &msg));
+    };
     let round_id = row.get::<Uuid,_>("id");
     let v = round_view(&mut tx, round_id, false).await?;
     tx.commit().await.map_err(ise)?;
@@ -4752,7 +4763,7 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     let sal = sqlx::query("SELECT s.id,s.sal_date,s.pct,s.amount::float8 AS amount,s.note,s.created_at,u.email AS author FROM app.commessa_sal s LEFT JOIN app.users u ON u.id=s.created_by WHERE s.commessa_id=$1 ORDER BY s.sal_date DESC,s.created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let shifts = sqlx::query("SELECT p.id,p.starts_at,p.ends_at,p.state,u.email FROM app.shift_plans p JOIN app.users u ON u.id=p.user_id WHERE p.commessa_id=$1 AND p.state<>'annullato' ORDER BY p.starts_at").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let teams = sqlx::query("SELECT t.id,t.name,(SELECT count(*) FROM app.team_members m WHERE m.team_id=t.id)::int AS members FROM app.commessa_teams ct JOIN app.teams t ON t.id=ct.team_id WHERE ct.commessa_id=$1 ORDER BY t.name").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
-    let pres = sqlx::query("SELECT p.id,p.clock_in,p.clock_out,u.email FROM app.commessa_presenze p JOIN app.users u ON u.id=p.user_id WHERE p.commessa_id=$1 ORDER BY p.clock_in DESC LIMIT 50").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let pres = sqlx::query("SELECT p.id,p.clock_in,p.clock_out,p.auto_closed,u.email FROM app.commessa_presenze p JOIN app.users u ON u.id=p.user_id WHERE p.commessa_id=$1 ORDER BY p.clock_in DESC LIMIT 50").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let my_open: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.commessa_presenze WHERE commessa_id=$1 AND user_id=$2 AND clock_out IS NULL").bind(id).bind(s.user_id).fetch_optional(&mut *tx).await.map_err(ise)?;
     // C3 — costi: voci (materiali/noli/...) + ore di presenza chiuse valorizzate al costo orario
     let costi = sqlx::query("SELECT k.id,k.description,k.category,k.amount::float8 AS amount,k.cost_date,u.email AS author FROM app.commessa_costi k LEFT JOIN app.users u ON u.id=k.created_by WHERE k.commessa_id=$1 ORDER BY k.cost_date DESC,k.created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
@@ -4787,7 +4798,8 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     let pres_out: Vec<Value> = pres.iter().map(|r| json!({
         "id":r.get::<Uuid,_>("id"),"email":r.get::<String,_>("email"),
         "clock_in":r.get::<chrono::DateTime<chrono::Utc>,_>("clock_in"),
-        "clock_out":r.try_get::<chrono::DateTime<chrono::Utc>,_>("clock_out").ok() })).collect();
+        "clock_out":r.try_get::<chrono::DateTime<chrono::Utc>,_>("clock_out").ok(),
+        "auto_closed":r.try_get::<bool,_>("auto_closed").unwrap_or(false) })).collect();
     let mut deps_map: std::collections::HashMap<Uuid,Vec<Uuid>> = std::collections::HashMap::new();
     for r in &deprows { deps_map.entry(r.get::<Uuid,_>("lav_id")).or_default().push(r.get::<Uuid,_>("depends_on_id")); }
     let lav_out: Vec<Value> = lav.iter().map(|r| { let lid=r.get::<Uuid,_>("id"); json!({
@@ -4979,8 +4991,9 @@ pub async fn commessa_clock_in(State(st): State<AppState>, h: HeaderMap, Path(ci
     let open: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.commessa_presenze WHERE commessa_id=$1 AND user_id=$2 AND clock_out IS NULL")
         .bind(cid).bind(s.user_id).fetch_optional(&mut *tx).await.map_err(ise)?;
     if open.is_some() { return Err(err(StatusCode::CONFLICT, "hai già una presenza aperta su questa commessa")); }
-    let id: Uuid = sqlx::query_scalar("INSERT INTO app.commessa_presenze(tenant_id,commessa_id,user_id,lat,lon,source) VALUES($1,$2,$3,$4,$5,'manuale') RETURNING id")
-        .bind(tid).bind(cid).bind(s.user_id).bind(b.lat).bind(b.lon).fetch_one(&mut *tx).await.map_err(ise)?;
+    // orologio unico (st.clock): coerente con la chiusura automatica delle presenze dimenticate (CA-17)
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.commessa_presenze(tenant_id,commessa_id,user_id,lat,lon,source,clock_in) VALUES($1,$2,$3,$4,$5,'manuale',$6) RETURNING id")
+        .bind(tid).bind(cid).bind(s.user_id).bind(b.lat).bind(b.lon).bind(st.clock.now()).fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":id})))
 }
@@ -4988,8 +5001,8 @@ pub async fn commessa_clock_out(State(st): State<AppState>, h: HeaderMap, Path(c
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "cantieri").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.commessa_presenze SET clock_out=now() WHERE commessa_id=$1 AND user_id=$2 AND clock_out IS NULL")
-        .bind(cid).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    let n = sqlx::query("UPDATE app.commessa_presenze SET clock_out=GREATEST($3, clock_in) WHERE commessa_id=$1 AND user_id=$2 AND clock_out IS NULL")
+        .bind(cid).bind(s.user_id).bind(st.clock.now()).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::BAD_REQUEST, "nessuna presenza aperta")); }
     Ok(Json(json!({"ok":true})))
@@ -7157,6 +7170,12 @@ pub async fn test_gps_silence_watchdog(State(st): State<AppState>) -> R {
     crate::worker::gps_silence_watchdog(&st).await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
+/// Hook di test (solo TEST_CLOCK): una passata del controllo ronde/presenze dimenticate (CA-17).
+pub async fn test_stale_open_watchdog(State(st): State<AppState>) -> R {
+    if !st.clock.test_mode { return Err(err(StatusCode::FORBIDDEN,"test clock disabled")); }
+    stale_open_watchdog(&st).await;
+    Ok(Json(json!({"ok":true})))
+}
 /// Hook di test (solo TEST_CLOCK): forza una passata del watchdog offline per e2e deterministici.
 pub async fn test_iot_watchdog(State(st): State<AppState>) -> R {
     if !st.clock.test_mode { return Err(err(StatusCode::FORBIDDEN,"test clock disabled")); }
@@ -7484,6 +7503,41 @@ pub async fn teltonika_ingest_one(st: &AppState, tid: Uuid, ext: &str, source: &
     }
 }
 
+/// CA-17 (worker, ~1 min): ronde e presenze dimenticate aperte. Ronde sul wall-clock SQL (come
+/// started_at e le punzonature); presenze sull orologio unico st.clock (come clock_in/out).
+/// - ronda in corso oltre finestra + tolleranza + 60 min (8 ore se il giro non ha finestra):
+///   chiusa come «abbandonata» (closed_by='auto') con anomalia, così sparisce dalle «in corso» e
+///   il giro torna avviabile;
+/// - presenza di cantiere aperta da oltre 16 ore: chiusa a durata ZERO e marcata `auto_closed`
+///   (da verificare): niente ore o costi inventati.
+pub async fn stale_open_watchdog(st: &AppState) {
+    let now = st.clock.now();
+    // ronde: wall-clock di proposito (now() SQL), come started_at e le punzonature delle ronde
+    let rounds = sqlx::query(
+        "UPDATE app.patrol_rounds ro SET status='abbandonata', ended_at=now(), closed_by='auto'
+           FROM app.patrol_routes rt
+          WHERE rt.id=ro.route_id AND ro.status='in_corso'
+            AND ro.started_at < now() - make_interval(mins => CASE WHEN rt.window_minutes IS NULL THEN 480
+                                                               ELSE rt.window_minutes + COALESCE(rt.grace_min,0) + 60 END)
+          RETURNING ro.id, ro.tenant_id, ro.started_at")
+        .fetch_all(&st.owner_pool).await.unwrap_or_default();
+    for r in rounds {
+        let (rid, tid): (Uuid, Uuid) = (r.get("id"), r.get("tenant_id"));
+        let started: chrono::DateTime<chrono::Utc> = r.get("started_at");
+        let _ = sqlx::query("INSERT INTO app.patrol_anomalies(tenant_id,round_id,kind,detail) VALUES($1,$2,'abbandonata',$3)")
+            .bind(tid).bind(rid).bind(format!("Ronda avviata alle {} e mai chiusa: chiusa automaticamente", started.format("%H:%M UTC")))
+            .execute(&st.owner_pool).await;
+        audit(st, tid, "sistema", "round_auto_close", json!({"round_id":rid})).await;
+    }
+    let pres = sqlx::query(
+        "UPDATE app.commessa_presenze SET clock_out=clock_in, auto_closed=true
+          WHERE clock_out IS NULL AND clock_in < $1 - interval '16 hours' RETURNING id, tenant_id, user_id")
+        .bind(now).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    for p in pres {
+        let tid: Uuid = p.get("tenant_id");
+        audit(st, tid, "sistema", "presenza_auto_close", json!({"presenza_id":p.get::<Uuid,_>("id"),"user_id":p.get::<Uuid,_>("user_id")})).await;
+    }
+}
 /// Vigilanza: auto-punzonatura da posizione device. Se il device (dev_id) è assegnato a una
 /// guardia con una ronda in corso, e la posizione cade nel raggio di un checkpoint GPS non ancora
 /// punzonato, registra il punch automatico. Riusa il device-tracking nativo (OsmAnd/Teltonika/PWA).

@@ -138,6 +138,20 @@ la parte ordini (CA-1/CA-7, vedi `campo-gruppi.md`).
   - Cruscotto vigilanza: ogni slot mostra l'ora locale; lo slot mancato ha ⚠ e apre l'allarme.
 - `qa/patrol-missed-e2e.sh` **13/13**.
 
+## Ronde e presenze dimenticate (CA-17, mig `0141`)
+
+- **Una ronda in corso per giro**: avviare una seconda ronda sullo stesso giro mentre una è in
+  corso dà 409 con chi l'ha avviata e a che ora (anche indice unico parziale, creato se i dati lo
+  permettono).
+- **Ronda abbandonata**: una ronda in corso oltre *finestra + tolleranza + 60 min* (8 ore se il giro
+  non ha finestra) viene chiusa dal worker come **abbandonata** (`closed_by='auto'`) con anomalia
+  «Ronda abbandonata (mai chiusa)»; il giro torna avviabile. Ronde sul wall-clock SQL, come avvio
+  e punzonature.
+- **Presenza di cantiere dimenticata**: aperta da oltre 16 ore → chiusa a **durata zero** e
+  marcata *da verificare* (`auto_closed`): niente ore o costi inventati; la scheda commessa la
+  segnala. Ingresso e uscita in cantiere ora usano l'orologio unico (`st.clock`).
+- e2e `qa/stale-open-e2e.sh` **11/11**.
+
 ## Perimetro
 
 Ronde = **Lavoro sul campo**. Dal 24/11/2026 (decisione PO, CA-12) il modulo produce un solo tipo

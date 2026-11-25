@@ -2036,12 +2036,12 @@ function schedLabel(o){ if(!o.scheduled_start)return'<span class="mut">—</span
   const d=a.toLocaleDateString('it-IT',{weekday:'short',day:'2-digit',month:'2-digit'});
   const hh=a.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
   return `${d} ${hh}${z?'–'+z.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}):''}`; }
-const ANOM_LAB={saltato:'Tappa saltata',in_ritardo:'Tratta in ritardo',non_completato:'Giro non completato',fuori_sequenza:'Fuori sequenza',permanenza:'Permanenza eccessiva',
+const ANOM_LAB={abbandonata:'Ronda abbandonata (mai chiusa)',saltato:'Tappa saltata',in_ritardo:'Tratta in ritardo',non_completato:'Giro non completato',fuori_sequenza:'Fuori sequenza',permanenza:'Permanenza eccessiva',
   inserimento_manuale:'Codice digitato a mano',posizione_distante:'Punzonato lontano dal punto'};
 // CA-22/CA-2: etichette leggibili per tipo di checkpoint e modo di punzonatura
 const CP_KIND_LAB={qr:'QR',nfc:'NFC',beacon:'Beacon',gps:'GPS'};
 const PUNCH_ENTRY_LAB={scansione:'scansione con la fotocamera',nfc:'tag NFC avvicinato',beacon:'beacon rilevato',manuale:'codice digitato a mano',gps:'posizione GPS',auto:'automatica dal dispositivo'};
-const ROUND_ST_LAB={in_corso:'in corso',completato:'completata',incompleto:'incompleta'};
+const ROUND_ST_LAB={in_corso:'in corso',completato:'completata',incompleto:'incompleta',abbandonata:'abbandonata (chiusa automaticamente)'};
 async function vRonde(v){
   const [routes,rounds]=await Promise.all([api('/patrol-routes').catch(()=>[]),api('/patrol-rounds').catch(()=>[])]);
   const sites=await api('/sites').catch(()=>[]);
@@ -2428,7 +2428,7 @@ async function openCommessa(id){
   const squadreSection=`<div><h3 style="margin:0">Squadre assegnate</h3>
     <div class="col" style="gap:var(--s-6);margin-top:var(--s-8)">${teamRows}</div>${teamAssign}</div>`;
   // C1 — presenze (timbrature)
-  const presRows=(c.presenze||[]).map(p=>`<tr><td class="small">${esc(p.email)}</td><td class="small">${dtLocal(p.clock_in)}</td><td class="small">${p.clock_out?dtLocal(p.clock_out):'<span style="color:var(--ok,green)">in cantiere</span>'}</td></tr>`).join('')
+  const presRows=(c.presenze||[]).map(p=>`<tr><td class="small">${esc(p.email)}</td><td class="small">${dtLocal(p.clock_in)}</td><td class="small">${p.auto_closed?'<span class="chip s-da_correggere" title="Uscita mai registrata: chiusa automaticamente dopo 16 ore, senza ore conteggiate">chiusa d\'ufficio · da verificare</span>':(p.clock_out?dtLocal(p.clock_out):'<span style="color:var(--ok,green)">in cantiere</span>')}</td></tr>`).join('')
     ||`<tr><td colspan="3" class="empty">Nessuna presenza</td></tr>`;
   const clockBtn=c.my_open
     ? `<button class="btn ok small" onclick="comClock('${id}','out')">Timbra uscita</button>`
