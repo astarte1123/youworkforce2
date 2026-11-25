@@ -13213,6 +13213,8 @@ async fn esc_user_rotation_shifts_g(
 
 /// Invio SMS nativo one-shot (verifica/test recapiti), riusando gli adapter di delivery:
 /// Twilio LIVE se configurato, altrimenti sink/dry (dev).
+/// SMS a un lavoratore (preavviso del silenzio dell'app): stesso canale nativo dell'escalation.
+pub async fn send_worker_sms(st: &AppState, to: &str, text: &str) -> &'static str { esc_send_sms_native(st, to, text).await.state }
 async fn esc_send_sms_native(st: &AppState, to: &str, text: &str) -> crate::delivery::SinkResult {
     use crate::delivery::Channel;
     let from = crate::delivery::chan("YW_ESC_FROM").unwrap_or_else(|| "+10000000000".into());

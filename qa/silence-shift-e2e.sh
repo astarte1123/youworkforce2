@@ -100,7 +100,13 @@ H=$(call W3 POST /api/worker/heartbeat '{}')
 echo "$H" | py "d['monitored'] and d['silence_after_s']==900" | grep -q True && ok "app in turno: sorvegliata (soglia 15 min)" || no "hb on" "$H"
 NOW=$(adv 0); qq "UPDATE app.shifts SET started_at='$NOW' WHERE tenant_id='$TID' AND user_id='$U3' AND state='in_corso'"
 qq "UPDATE app.devices SET last_seen_at='$NOW', last_pos_at=NULL WHERE id='$DP'"
+# preavviso al lavoratore (PO 25/11 sera): SMS «Sei ancora lì?» 2 minuti prima dell'allarme
+PH="+3933$(python -c 'import random;print(random.randint(10**7,10**8-1))')"
+qq "UPDATE app.users SET phone='$PH' WHERE id='$U3'"
 adv 895 >/dev/null; WD; [ "$(NI "$DP")" = "0" ] && ok "app in turno: 5 s prima della soglia nessun allarme" || no "app prima" "$(NI "$DP")"
+if [ -n "${YW_ESC_SINK_LOG:-}" ] && [ -f "${YW_ESC_SINK_LOG:-}" ]; then
+  sleep 1; grep -a "$PH" "$YW_ESC_SINK_LOG" | grep -aq "segni di vita" && ok "preavviso SMS al lavoratore prima dell'allarme" || no "preavviso" "nessun SMS a $PH nel ricevitore di prova"
+fi
 adv 10 >/dev/null; WD;  [ "$(NI "$DP" "='aperto'")" = "1" ] && ok "app in turno silenziosa: allarme Perdita di contatto" || no "app dopo" "$(NI "$DP")"
 call W3 POST /api/worker/heartbeat '{}' >/dev/null
 [ "$(NI "$DP" "='chiuso'")" = "1" ] && ok "l'app torna in linea: allarme chiuso da solo" || no "app auto-close" "$(NI "$DP" "='chiuso'")"

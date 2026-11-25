@@ -111,6 +111,11 @@ e2e: `qa/checkin-sos-attribution-e2e.sh`.
   «Silenzio dell'app»), salvo chi ha già un badge in servizio. Il **turno nell'app** esiste solo
   con il modulo Gestione turni (decisione PO 25/11 sera): con il solo Lone Worker l'app non apre
   turni e quindi il suo silenzio non è sorvegliato; restano check-in, SOS e immobilità.
+- **Preavviso prima dell'allarme di silenzio dell'app** (decisione PO 25/11 sera, mig `0153`): a
+  schermo bloccato il telefono può sospendere l'app web. 2 minuti prima della soglia
+  (`app_silence_warn_s`, 0 = nessun preavviso) il lavoratore riceve un SMS «la tua app non dà segni
+  di vita: aprila ora»; se la apre, il battito annulla l'allarme. Un SMS per episodio, serve il
+  telefono nel profilo. **Roadmap:** app nativa o PWA con notifiche push, per l'uso salva-vita.
 - **Badge: silenzio sorvegliato sempre** (default, mig `0150`); «solo durante il turno» è una
   scelta del tenant. Vedi [Dispositivi GPS e badge](dispositivi-gps.md).
 - **Badge che non si collega**: nella scheda, riquadro **Collegamento** con «verifica ora»: dice se

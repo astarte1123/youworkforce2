@@ -84,8 +84,8 @@ pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
     // Q4 (PO 24/11/2026): silenzio sorvegliato solo durante il turno; vale anche per l'app.
     // Turno = turno aperto nell'app, oppure (solo badge) un turno pianificato che copre adesso.
     let rows = sqlx::query(
-        "SELECT d.tenant_id, d.source, d.external_id, d.last_lat, d.last_lon, d.last_seen_at, d.last_pos_at,
-                d.silence_armed_at, sh.since AS shift_since
+        "SELECT d.id AS device_id, d.tenant_id, d.source, d.external_id, d.last_lat, d.last_lon, d.last_seen_at, d.last_pos_at,
+                d.silence_armed_at, sh.since AS shift_since, (SELECT u.phone FROM app.users u WHERE u.id=d.assigned_user) AS user_phone
          FROM app.devices d
          JOIN app.tenants tn ON tn.id=d.tenant_id AND tn.status<>'sospeso'
          LEFT JOIN LATERAL (SELECT min(x) AS since FROM (
@@ -107,7 +107,7 @@ pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
         .bind(now).bind(crate::modules::feature_modules("badge_silence")).bind(crate::modules::feature_modules("app_silence"))
         .fetch_all(&st.owner_pool).await?;
     let mut gcfg: std::collections::HashMap<Uuid, (i64, bool)> = std::collections::HashMap::new();
-    let mut acfg: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
+    let mut acfg: std::collections::HashMap<Uuid, (i64, i64)> = std::collections::HashMap::new();
     for r in rows {
         let tid: Uuid = r.get("tenant_id");
         let source: String = r.get("source");
@@ -116,11 +116,14 @@ pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
         let last: Option<DateTime<Utc>> = r.try_get("last_seen_at").ok().flatten();
         let last_pos: Option<DateTime<Utc>> = r.try_get("last_pos_at").ok().flatten();
         let armed: Option<DateTime<Utc>> = r.try_get("silence_armed_at").ok().flatten();
+        let mut warn_s = 0i64;
         let (after, reference) = if app {
-            let after = match acfg.get(&tid) { Some(v) => *v, None => {
-                let v = api::tool_config(st, tid, "loneworker", "app_silence").await
-                    .get("app_silence_after_s").and_then(|v| v.as_i64()).unwrap_or(900);
+            let (after, w) = match acfg.get(&tid) { Some(v) => *v, None => {
+                let cfg = api::tool_config(st, tid, "loneworker", "app_silence").await;
+                let v = (cfg.get("app_silence_after_s").and_then(|v| v.as_i64()).unwrap_or(900),
+                         cfg.get("app_silence_warn_s").and_then(|v| v.as_i64()).unwrap_or(120));
                 acfg.insert(tid, v); v } };
+            warn_s = w;
             // l'app conta dall'ultimo segno di vita (battito o posizione) o dall'inizio del turno
             (after, [last, last_pos, shift_since].into_iter().flatten().max())
         } else {
@@ -135,6 +138,23 @@ pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
         };
         if after <= 0 { continue; }
         let Some(reference) = reference else { continue; };
+        // Decisione PO 25/11 sera: prima dell'allarme di silenzio dell'app, un avviso al lavoratore
+        // («Sei ancora lì?»): il telefono può aver sospeso l'app a schermo bloccato. Un SMS per
+        // episodio; aprire l'app (battito) annulla tutto.
+        if app && warn_s > 0 && warn_s < after && silence_exceeded(now, reference, after).is_none() {
+            if let Some(silent) = silence_exceeded(now, reference, after - warn_s) {
+                let dev: Uuid = r.get("device_id");
+                if prewarn_once(dev, reference) {
+                    if let Some(phone) = r.try_get::<Option<String>,_>("user_phone").ok().flatten().filter(|p| !p.trim().is_empty()) {
+                        let text = format!("YouWorkforce: la tua app di sicurezza non dà segni di vita da {} minuti. Aprila ora: tra circa {} minuti parte l'allarme ai reperibili.",
+                            silent / 60, ((after - silent).max(60)) / 60);
+                        let res = api::send_worker_sms(st, &phone, &text).await;
+                        tracing::info!("silenzio app: preavviso al lavoratore (tenant {tid}, esito {})", res);
+                    }
+                }
+            }
+            continue;
+        }
         let Some(silent_for) = silence_exceeded(now, reference, after) else { continue; };
         let ext: String = r.get("external_id");
         let srcev = format!("{}-silence-{}-{}", if app { "app" } else { "gps" }, ext, reference.timestamp_millis());
@@ -160,6 +180,16 @@ pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
         if let Err(e) = res { tracing::error!("watchdog silenzio {ext} tenant {tid}: incidente non creato: {:?}", e); }
     }
     Ok(())
+}
+
+/// Un solo preavviso per episodio di silenzio (device + inizio del silenzio). In memoria: dopo un
+/// riavvio al massimo un preavviso in più, mai un allarme in meno.
+fn prewarn_once(dev: Uuid, reference: DateTime<Utc>) -> bool {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<Uuid, DateTime<Utc>>>> = std::sync::OnceLock::new();
+    let mut m = SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new())).lock().unwrap();
+    if m.get(&dev) == Some(&reference) { return false; }
+    m.insert(dev, reference);
+    true
 }
 
 /// Silenzio oltre la soglia? Ritorna i secondi di silenzio solo se `> after` (alla soglia esatta
