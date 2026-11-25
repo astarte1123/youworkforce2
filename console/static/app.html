@@ -2813,17 +2813,22 @@ async function commesseCSV(){ const C=await api('/commesse').catch(()=>[]);
   downloadCSV('commesse.csv',[['Codice','Nome','Committente','Sede','Stato','Avanzamento%','Lavorazioni','Turni'],...C.map(c=>[c.code,c.name,c.client_name||'',c.site||'',COMM_STATI[c.status]||humanizeCode(c.status),c.progress,c.lav_count,c.shift_count])]); toast('CSV commesse scaricato','ok'); }
 async function interventiCSV(){ const O=await api('/orders').catch(()=>[]);
   downloadCSV('interventi.csv',[['Titolo','Cliente','Sede','Assegnatario','Quando','Priorità','Stato'],...O.map(o=>[o.title,o.client_name||'',o.site||'',o.assignee||o.group_name||'',o.scheduled_start?new Date(o.scheduled_start).toLocaleString('it-IT'):'',o.priority,o.state])]); toast('CSV interventi scaricato','ok'); }
+let QUALS=[];
 async function vListino(v){
   const P=await api('/price-items').catch(()=>[]);
+  // CA-6: qualifiche (modulo Qualifiche) per le tariffe di manodopera
+  QUALS=ACTIVE_MODS.has('qualifiche')?await api('/qualifications').catch(()=>[]):[];
+  const fmtD=d=>d?new Date(d+'T12:00:00').toLocaleDateString('it-IT'):'';
+  const validity=p=>(p.valid_from||p.valid_to)?`<div class="small mut">${p.valid_from?'dal '+fmtD(p.valid_from):''}${p.valid_to?' al '+fmtD(p.valid_to):''}</div>`:'';
   const canEdit=can(['pianificatore','tenant_admin'],'plan');
-  const row=p=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick='priceForm(${jattr(p)})'`:''}><td><b>${esc(p.name)}</b>${p.code?`<div class="small mut">${esc(p.code)}</div>`:''}</td>
+  const row=p=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick='priceForm(${jattr(p)})'`:''}><td><b>${esc(p.name)}</b>${p.code?`<div class="small mut">${esc(p.code)}</div>`:''}${p.qualification?`<div class="small"><span class="tag">qualifica: ${esc(p.qualification)}</span></div>`:''}${validity(p)}</td>
     <td class="small">${esc(PRICE_CAT[p.category]||humanizeCode(p.category))}</td><td class="small">${esc(p.unit)}</td>
     <td style="text-align:right">${eur(p.unit_price)}</td>
     <td>${p.active?'<span class="chip s-attivo">attiva</span>':'<span class="chip">sospesa</span>'}</td>
     <td style="text-align:right">${canEdit?`<button class="btn-ico btn ghost" onclick="event.stopPropagation();priceDel('${p.id}')">${ICON.x}</button>`:''}</td></tr>`;
   v.innerHTML=`<div class="page-h"><div><h1>Listino</h1><div class="mut">${P.length} voci · prezzi per valorizzare gli interventi</div></div>
     <span>${canEdit?`<button class="btn" onclick="priceForm()">+ Nuova voce</button>`:''}</span></div>
-  <div class="small mut" style="margin:-4px 0 var(--s-12)">🧾 Il listino è il catalogo delle voci fatturabili (manodopera, materiali, trasferta). Si usa per valorizzare ogni intervento.</div>
+  <div class="small mut" style="margin:-4px 0 var(--s-12)">🧾 Il listino è l’unico catalogo dei prezzi (manodopera, materiali, trasferta): interventi, consuntivi e costi delle commesse lo leggono e copiano il prezzo sulla riga. La <b>manodopera a ore</b> può avere una tariffa per <b>qualifica</b> e un periodo di validità: a ogni persona si applica la tariffa della sua qualifica valida quel giorno, altrimenti quella per tutti.</div>
   <div class="card"><table class="table" data-export="listino"><thead><tr><th>Voce</th><th>Categoria</th><th>Unità</th><th style="text-align:right">Prezzo</th><th>Stato</th><th></th></tr></thead>
     <tbody>${P.map(row).join('')||emptyRow(6, ICON.receipt, 'Nessuna voce di listino', 'Il listino definisce i prezzi di prestazioni e materiali, usati nei consuntivi e nelle offerte.', {fn:'priceForm()',label:'+ Nuova voce'})}</tbody></table></div>`;
 }
@@ -2834,12 +2839,17 @@ function priceForm(p){ p=p||{};
       <label class="small mut grow">Prezzo (€)<input id="piPrice" type="number" step="0.01" value="${p.unit_price!=null?p.unit_price:''}"></label></div>
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Categoria<select id="piCat">${Object.entries(PRICE_CAT).map(([k,l])=>`<option value="${k}" ${k===(p.category||'altro')?'selected':''}>${l}</option>`).join('')}</select></label>
       <label class="small mut grow">Unità<select id="piUnit">${PRICE_UNITS.map(u=>`<option value="${u}" ${u===(p.unit||'pezzo')?'selected':''}>${u}</option>`).join('')}</select></label></div>
+    ${QUALS.length?`<label class="small mut">Qualifica (solo per la manodopera a ore)<select id="piQual"><option value="">— per tutti —</option>${QUALS.map(q=>`<option value="${esc(q.id)}" ${q.id===p.qualification_id?'selected':''}>${esc(q.name)}</option>`).join('')}</select></label>`:''}
+    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Valida dal (opz.)<input id="piFrom" type="date" value="${esc(p.valid_from||'')}"></label>
+      <label class="small mut grow">al (opz.)<input id="piTo" type="date" value="${esc(p.valid_to||'')}"></label></div>
     ${p.id?`<label class="row small" style="gap:var(--s-8)"><input type="checkbox" id="piActive" ${p.active!==false?'checked':''}> Attiva (selezionabile sugli interventi)</label>`:''}
     <button class="btn" onclick="priceSave('${p.id||''}')">Salva</button><div class="cfg-msg small"></div></div>`);
 }
 async function priceSave(id){ const m=$('.cfg-msg'); const name=$('#piName').value.trim();
   if(!name){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
-  const b={name,code:$('#piCode').value.trim()||null,category:$('#piCat').value,unit:$('#piUnit').value,unit_price:Number($('#piPrice').value)||0};
+  const b={name,code:$('#piCode').value.trim()||null,category:$('#piCat').value,unit:$('#piUnit').value,unit_price:Number($('#piPrice').value)||0,
+    valid_from:$('#piFrom').value||'',valid_to:$('#piTo').value||''};
+  if($('#piQual')) b.qualification_id=$('#piQual').value||'';
   if(id&&$('#piActive')) b.active=$('#piActive').checked;
   try{await api(id?('/price-items/'+id):'/price-items',{method:'POST',body:JSON.stringify(b)}); toast('Salvato','ok'); closeDrawer(); route();}catch(e){m.textContent=friendlyError(e);m.style.color='var(--bad)';}
 }

@@ -5433,6 +5433,12 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     // C3 — costi: voci (materiali/noli/...) + ore di presenza chiuse valorizzate al costo orario
     let costi = sqlx::query("SELECT k.id,k.description,k.category,k.amount::float8 AS amount,k.cost_date,u.email AS author FROM app.commessa_costi k LEFT JOIN app.users u ON u.id=k.created_by WHERE k.commessa_id=$1 ORDER BY k.cost_date DESC,k.created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let labor_hours: f64 = sqlx::query_scalar("SELECT COALESCE(sum(EXTRACT(EPOCH FROM (clock_out-clock_in))/3600.0),0)::float8 FROM app.commessa_presenze WHERE commessa_id=$1 AND clock_out IS NOT NULL").bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
+    // CA-6: ogni presenza valorizzata con la tariffa della persona (listino per qualifica, valida quel
+    // giorno); se il listino non ce l'ha, col costo orario della commessa. In centesimi.
+    let labor_cost_cents: i64 = sqlx::query_scalar("SELECT COALESCE(round(sum(EXTRACT(EPOCH FROM (p.clock_out-p.clock_in))/3600.0
+            * COALESCE(app.yw_labor_rate_cents(p.tenant_id,p.user_id,p.clock_in::date), round(COALESCE(c.labor_cost_hour,0)*100)))),0)::bigint
+          FROM app.commessa_presenze p JOIN app.commesse c ON c.id=p.commessa_id WHERE p.commessa_id=$1 AND p.clock_out IS NOT NULL AND NOT p.auto_closed")
+        .bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
     let materials_cost: f64 = sqlx::query_scalar("SELECT COALESCE(sum(amount),0)::float8 FROM app.commessa_costi WHERE commessa_id=$1").bind(id).fetch_one(&mut *tx).await.map_err(ise)?;
     let diario = sqlx::query("SELECT g.id,g.diary_date,g.weather,g.present_count,g.body,u.email AS author FROM app.commessa_diario g LEFT JOIN app.users u ON u.id=g.created_by WHERE g.commessa_id=$1 ORDER BY g.diary_date DESC,g.created_at DESC LIMIT 100").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let fatture = sqlx::query("SELECT f.id,f.number,f.amount::float8 AS amount,f.issue_date,f.status,f.note,f.sal_id FROM app.commessa_fatture f WHERE f.commessa_id=$1 ORDER BY f.issue_date DESC,f.created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
@@ -5451,7 +5457,7 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
         "issue_date":r.get::<chrono::NaiveDate,_>("issue_date").to_string(),"status":r.get::<String,_>("status"),
         "note":r.try_get::<String,_>("note").ok(),"sal_id":r.try_get::<Uuid,_>("sal_id").ok() })).collect();
     let labor_rate: f64 = c.try_get::<f64,_>("labor_rate").ok().unwrap_or(0.0);
-    let labor_cost = (labor_hours*labor_rate*100.0).round()/100.0;
+    let labor_cost = labor_cost_cents as f64 / 100.0;
     let total_cost = ((labor_cost+materials_cost)*100.0).round()/100.0;
     let budget_v = c.try_get::<f64,_>("budget").ok();
     let variance = budget_v.map(|b| ((b-total_cost)*100.0).round()/100.0);
@@ -10131,28 +10137,51 @@ pub async fn delete_contact(State(st): State<AppState>, h: HeaderMap, Path(id): 
 // ===== Interventi A2: listino prezzi + valorizzazione della visita =====
 #[derive(Deserialize)]
 pub struct PriceItemReq { pub name: String, #[serde(default)] pub code: Option<String>, #[serde(default)] pub category: Option<String>,
-    #[serde(default)] pub unit: Option<String>, #[serde(default)] pub unit_price: Option<f64>, #[serde(default)] pub active: Option<bool> }
+    #[serde(default)] pub unit: Option<String>, #[serde(default)] pub unit_price: Option<f64>, #[serde(default)] pub active: Option<bool>,
+    // CA-6: qualifica (tariffe di manodopera per qualifica) e validità; "" = togli
+    #[serde(default)] pub qualification_id: Option<String>, #[serde(default)] pub valid_from: Option<String>, #[serde(default)] pub valid_to: Option<String> }
+/// CA-6: euro -> centesimi (arrotondati), mai negativi.
+fn eur_to_cents(v: Option<f64>) -> Result<Option<i64>, (StatusCode,String)> {
+    match v { None => Ok(None), Some(x) if x < 0.0 || !x.is_finite() => Err(err(StatusCode::BAD_REQUEST, "prezzo non valido")), Some(x) => Ok(Some((x * 100.0).round() as i64)) }
+}
+/// Campo opzionale del listino: None = non toccare, Some(None) = togli, Some(Some(v)) = imposta.
+fn opt_field<T>(v: &Option<String>, parse: impl Fn(&str) -> Option<T>, what: &str) -> Result<Option<Option<T>>, (StatusCode,String)> {
+    match v.as_deref().map(str::trim) {
+        None => Ok(None), Some("") => Ok(Some(None)),
+        Some(x) => parse(x).map(|p| Some(Some(p))).ok_or_else(|| err(StatusCode::BAD_REQUEST, &format!("{what} non valido"))),
+    }
+}
 pub async fn list_price_items(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "interventi").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT id,code,name,category,unit,unit_price::float8 AS unit_price,active FROM app.price_list_items ORDER BY active DESC,category,name").fetch_all(&mut *tx).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT i.id,i.code,i.name,i.category,i.unit,i.price_cents,i.active,i.qualification_id,q.name AS qualification,i.valid_from,i.valid_to
+            FROM app.price_list_items i LEFT JOIN app.qualifications q ON q.id=i.qualification_id ORDER BY i.active DESC,i.category,i.name,q.name NULLS FIRST").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    let out: Vec<Value> = rows.iter().map(|r| json!({
+    let out: Vec<Value> = rows.iter().map(|r| { let c: i64 = r.get("price_cents"); json!({
         "id":r.get::<Uuid,_>("id"),"code":r.try_get::<String,_>("code").ok(),"name":r.get::<String,_>("name"),
         "category":r.get::<String,_>("category"),"unit":r.get::<String,_>("unit"),
-        "unit_price":r.get::<f64,_>("unit_price"),"active":r.get::<bool,_>("active") })).collect();
+        "price_cents":c, "unit_price": c as f64 / 100.0, "active":r.get::<bool,_>("active"),
+        "qualification_id":r.try_get::<Option<Uuid>,_>("qualification_id").ok().flatten(),
+        "qualification":r.try_get::<Option<String>,_>("qualification").ok().flatten(),
+        "valid_from":r.try_get::<Option<chrono::NaiveDate>,_>("valid_from").ok().flatten(),
+        "valid_to":r.try_get::<Option<chrono::NaiveDate>,_>("valid_to").ok().flatten() }) }).collect();
     Ok(Json(json!(out)))
 }
 pub async fn create_price_item(State(st): State<AppState>, h: HeaderMap, Json(b): Json<PriceItemReq>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
+    let cents = eur_to_cents(b.unit_price)?;
+    let q = opt_field(&b.qualification_id, |x| Uuid::parse_str(x).ok(), "qualifica")?.flatten();
+    let vf = opt_field(&b.valid_from, |x| chrono::NaiveDate::parse_from_str(x, "%Y-%m-%d").ok(), "inizio validità")?.flatten();
+    let vt = opt_field(&b.valid_to, |x| chrono::NaiveDate::parse_from_str(x, "%Y-%m-%d").ok(), "fine validità")?.flatten();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO app.price_list_items(tenant_id,code,name,category,unit,unit_price) VALUES($1,$2,$3,COALESCE($4,'altro'),COALESCE($5,'pezzo'),COALESCE($6::numeric,0)) RETURNING id")
-        .bind(tid).bind(&b.code).bind(b.name.trim()).bind(&b.category).bind(&b.unit).bind(b.unit_price)
-        .fetch_one(&mut *tx).await.map_err(ise)?;
+        "INSERT INTO app.price_list_items(tenant_id,code,name,category,unit,price_cents,qualification_id,valid_from,valid_to)
+         VALUES($1,$2,$3,COALESCE($4,'altro'),COALESCE($5,'pezzo'),COALESCE($6,0),$7,$8,$9) RETURNING id")
+        .bind(tid).bind(&b.code).bind(b.name.trim()).bind(&b.category).bind(&b.unit).bind(cents).bind(q).bind(vf).bind(vt)
+        .fetch_one(&mut *tx).await.map_err(|e| conflict_or(e, "periodo di validità non valido"))?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":id})))
 }
@@ -10160,9 +10189,17 @@ pub async fn update_price_item(State(st): State<AppState>, h: HeaderMap, Path(id
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.price_list_items SET name=COALESCE($2,name),code=$3,category=COALESCE($4,category),unit=COALESCE($5,unit),unit_price=COALESCE($6::numeric,unit_price),active=COALESCE($7,active) WHERE id=$1")
-        .bind(id).bind(if b.name.trim().is_empty(){None}else{Some(b.name.trim())}).bind(&b.code).bind(&b.category).bind(&b.unit).bind(b.unit_price).bind(b.active)
-        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    let cents = eur_to_cents(b.unit_price)?;
+    let q = opt_field(&b.qualification_id, |x| Uuid::parse_str(x).ok(), "qualifica")?;
+    let vf = opt_field(&b.valid_from, |x| chrono::NaiveDate::parse_from_str(x, "%Y-%m-%d").ok(), "inizio validità")?;
+    let vt = opt_field(&b.valid_to, |x| chrono::NaiveDate::parse_from_str(x, "%Y-%m-%d").ok(), "fine validità")?;
+    let n = sqlx::query("UPDATE app.price_list_items SET name=COALESCE($2,name),code=$3,category=COALESCE($4,category),unit=COALESCE($5,unit),
+            price_cents=COALESCE($6,price_cents),active=COALESCE($7,active),
+            qualification_id=CASE WHEN $8 THEN $9 ELSE qualification_id END,
+            valid_from=CASE WHEN $10 THEN $11 ELSE valid_from END, valid_to=CASE WHEN $12 THEN $13 ELSE valid_to END WHERE id=$1")
+        .bind(id).bind(if b.name.trim().is_empty(){None}else{Some(b.name.trim())}).bind(&b.code).bind(&b.category).bind(&b.unit).bind(cents).bind(b.active)
+        .bind(q.is_some()).bind(q.flatten()).bind(vf.is_some()).bind(vf.flatten()).bind(vt.is_some()).bind(vt.flatten())
+        .execute(&mut *tx).await.map_err(|e| conflict_or(e, "periodo di validità non valido"))?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "voce non trovata")); }
     Ok(Json(json!({"ok":true})))
@@ -10210,12 +10247,13 @@ pub async fn add_order_line(State(st): State<AppState>, h: HeaderMap, Path(wo): 
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     if !order_line_allowed(&mut tx, &s, wo).await? { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore o assegnatario")); }
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO app.work_order_lines(tenant_id,work_order_id,item_id,description,category,unit,qty,unit_price,created_by)
+        // CA-6: prezzo in centesimi COPIATO dalla voce di listino (resta storico se il listino cambia)
+        "INSERT INTO app.work_order_lines(tenant_id,work_order_id,item_id,description,category,unit,qty,unit_price_cents,created_by)
          VALUES($1,$2,$3,$4,COALESCE($5,'altro'),COALESCE($6,'pezzo'),COALESCE($7::numeric,1),
-                COALESCE($8::numeric,(SELECT unit_price FROM app.price_list_items WHERE id=$3 AND tenant_id=$1),0),$9) RETURNING id")
+                COALESCE($8,(SELECT price_cents FROM app.price_list_items WHERE id=$3 AND tenant_id=$1),0),$9) RETURNING id")
         // CA-11: chi non vede i costi non fissa il prezzo: vale quello del listino (o 0, da valorizzare in ufficio)
         .bind(tid).bind(wo).bind(b.item_id).bind(b.description.trim()).bind(&b.category).bind(&b.unit).bind(b.qty)
-        .bind(if can_see_costs(&s) { b.unit_price } else { None }).bind(s.user_id)
+        .bind(if can_see_costs(&s) { eur_to_cents(b.unit_price)? } else { None }).bind(s.user_id)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":id})))
@@ -10741,7 +10779,6 @@ pub async fn generate_timesheet_from_order(State(st): State<AppState>, h: Header
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let o = sqlx::query("SELECT title,state,assigned_user,work_minutes,work_started_at,arrived_at,materials FROM app.work_orders WHERE id=$1")
         .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "ordine non trovato"))?;
-    let labor_rate = ts_line_rate(&st, &s, None).await?;
     let owner: Uuid = o.try_get::<Uuid,_>("assigned_user").map_err(|_| err(StatusCode::BAD_REQUEST, "ordine non assegnato a una persona"))?;
     // Autorizzazione: l'assegnatario stesso o un pianificatore.
     if owner != s.user_id && !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo l'assegnatario o il pianificatore")); }
@@ -10756,6 +10793,7 @@ pub async fn generate_timesheet_from_order(State(st): State<AppState>, h: Header
     let arrived: Option<chrono::DateTime<chrono::Utc>> = o.try_get("arrived_at").ok();
     let wd = started.or(arrived).map(|t| t.date_naive()).unwrap_or_else(|| st.clock.now().date_naive());
     let materials: Value = o.try_get("materials").unwrap_or(json!([]));
+    let labor_rate = ts_line_rate(&st, &s, None, owner, wd).await?; // CA-6: qualifica di chi ha lavorato
     let def_cur = tool_config(&st, tid, "consuntivi", "rates").await
         .get("currency").and_then(|v| v.as_str()).unwrap_or("EUR").to_string();
     // Riusa una bozza aperta per (ordine, assegnatario) oppure creane una.
@@ -10940,7 +10978,7 @@ pub async fn add_line(State(st): State<AppState>, h: HeaderMap, Path(id): Path<U
     guard_owner_editable(&st, tid, id, s.user_id).await?;
     let wd = chrono::NaiveDate::parse_from_str(&b.work_date, "%Y-%m-%d").map_err(|_| err(StatusCode::BAD_REQUEST, "data non valida"))?;
     let (act, minutes, cur) = ts_line_validate(&st, tid, &b.activity, b.minutes, b.currency.as_deref()).await?;
-    let rate = ts_line_rate(&st, &s, b.rate_cents).await?;
+    let rate = ts_line_rate(&st, &s, b.rate_cents, s.user_id, wd).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.timesheet_lines(tenant_id,timesheet_id,activity,work_date,minutes,rate_cents,currency) VALUES($1,$2,$3,$4,$5,$6,$7)")
         .bind(tid).bind(id).bind(&act).bind(wd).bind(minutes).bind(rate)
@@ -10989,12 +11027,13 @@ async fn ts_expense_validate(st: &AppState, tid: Uuid, desc: &str, amount: i64, 
 /// CA-14: chi consuntiva non sceglie la propria tariffa. La tariffa indicata vale solo per chi
 /// approva, pianifica o vede i costi; per gli altri si usa la tariffa oraria di manodopera del
 /// listino (prima voce attiva «manodopera» a ore), altrimenti resta da valorizzare (NULL).
-async fn ts_line_rate(st: &AppState, s: &Session, asked: Option<i64>) -> Result<Option<i64>,(StatusCode,String)> {
+/// CA-6 (PO 25/11 sera): la tariffa viene dal listino unico per QUALIFICA della persona, valida in
+/// quel giorno (app.yw_labor_rate_cents: prima la qualifica, poi la voce per tutti).
+async fn ts_line_rate(st: &AppState, s: &Session, asked: Option<i64>, worker: Uuid, day: chrono::NaiveDate) -> Result<Option<i64>,(StatusCode,String)> {
     if let Some(r) = asked { if r < 0 { return Err(err(StatusCode::BAD_REQUEST, "tariffa negativa")); } }
     if asked.is_some() && (is_approver(s) || can_see_costs(s)) { return Ok(asked); }
-    Ok(sqlx::query_scalar::<_, i64>("SELECT round(unit_price*100)::bigint FROM app.price_list_items
-            WHERE tenant_id=$1 AND active AND category='manodopera' AND unit='ora' ORDER BY created_at LIMIT 1")
-        .bind(s.tenant_id.unwrap()).fetch_optional(&st.owner_pool).await.map_err(ise)?)
+    Ok(sqlx::query_scalar::<_, Option<i64>>("SELECT app.yw_labor_rate_cents($1,$2,$3)")
+        .bind(s.tenant_id.unwrap()).bind(worker).bind(day).fetch_one(&st.owner_pool).await.map_err(ise)?)
 }
 async fn ts_touch(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, tid: Uuid, id: Uuid, kind: &str, detail: Value) -> Result<(),(StatusCode,String)> {
     sqlx::query("UPDATE app.timesheets SET version=version+1,updated_at=now() WHERE id=$1 AND tenant_id=$2").bind(id).bind(tid).execute(&mut **tx).await.map_err(ise)?;
@@ -11715,7 +11754,7 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
             let act = gs("activity").unwrap_or_default(); if act.trim().is_empty() { return Err("attivita' richiesta".into()); }
             let minutes = gi("minutes").unwrap_or(0) as i32;
             let (_, minutes, cur) = ts_line_validate(st, tid, &act, minutes, None).await.map_err(|e| e.1)?; // CA-14
-            let rate_cents = ts_line_rate(st, s, gf("rate_eur").map(|r| (r*100.0).round() as i64)).await.map_err(|e| e.1)?;
+            let rate_cents = ts_line_rate(st, s, gf("rate_eur").map(|r| (r*100.0).round() as i64), s.user_id, wd).await.map_err(|e| e.1)?;
             let mut t = tx!();
             sqlx::query("INSERT INTO app.timesheet_lines(tenant_id,timesheet_id,activity,work_date,minutes,rate_cents,currency) VALUES($1,$2,$3,$4,$5,$6,$7)")
                 .bind(tid).bind(id).bind(act.trim()).bind(wd).bind(minutes).bind(rate_cents).bind(cur).execute(&mut *t).await.map_err(|e| e.to_string())?;

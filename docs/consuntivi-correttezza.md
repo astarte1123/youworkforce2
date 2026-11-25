@@ -63,3 +63,10 @@ post-approvazione: slice successivi del piano.
 - `qa/smoke.sh` T13/T14 (34/34): totale deterministico, submit/approve, doppia approvazione, CSV.
 - `qa/consuntivi-correttezza-e2e.sh` (5/5): arrotondamento half-up (838≠837), versioning, self-approval
   403, approvazione da terzo, approvato immutabile.
+
+## Tariffe per qualifica dal listino unico (CA-6, decisione PO 25/11/2026)
+
+La tariffa di una riga di consuntivo non è più «la prima voce di manodopera del listino»: è quella
+della **qualifica** della persona valida nel giorno della riga (`app.yw_labor_rate_cents`), altrimenti
+la voce di manodopera per tutti. Il lavoratore non la indica; se il listino non ha manodopera la
+fissa chi approva. Prezzi in centesimi. Vedi [proposte-campo-ca4-ca5-ca6](proposte-campo-ca4-ca5-ca6.md).

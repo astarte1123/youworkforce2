@@ -85,6 +85,17 @@ copia dati + adeguamento API/console commesse; e2e su commesse e squadre.
 
 ## CA-6 · Un listino unico, in centesimi
 
+> **FATTO (decisione PO 25/11/2026, opzione 1, mig `0156`–`0157`).** Il listino ha il prezzo in
+> **centesimi** (`price_cents`, fonte unica; `unit_price` in euro è calcolato, 2 decimali esatti), la
+> **qualifica** (`qualification_id`, solo per la manodopera a ore) e la **validità** (`valid_from`,
+> `valid_to`). Le righe dell'intervento copiano il prezzo in centesimi (`unit_price_cents`).
+> La tariffa di manodopera di una persona in un giorno la calcola `app.yw_labor_rate_cents`:
+> voce «manodopera» a ore attiva e valida quel giorno, prima quella di una qualifica che la persona
+> ha (non scaduta, la più alta se più d'una), poi quella per tutti. La usano il consuntivo (riga
+> manuale, ponte dall'intervento, agente AI) e i **costi di commessa** (ogni presenza valorizzata con
+> la tariffa della persona; senza voce nel listino, il costo orario della commessa). Pagina Listino:
+> qualifica e validità nel modulo. e2e `qa/listino-qualifica-e2e.sh` 8/8.
+
 **Problema.** Ci sono più valorizzazioni che non si parlano:
 - listino (`price_list_items.unit_price`, euro con decimali, letto come numero in virgola mobile);
 - righe dell'intervento (`work_order_lines.unit_price`, euro);
