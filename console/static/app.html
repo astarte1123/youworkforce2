@@ -2438,7 +2438,7 @@ async function openCommessa(id){
   // C3 — costi vs budget
   const cs=c.cost||{}; const costiRows=(c.costi||[]).map(k=>`<tr><td class="small">${esc(k.description)}<div class="small mut">${esc(COSTO_CAT[k.category]||k.category)} · ${esc(k.cost_date)}</div></td><td style="text-align:right">${eur(k.amount)}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="costoDel('${id}','${k.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')||`<tr><td colspan="3" class="empty">Nessun costo</td></tr>`;
   const vClass=cs.variance==null?'':(cs.variance>=0?'color:var(--ok,#16a34a)':'color:var(--bad)');
-  const costiSection=`<div><div class="spread"><h3 style="margin:0">Costi e budget</h3>${planner?`<button class="btn ghost small" onclick="costoNew('${id}')">+ costo</button>`:''}</div>
+  const costiSection=c.costs_hidden?costsHidden('Costi e budget'):`<div><div class="spread"><h3 style="margin:0">Costi e budget</h3>${planner?`<button class="btn ghost small" onclick="costoNew('${id}')">+ costo</button>`:''}</div>
     <div class="row" style="gap:var(--s-8);align-items:center;margin:var(--s-8) 0">${planner?`<label class="small mut">Costo orario manodopera (€)<input id="cmRate" type="number" step="0.01" value="${c.labor_rate||0}" style="width:110px"> <button class="btn ghost small" onclick="comRate('${id}')">salva</button></label>`:`<span class="small mut">Costo orario: ${eur(c.labor_rate)}</span>`}</div>
     <table class="table"><tbody>
       <tr><td class="small">Manodopera (${cs.labor_hours||0} h × ${eur(c.labor_rate)})</td><td style="text-align:right">${eur(cs.labor_cost)}</td><td></td></tr>
@@ -2462,7 +2462,7 @@ async function openCommessa(id){
     <td style="text-align:right">${planner?`<select onchange="fatturaStatus('${id}','${f.id}',this.value)" class="small"><option ${f.status==='emessa'?'selected':''}>emessa</option><option ${f.status==='pagata'?'selected':''}>pagata</option><option ${f.status==='annullata'?'selected':''}>annullata</option></select> <button class="btn-ico btn ghost" onclick="fatturaDel('${id}','${f.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
     ||`<tr><td colspan="4" class="empty">Nessuna fattura</td></tr>`;
   const fatt_tot=(c.fatture||[]).filter(f=>f.status!=='annullata').reduce((a,f)=>a+(f.amount||0),0);
-  const fattureSection=`<div><h3 style="margin:0">Fatturazione (da SAL)</h3>
+  const fattureSection=c.costs_hidden?costsHidden('Fatturazione (da SAL)'):`<div><h3 style="margin:0">Fatturazione (da SAL)</h3>
     <div class="small mut" style="margin:var(--s-4) 0">Usa «fattura» su una riga SAL per emettere il documento con l'importo maturato.</div>
     <table class="table"><thead><tr><th>Numero</th><th style="text-align:right">Importo</th><th>Stato</th><th></th></tr></thead>
     <tbody>${fattRows}</tbody><tfoot><tr><td style="text-align:right"><b>Fatturato</b></td><td style="text-align:right"><b>${eur(fatt_tot)}</b></td><td colspan="2"></td></tr></tfoot></table></div>`;
@@ -2738,7 +2738,7 @@ async function contDel(id){ if(!await askConfirm('Eliminare il referente?'))retu
 // ===== Interventi A2: Listino prezzi =====
 const PRICE_CAT={manodopera:'Manodopera',materiale:'Materiale',trasferta:'Trasferta',forfait:'Forfait',altro:'Altro'};
 const PRICE_UNITS=['ora','pezzo','km','giorno','forfait'];
-function eur(n){ return '€ '+(Number(n)||0).toLocaleString('it-IT',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function eur(n){ if(n==null) return '—'; return '€ '+(Number(n)||0).toLocaleString('it-IT',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 // Export CSV (separatore ; per Excel IT; BOM per accenti)
 function toCSV(rows){ return rows.map(r=>r.map(c=>{ const s=String(c==null?'':c); return /[",\n;]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }).join(';')).join('\r\n'); }
 function downloadCSV(name,rows){ const blob=new Blob(['﻿'+toCSV(rows)],{type:'text/csv;charset=utf-8'});
@@ -2791,6 +2791,7 @@ async function orderLines(wo){
     ||`<tr><td colspan="5" class="empty">Nessuna voce</td></tr>`;
   box.innerHTML=`<table class="table"><thead><tr><th>Voce</th><th style="text-align:right">Q.tà</th><th style="text-align:right">Prezzo</th><th style="text-align:right">Totale</th><th></th></tr></thead>
     <tbody>${rows}</tbody><tfoot><tr><td colspan="3" style="text-align:right"><b>Totale</b></td><td style="text-align:right"><b>${eur(d.total)}</b></td><td></td></tr></tfoot></table>
+    ${d.prices_hidden?'<div class="small mut" style="margin:var(--s-4) 0">🔒 Prezzi riservati a chi vede i costi: le voci che aggiungi prendono il prezzo dal listino.</div>':''}
     <button class="btn ghost small" onclick="orderLineAdd('${wo}')">+ aggiungi voce</button>`;
 }
 async function orderLineAdd(wo){
@@ -5468,6 +5469,8 @@ const CAP_LABELS={
   'plan':               ['Lavoro sul campo · Pianificare','Creare e assegnare ordini, interventi, ronde e turni.'],
   'approve':            ['Consuntivi · Approvare','Approvare o rifiutare i consuntivi.'],
   'timesheets.view_all':['Consuntivi · Vedere tutti','Leggere i consuntivi di tutte le persone, non solo i propri.'],
+  'orders.view_all':    ['Interventi · Vedere tutti','Leggere tutti gli interventi delle proprie sedi, non solo quelli assegnati a sé o al proprio gruppo.'],
+  'costs.view':         ['Costi · Vedere','Vedere budget, costi, SAL, fatture delle commesse e i prezzi dei materiali degli interventi.'],
   'config.view':        ['Configurazione · Sola lettura','Vedere impostazioni e diagnostica (senza modificarle).'],
   'users.manage':       ['Amministrazione · Utenti e ruoli','Creare/modificare utenti, gruppi di persone, permessi, ruoli, sedi e squadre.'],
   'devices.admin':      ['Amministrazione · Dispositivi','Censire dispositivi, gestire token/onboarding, geofence e provisioning.'],
@@ -5478,6 +5481,8 @@ const CAP_LABELS={
   'audit.view':         ['Audit · Registro attività','Leggere il registro delle attività del tenant.'],
   'dashboard.manage':   ['Dashboard · Organizzare','Abilitare, ordinare e dimensionare i widget della dashboard.'],
 };
+// CA-11: sezione economica non visibile a questo utente
+function costsHidden(t){ return `<div><h3 style="margin:0">${esc(t)}</h3><div class="small mut" style="margin-top:var(--s-6)">🔒 Dati economici riservati: li vede chi pianifica o chi ha il permesso «Costi · Vedere».</div></div>`; }
 function capLabel(code){ return (CAP_LABELS[code]||[code,''])[0]; }
 function capHelp(code){ return (CAP_LABELS[code]||[code,''])[1]; }
 // Form UNICO (drawer) per creare/modificare un ruolo personalizzato: nome + descrizione +

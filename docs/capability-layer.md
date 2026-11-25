@@ -18,6 +18,8 @@ toccare il codice. Additivo e non distruttivo; i ruoli restano, le capability li
 | `plan`               | pianificazione (ordini, ronde, turni) | `is_planner` |
 | `approve`            | approvazione consuntivi | `is_approver` |
 | `timesheets.view_all`| lettura di tutti i consuntivi | list/get/export/summary consuntivi |
+| `orders.view_all`    | lettura di tutti gli ordini (interventi) delle proprie sedi | list_orders, righe/allegati ordine, assistente (CA-10) |
+| `costs.view`         | budget, costi, SAL, fatture commesse; prezzi materiali | get/list commesse, righe ordine (CA-11; anche con `plan`) |
 | `config.view`        | lettura configurazione/diagnostica | module-tools, assistant plan |
 | `users.manage`       | utenti/gruppi/permessi/ruoli custom/sedi/squadre/asset | ~32 endpoint (Tappa 2) |
 | `devices.admin`      | censimento/token/onboarding/geofence/provisioning | ~20 endpoint (Tappa 2) |
@@ -40,8 +42,8 @@ toccare il codice. Additivo e non distruttivo; i ruoli restano, le capability li
 | tenant_admin | **admin** (⇒ tutte) |
 | operatore | incidents.view, incidents.handle, devices.manage |
 | pianificatore | plan |
-| responsabile | approve, incidents.view, incidents.handle, timesheets.view_all |
-| auditor | incidents.view, timesheets.view_all, config.view |
+| responsabile | approve, incidents.view, incidents.handle, timesheets.view_all, orders.view_all, costs.view |
+| auditor | incidents.view, timesheets.view_all, config.view, orders.view_all, costs.view |
 | reperibile | incidents.handle |
 | lavoratore | — (accesso ai propri dati via controlli "owner", non capability) |
 
@@ -50,6 +52,28 @@ toccare il codice. Additivo e non distruttivo; i ruoli restano, le capability li
 > soli controlli di **scope sui propri dati** (owner/sede). Gli endpoint prima `admin_only` sono
 > stati spezzati nelle 7 capability d'area (Tappa 2 FATTA).
 > Prova granularità: `qa/capabilities-granular-e2e.sh`. Piano completo: [iam-refactor-plan.md](iam-refactor-plan.md).
+
+### Campo: ordini, costi, posizioni e sedi (CA-9/10/11, 25/11/2026)
+
+- **Ordini (CA-10).** Prima chiunque non avesse il ruolo base «lavoratore» (operatore, reperibile,
+  ruoli personalizzati…) vedeva tutti gli ordini. Ora tutti gli ordini li vede solo chi ha `plan` o
+  `orders.view_all`; gli altri vedono i propri e quelli del proprio gruppo di persone. Righe e
+  allegati di un ordine seguono la stessa regola (`order_view_allowed`); le indicazioni d'accesso
+  alla sede solo a pianificatore e assegnatario. Stessa regola per lo strumento AI «elenco ordini».
+- **Costi (CA-11).** Budget, costo orario, costi, importi SAL e fatture delle commesse e i prezzi
+  dei materiali degli ordini li vede chi ha `plan` o `costs.view` (`can_see_costs`); agli altri la
+  scheda dice «dati economici riservati». Chi non vede i costi **non fissa il prezzo** di una voce:
+  vale quello del listino (o 0, da valorizzare in ufficio).
+- **Posizioni (CA-11).** L'elenco dispositivi (con le posizioni) e il cruscotto vigilanza sono
+  riservati a chi supervisiona (`is_supervisor`: `incidents.view`, `plan`, `devices.manage`,
+  `devices.admin` o `iot.manage`); gli altri vedono solo i propri dispositivi.
+- **Sedi (CA-9/CA-10).** `allowed_sites` prima restringeva solo i ruoli base operatore/lavoratore/
+  reperibile: un responsabile con sedi assegnate approvava ovunque. Ora **chiunque abbia sedi
+  assegnate** è ristretto a quelle (centrale, ordini, consuntivi), tranne chi ha `admin`. Approvare
+  o rimandare un consuntivo richiede il modulo attivo e, per chi è ristretto, una sede consentita
+  (un consuntivo senza sede non è approvabile da un ruolo ristretto). L'assistente AI legge un
+  consuntivo con la stessa regola della UI.
+- Prova: `qa/field-permissions-e2e.sh` **22/22**.
 
 ## Come funziona
 

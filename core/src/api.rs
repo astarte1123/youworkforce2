@@ -2177,6 +2177,8 @@ pub fn cap_modules(cap: &str) -> &'static [&'static str] {
         "iot.manage"                           => &["iot","gps"],
         "plan"                                 => &["interventi","cantieri","giri","workforce"],
         "approve" | "timesheets.view_all"      => &["consuntivi"],
+        "orders.view_all"                      => &["interventi"],
+        "costs.view"                           => &["cantieri","interventi"],
         _ => &[], // core: utenti/ruoli/privacy/audit/dashboard/impostazioni/diagnostica
     }
 }
@@ -2188,6 +2190,9 @@ pub const CAPABILITIES: &[(&str,&str)] = &[
     ("plan",                 "Pianificazione: ordini/interventi, ronde, turni"),
     ("approve",              "Consuntivi: approvazione/rifiuto"),
     ("timesheets.view_all",  "Consuntivi: lettura di tutti (non solo i propri)"),
+    // CA-10/CA-11 (25/11/2026): visibilità prima legata al nome del ruolo «lavoratore»
+    ("orders.view_all",      "Interventi: lettura di tutti gli ordini delle proprie sedi (non solo i propri)"),
+    ("costs.view",           "Costi: budget, costi, SAL, fatture e prezzi dei materiali"),
     ("config.view",          "Lettura configurazione e diagnostica"),
     // Fase 4 (Tappa 2): aree amministrative, split di `admin`. Nessun ruolo le ha di default
     // (solo `tenant_admin` via `admin` super); assegnabili a ruoli custom per delega mirata.
@@ -2206,8 +2211,8 @@ pub(crate) fn default_role_caps(role: &str) -> Vec<&'static str> {
         "tenant_admin"  => vec!["admin"],
         "operatore"     => vec!["incidents.view","incidents.handle","devices.manage"],
         "pianificatore" => vec!["plan"],
-        "responsabile"  => vec!["approve","incidents.view","incidents.handle","timesheets.view_all"],
-        "auditor"       => vec!["incidents.view","timesheets.view_all","config.view"],
+        "responsabile"  => vec!["approve","incidents.view","incidents.handle","timesheets.view_all","orders.view_all","costs.view"],
+        "auditor"       => vec!["incidents.view","timesheets.view_all","config.view","orders.view_all","costs.view"],
         "reperibile"    => vec!["incidents.handle"],
         _ => vec![],
     }
@@ -2280,10 +2285,14 @@ pub(crate) const USER_ROLES: &[&str] = &["tenant_admin","operatore","pianificato
 
 /// #8 ACL: sedi visibili all'utente. None = tutte (admin/auditor/pianificatore o
 /// operatore senza restrizioni); Some(set) = solo quelle sedi.
+/// Sedi consentite all'utente. CA-9/CA-10 (25/11/2026): prima la restrizione valeva solo per i nomi
+/// di ruolo operatore/lavoratore/reperibile, quindi un responsabile o un ruolo personalizzato con
+/// sedi assegnate vedeva e approvava tutto. Ora: chiunque abbia sedi assegnate è ristretto a
+/// quelle, tranne l'amministratore (`admin`). Nessuna sede assegnata = nessuna restrizione.
 async fn allowed_sites(st: &AppState, s: &Session) -> Option<std::collections::HashSet<Uuid>> {
-    if !matches!(s.role.as_str(), "operatore"|"lavoratore"|"reperibile") { return None; }
-    let rows = sqlx::query_scalar::<_, Uuid>("SELECT site_id FROM app.operator_sites WHERE user_id=$1")
-        .bind(s.user_id).fetch_all(&st.owner_pool).await.ok()?;
+    if has_cap(s, "admin") { return None; }
+    let rows = sqlx::query_scalar::<_, Uuid>("SELECT site_id FROM app.operator_sites WHERE tenant_id=$2 AND user_id=$1")
+        .bind(s.user_id).bind(s.tenant_id).fetch_all(&st.owner_pool).await.ok()?;
     if rows.is_empty() { None } else { Some(rows.into_iter().collect()) }
 }
 /// SL-6: un incidente SENZA sede (SOS dall'app, check-in mancato di un lavoratore senza sede
@@ -2352,8 +2361,10 @@ pub async fn list_devices(State(st): State<AppState>, h: HeaderMap) -> R {
         .bind(tid0).bind(now0).fetch_all(&st.owner_pool).await.unwrap_or_default().into_iter().collect();
     let shift_only = tool_config(&st, tid0, "gps", "alarm_map").await
         .get("silence_shift_only").and_then(|v| v.as_str()).map(|s| s != "no").unwrap_or(true);
+    let sup = is_supervisor(&s); // CA-11: posizioni dei colleghi solo a chi supervisiona
     let out: Vec<Value> = rows.iter()
         .filter(|r| site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok()))
+        .filter(|r| sup || r.try_get::<Uuid,_>("assigned_user").ok() == Some(s.user_id))
         .map(|r| json!({
         "id": r.get::<Uuid,_>("id"), "external_id": r.get::<String,_>("external_id"), "source": r.get::<String,_>("source"),
         "label": r.try_get::<String,_>("label").ok(), "enabled": r.get::<bool,_>("enabled"), "config": r.get::<Value,_>("config"),
@@ -3868,6 +3879,8 @@ pub async fn patrol_dashboard(State(st): State<AppState>, h: HeaderMap) -> R {
     use chrono::Duration;
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "giri").await?;
+    // CA-11: il cruscotto mostra dove sono le guardie: solo a chi supervisiona
+    if !is_supervisor(&s) { return Err(err(StatusCode::FORBIDDEN, "cruscotto vigilanza riservato a chi supervisiona")); }
     let now = st.clock.now(); // orologio controllabile (coerente col resto; TEST_CLOCK)
     let ttz: chrono_tz::Tz = sqlx::query_scalar::<_,String>("SELECT timezone FROM app.tenants WHERE id=$1").bind(tid)
         .fetch_optional(&st.owner_pool).await.ok().flatten().and_then(|z| parse_tz(&z)).unwrap_or(chrono_tz::Europe::Rome);
@@ -4694,7 +4707,7 @@ pub async fn list_commesse(State(st): State<AppState>, h: HeaderMap) -> R {
         "lat":r.try_get::<f64,_>("lat").ok(),"lon":r.try_get::<f64,_>("lon").ok(),
         "start_date":r.try_get::<chrono::NaiveDate,_>("start_date").ok().map(|d|d.to_string()),
         "end_date":r.try_get::<chrono::NaiveDate,_>("end_date").ok().map(|d|d.to_string()),
-        "budget":r.try_get::<f64,_>("budget").ok(),
+        "budget": if can_see_costs(&s) { r.try_get::<f64,_>("budget").ok() } else { None }, // CA-11
         "progress":r.get::<i32,_>("progress"),"lav_count":r.get::<i32,_>("lav_count"),"shift_count":r.get::<i32,_>("shift_count")
     })).collect();
     Ok(Json(json!(out)))
@@ -4792,7 +4805,7 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
         "id":r.get::<Uuid,_>("id"),"email":r.get::<String,_>("email"),"state":r.get::<String,_>("state"),
         "starts_at":r.get::<chrono::DateTime<chrono::Utc>,_>("starts_at"),
         "ends_at":r.get::<chrono::DateTime<chrono::Utc>,_>("ends_at") })).collect();
-    Ok(Json(json!({
+    let mut out = json!({
         "id":c.get::<Uuid,_>("id"),"code":c.get::<String,_>("code"),"name":c.get::<String,_>("name"),
         "status":c.get::<String,_>("status"),"client_name":c.try_get::<String,_>("client_name").ok(),
         "site":c.try_get::<String,_>("site").ok(),"site_id":c.try_get::<Uuid,_>("site_id").ok(),
@@ -4810,7 +4823,16 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
         "cost":{"labor_hours":(labor_hours*100.0).round()/100.0,"labor_cost":labor_cost,"materials_cost":materials_cost,
                 "total_cost":total_cost,"budget":budget_v,"variance":variance},
         "diario":diario_out,"fatture":fatture_out,"attachments":att_out
-    })))
+    });
+    // CA-11: budget, costo orario, costi, SAL in euro e fatture solo a chi pianifica o ha costs.view
+    if !can_see_costs(&s) {
+        if let Some(o) = out.as_object_mut() {
+            for k in ["budget","labor_rate","costi","cost","fatture"] { o.remove(k); }
+            o.insert("costs_hidden".into(), json!(true));
+            if let Some(Value::Array(sal)) = o.get_mut("sal") { for x in sal.iter_mut() { if let Some(m) = x.as_object_mut() { m.remove("amount"); } } }
+        }
+    }
+    Ok(Json(out))
 }
 pub async fn update_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<CommessaPatch>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
@@ -8243,6 +8265,13 @@ pub fn tenant_slug(st: &AppState, h: &HeaderMap) -> Option<String> {
 // ======================= Prompt 9: ordini + consuntivi =======================
 pub(crate) fn is_planner(s: &Session) -> bool { has_cap(s, "plan") }
 pub(crate) fn is_approver(s: &Session) -> bool { has_cap(s, "approve") }
+/// CA-11: budget, costi, SAL, fatture, prezzi. Chi pianifica (crea commesse e ne fissa il budget)
+/// li vede; gli altri solo con `costs.view`.
+pub(crate) fn can_see_costs(s: &Session) -> bool { has_cap(s, "plan") || has_cap(s, "costs.view") }
+/// CA-11: posizioni dei colleghi solo a chi supervisiona (centrale, pianificazione, dispositivi).
+pub(crate) fn is_supervisor(s: &Session) -> bool {
+    ["incidents.view","plan","devices.manage","devices.admin","iot.manage"].iter().any(|c| has_cap(s, c))
+}
 
 pub async fn module_active(st: &AppState, tid: Uuid, code: &str) -> bool {
     // SA-5: tenant sospeso => nessun modulo attivo (ingress, allarmi, funzioni di modulo fermi).
@@ -9005,7 +9034,13 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
         o.arrived_at,o.work_started_at,o.work_minutes,o.materials,o.checklist,o.outcome_kind,o.report,o.signed_by,o.signed_at,\
         s.address AS site_address,s.lat AS site_lat,s.lon AS site_lon,s.access_notes AS site_access,o.client_id,cl.name AS client_name";
     let joins="FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user LEFT JOIN app.user_groups g ON g.id=o.assigned_group LEFT JOIN app.clients cl ON cl.id=o.client_id";
-    let rows = if s.role == "lavoratore" {
+    // CA-10: tutti gli ordini solo a chi pianifica o ha `orders.view_all` (prima: chiunque non si
+    // chiamasse «lavoratore», compresi i ruoli custom); in ogni caso filtrati per sedi consentite.
+    let see_all = is_planner(&s) || has_cap(&s, "orders.view_all");
+    let acl = allowed_sites(&st, &s).await;
+    let my_groups: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM app.user_group_members WHERE tenant_id=$1 AND user_id=$2")
+        .bind(s.tenant_id.unwrap()).bind(s.user_id).fetch_all(&st.owner_pool).await.unwrap_or_default();
+    let rows = if !see_all {
         // tecnico: i propri ordini + quelli assegnati a un gruppo di persone di cui è membro
         sqlx::query(&format!("SELECT {cols} {joins}
             WHERE o.assigned_user=$1 OR o.assigned_group IN (SELECT group_id FROM app.user_group_members WHERE user_id=$1)
@@ -9015,7 +9050,9 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
             ORDER BY o.scheduled_start NULLS LAST, o.updated_at DESC")).fetch_all(&mut *tx).await
     }.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    let out: Vec<Value> = rows.iter().map(|r| json!({
+    let mine = |r: &sqlx::postgres::PgRow| r.try_get::<Uuid,_>("assigned_user").ok() == Some(s.user_id)
+        || r.try_get::<Uuid,_>("assigned_group").ok().map(|g| my_groups.contains(&g)).unwrap_or(false);
+    let out: Vec<Value> = rows.iter().filter(|r| mine(r) || site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok())).map(|r| json!({
         "id": r.get::<Uuid,_>("id"), "title": r.get::<String,_>("title"), "state": r.get::<String,_>("state"),
         "version": r.get::<i32,_>("version"), "site": r.try_get::<String,_>("site").ok(),
         "site_id": r.try_get::<Uuid,_>("site_id").ok(), "assigned_user": r.try_get::<Uuid,_>("assigned_user").ok(),
@@ -9037,7 +9074,7 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
         "site_address": r.try_get::<String,_>("site_address").ok(),
         "site_lat": r.try_get::<f64,_>("site_lat").ok(), "site_lon": r.try_get::<f64,_>("site_lon").ok(),
         // indicazioni d'accesso: solo a chi è autorizzato (assegnatario/lavoratore o pianificatore)
-        "site_access": if is_planner(&s) || s.role=="lavoratore" { r.try_get::<String,_>("site_access").ok() } else { None },
+        "site_access": if is_planner(&s) || mine(r) { r.try_get::<String,_>("site_access").ok() } else { None },
         "client_id": r.try_get::<Uuid,_>("client_id").ok(), "client_name": r.try_get::<String,_>("client_name").ok()
     })).collect();
     Ok(Json(json!(out)))
@@ -9190,8 +9227,9 @@ async fn order_line_allowed(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, s: &
     Ok(asg == Some(s.user_id))
 }
 pub async fn list_order_lines(State(st): State<AppState>, h: HeaderMap, Path(wo): Path<Uuid>) -> R {
-    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
-    require_module(&st, tid, "interventi").await?;
+    let s = require_tenant(&st, &h).await?;
+    let tid = order_view_allowed(&st, &s, wo).await?; // CA-10
+    let costs = can_see_costs(&s); // CA-11: il tecnico vede i materiali, non i prezzi
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let rows = sqlx::query("SELECT id,item_id,description,category,unit,qty::float8 AS qty,unit_price::float8 AS unit_price,(qty*unit_price)::float8 AS total FROM app.work_order_lines WHERE work_order_id=$1 ORDER BY created_at").bind(wo).fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
@@ -9199,8 +9237,10 @@ pub async fn list_order_lines(State(st): State<AppState>, h: HeaderMap, Path(wo)
     let out: Vec<Value> = rows.iter().map(|r| { let t=r.get::<f64,_>("total"); tot+=t; json!({
         "id":r.get::<Uuid,_>("id"),"item_id":r.try_get::<Uuid,_>("item_id").ok(),"description":r.get::<String,_>("description"),
         "category":r.get::<String,_>("category"),"unit":r.get::<String,_>("unit"),
-        "qty":r.get::<f64,_>("qty"),"unit_price":r.get::<f64,_>("unit_price"),"total":t }) }).collect();
-    Ok(Json(json!({"lines":out,"total":(tot*100.0).round()/100.0})))
+        "qty":r.get::<f64,_>("qty"),
+        "unit_price": if costs { Some(r.get::<f64,_>("unit_price")) } else { None },
+        "total": if costs { Some(t) } else { None } }) }).collect();
+    Ok(Json(json!({"lines":out,"total": if costs { Some((tot*100.0).round()/100.0) } else { None }, "prices_hidden": !costs})))
 }
 #[derive(Deserialize)]
 pub struct OrderLineReq { pub description: String, #[serde(default)] pub item_id: Option<Uuid>, #[serde(default)] pub category: Option<String>,
@@ -9213,8 +9253,11 @@ pub async fn add_order_line(State(st): State<AppState>, h: HeaderMap, Path(wo): 
     if !order_line_allowed(&mut tx, &s, wo).await? { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore o assegnatario")); }
     let id: Uuid = sqlx::query_scalar(
         "INSERT INTO app.work_order_lines(tenant_id,work_order_id,item_id,description,category,unit,qty,unit_price,created_by)
-         VALUES($1,$2,$3,$4,COALESCE($5,'altro'),COALESCE($6,'pezzo'),COALESCE($7::numeric,1),COALESCE($8::numeric,0),$9) RETURNING id")
-        .bind(tid).bind(wo).bind(b.item_id).bind(b.description.trim()).bind(&b.category).bind(&b.unit).bind(b.qty).bind(b.unit_price).bind(s.user_id)
+         VALUES($1,$2,$3,$4,COALESCE($5,'altro'),COALESCE($6,'pezzo'),COALESCE($7::numeric,1),
+                COALESCE($8::numeric,(SELECT unit_price FROM app.price_list_items WHERE id=$3 AND tenant_id=$1),0),$9) RETURNING id")
+        // CA-11: chi non vede i costi non fissa il prezzo: vale quello del listino (o 0, da valorizzare in ufficio)
+        .bind(tid).bind(wo).bind(b.item_id).bind(b.description.trim()).bind(&b.category).bind(&b.unit).bind(b.qty)
+        .bind(if can_see_costs(&s) { b.unit_price } else { None }).bind(s.user_id)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":id})))
@@ -9548,6 +9591,20 @@ pub async fn order_cancel(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
 
 // ---- Intervento end-to-end: report, allegati (foto/doc), firma ----
 /// Chi può operare sull'esecuzione di un ordine: il pianificatore/admin oppure l'assegnatario.
+/// CA-10: lettura di un ordine = chi può lavorarci (order_edit_allowed) oppure chi ha
+/// `orders.view_all` e l'ordine è in una delle sue sedi.
+async fn order_view_allowed(st: &AppState, s: &Session, oid: Uuid) -> Result<Uuid,(StatusCode,String)> {
+    if let Ok(t) = order_edit_allowed(st, s, oid).await { return Ok(t); }
+    let tid = s.tenant_id.unwrap();
+    if !module_active(st, tid, "interventi").await { return Err(err(StatusCode::FORBIDDEN, "modulo interventi non abilitato")); }
+    if has_cap(s, "orders.view_all") {
+        let site: Option<Uuid> = sqlx::query_scalar("SELECT site_id FROM app.work_orders WHERE id=$1 AND tenant_id=$2")
+            .bind(oid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "ordine inesistente"))?;
+        if site_allowed(&allowed_sites(st, s).await, site) { return Ok(tid); }
+    }
+    Err(err(StatusCode::FORBIDDEN, "non autorizzato su questo ordine"))
+}
 async fn order_edit_allowed(st: &AppState, s: &Session, oid: Uuid) -> Result<Uuid,(StatusCode,String)> {
     let tid = s.tenant_id.unwrap();
     if !module_active(st, tid, "interventi").await { return Err(err(StatusCode::FORBIDDEN, "modulo interventi non abilitato")); }
@@ -9621,7 +9678,7 @@ pub async fn order_attachment_add(State(st): State<AppState>, h: HeaderMap, Path
 }
 pub async fn order_attachments_list(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
-    let tid = order_edit_allowed(&st, &s, id).await?;
+    let tid = order_view_allowed(&st, &s, id).await?;
     let rows = sqlx::query("SELECT id,kind,filename,content_type,caption,created_by,created_at FROM app.work_order_attachments WHERE tenant_id=$1 AND work_order_id=$2 ORDER BY created_at")
         .bind(tid).bind(id).fetch_all(&st.owner_pool).await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({
@@ -9835,8 +9892,22 @@ async fn guard_timesheet_access(st: &AppState, s: &Session, d: &Value) -> Result
     Ok(())
 }
 
+/// CA-9: chi approva/rimanda deve avere il modulo attivo e, se ristretto per sede, il consuntivo
+/// deve essere di una sua sede (un consuntivo senza sede non è approvabile da un ruolo ristretto).
+async fn guard_timesheet_review(st: &AppState, s: &Session, id: Uuid) -> Result<(),(StatusCode,String)> {
+    let tid = s.tenant_id.unwrap();
+    if !module_active(st, tid, "consuntivi").await { return Err(err(StatusCode::FORBIDDEN, "modulo consuntivi non abilitato")); }
+    if let Some(set) = allowed_sites(st, s).await {
+        let site: Option<Uuid> = sqlx::query_scalar("SELECT o.site_id FROM app.timesheets t LEFT JOIN app.work_orders o ON o.id=t.work_order_id WHERE t.id=$1 AND t.tenant_id=$2")
+            .bind(id).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "non trovato"))?;
+        match site { Some(si) if set.contains(&si) => {}, _ => return Err(err(StatusCode::FORBIDDEN, "consuntivo fuori dalle tue sedi")) }
+    }
+    Ok(())
+}
 pub async fn get_timesheet(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
+    require_module(&st, s.tenant_id.unwrap(), "consuntivi").await?; // CA-9
     let d = timesheet_detail(&st, s.tenant_id.unwrap(), id).await?;
     guard_timesheet_access(&st, &s, &d).await?;
     Ok(Json(d))
@@ -9882,6 +9953,7 @@ pub async fn add_expense(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
 }
 
 async fn guard_owner_editable(st: &AppState, tid: Uuid, id: Uuid, uid: Uuid) -> Result<(),(StatusCode,String)> {
+    if !module_active(st, tid, "consuntivi").await { return Err(err(StatusCode::FORBIDDEN, "modulo consuntivi non abilitato")); } // CA-9
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("SELECT user_id,state FROM app.timesheets WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
     let _ = tx.commit().await;
@@ -9895,6 +9967,7 @@ async fn guard_owner_editable(st: &AppState, tid: Uuid, id: Uuid, uid: Uuid) -> 
 pub async fn submit_timesheet(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
+    require_module(&st, tid, "consuntivi").await?; // CA-9
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("UPDATE app.timesheets SET state='in_revisione',version=version+1,updated_at=now() WHERE id=$1 AND user_id=$2 AND state IN ('bozza','da_correggere')")
         .bind(id).bind(s.user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
@@ -9909,6 +9982,7 @@ pub async fn approve_timesheet(State(st): State<AppState>, h: HeaderMap, Path(id
     let s = require_tenant(&st, &h).await?;
     if !is_approver(&s) { return Err(err(StatusCode::FORBIDDEN, "solo responsabile")); }
     let tid = s.tenant_id.unwrap();
+    guard_timesheet_review(&st, &s, id).await?; // CA-9: modulo + sedi dell'approvatore
     // Segregation of duties: di default NON si approva il proprio consuntivo. Un tenant può
     // consentirlo esplicitamente (consuntivi.approval.allow_self_approve=true) per realtà piccole.
     let allow_self = tool_config(&st, tid, "consuntivi", "approval").await
@@ -9935,6 +10009,7 @@ pub async fn request_changes(State(st): State<AppState>, h: HeaderMap, Path(id):
     let s = require_tenant(&st, &h).await?;
     if !is_approver(&s) { return Err(err(StatusCode::FORBIDDEN, "solo responsabile")); }
     let tid = s.tenant_id.unwrap();
+    guard_timesheet_review(&st, &s, id).await?; // CA-9
     let allow_self = tool_config(&st, tid, "consuntivi", "approval").await
         .get("allow_self_approve").and_then(|v| v.as_bool()).unwrap_or(false);
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
@@ -9954,6 +10029,7 @@ pub async fn request_changes(State(st): State<AppState>, h: HeaderMap, Path(id):
 
 pub async fn export_timesheet_csv(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Response, (StatusCode,String)> {
     let s = require_tenant(&st, &h).await?;
+    require_module(&st, s.tenant_id.unwrap(), "consuntivi").await?; // CA-9
     let d = timesheet_detail(&st, s.tenant_id.unwrap(), id).await?;
     guard_timesheet_access(&st, &s, &d).await?;
     let cur = d["currency"].as_str().unwrap_or("EUR").to_string();
@@ -10278,11 +10354,9 @@ pub async fn consuntivo_ai_summary(State(st): State<AppState>, h: HeaderMap, Pat
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     let c = ai_gate(&st, tid, "consuntivi_summary").await?;
+    require_module(&st, tid, "consuntivi").await?; // CA-9
     let d = timesheet_detail(&st, tid, id).await?;
-    let owner_id = d["owner_id"].as_str().and_then(|x| Uuid::parse_str(x).ok());
-    if owner_id != Some(s.user_id) && !has_cap(&s,"timesheets.view_all") {
-        return Err(err(StatusCode::FORBIDDEN, "non autorizzato"));
-    }
+    guard_timesheet_access(&st, &s, &d).await?; // stessa regola della UI (proprietario, view_all, sedi)
     let sys = format!("Sei un amministrativo di YouWorkforce. Riassumi il consuntivo in modo chiaro per un \
         approvatore: totale ore, spese, importo, eventuali tariffe mancanti o anomalie. {AI_SAFE}");
     let out = match ai_chat(&st, &c, &sys, &serde_json::to_string(&d).unwrap_or_default()).await {
@@ -10415,6 +10489,17 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
         }
         "query_work_orders" => {
             if !module_active(st, tid, "interventi").await { return Err("modulo interventi non abilitato".into()); }
+            // CA-10: chi non vede tutti gli ordini, dall'assistente vede solo i propri / del proprio gruppo
+            if !is_planner(s) && !has_cap(s, "orders.view_all") {
+                let mut t = tx!();
+                let rows = sqlx::query("SELECT o.id,o.title,o.state,o.priority FROM app.work_orders o
+                    WHERE (o.assigned_user=$1 OR o.assigned_group IN (SELECT group_id FROM app.user_group_members WHERE user_id=$1))
+                      AND ($2::text IS NULL OR o.state=$2) ORDER BY o.updated_at DESC LIMIT 50")
+                    .bind(s.user_id).bind(gs("state")).fetch_all(&mut *t).await.map_err(|e| e.to_string())?;
+                t.commit().await.ok();
+                return Ok(json!(rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"titolo":r.get::<String,_>("title"),
+                    "stato":r.get::<String,_>("state"),"priorita":r.get::<i32,_>("priority")})).collect::<Vec<_>>()));
+            }
             let mut t = tx!();
             let rows = if let Some(stt)=gs("state") {
                 sqlx::query("SELECT o.id,o.title,o.state,o.priority FROM app.work_orders o WHERE o.state=$1 ORDER BY o.updated_at DESC LIMIT 50").bind(stt).fetch_all(&mut *t).await
@@ -10428,7 +10513,10 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
         "get_consuntivo" => {
             if !module_active(st, tid, "consuntivi").await { return Err("modulo consuntivi non abilitato".into()); }
             let id = gu("timesheet_id").ok_or("timesheet_id non valido")?;
-            timesheet_detail(st, tid, id).await.map_err(|e| e.1)
+            // CA-9: l'assistente legge solo ciò che l'utente può leggere dalla UI
+            let d = timesheet_detail(st, tid, id).await.map_err(|e| e.1)?;
+            guard_timesheet_access(st, s, &d).await.map_err(|e| e.1)?;
+            Ok(d)
         }
         "add_diary_entry" => {
             if !module_active(st, tid, "workforce").await && !module_active(st, tid, "interventi").await {

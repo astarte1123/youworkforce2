@@ -42,6 +42,10 @@ Due pagine distinte (amministratore):
 **Utenti e ruoli** (hub identità & accessi):
 
 - **Utenti**: invito, ruolo base, password, telefono, sedi visibili.
+  Chi ha sedi assegnate vede e approva solo nelle sue sedi (qualunque ruolo, tranne
+  l'amministratore). Ordini di altri, costi e posizioni dei colleghi richiedono i permessi
+  «Interventi · Vedere tutti», «Costi · Vedere» o un ruolo di supervisione (vedi
+  [capability-layer](capability-layer.md)).
 - **Gruppi di persone (condivisi)**: insiemi di persone riusabili da qualunque modulo; si possono
   **importare** nei gruppi di allarme. Vedi [gruppi-condivisi](gruppi-condivisi.md).
 - **Permessi (capability)**: matrice ruolo × capability (`admin`/`plan`/`approve`). Il default
