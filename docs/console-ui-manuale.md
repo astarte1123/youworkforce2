@@ -315,6 +315,26 @@ stessa cosa sono diventate **schede** di una sola voce (barra sotto il titolo, `
   chiamata fallisce vale «non demo».
 - **Testi dei connettori ritirati (FE-18):** tolti dalle pagine; restano solo chiavi interne.
 
+## 12. Telefono, tastiera, lingua e stile (FE-13..16, 25/11/2026)
+
+- **Telefono (FE-15).** Nessuna pagina della console scorre più in orizzontale a 360 px, 800 px e
+  1280 px (verifica automatica su 18 pagine): sotto 820 px intestazioni, barre e righe vanno a capo,
+  le tabelle larghe scorrono dentro la loro scheda, le schede di una voce scorrono in orizzontale, i
+  pulsanti hanno almeno 40 px di altezza; nelle griglie una colonna non si allarga per un contenuto
+  largo. Le larghezze fisse grandi sono diventate «al massimo N px».
+- **Tastiera e lettori di schermo (FE-16).** Il menu è fatto di link veri (`href`, pagina corrente
+  annunciata con `aria-current`), c'è «Vai al contenuto», il focus è sempre visibile. Pannello
+  laterale e finestre di conferma sono dialoghi (`role=dialog`, il focus entra e torna dove era, Esc
+  chiude). `a11yEnhance()` in app.js rende accessibile anche ciò che le pagine disegnano: righe e
+  elementi cliccabili raggiungibili col tabulatore e attivabili con Invio/Spazio, pulsanti con sola
+  icona con un nome, campi senza etichetta con il nome dal segnaposto; gli avvisi sono annunciati
+  (`role=status`).
+- **Lingua (FE-14).** Tutte le voci del menu hanno la traduzione inglese; date e ore seguono la
+  lingua scelta (`UI_LOCALE()`: it-IT / en-GB). Il resto delle pagine resta in italiano con la
+  traduzione automatica delle frasi più comuni.
+- **Stile (FE-13).** I colori scritti a mano negli stili delle pagine sono diventati i colori del tema
+  (`--bad`, `--ok`, `--warn`, `--info`, `--mut`, `--surface`, …): seguono anche il tema scuro.
+
 ## Note tecniche
 - File coinvolti: `console/static/app.html`, `console/static/app.js`, `console/static/app.css`.
 - Avvio console: dalla cartella `console/`, `./console.exe` (o `go run .`) → `:8081`,

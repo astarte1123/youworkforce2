@@ -358,3 +358,28 @@ tr.inc-live b{color:var(--bad)}
 .subnav a:hover{color:var(--fg)}
 .subnav a.on{color:var(--brand);border-bottom-color:var(--brand)}
 .subnav a:focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:4px}
+
+/* ---- FE-16: tastiera ---- */
+:where(a,button,input,select,textarea,[tabindex]):focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:var(--r-sm)}
+.skip-link{position:absolute;left:var(--s-8);top:-48px;z-index:3000;background:var(--surface);color:var(--fg);border:1px solid var(--line);border-radius:var(--r-sm);padding:var(--s-8) var(--s-12);font-weight:600}
+.skip-link:focus{top:var(--s-8)}
+tr.clk:focus-visible td{background:var(--brand-soft)}
+/* ---- FE-15: telefono ---- */
+@media(max-width:820px){
+  .page-h{flex-wrap:wrap;gap:var(--s-8)}
+  .page-h > *{min-width:0}
+  .topbar{flex-wrap:wrap;row-gap:var(--s-6)}
+  .card-h{flex-wrap:wrap;gap:var(--s-8)}
+  .row{flex-wrap:wrap}
+  .spread{flex-wrap:wrap;gap:var(--s-8)}
+  /* tabelle larghe: scorrono dentro la loro scheda invece di allargare la pagina */
+  .table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .subnav{overflow-x:auto;flex-wrap:nowrap}
+  .subnav a{white-space:nowrap}
+  #mapCtl{flex-wrap:wrap}
+  .btn,.btn-ico{min-height:40px}
+}
+/* FE-15: nelle griglie una colonna non si allarga oltre lo schermo per un contenuto largo
+   (tabelle, barre di esportazione): la scheda scorre al suo interno */
+.grid>*{min-width:0}
+.grid>.card{overflow-x:auto}

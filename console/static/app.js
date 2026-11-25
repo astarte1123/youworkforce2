@@ -100,7 +100,7 @@ function errorRow(colspan, e, retry){
   return `<tr><td colspan="${Number(colspan)||1}" style="padding:0">${errorBox(e,retry)}</td></tr>`;
 }
 
-function toast(msg, kind=''){ let w=$('#toasts'); if(!w){w=el('<div id="toasts"></div>');document.body.append(w);}
+function toast(msg, kind=''){ let w=$('#toasts'); if(!w){w=el('<div id="toasts" role="status" aria-live="polite"></div>');document.body.append(w);}
   // Error passato direttamente → messaggio comprensibile; stringhe tecniche negli avvisi d'errore → idem.
   if(msg&&typeof msg==='object') msg=friendlyError(msg);
   else if(kind==='bad'&&/sqlx|error returned from database|SQLSTATE|failed to fetch|networkerror|load failed|^HTTP \d+$|^db$|<html|<!doctype|internal server error|panick|traceback/i.test(String(msg??'').trim())) msg=friendlyError(String(msg));
@@ -288,4 +288,46 @@ function armDropzones(root){
   const mo=new MutationObserver(ms=>{ for(const m of ms){ if(m.addedNodes&&m.addedNodes.length){ if(!t)t=setTimeout(()=>{t=null;armDropzones(document);},40); break; } } });
   if(document.body) mo.observe(document.body,{childList:true,subtree:true});
   else document.addEventListener('DOMContentLoaded',()=>mo.observe(document.body,{childList:true,subtree:true}));
+})();
+
+// FE-14: lingua delle date e dei numeri (it-IT / en-GB) secondo la lingua scelta
+function UI_LOCALE(){ try{ return (typeof LANG!=='undefined' && LANG==='en') ? 'en-GB' : 'it-IT'; }catch(e){ return 'it-IT'; } }
+
+// FE-16 (25/11/2026): accessibilità di tutto ciò che le viste generano, senza toccare ogni template.
+//  - elementi cliccabili che non sono pulsanti o link (righe .clk, div/span con onclick): raggiungibili
+//    col tabulatore (tabindex) e annunciati come pulsanti; Invio/Spazio li attivano
+//  - pulsanti con sola icona: nome accessibile dal title o dall'icona
+//  - campi senza etichetta: nome dal segnaposto
+function a11yEnhance(root){
+  const r = root && root.querySelectorAll ? root : document;
+  r.querySelectorAll('[onclick]:not(button):not(a[href]):not(input):not(select):not(textarea):not(label):not(option),tr.clk').forEach(el=>{
+    if(!el.hasAttribute('tabindex')) el.setAttribute('tabindex','0');
+    // le righe di tabella restano righe (la tabella resta leggibile): solo focus + Invio
+    if(!el.hasAttribute('role') && el.tagName!=='TR') el.setAttribute('role', el.tagName==='A' ? 'link' : 'button');
+  });
+  r.querySelectorAll('button:not([aria-label])').forEach(b=>{
+    if((b.textContent||'').replace(/[✕×\s]/g,'').trim()) return;
+    const t = b.getAttribute('title');
+    b.setAttribute('aria-label', t || (/✕|×/.test(b.textContent||'') ? 'Chiudi' : 'Rimuovi'));
+  });
+  r.querySelectorAll('input:not([type=hidden]):not([aria-label]),select:not([aria-label]),textarea:not([aria-label])').forEach(f=>{
+    if(f.closest('label') || (f.id && document.querySelector('label[for="'+f.id+'"]'))) return;
+    const ph = f.getAttribute('placeholder') || f.getAttribute('title');
+    if(ph) f.setAttribute('aria-label', ph);
+  });
+}
+document.addEventListener('keydown', e=>{
+  if(e.key!=='Enter' && e.key!==' ') return;
+  const el = e.target;
+  if(!el || !el.getAttribute) return;
+  const role=el.getAttribute('role');
+  const kbd = (role==='button' || role==='link' || (el.tagName==='TR' && el.classList.contains('clk')));
+  if(!kbd || /^(BUTTON|INPUT|SELECT|TEXTAREA)$/.test(el.tagName) || (el.tagName==='A' && el.hasAttribute('href'))) return;
+  if(e.key===' ' && role==='link') return;
+  e.preventDefault(); el.click();
+});
+(function(){ let pend=false;
+  const run=()=>{ pend=false; try{ a11yEnhance(document); }catch(e){} };
+  const start=()=>{ run(); try{ new MutationObserver(()=>{ if(!pend){ pend=true; requestAnimationFrame(run); } }).observe(document.body,{childList:true,subtree:true}); }catch(e){} };
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', start); else start();
 })();

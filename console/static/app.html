@@ -171,9 +171,15 @@ const I18N={ en:{
   grp_op:"Operations", grp_safety:"Worker Safety", grp_iot:"IoT Dashboard", grp_work:"Field work", grp_cfg:"Configuration",
   "nav_dashboard":"Dashboard","nav_centrale":"Alarm center","nav_miei-allarmi":"My alarms",
   "nav_mappa":"Alarm map","nav_mappa-dispositivi":"Device map","nav_piantine":"Floor plans","nav_cruscotti":"IoT dashboards","nav_report":"Reports","nav_iot-alerts":"IoT alerts","nav_iot-monitor":"IoT monitoring",
+  "nav_centrale":"Alarm center","nav_mappa":"Map","nav_piantine":"Indoor floor plans","nav_pianificazione":"Planning",
+  "nav_regole-sicurezza":"Safety rules","nav_regole-sensori":"Sensor rules","nav_moduli":"Modules and AI","nav_setup":"Guided setup",
+  "nav_utenti-ruoli":"People and permissions","nav_anagrafiche":"Sites and assets","nav_privacy-audit":"Privacy and audit",
+  "nav_dispositivi":"Devices and app","nav_gruppi":"Escalation and on-call","nav_connettori":"Device connection","nav_ore":"Hours worked",
+  "nav_clienti":"Customers","nav_listino":"Price list","nav_richieste":"Requests","nav_contratti":"Contracts","nav_cantieri":"Job sites",
+  "nav_ronde":"Patrols","nav_vigilanza":"Patrol dashboard","nav_report":"Reports",
   "nav_ordini":"Work orders","nav_consuntivi":"Timesheets","nav_turni":"Shifts","nav_agente":"AI agent",
-  "nav_dispositivi":"Devices & Apps","nav_trigger":"Safety triggers","nav_profili":"Protection profiles","nav_connettori":"Device connection","nav_gruppi":"Escalation & on-call",
-  "nav_anagrafiche":"Users & sites","nav_ai":"AI · youworker.ai","nav_moduli":"Modules",
+  "nav_dispositivi":"Devices and app","nav_trigger":"Safety triggers","nav_profili":"Protection profiles","nav_connettori":"Device connection","nav_gruppi":"Escalation & on-call",
+  "nav_anagrafiche":"Sites and assets","nav_ai":"AI · youworker.ai","nav_moduli":"Modules and AI",
   // Centrale allarmi
   cen_title:"Alarm center", cen_tab_open:"Open", cen_tab_closed:"Closed", cen_tab_all:"All",
   cen_search:"🔎 Search: type, site, assignee, status, priority, reference…",
@@ -196,7 +202,7 @@ const I18N={ en:{
   fp_floorplan:"Floor plan", fp_place:"Place on floor plan", fp_place_choose:"— choose beacon or device —",
   fp_place_btn:"📍 on the map", fp_config:"⚙ Configure indoor floor plan", fp_none:"— none —",
   // nav mancanti
-  "nav_ronde":"Patrols","nav_utenti-ruoli":"Users & roles","nav_privacy-audit":"Privacy & audit",
+  "nav_ronde":"Patrols","nav_utenti-ruoli":"People and permissions","nav_privacy-audit":"Privacy & audit",
   priv_title:"Privacy & audit",
   // titoli pagina (altre viste)
   ord_title:"Work orders", consun_title:"Timesheets", turni_title:"Shifts", moduli_title:"Modules",
@@ -290,7 +296,7 @@ try{ document.documentElement.lang=LANG; }catch(e){}
 function navLabel(n){ return t('nav_'+n.k, n.t); }
 function navHtml(){ const items=visibleNav(); let h='';
   for(const [g,label] of NAV_GROUPS){ const gi=items.filter(n=> n.grps ? n.grps.includes(g) : (n.grp||'op')===g); if(!gi.length)continue;
-    h+=`<div class="nav-grp">${t('grp_'+g,label)}</div>`+gi.map(n=>`<a data-k="${n.k}"><span class="ico">${ICON[n.ico]}</span>${navLabel(n)}</a>`).join(''); }
+    h+=`<div class="nav-grp">${t('grp_'+g,label)}</div>`+gi.map(n=>`<a data-k="${n.k}" href="#/${n.k}"><span class="ico" aria-hidden="true">${ICON[n.ico]}</span>${navLabel(n)}</a>`).join(''); }
   return h; }
 const modOk = n => !n.mod || n.mod.some(m=>ACTIVE_MODS.has(m));
 const featOk = n => !n.feat || UI_FEAT[n.feat]!==false;
@@ -348,7 +354,7 @@ function renderLogin(){
   <div style="min-height:100vh;display:grid;place-items:center;padding:var(--s-20);background:
      radial-gradient(1200px 600px at 10% -10%, var(--brand-soft), transparent),
      radial-gradient(900px 500px at 110% 110%, var(--info-soft), transparent), var(--bg)">
-    <div class="card" style="width:400px;max-width:100%">
+    <div class="card" style="width:min(400px,100%);max-width:100%">
       <div class="card-b">
         <div class="row" style="gap:var(--s-10);margin-bottom:var(--s-6)"><div class="logo">${ICON.logomark}</div>
           <div><h1 style="font-size:19px">YouWorkforce</h1><div class="small mut">${t('app_subtitle','Console cliente')}</div></div>
@@ -397,6 +403,7 @@ async function stopImpersonate(){ try{SSE&&SSE.close()}catch(e){} try{ await api
 // ---------------- shell ----------------
 function renderShell(){
   $('#root').innerHTML = `
+  <a class="skip-link" href="#main" onclick="event.preventDefault();const v=$('#view');v.setAttribute('tabindex','-1');v.focus()">Vai al contenuto</a>
   <div class="shell">
     <aside class="side" id="side">
       <div class="brand"><div class="logo">${ICON.logomark}</div>
@@ -404,7 +411,7 @@ function renderShell(){
           ${brandNameOrLogo()}
           <span style="font-size:8px;color:var(--faint);font-weight:700;letter-spacing:.03em;margin-top:var(--s-2);white-space:nowrap">Powered by YouCo</span>
         </div></div>
-      <nav id="nav">${navHtml()}</nav>
+      <nav id="nav" aria-label="Menu principale">${navHtml()}</nav>
       <div class="foot">
         <div class="row"><div class="ava">${initials(ME.email)}</div>
           <div class="grow" style="min-width:0"><div class="small" style="font-weight:650;overflow:hidden;text-overflow:ellipsis">${esc(ME.email.split('@')[0])}</div>
@@ -422,7 +429,7 @@ function renderShell(){
         <button id="themeBtn" class="btn-ico btn ghost" title="Tema" onclick="toggleTheme()">${themeIconHtml()}</button>
         <button class="btn-ico btn ghost" title="${t('logout','Esci')}" onclick="logout()">${ICON.logout}</button>
       </div>
-      ${ME.impersonator?`<div style="background:var(--warn-soft);color:#7a5a00;border-bottom:1px solid var(--line);padding:var(--s-8) var(--s-16);font-size:13px;display:flex;align-items:center;gap:var(--s-10)">
+      ${ME.impersonator?`<div style="background:var(--warn-soft);color:var(--warn);border-bottom:1px solid var(--line);padding:var(--s-8) var(--s-16);font-size:13px;display:flex;align-items:center;gap:var(--s-10)">
         <b>👤 Stai impersonando</b> ${brandName()} come <b>${esc(ME.email)}</b> · supporto superadmin (${esc(ME.impersonator)})
         <button class="btn ghost small" style="margin-left:auto" onclick="stopImpersonate()">Esci impersonazione</button></div>`:''}
       ${ME.suspension_notice?`<div role="alert" style="background:var(--bad-soft);color:var(--fg);border-left:4px solid var(--bad);border-bottom:1px solid var(--line);padding:var(--s-8) var(--s-16);font-size:13px">
@@ -433,22 +440,22 @@ function renderShell(){
       ${(ME.license_notice||[]).length?`<div role="status" style="background:var(--warn-soft);color:var(--fg);border-left:4px solid var(--warn);border-bottom:1px solid var(--line);padding:var(--s-8) var(--s-16);font-size:13px">
         <b>Licenze superate:</b> ${ME.license_notice.map(l=>`${esc(l.label)} ${l.used} su ${l.limit}`).join(' · ')}.
         Il servizio continua a funzionare normalmente; contatta l'assistenza per adeguare le licenze.</div>`:''}
-      <div class="content"><div id="subnav"></div><div id="view"></div></div>
+      <main class="content" id="main"><div id="subnav"></div><div id="view"></div></main>
     </div>
   </div>
-  <button id="fab" class="hide" onclick="toggleAI()" title="Assistente"
+  <button id="fab" class="hide" onclick="toggleAI()" title="Assistente" aria-label="Apri l’assistente"
     style="position:fixed;right:22px;bottom:22px;z-index:45;width:56px;height:56px;border-radius:50%;border:none;
     background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff;box-shadow:var(--sh-lg);cursor:pointer;font-size:22px">✦</button>
   <div id="ai" class="card hide" style="position:fixed;right:22px;bottom:90px;z-index:46;width:min(400px,92vw);max-height:70vh;display:flex;flex-direction:column">
     <div class="card-h"><div class="row" style="gap:var(--s-8)"><b>Assistente</b><span class="tag sim">${AI_FEAT.assistant?'youworker.ai · sola lettura':'deterministico · sola lettura'}</span></div>
-      <button class="btn-ico btn ghost" onclick="toggleAI()">✕</button></div>
+      <button class="btn-ico btn ghost" onclick="toggleAI()" aria-label="Chiudi l’assistente">✕</button></div>
     <div id="aiLog" class="card-b" style="overflow:auto;flex:1;display:flex;flex-direction:column;gap:var(--s-10)">
       <div class="small mut">Chiedi in linguaggio naturale. Es: «check-in scaduti al sito Milano», «ricostruisci l'ultimo allarme», «ordini attivi».</div></div>
     <div class="card-h" style="border-top:1px solid var(--line);border-bottom:none">
-      <input id="aiQ" placeholder="Scrivi una domanda…" onkeydown="if(event.key==='Enter')askAI()">
+      <input id="aiQ" aria-label="Domanda all’assistente" placeholder="Scrivi una domanda…" onkeydown="if(event.key==='Enter')askAI()">
       <button class="btn" onclick="askAI()">Invia</button></div>
   <div id="navScrim" onclick="toggleNav(false)"></div>`;
-  $('#nav').onclick=e=>{const a=e.target.closest('a[data-k]'); if(a){location.hash='#/'+a.dataset.k; toggleNav(false);}};
+  $('#nav').onclick=e=>{const a=e.target.closest('a[data-k]'); if(a){ e.preventDefault(); location.hash='#/'+a.dataset.k; toggleNav(false);}};
   api('/modules').then(M=>{ if((M||[]).some(m=>m.code==='assistant'&&m.state==='attivo')) $('#fab').classList.remove('hide'); }).catch(()=>{});
   window.onhashchange=route;
   // FE-1: anche reperibile e responsabile (gestiscono allarmi) ricevono gli aggiornamenti in tempo reale
@@ -472,7 +479,7 @@ function toggleNav(force){
   s.classList.toggle('open',open); if(sc)sc.classList.toggle('open',open);
 }
 function rebuildNav(){ const n=$('#nav'); if(n) n.innerHTML=navHtml(); }
-function setActive(k){ $$('#nav a').forEach(a=>a.classList.toggle('active',a.dataset.k===k));
+function setActive(k){ $$('#nav a').forEach(a=>{ const on=a.dataset.k===k; a.classList.toggle('active',on); if(on) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
   const n=allNav().find(x=>x.k===k); if(n&&$('#pageTitle'))$('#pageTitle').textContent=navLabel(n);
   // gruppo di navigazione attivo → filigrana "Lavoro sul campo" via CSS (body[data-navgrp])
   const grp = n ? (n.grp || (n.grps&&n.grps[0]) || '') : '';
@@ -714,7 +721,7 @@ function incidentAlert(d){
     m.style.cssText='position:fixed;inset:0;z-index:3000;display:flex;align-items:flex-start;justify-content:center;padding:8vh 16px 16px;background:rgba(0,0,0,.45)';
     m.innerHTML=`<div class="card" style="max-width:460px;width:100%;overflow:hidden;border:2px solid var(--bad);box-shadow:var(--sh-lg,0 10px 40px rgba(0,0,0,.3))">
       <div class="alm-hd" style="background:var(--bad);color:#fff;padding:var(--s-12) var(--s-16);font-weight:800;display:flex;align-items:center;gap:var(--s-8);font-size:15px">
-        🚨 <span>NUOVO ALLARME</span><span id="almN" class="chip" style="margin-left:auto;background:#fff;color:var(--bad);border:none"></span></div>
+        🚨 <span>NUOVO ALLARME</span><span id="almN" class="chip" style="margin-left:auto;background:var(--surface);color:var(--bad);border:none"></span></div>
       <div class="card-b"><div id="almList" class="col" style="gap:var(--s-8);max-height:48vh;overflow:auto"></div>
         <div class="row" style="gap:var(--s-8);justify-content:flex-end;margin-top:var(--s-12)">
           <button class="btn ghost" onclick="almClose()">Chiudi</button>
@@ -724,7 +731,7 @@ function incidentAlert(d){
   }
   const list=m.querySelector('#almList');
   const row=document.createElement('div'); row.className='card pad'; row.style.cssText='border-left:4px solid var(--bad);cursor:pointer';
-  row.innerHTML=`<b>${esc(label)}</b><div class="small mut">rif. ${esc(corr||'—')} · ${new Date().toLocaleTimeString('it-IT')}</div>`;
+  row.innerHTML=`<b>${esc(label)}</b><div class="small mut">rif. ${esc(corr||'—')} · ${new Date().toLocaleTimeString(UI_LOCALE())}</div>`;
   if(d.incident_id) row.onclick=()=>{ almClose(); openIncident(d.incident_id); };
   list.prepend(row);
   const n=list.children.length, nb=m.querySelector('#almN'); if(nb)nb.textContent=(n>1?n+' allarmi':'1 allarme');
@@ -856,10 +863,10 @@ async function vIotMonitor(v){
   const sm=d.summary||{}; const devs=d.devices||[];
   const chip=(lab,val,col)=>`<span style="display:inline-block;padding:var(--s-4) var(--s-10);border-radius:10px;background:${col};color:#fff;font-size:13px;margin-right:var(--s-6)">${lab}: <b>${val}</b></span>`;
   const cards = devs.map(x=>{
-    const stat = x.online ? '<span style="color:#16a34a">● Online</span>'
-      : `<span style="color:#e2001a">● Offline</span> <span class="mut" style="font-size:12px">(${iotAgo(x.seconds_since)})</span>`;
+    const stat = x.online ? '<span style="color:var(--ok)">● Online</span>'
+      : `<span style="color:var(--brand)">● Offline</span> <span class="mut" style="font-size:12px">(${iotAgo(x.seconds_since)})</span>`;
     const wd = x.has_watchdog ? '' : ' <span class="mut" style="font-size:11px" title="Nessuna soglia di silenzio impostata">no watchdog</span>';
-    const al = x.open_alerts>0 ? `<a href="#/iot-alerts" style="color:#e2001a;font-weight:600">${x.open_alerts} alert</a>` : '<span class="mut" style="font-size:12px">nessun alert</span>';
+    const al = x.open_alerts>0 ? `<a href="#/iot-alerts" style="color:var(--brand);font-weight:600">${x.open_alerts} alert</a>` : '<span class="mut" style="font-size:12px">nessun alert</span>';
     const vals = (x.metrics||[]).map(m=>`<div class="row" style="justify-content:space-between;gap:var(--s-10)"><span class="mut" style="font-size:12px">${m.label||m.metric}</span><b>${m.value!=null?m.value:'—'} ${m.unit||''}</b></div>`).join('') || '<div class="mut" style="font-size:12px">Nessuna misura ancora</div>';
     const primLab = (x.metrics||[]).find(m=>m.metric===x.primary);
     return `<div class="card" style="padding:var(--s-14);min-width:240px;flex:1 1 240px">
@@ -890,7 +897,7 @@ async function vIotAlerts(v){
   const rows = list.map(a=>{
     const kind=IOTA_KIND[a.kind]||humanizeCode(a.kind);
     const val=(a.last_value!=null)?(' · '+(a.metric?a.metric+' ':'')+a.last_value+(a.threshold!=null?(' (soglia '+a.threshold+')'):'')):'';
-    const when=new Date(a.opened_at).toLocaleString('it-IT');
+    const when=new Date(a.opened_at).toLocaleString(UI_LOCALE());
     const occ=(a.occurrences>1)?` ·×${a.occurrences}`:'';
     const act = a.state==='chiuso' ? '<span class="mut">chiuso</span>'
       : `${a.state==='aperto'?`<button class="btn" onclick="iotAlertAck('${a.id}')">Prendi in carico</button> `:''}<button class="btn ghost" onclick="iotAlertClose('${a.id}')">Chiudi</button>`;
@@ -1050,7 +1057,7 @@ async function vMieiAllarmi(v){
     <button class="seg-btn ${tab==='miei'?'on':''}" onclick="MIEI_TAB='miei';route()">Miei <span class="seg-n">${miei.length}</span></button>
     <button class="seg-btn ${tab==='tutti'?'on':''}" onclick="MIEI_TAB='tutti';route()">Tutti aperti <span class="seg-n">${aperti.length}</span></button></div>
   <div class="col" style="gap:var(--s-10)">${list.map(i=>`
-    <div class="card clk-card" data-inc="${i.id}" style="padding:var(--s-14);border-left:4px solid ${i.priority>=3?'var(--bad)':i.priority>=2?'#ea580c':'var(--line)'}">
+    <div class="card clk-card" data-inc="${i.id}" style="padding:var(--s-14);border-left:4px solid ${i.priority>=3?'var(--bad)':i.priority>=2?'var(--warn)':'var(--line)'}">
       <div class="spread"><b>${esc(etLab(i.etype))}</b>${chip(i.state)}</div>
       <div class="small mut" style="margin-top:var(--s-4)">${i.worker?('👤 '+esc(i.worker)+' · '):''}${incLoc(i)}</div>
       <div class="small mut" style="margin-top:var(--s-2)">${esc(i.site||'sede n/d')}${i.assignee?' · 🧑‍💼 '+esc(i.assignee):''}${i.assigned_to_me?' · <b>assegnato a te</b>':i.notified_me?' · <b>sei stato avvisato</b>':''}</div>
@@ -1080,7 +1087,7 @@ async function openIncident(id){
   drawer(`Incidente · ${esc(etypeLabel(i.etype))}`, `
     <div class="row" style="margin-bottom:var(--s-10)">${chip(i.state)}<span class="chip">prio ${i.priority}</span><span class="chip">${esc(i.site||'—')}</span>${i.assignee?`<span class="chip" title="operatore assegnato">🧑‍💼 ${esc(i.assignee)}</span>`:''}</div>
     ${(i.worker||i.device)?`<div class="row" style="gap:var(--s-6);margin-bottom:var(--s-10)">${i.worker?`<span class="chip" title="lavoratore (all'orario dell'evento)">👤 ${esc(i.worker)}</span>`:''}${i.device?`<span class="chip" title="dispositivo">📟 ${esc(i.device)}</span>`:''}</div>`:''}
-    <div class="card pad" style="margin-bottom:var(--s-12);border-left:4px solid ${i.priority>=3?'var(--bad)':'#ea580c'};background:var(--brand-soft)">
+    <div class="card pad" style="margin-bottom:var(--s-12);border-left:4px solid ${i.priority>=3?'var(--bad)':'var(--warn)'};background:var(--brand-soft)">
       <b>📍 Dove si trova${i.worker?' '+esc(i.worker):' il lavoratore'}</b>
       <div style="margin-top:var(--s-4)">${incLoc(i)}</div>
       ${(i.floorplan_id||incMapsUrl(i))?`<div class="row" style="gap:var(--s-6);margin-top:var(--s-8);flex-wrap:wrap">
@@ -1092,7 +1099,7 @@ async function openIncident(id){
     <div style="margin-bottom:var(--s-6)">${acts}</div>${assignBox}${noteBox}
     ${AI_FEAT.incident_summary?`<div class="row" style="gap:var(--s-6);margin-top:var(--s-14)"><button class="btn ghost small" onclick="aiIncidentSummary('${id}',this)">✦ Sintesi AI</button></div><div id="aiIncOut"></div>`:''}
     <h3 style="margin:var(--s-18) 0 var(--s-10)">Timeline</h3>
-    <ul class="timeline">${tl.map(e=>{const dt=fmtDetail(e.kind,e.detail);return `<li><div class="t">${tlTitle(e.kind)}${e.at?` <span class="small mut" style="font-weight:400">· ${new Date(e.at).toLocaleTimeString('it-IT')}</span>`:''}</div>${dt?`<div class="small mut">${dt}</div>`:''}</li>`;}).join('')||'<li class="mut">—</li>'}</ul>`);
+    <ul class="timeline">${tl.map(e=>{const dt=fmtDetail(e.kind,e.detail);return `<li><div class="t">${tlTitle(e.kind)}${e.at?` <span class="small mut" style="font-weight:400">· ${new Date(e.at).toLocaleTimeString(UI_LOCALE())}</span>`:''}</div>${dt?`<div class="small mut">${dt}</div>`:''}</li>`;}).join('')||'<li class="mut">—</li>'}</ul>`);
 }
 async function aiIncidentSummary(id,btn){ const box=$('#aiIncOut'); if(!box)return; btn.disabled=true; box.innerHTML='<div class="small mut" style="margin-top:var(--s-6)">youworker.ai…</div>';
   try{ const r=await api('/incidents/'+id+'/ai-summary'); box.innerHTML=`<div class="card pad" style="margin-top:var(--s-6);background:var(--brand-soft)"><div class="small mut">✦ youworker.ai</div><div style="white-space:pre-wrap;margin-top:var(--s-4)">${esc(r.summary)}</div></div>`; }
@@ -1180,7 +1187,7 @@ function devSrcLab(s){ return DEV_SRC_LAB[s]||humanizeCode(s)||'Dispositivo'; }
 // Tipi di allegato degli interventi (work_order_attachments.kind).
 const ATT_KIND_LAB={photo:'Foto',doc:'Documento',signature:'Firma'};
 function incRef(c){ const x=String(c||'').replace(/-/g,''); return x?'#'+x.slice(0,8).toUpperCase():'—'; }
-function fmtD(s){ return s? new Date(s).toLocaleString('it-IT') : '—'; }
+function fmtD(s){ return s? new Date(s).toLocaleString(UI_LOCALE()) : '—'; }
 function fmtResp(sec){ sec=Number(sec); if(!isFinite(sec)) return '—'; return sec>=60 ? Math.floor(sec/60)+'m '+Math.round(sec%60)+'s' : Math.round(sec)+'s'; }
 async function vReport(v){
   const mods=await api('/modules').catch(()=>[]);
@@ -1256,7 +1263,7 @@ async function pdfAlarms(){
     doc.setFontSize(10); doc.setTextColor(90);
     doc.text(String(d.tenant||''), 14, 24);
     doc.text('Periodo: '+fmtD(d.from)+'  —  '+fmtD(d.to), 14, 29);
-    doc.text('Generato il: '+new Date().toLocaleString('it-IT'), 14, 34);
+    doc.text('Generato il: '+new Date().toLocaleString(UI_LOCALE()), 14, 34);
     doc.setTextColor(20);
     doc.text(`Totale: ${sm.totale}    Critici: ${sm.critici}    Aperti: ${sm.aperti}    Presi in carico: ${sm.presi_in_carico}/${sm.totale}    Tempo medio risposta: ${fmtResp(sm.ack_medio_s)}`, 14, 42);
     const body=(d.rows||[]).map(r=>[fmtD(r.opened_at),r.label,r.state,r.ack_at?fmtD(r.ack_at):'non preso',fmtResp(r.response_s),r.closed_at?fmtD(r.closed_at):'aperto',r.site||'—',r.assignee||'—',r.outcome||'']);
@@ -1273,8 +1280,8 @@ async function runMoveReport(){
   try{
     const [route,pres]=await Promise.all([api('/reports/route?device='+dev+'&'+rng),api('/reports/presence?'+rng)]);
     const km=(route.total_m/1000).toFixed(2);
-    const stops=(route.stops||[]).map(s=>`<tr><td class="small">${new Date(s.from).toLocaleString('it-IT')}</td><td class="small">${s.minutes} min</td><td class="small mono">${s.lat.toFixed(4)},${s.lon.toFixed(4)}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">nessuna sosta</td></tr>';
-    const ev=(pres.events||[]).map(e=>`<tr><td class="small">${new Date(e.at).toLocaleString('it-IT')}</td><td>${e.inside?'🟢 ingresso':'🔴 uscita'}</td><td class="small">${esc(e.external_id)}</td><td class="small">${esc(e.geofence)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessun evento di presenza</td></tr>';
+    const stops=(route.stops||[]).map(s=>`<tr><td class="small">${new Date(s.from).toLocaleString(UI_LOCALE())}</td><td class="small">${s.minutes} min</td><td class="small mono">${s.lat.toFixed(4)},${s.lon.toFixed(4)}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">nessuna sosta</td></tr>';
+    const ev=(pres.events||[]).map(e=>`<tr><td class="small">${new Date(e.at).toLocaleString(UI_LOCALE())}</td><td>${e.inside?'🟢 ingresso':'🔴 uscita'}</td><td class="small">${esc(e.external_id)}</td><td class="small">${esc(e.geofence)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessun evento di presenza</td></tr>';
     out.innerHTML=`
       <div class="card"><div class="card-h"><h2>Percorso</h2>
         <button class="btn ghost small" onclick="downloadFile('/reports/route.csv?device=${dev}&${rng}','percorso.csv')">CSV</button></div>
@@ -1364,7 +1371,7 @@ async function calMove(info){
 }
 function calExport(fmt){
   const rows=(CAL_LAST||[]).slice().sort((a,b)=>a.start<b.start?-1:1).map(e=>[
-    (e.user||'').replace(/\n/g,' '), e.source, new Date(e.start).toLocaleString('it-IT'), new Date(e.end||e.start).toLocaleString('it-IT'), e.title]);
+    (e.user||'').replace(/\n/g,' '), e.source, new Date(e.start).toLocaleString(UI_LOCALE()), new Date(e.end||e.start).toLocaleString(UI_LOCALE()), e.title]);
   if(!rows.length){ toast('Nessun evento da esportare','mut'); return; }
   const head=['Lavoratore','Tipo','Inizio','Fine','Titolo'];
   if(fmt==='csv'){
@@ -1474,31 +1481,31 @@ function alarmIcon(a){
   if(a.indoor){
     // pin INDOOR: badge quadrato con bordo blu (chiaramente diverso dall'outdoor)
     return L.divIcon({className:'', iconSize:[30,30], iconAnchor:[15,15],
-      html:`<div style="background:${bg};border:3px solid #1e3a8a;border-radius:6px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 1px 5px rgba(0,0,0,.45)"><span style="filter:grayscale(0)">🏭</span></div>`});
+      html:`<div style="background:${bg};border:3px solid var(--info);border-radius:6px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 1px 5px rgba(0,0,0,.45)"><span style="filter:grayscale(0)">🏭</span></div>`});
   }
   // pin OUTDOOR: cerchio bianco con l'emoji dell'allarme
   return L.divIcon({className:'', iconSize:[28,28], iconAnchor:[14,14],
     html:`<div style="background:${bg};border:3px solid #fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 1px 5px rgba(0,0,0,.45)">${emo}</div>`});
 }
 const ALARM_LEGEND=`<div class="small mut" style="display:flex;gap:var(--s-14);align-items:center;margin:var(--s-4) 0 var(--s-8)">
-  <span style="display:inline-flex;align-items:center;gap:var(--s-5)"><span style="width:16px;height:16px;background:#dc2626;border:2px solid #fff;border-radius:50%;display:inline-block"></span> outdoor (GPS)</span>
-  <span style="display:inline-flex;align-items:center;gap:var(--s-5)"><span style="width:16px;height:16px;background:#dc2626;border:2px solid #1e3a8a;border-radius:4px;display:inline-block"></span> indoor (beacon/zona)</span></div>`;
+  <span style="display:inline-flex;align-items:center;gap:var(--s-5)"><span style="width:16px;height:16px;background:var(--bad);border:2px solid #fff;border-radius:50%;display:inline-block"></span> outdoor (GPS)</span>
+  <span style="display:inline-flex;align-items:center;gap:var(--s-5)"><span style="width:16px;height:16px;background:var(--bad);border:2px solid var(--info);border-radius:4px;display:inline-block"></span> indoor (beacon/zona)</span></div>`;
 function alarmPopup(a){
   const where=a.indoor
-    ? '🏭 <b>indoor</b> · '+esc(a.zone||'zona non mappata')+(a.beacon_uid?(' <span style="color:#888">['+esc(a.beacon_uid)+']</span>'):'')
+    ? '🏭 <b>indoor</b> · '+esc(a.zone||'zona non mappata')+(a.beacon_uid?(' <span style="color:var(--mut)">['+esc(a.beacon_uid)+']</span>'):'')
     : '📍 outdoor · '+(a.lat!=null?a.lat.toFixed(5)+', '+a.lon.toFixed(5):'posizione n/d');
   return `<b>${esc(a.label)}</b><br>
-    <span style="color:#666">${new Date(a.opened_at).toLocaleString('it-IT')} · ${a.state==='chiuso'?'🟢 chiuso':'🔴 aperto'}</span><br>
+    <span style="color:var(--mut)">${new Date(a.opened_at).toLocaleString(UI_LOCALE())} · ${a.state==='chiuso'?'🟢 chiuso':'🔴 aperto'}</span><br>
     ${where}<br>
     ${a.device?('📟 '+esc(a.device)+'<br>'):''}
-    ${a.person?('👤 '+esc(a.person)+'<br>'):'<span style="color:#888">persona non associata al device</span><br>'}
+    ${a.person?('👤 '+esc(a.person)+'<br>'):'<span style="color:var(--mut)">persona non associata al device</span><br>'}
     <a href="#" onclick="openIncident('${a.id}');return false">Apri incidente</a>`;
 }
 // Riepilogo compatto mostrato come TOOLTIP sul pin (meno invasivo del popup) quando si seleziona
 // un allarme dall'elenco. Il popup completo resta disponibile cliccando direttamente il pin.
 function alarmTip(a){
   const emo = a.etype==='sos'?'🆘':a.etype==='man_down'?'🧍':'⚠️';
-  return `<b>${emo} ${esc(a.label)}</b><br><span style="opacity:.75">${new Date(a.opened_at).toLocaleString('it-IT')} · ${a.state==='chiuso'?'🟢 chiuso':'🔴 aperto'}</span>`
+  return `<b>${emo} ${esc(a.label)}</b><br><span style="opacity:.75">${new Date(a.opened_at).toLocaleString(UI_LOCALE())} · ${a.state==='chiuso'?'🟢 chiuso':'🔴 aperto'}</span>`
     + (a.person?`<br>👤 ${esc(a.person)}`:'') + (a.device?`<br>📟 ${esc(a.device)}`:'');
 }
 async function renderAlarms(admin){
@@ -1510,7 +1517,7 @@ async function renderAlarms(admin){
   $('#mapCtl').innerHTML=`<div class="field"><label>${t('map_from','Dal')}</label><input id="mFrom" type="date" value="${wago}"></div>
     <div class="field"><label>${t('map_to','Al')}</label><input id="mTo" type="date" value="${today}"></div>
     <div class="field"><label>${t('map_type','Tipo')}</label><select id="mEtype"><option value="">${t('map_all_critical','Tutti i critici')}</option><option value="sos">SOS</option><option value="man_down">${esc(etLab('man_down'))}</option>${ALARM_ETYPES.filter(e=>e!=='sos'&&e!=='man_down').map(e=>`<option value="${e}">${esc(etLab(e))}</option>`).join('')}</select></div>
-    ${gfOn?`<div class="field"><label>${t('gf_color','Colore area Geofence')}</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" title="${t('gf_color','Colore area Geofence')}" style="width:120px;height:40px;padding:var(--s-3);cursor:pointer"></div>`:''}
+    ${gfOn?`<div class="field"><label>${t('gf_color','Colore area Geofence')}</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" title="${t('gf_color','Colore area Geofence')}" style="width:min(120px,100%);height:40px;padding:var(--s-3);cursor:pointer"></div>`:''}
     <div class="field"><label>&nbsp;</label><button class="btn" onclick="loadAlarmsOnMap()">${t('map_refresh','Aggiorna')}</button></div>
     ${admin?`<div class="field" style="margin-left:auto"><label>&nbsp;</label><button class="btn ghost small" onclick="geofenceAlarmsSet(${gfOn?'false':'true'})" title="${gfOn?'Nascondi la gestione delle aree geofence':'Mostra la gestione delle aree geofence'}">${gfOn?'▣ Nascondi aree geofence':'▢ Mostra aree geofence'}</button></div>`:''}`;
   // aree geofence: solo se attivate dall'admin
@@ -1557,11 +1564,11 @@ async function loadAlarmsOnMap(){
     });
     if(pts.length) MAP.fitBounds(pts,{padding:[40,40],maxZoom:16});
     const row=a=>`<div class="clk-card alarm-row" data-aid="${a.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)" onclick="focusAlarm('${a.id}',${a.lat},${a.lon})">
-      <div class="spread"><b class="small">${esc(a.label)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString('it-IT')}</span></div>
+      <div class="spread"><b class="small">${esc(a.label)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString(UI_LOCALE())}</span></div>
       <div class="small">${a.indoor?'🏭 indoor · '+esc(a.zone||'zona non mappata'):'📍 outdoor'} · ${a.state==='chiuso'?'🟢 chiuso':'🔴 aperto'}</div>
       <div class="small mut">${a.device?('📟 '+esc(a.device)):''}${a.person?(' · 👤 '+esc(a.person)):''}</div></div>`;
     side.innerHTML=`<h2 style="margin-bottom:var(--s-4)">Allarmi (${al.length})</h2>${ALARM_LEGEND}
-      ${noGeo.length?`<div class="small" style="color:var(--bad);margin:var(--s-6) 0">⚠ ${noGeo.length} indoor senza posizione (beacon non mappato) — registra la zona in “⚙ Zone indoor”:</div>${noGeo.map(a=>`<div class="alarm-row" data-aid="${a.id}" onclick="focusAlarm('${a.id}',null,null)" style="cursor:pointer;border:1px dashed var(--bad);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)"><div class="spread"><b class="small">${esc(a.label)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString('it-IT')}</span></div><div class="small">beacon <span class="mono">${esc(a.beacon_uid||'—')}</span> · ${a.device?esc(a.device):''} · <span class="mut">senza posizione GPS</span></div></div>`).join('')}<hr style="border:none;border-top:1px solid var(--line);margin:var(--s-8) 0">`:''}
+      ${noGeo.length?`<div class="small" style="color:var(--bad);margin:var(--s-6) 0">⚠ ${noGeo.length} indoor senza posizione (beacon non mappato) — registra la zona in “⚙ Zone indoor”:</div>${noGeo.map(a=>`<div class="alarm-row" data-aid="${a.id}" onclick="focusAlarm('${a.id}',null,null)" style="cursor:pointer;border:1px dashed var(--bad);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)"><div class="spread"><b class="small">${esc(a.label)}</b><span class="small mut">${new Date(a.opened_at).toLocaleString(UI_LOCALE())}</span></div><div class="small">beacon <span class="mono">${esc(a.beacon_uid||'—')}</span> · ${a.device?esc(a.device):''} · <span class="mut">senza posizione GPS</span></div></div>`).join('')}<hr style="border:none;border-top:1px solid var(--line);margin:var(--s-8) 0">`:''}
       ${al.filter(a=>a.lat!=null).map(row).join('')||(noGeo.length?'':'<div class="small mut">Nessun allarme nel periodo.</div>')}
       ${window._alarmGfOn?geofencePanel(window._ALARM_GF||[], window._mapAdmin):''}`;
   }catch(err){ side.innerHTML='<div class="small" style="color:var(--bad)">'+esc(friendlyError(err))+'</div>'; }
@@ -1621,7 +1628,7 @@ async function renderDevices(admin){
   $('#mapSide').innerHTML=`<h2 style="margin-bottom:var(--s-4)">Presenza</h2>
     <div class="small mut" style="margin-bottom:var(--s-8)">Qui i dispositivi con posizione GPS (outdoor). Quelli al chiuso compaiono nella vista <b>🏭 Indoor</b> sulle piantine.</div>
     ${PR.length?PR.map(p=>`<div style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)">
-    <b class="small">${esc(p.device||p.external_id)}</b><div class="small mut">${esc(p.geofence)} · da ${new Date(p.since).toLocaleTimeString('it-IT')}</div>
+    <b class="small">${esc(p.device||p.external_id)}</b><div class="small mut">${esc(p.geofence)} · da ${new Date(p.since).toLocaleTimeString(UI_LOCALE())}</div>
     ${p.user?`<div class="small mut">👤 ${esc(p.user)}</div>`:''}</div>`).join(''):'<div class="small mut">Nessun dispositivo dentro una geofence.</div>'}
     ${geofencePanel(GFo,admin)}`;
   if(admin) setupGeofenceTools(MAP,{geo:true});
@@ -1676,12 +1683,12 @@ function endFreehand(){ if(!FH||!MAP)return; MAP.off('mousedown',FH.onDown); MAP
 // indoor: polygon points=[[x,y],...], circle={cx,cy,radius} (unità pixel).
 let FPMAP=null, FPSEL=null;
 function beaconIcon(){ return L.divIcon({className:'',iconSize:[22,22],iconAnchor:[11,11],
-  html:`<div style="background:#2563eb;border:2px solid #fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.4)">📡</div>`}); }
+  html:`<div style="background:var(--info);border:2px solid #fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.4)">📡</div>`}); }
 function deviceIndoorIcon(){ return L.divIcon({className:'',iconSize:[24,24],iconAnchor:[12,12],
   html:`<div style="background:#0f766e;border:2px solid #fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 4px rgba(0,0,0,.4)">📟</div>`}); }
 // dispositivo posizionato MANUALMENTE (punto fisso): quadrato ambra, distinto dal live (cerchio teal)
 function devicePlacedIcon(){ return L.divIcon({className:'',iconSize:[24,24],iconAnchor:[12,12],
-  html:`<div style="background:#b45309;border:2px solid #fff;border-radius:6px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 4px rgba(0,0,0,.4)">📟</div>`}); }
+  html:`<div style="background:var(--warn);border:2px solid #fff;border-radius:6px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 1px 4px rgba(0,0,0,.4)">📟</div>`}); }
 async function fpImageUrl(id){ const r=await fetch('/api/floorplans/'+id+'/image',{headers:{'x-tenant-slug':store.slug},credentials:'include'}); if(!r.ok) throw new Error('immagine piantina non disponibile'); const b=await r.blob(); return URL.createObjectURL(b); }
 async function renderIndoor(admin,selectId){
   $('#mapSub').textContent='piantine indoor · beacon';
@@ -1694,7 +1701,7 @@ async function renderIndoor(admin,selectId){
     +(admin&&FP.length?`<div class="field" style="flex:1 1 340px;min-width:280px"><label>${t('fp_place','Posiziona sulla piantina')}</label>
         <div class="row" style="gap:var(--s-6);flex-wrap:nowrap;align-items:stretch"><select id="fpPlaceSel" class="grow"><option value="">${t('fp_place_choose','— scegli beacon o dispositivo —')}</option></select>
         <button class="btn ghost small" id="fpPlaceBtn" onclick="fpArmPlace(this)" style="flex:none;white-space:nowrap">${t('fp_place_btn','📍 sulla mappa')}</button></div></div>`:'')
-    +(gfOn&&FP.length?`<div class="field"><label>${t('gf_color','Colore area Geofence')}</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" title="${t('gf_color','Colore area Geofence')}" style="height:40px;padding:var(--s-3);width:120px;cursor:pointer"></div>`:'')
+    +(gfOn&&FP.length?`<div class="field"><label>${t('gf_color','Colore area Geofence')}</label><input type="color" value="${window._gfColor||'#16a34a'}" onchange="window._gfColor=this.value" title="${t('gf_color','Colore area Geofence')}" style="height:40px;padding:var(--s-3);width:min(120px,100%);cursor:pointer"></div>`:'')
     +(admin&&FP.length?`<div class="field" style="margin-left:auto"><label>&nbsp;</label><button class="btn ghost small" onclick="geofenceAlarmsSet(${gfOn?'false':'true'})" title="${gfOn?'Nascondi aree geofence':'Mostra aree geofence'}" style="flex:none">${gfOn?'▣ Nascondi aree geofence':'▢ Mostra aree geofence'}</button></div>`:'')
     +(admin&&FP.length?`<div class="field"><label>&nbsp;</label><button class="btn ghost small" onclick="configIndoor()" style="flex:none">${t('fp_config','⚙ Configura piantina indoor')}</button></div>`:'');
   if(FP.length){ fpOpen(); }
@@ -1722,13 +1729,13 @@ async function fpOpen(){
     const beacons=(B||[]).filter(b=>b.floorplan_id===id && b.x!=null && b.y!=null);
     const bl=L.layerGroup().addTo(FPMAP);
     beacons.forEach(b=> L.marker([b.y,b.x],{icon:beaconIcon()})
-      .bindPopup(`<b>📡 ${esc(b.zone_name)}</b><br><span style="color:#666">beacon ${esc(b.beacon_uid)}</span>${window._fpAdmin?`<br><a href="#" onclick="beaconUnplace('${b.id}');return false">Rimuovi dalla piantina</a>`:''}`).addTo(bl));
+      .bindPopup(`<b>📡 ${esc(b.zone_name)}</b><br><span style="color:var(--mut)">beacon ${esc(b.beacon_uid)}</span>${window._fpAdmin?`<br><a href="#" onclick="beaconUnplace('${b.id}');return false">Rimuovi dalla piantina</a>`:''}`).addTo(bl));
     // dispositivi posizionati MANUALMENTE su questa piantina (punto fisso)
     const devLabel=d=>esc(d.label||d.external_id||'dispositivo');
     const placedDevs=(DV||[]).filter(d=>d.floorplan_id===id && d.fp_x!=null && d.fp_y!=null);
     const pdl=L.layerGroup().addTo(FPMAP);
     placedDevs.forEach(d=> L.marker([d.fp_y,d.fp_x],{icon:devicePlacedIcon()})
-      .bindPopup(`<b>📟 ${devLabel(d)}</b><br><span style="color:#666">${esc(d.model_name||(d.source?devSrcLab(d.source):''))}${d.user_email?(' · 👤 '+esc(d.user_email)):''}</span>${window._fpAdmin?`<br><a href="#" onclick="deviceUnplace('${d.id}');return false">Rimuovi dalla piantina</a>`:''}`).addTo(pdl));
+      .bindPopup(`<b>📟 ${devLabel(d)}</b><br><span style="color:var(--mut)">${esc(d.model_name||(d.source?devSrcLab(d.source):''))}${d.user_email?(' · 👤 '+esc(d.user_email)):''}</span>${window._fpAdmin?`<br><a href="#" onclick="deviceUnplace('${d.id}');return false">Rimuovi dalla piantina</a>`:''}`).addTo(pdl));
     // Selettore UNICO di posizionamento: beacon (ancore di zona) + dispositivi (asset tracciati),
     // raggruppati con <optgroup>. Il value porta il prefisso b:/d: per distinguere il tipo.
     const psel=document.getElementById('fpPlaceSel');
@@ -1771,13 +1778,13 @@ async function fpOpen(){
       const dl=L.layerGroup().addTo(FPMAP);
       (devHere||[]).forEach(d=>{ if(d.x==null)return;
         L.marker([d.y+ (0), d.x],{icon:deviceIndoorIcon(),zIndexOffset:500})
-          .bindPopup(`<b>📟 ${esc(d.device||'dispositivo')}</b><br>${d.person?('👤 '+esc(d.person)+'<br>'):''}🏭 ${esc(d.zone)}<br><span style="color:#666">ultima posizione indoor: ${new Date(d.at).toLocaleString('it-IT')}</span>`).addTo(dl); });
+          .bindPopup(`<b>📟 ${esc(d.device||'dispositivo')}</b><br>${d.person?('👤 '+esc(d.person)+'<br>'):''}🏭 ${esc(d.zone)}<br><span style="color:var(--mut)">ultima posizione indoor: ${new Date(d.at).toLocaleString(UI_LOCALE())}</span>`).addTo(dl); });
     }catch(e){}
     $('#mapSide').innerHTML=`<h2 style="margin-bottom:var(--s-8)">${esc(f.name)}</h2>
       <div class="small mut">${beacons.length} beacon · ${placedDevs.length} dispositivi fissi${window._fpGfOn?` · ${gfs.length} geofence`:''} · ${(devHere||[]).length} indoor (live) · ${w}×${h}px</div>
       ${alarmsHere.length?`<div class="small" style="color:var(--bad);margin:var(--s-10) 0 var(--s-6)">🚨 ${alarmsHere.length} allarme/i su questa piantina (ultimi 7gg) — clicca un pin o una riga</div>
         ${alarmsHere.map(a=>`<div class="clk-card alarm-row" data-aid="${a.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)" onclick="focusIndoorAlarm('${a.id}')">
-          <div class="spread"><b class="small">${esc(a.label||etypeLabel(a.etype))}</b><span class="small mut">${new Date(a.opened_at).toLocaleString('it-IT')}</span></div>
+          <div class="spread"><b class="small">${esc(a.label||etypeLabel(a.etype))}</b><span class="small mut">${new Date(a.opened_at).toLocaleString(UI_LOCALE())}</span></div>
           <div class="small">🏭 ${esc(a.zone||'zona')}${a.beacon_uid?` · beacon <span class="mono">${esc(a.beacon_uid)}</span>`:''} · ${a.state==='chiuso'?'🟢 chiuso':'🔴 aperto'}</div>
           <div class="small mut">${a.person?('👤 '+esc(a.person)):''}${a.device?(' · 📟 '+esc(a.device)):''}</div></div>`).join('')}`
         :'<div class="small mut" style="margin-top:var(--s-8)">Nessun allarme indoor su questa piantina negli ultimi 7gg.</div>'}
@@ -1929,7 +1936,7 @@ function drawGeofence(g,admin){
   else if(g.kind==='polygon'&&g.geom.points){ layer=L.polygon(g.geom.points,{color:col,fillColor:col,fillOpacity:0.12}); }
   if(!layer)return;
   layer._gf=g; GF_LAYERS[g.id]=layer;
-  layer.bindPopup(`<b>${esc(g.name)}</b><br><span style="color:#666">${esc(gfKindLab(g.kind))}</span>${gfPopupActions(g,admin)}`);
+  layer.bindPopup(`<b>${esc(g.name)}</b><br><span style="color:var(--mut)">${esc(gfKindLab(g.kind))}</span>${gfPopupActions(g,admin)}`);
   layer.addTo(GFLAYER);
 }
 // Geometria corrente dal layer Leaflet (dopo edit Geoman). Outdoor: lat/lon; indoor: cx/cy o points xy.
@@ -2013,7 +2020,7 @@ function geofencePanel(GF,admin){ if(!admin)return'';
   return `<h2 style="margin:var(--s-14) 0 var(--s-4)">Aree (geofence)</h2>
     <div class="small mut" style="margin-bottom:var(--s-8)">Rinomina, colore, modifica forma, associa dispositivi/eventi o elimina. Disegna nuove aree con gli strumenti ⬡.</div>
     ${GF.length?GF.map(g=>`<div data-gf="${g.id}" style="border:1px solid var(--line);border-radius:10px;padding:var(--s-8);margin-bottom:var(--s-6);transition:background .12s,border-color .12s">
-      <div class="spread"><b class="small" style="cursor:pointer" title="Mostra e zooma l'area sulla mappa" onclick="gfFocus('${g.id}')">📍 ${esc(g.name)}</b><span class="chip" style="background:${g.color||'#16a34a'};color:#fff;border:none">${esc(gfKindLab(g.kind))}</span></div>
+      <div class="spread"><b class="small" style="cursor:pointer" title="Mostra e zooma l'area sulla mappa" onclick="gfFocus('${g.id}')">📍 ${esc(g.name)}</b><span class="chip" style="background:${g.color||'var(--ok)'};color:#fff;border:none">${esc(gfKindLab(g.kind))}</span></div>
       <div class="small mut" style="margin:var(--s-4) 0">${(g.device_ids||[]).length} device · ${(g.etypes||[]).length} eventi${g.alert_on?` · <span style="color:var(--bad)">🚨 allarme in ${g.alert_on==='enter'?'ingresso':'uscita'}</span>`:''}</div>
       <div class="row" style="gap:var(--s-6);flex-wrap:wrap;align-items:center">
         <button class="btn ghost small" onclick="gfEditShape('${g.id}')">✥ Forma</button>
@@ -2082,8 +2089,8 @@ async function addCircle(lat,lon){
 }
 function popupHtml(d){
   return `<b>${esc(d.label||d.external_id)}</b><br>
-    <span style="color:#666">${d.last_lat.toFixed(5)}, ${d.last_lon.toFixed(5)}</span><br>
-    ${d.last_battery!=null?'🔋 '+Math.round(d.last_battery)+'% · ':''}${d.last_pos_at?new Date(d.last_pos_at).toLocaleString('it-IT'):''}<br>
+    <span style="color:var(--mut)">${d.last_lat.toFixed(5)}, ${d.last_lon.toFixed(5)}</span><br>
+    ${d.last_battery!=null?'🔋 '+Math.round(d.last_battery)+'% · ':''}${d.last_pos_at?new Date(d.last_pos_at).toLocaleString(UI_LOCALE()):''}<br>
     ${d.user_email?'👤 '+esc(d.user_email)+'<br>':''}
     <button id="trailBtn_${d.id}" style="margin-top:var(--s-6)">Percorso recente</button>`;
 }
@@ -2125,9 +2132,9 @@ const PRI_LAB={1:'bassa',2:'media',3:'alta'};
 function priBadge(p){ const c=p>=3?'var(--bad,#c0392b)':p===2?'var(--warn,#b8860b)':'var(--mut)'; return `<span class="tag" style="color:${c}">${PRI_LAB[p]||'media'}</span>`; }
 function schedLabel(o){ if(!o.scheduled_start)return'<span class="mut">—</span>';
   const a=new Date(o.scheduled_start), z=o.scheduled_end?new Date(o.scheduled_end):null;
-  const d=a.toLocaleDateString('it-IT',{weekday:'short',day:'2-digit',month:'2-digit'});
-  const hh=a.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
-  return `${d} ${hh}${z?'–'+z.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}):''}`; }
+  const d=a.toLocaleDateString(UI_LOCALE(),{weekday:'short',day:'2-digit',month:'2-digit'});
+  const hh=a.toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'});
+  return `${d} ${hh}${z?'–'+z.toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'}):''}`; }
 const ANOM_LAB={abbandonata:'Ronda abbandonata (mai chiusa)',saltato:'Tappa saltata',in_ritardo:'Tratta in ritardo',non_completato:'Giro non completato',fuori_sequenza:'Fuori sequenza',permanenza:'Permanenza eccessiva',
   inserimento_manuale:'Codice digitato a mano',posizione_distante:'Punzonato lontano dal punto'};
 // CA-22/CA-2: etichette leggibili per tipo di checkpoint e modo di punzonatura
@@ -2210,7 +2217,7 @@ async function ronView(id){ const r=await api('/patrol-rounds/'+id).catch(()=>nu
   drawer('Ronda — '+esc(r.route_name), `<div class="col" style="gap:var(--s-8)">
     <div>Operatore: <b>${esc(r.user_email||'utente rimosso')}</b> · Stato: <span class="chip ${r.status==='completato'?'ok':(r.status==='incompleto'?'bad':'')}">${esc(roundStLab(r.status))}</span> · ${r.done}/${r.total} tappe</div>
     <div class="small mut">Avvio: ${r.started_at?new Date(r.started_at).toLocaleString():''}${r.ended_at?(' · Fine: '+new Date(r.ended_at).toLocaleString()):''}${r.window_minutes?(' · finestra '+r.window_minutes+' min'):''}</div>
-    ${(r.anomalies&&r.anomalies.length)?`<div class="card pad" style="background:#fdecec;border-left:3px solid var(--bad)"><b class="small">⚠ ${r.anomalies.length} anomalie</b>${r.anomalies.map(a=>`<div class="small">· <b>${esc(ANOM_LAB[a.kind]||humanizeCode(a.kind))}</b> — ${esc(a.detail||'')}</div>`).join('')}</div>`:'<div class="small" style="color:var(--ok,green)">✓ Nessuna anomalia</div>'}
+    ${(r.anomalies&&r.anomalies.length)?`<div class="card pad" style="background:var(--bad-soft);border-left:3px solid var(--bad)"><b class="small">⚠ ${r.anomalies.length} anomalie</b>${r.anomalies.map(a=>`<div class="small">· <b>${esc(ANOM_LAB[a.kind]||humanizeCode(a.kind))}</b> — ${esc(a.detail||'')}</div>`).join('')}</div>`:'<div class="small" style="color:var(--ok,green)">✓ Nessuna anomalia</div>'}
     <table class="table" data-export="checkpoint"><thead><tr><th>#</th><th>Checkpoint</th><th>Tipo</th><th>Tempo max</th><th>Punzonatura</th></tr></thead>
     <tbody>${r.checkpoints.map(c=>{ const p=c.punched; return `<tr><td>${c.position}</td><td>${esc(c.name)}</td><td><span class="chip">${esc(cpKindLab(c.kind))}</span></td><td class="small mut">${c.max_min!=null?c.max_min+' min':'—'}</td>
       <td>${p?(`<span class="chip ${p.ok?'ok':'bad'}">${p.ok?'riuscita':'non riuscita'}</span> <span class="small mut">${new Date(p.at).toLocaleTimeString()} · ${esc(PUNCH_ENTRY_LAB[p.entry]||'modo non registrato')}${p.distance_m!=null?' · a '+p.distance_m+' m dal punto':''}</span>`
@@ -2229,14 +2236,14 @@ async function vVigilanza(v){
   const sm=(d&&d.summary)||{svolte:0,mancanti:0,attese:0,anomalie_oggi:0};
   const tile=(n,l,col)=>`<div class="card pad" style="flex:1;min-width:110px;text-align:center"><div style="font-size:26px;font-weight:700;${col?'color:'+col:''}">${n}</div><div class="small mut">${l}</div></div>`;
   const live=(d&&d.live||[]).map(r=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin:var(--s-4) 0">
-    <div><b class="small">${esc(r.route_name)}</b><div class="small mut">👤 ${esc((r.email||'operatore').split('@')[0])} · dalle ${new Date(r.started_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}</div></div>
+    <div><b class="small">${esc(r.route_name)}</b><div class="small mut">👤 ${esc((r.email||'operatore').split('@')[0])} · dalle ${new Date(r.started_at).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'})}</div></div>
     <span class="chip">${r.done}/${r.total}</span></div>`).join('')||'<div class="small mut">Nessuna ronda in corso.</div>';
   // slot dovuti raggruppati per giro
   const byR={}; (d&&d.slots||[]).forEach(s=>{(byR[s.route_name]=byR[s.route_name]||[]).push(s);});
   const slotsHtml=Object.keys(byR).map(rn=>`<div style="margin-bottom:var(--s-6)"><div class="small" style="font-weight:600">${esc(rn)}</div>
     <div class="row" style="gap:var(--s-4);flex-wrap:wrap">${byR[rn].map(s=>{const col=s.status==='mancante'?'background:var(--bad);color:#fff':(s.status==='svolta'?'background:var(--ok,#16a34a);color:#fff':'');const lab={svolta:'svolta',mancante:'mancata',attesa:'in attesa'}[s.status]||humanizeCode(s.status);
       return s.incident_id?`<span class="chip clk" style="${col}" title="Ronda mancata: apri l'allarme" onclick="openIncident('${s.incident_id}')">${esc(s.local_time||'')} ⚠</span>`
-        :`<span class="chip" style="${col}" title="${esc(lab)}">${esc(s.local_time||new Date(s.at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}))}</span>`;}).join('')}</div></div>`).join('')
+        :`<span class="chip" style="${col}" title="${esc(lab)}">${esc(s.local_time||new Date(s.at).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'}))}</span>`;}).join('')}</div></div>`).join('')
     ||'<div class="small mut">Nessuna ronda pianificata per oggi. Crea un piano qui sotto.</div>';
   const schRows=(scheds||[]).map(s=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin:var(--s-4) 0">
     <div><b class="small">${esc(s.route_name)}</b><div class="small mut">${DOW_V.filter((_,i)=>s.days_mask[i]==='1').join(' ')} · ${esc(s.from_time)}–${esc(s.to_time)} · ogni ${s.every_minutes} min</div></div>
@@ -2265,7 +2272,7 @@ function schNew(){ const routes=$('#view')._vroutes||[];
     <label class="small mut">Giorni</label>
     <div class="row" style="gap:var(--s-6);flex-wrap:wrap">${DOW_V.map((d,i)=>`<label class="row small" style="gap:var(--s-3)"><input type="checkbox" class="scD" data-i="${i}" checked>${d}</label>`).join('')}</div>
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Dalle<input id="scF" type="time" value="22:00"></label><label class="small mut grow">Alle<input id="scT" type="time" value="06:00"></label>
-      <label class="small mut" style="width:120px">Ogni (min)<input id="scE" type="number" value="60" min="5"></label></div>
+      <label class="small mut" style="width:min(120px,100%)">Ogni (min)<input id="scE" type="number" value="60" min="5"></label></div>
     <button class="btn" onclick="schSave()">Crea piano</button><div class="cfg-msg small"></div></div>`);
 }
 async function schSave(){ const m=$('.cfg-msg'); let mask=''; for(let i=0;i<7;i++){ mask+=document.querySelector('.scD[data-i="'+i+'"]')?.checked?'1':'0'; }
@@ -2283,11 +2290,11 @@ function renderOrdini(v){
   const sched=O.filter(o=>o.scheduled_start).slice().sort((a,b)=>new Date(a.scheduled_start)-new Date(b.scheduled_start));
   const unsched=O.filter(o=>!o.scheduled_start);
   const toAssign=sched.filter(o=>!o.assignee&&!o.group_name).length;
-  const nextLbl=sched[0]?new Date(sched[0].scheduled_start).toLocaleDateString('it-IT',{weekday:'short',day:'2-digit',month:'short'}):'—';
+  const nextLbl=sched[0]?new Date(sched[0].scheduled_start).toLocaleDateString(UI_LOCALE(),{weekday:'short',day:'2-digit',month:'short'}):'—';
   const asgLabel=o=>o.assignee?esc(o.assignee):(o.group_name?('👥 '+esc(o.group_name)):'<span style="color:var(--bad)">da assegnare</span>');
   const dayCol=o=>{ const dt=new Date(o.scheduled_start); const today=new Date().toISOString().slice(0,10)===dt.toISOString().slice(0,10);
-    return today?'<b>oggi</b>':dt.toLocaleDateString('it-IT',{weekday:'short',day:'2-digit',month:'short'}); };
-  const hhmm=o=>new Date(o.scheduled_start).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
+    return today?'<b>oggi</b>':dt.toLocaleDateString(UI_LOCALE(),{weekday:'short',day:'2-digit',month:'short'}); };
+  const hhmm=o=>new Date(o.scheduled_start).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'});
   const tabs=`<div class="seg" style="margin-bottom:var(--s-14)">
     <button class="seg-btn${ORD_TAB==='agenda'?' on':''}" onclick="ordTab('agenda')">Agenda appuntamenti <span class="seg-n">${sched.length}</span></button>
     <button class="seg-btn${ORD_TAB==='todo'?' on':''}" onclick="ordTab('todo')">Da pianificare <span class="seg-n">${unsched.length}</span></button></div>`;
@@ -2414,7 +2421,7 @@ function comNew(){
     <label class="small mut">Sede collegata (facoltativa)<select id="cmSite"><option value="">—</option>${sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
     ${comGeoFields()}
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Inizio<input id="cmStart" type="date"></label><label class="small mut grow">Fine prevista<input id="cmEnd" type="date"></label></div>
-    <label class="small mut">Importo contratto (€, facoltativo)<input id="cmBudget" type="number" step="0.01" style="width:160px"></label>
+    <label class="small mut">Importo contratto (€, facoltativo)<input id="cmBudget" type="number" step="0.01" style="width:min(160px,100%)"></label>
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">CIG (appalto pubblico)<input id="cmCig"></label><label class="small mut grow">CUP<input id="cmCup"></label></div>
     <label class="small mut">Note<input id="cmNote"></label>
     <button class="btn" onclick="comSave()">Crea commessa</button><div class="cfg-msg small"></div></div>`);
@@ -2537,7 +2544,7 @@ async function openCommessa(id){
   const cs=c.cost||{}; const costiRows=(c.costi||[]).map(k=>`<tr><td class="small">${esc(k.description)}<div class="small mut">${esc(COSTO_CAT[k.category]||humanizeCode(k.category))} · ${esc(k.cost_date)}</div></td><td style="text-align:right">${eur(k.amount)}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="costoDel('${id}','${k.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')||`<tr><td colspan="3" class="empty">Nessun costo</td></tr>`;
   const vClass=cs.variance==null?'':(cs.variance>=0?'color:var(--ok,#16a34a)':'color:var(--bad)');
   const costiSection=c.costs_hidden?costsHidden('Costi e budget'):`<div><div class="spread"><h3 style="margin:0">Costi e budget</h3>${planner?`<button class="btn ghost small" onclick="costoNew('${id}')">+ costo</button>`:''}</div>
-    <div class="row" style="gap:var(--s-8);align-items:center;margin:var(--s-8) 0">${planner?`<label class="small mut">Costo orario manodopera (€)<input id="cmRate" type="number" step="0.01" value="${c.labor_rate||0}" style="width:110px"> <button class="btn ghost small" onclick="comRate('${id}')">salva</button></label>`:`<span class="small mut">Costo orario: ${eur(c.labor_rate)}</span>`}</div>
+    <div class="row" style="gap:var(--s-8);align-items:center;margin:var(--s-8) 0">${planner?`<label class="small mut">Costo orario manodopera (€)<input id="cmRate" type="number" step="0.01" value="${c.labor_rate||0}" style="width:min(110px,100%)"> <button class="btn ghost small" onclick="comRate('${id}')">salva</button></label>`:`<span class="small mut">Costo orario: ${eur(c.labor_rate)}</span>`}</div>
     <table class="table"><tbody>
       <tr><td class="small">Manodopera (${cs.labor_hours||0} h × ${eur(c.labor_rate)})</td><td style="text-align:right">${eur(cs.labor_cost)}</td><td></td></tr>
       <tr><td class="small">Materiali / noli / varie</td><td style="text-align:right">${eur(cs.materials_cost)}</td><td></td></tr>
@@ -2577,7 +2584,7 @@ async function openCommessa(id){
     <div class="row" style="gap:var(--s-6);flex-wrap:wrap"><button class="btn ghost small" onclick="comPrint('${id}')">📄 Stampa dossier</button>
       ${planner?`<button class="btn ghost small" onclick='comGeoForm("${id}",${jattr({code:c.code,name:c.name,address:c.address,lat:c.lat,lon:c.lon})})'>📍 ${(c.lat!=null&&c.lon!=null)?'Posizione':'Imposta posizione'}</button>`:''}</div>
     <div><div class="spread"><b>${esc(c.name)}</b>${statusSel}</div>
-      <div class="small mut" style="margin-top:var(--s-4)">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}${c.start_date?' · '+esc(c.start_date):''}${c.end_date?' → '+esc(c.end_date):''}${c.budget!=null?' · € '+c.budget.toLocaleString('it-IT'):''}${(c.cig||c.cup)?`<br>${c.cig?'CIG: '+esc(c.cig):''}${c.cup?' · CUP: '+esc(c.cup):''}`:''}</div>
+      <div class="small mut" style="margin-top:var(--s-4)">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}${c.start_date?' · '+esc(c.start_date):''}${c.end_date?' → '+esc(c.end_date):''}${c.budget!=null?' · € '+c.budget.toLocaleString(UI_LOCALE()):''}${(c.cig||c.cup)?`<br>${c.cig?'CIG: '+esc(c.cig):''}${c.cup?' · CUP: '+esc(c.cup):''}`:''}</div>
       <div class="row" style="gap:var(--s-8);align-items:center;margin-top:var(--s-8)">${progBar(c.progress)}<b>${c.progress}%</b><span class="small mut">avanzamento complessivo (media pesata)</span></div></div>
     <div class="seg" style="flex-wrap:wrap">
       <button class="seg-btn on" data-ct="avanzamento" onclick="comTab('avanzamento')">Avanzamento</button>
@@ -2640,7 +2647,7 @@ async function costoDel(cid,id){ if(!await askConfirm('Eliminare il costo?'))ret
 function diarioNew(cid){ drawer('Annotazione giornale',`<div class="col" style="gap:var(--s-10)">
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Data<input id="gdDate" type="date" value="${new Date().toISOString().slice(0,10)}"></label>
       <label class="small mut grow">Meteo<input id="gdWeather" placeholder="sereno, pioggia…"></label>
-      <label class="small mut" style="width:120px">Presenti<input id="gdPres" type="number"></label></div>
+      <label class="small mut" style="width:min(120px,100%)">Presenti<input id="gdPres" type="number"></label></div>
     <label class="small mut">Attività svolte / note<textarea id="gdBody" style="width:100%;height:80px"></textarea></label>
     <button class="btn" onclick="diarioSave('${cid}')">Salva</button><div class="cfg-msg small"></div></div>`); }
 async function diarioSave(cid){ const m=$('.cfg-msg'); const body=$('#gdBody').value.trim(); if(!body){m.textContent='testo richiesto';m.style.color='var(--bad)';return;}
@@ -2693,7 +2700,7 @@ async function comPrint(id){
     <h2>Costi</h2>${tbl(['Voce','Categoria','Importo','Data'],costi)}
     <div class="tot">Manodopera: € ${cs.labor_cost||0} (${cs.labor_hours||0} h) · Materiali: € ${cs.materials_cost||0} · <b>Totale costi: € ${cs.total_cost||0}</b>${cs.variance!=null?' · Scostamento budget: € '+cs.variance:''}</div>
     <h2>Fatture</h2>${tbl(['Numero','Importo','Stato','Data'],fatt)}
-    <div class="meta" style="margin-top:var(--s-20)">Generato da YouWorkforce · ${new Date().toLocaleString('it-IT')}</div>
+    <div class="meta" style="margin-top:var(--s-20)">Generato da YouWorkforce · ${new Date().toLocaleString(UI_LOCALE())}</div>
     <script>window.onload=function(){window.print();}<\/script></body></html>`;
   const w=window.open('','_blank'); if(!w){ toast('Abilita i popup per stampare','warn'); return; }
   w.document.open(); w.document.write(html); w.document.close();
@@ -2703,7 +2710,7 @@ async function comDel(id){ if(!await askConfirm('Eliminare la commessa? (rimuove
 function lavNew(cid){
   drawer('Nuova lavorazione',`<div class="col" style="gap:var(--s-10)">
     <label class="small mut">Nome<input id="lvName" placeholder="Scavo e fondazioni"></label>
-    <label class="small mut">Peso (quanto incide sul totale)<input id="lvW" type="number" step="0.5" value="1" style="width:120px"></label>
+    <label class="small mut">Peso (quanto incide sul totale)<input id="lvW" type="number" step="0.5" value="1" style="width:min(120px,100%)"></label>
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Inizio (cronoprogramma)<input id="lvS" type="date"></label><label class="small mut grow">Fine<input id="lvE" type="date"></label></div>
     <label class="small mut">Note<input id="lvNote"></label>
     <button class="btn" onclick="lavSave('${cid}')">Aggiungi</button><div class="cfg-msg small"></div></div>`);
@@ -2744,14 +2751,14 @@ function ganttHtml(lavs){
   if(!withD.length) return '<div class="small mut">Cronoprogramma: assegna date alle lavorazioni (pulsante «pianifica») per vedere il Gantt.</div>';
   const toT=d=>new Date(d+'T00:00:00').getTime();
   let min=Math.min(...withD.map(l=>toT(l.start_date))), max=Math.max(...withD.map(l=>toT(l.end_date)));
-  const span=Math.max(1,max-min); const fmt=t=>new Date(t).toLocaleDateString('it-IT',{day:'2-digit',month:'2-digit'});
+  const span=Math.max(1,max-min); const fmt=t=>new Date(t).toLocaleDateString(UI_LOCALE(),{day:'2-digit',month:'2-digit'});
   const rows=(lavs||[]).map(l=>{
-    if(!l.start_date||!l.end_date) return `<div class="row" style="gap:var(--s-8);align-items:center;margin:var(--s-3) 0"><div class="small mut" style="width:130px;overflow:hidden;text-overflow:ellipsis">${esc(l.name)}</div><div class="small mut" style="flex:1">— senza date —</div></div>`;
+    if(!l.start_date||!l.end_date) return `<div class="row" style="gap:var(--s-8);align-items:center;margin:var(--s-3) 0"><div class="small mut" style="width:min(130px,100%);overflow:hidden;text-overflow:ellipsis">${esc(l.name)}</div><div class="small mut" style="flex:1">— senza date —</div></div>`;
     const a=toT(l.start_date),z=toT(l.end_date);
     const left=(a-min)/span*100, w=Math.max(2,(z-a)/span*100);
     const col=l.late?'var(--bad)':(l.progress_pct>=100?'var(--ok,#16a34a)':'var(--brand,#2563eb)');
     return `<div class="row" style="gap:var(--s-8);align-items:center;margin:var(--s-3) 0">
-      <div class="small" style="width:130px;overflow:hidden;text-overflow:ellipsis" title="${esc(l.name)}">${esc(l.name)}</div>
+      <div class="small" style="width:min(130px,100%);overflow:hidden;text-overflow:ellipsis" title="${esc(l.name)}">${esc(l.name)}</div>
       <div style="flex:1;position:relative;height:18px;background:var(--line);border-radius:4px">
         <div style="position:absolute;left:${left}%;width:${w}%;top:0;bottom:0;background:${col};border-radius:4px" title="${esc(l.start_date)} → ${esc(l.end_date)} · ${l.progress_pct}%">
           <div style="height:100%;width:${l.progress_pct}%;background:rgba(255,255,255,.35);border-radius:4px"></div></div></div></div>`;
@@ -2764,7 +2771,7 @@ function salNew(cid){
     <div class="small mut">Fotografia dell'avanzamento a una data (per fatturazione a milestone).</div>
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Data<input id="slDate" type="date" value="${new Date().toISOString().slice(0,10)}"></label>
       <label class="small mut grow">Avanzamento %<input id="slPct" type="number" min="0" max="100" value="0"></label></div>
-    <label class="small mut">Importo maturato (€, facoltativo)<input id="slAmt" type="number" step="0.01" style="width:160px"></label>
+    <label class="small mut">Importo maturato (€, facoltativo)<input id="slAmt" type="number" step="0.01" style="width:min(160px,100%)"></label>
     <label class="small mut">Note<input id="slNote"></label>
     <button class="btn" onclick="salSave('${cid}')">Registra</button><div class="cfg-msg small"></div></div>`);
 }
@@ -2840,7 +2847,7 @@ async function contDel(id){ if(!await askConfirm('Eliminare il referente?'))retu
 // ===== Interventi A2: Listino prezzi =====
 const PRICE_CAT={manodopera:'Manodopera',materiale:'Materiale',trasferta:'Trasferta',forfait:'Forfait',altro:'Altro'};
 const PRICE_UNITS=['ora','pezzo','km','giorno','forfait'];
-function eur(n){ if(n==null) return '—'; return '€ '+(Number(n)||0).toLocaleString('it-IT',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function eur(n){ if(n==null) return '—'; return '€ '+(Number(n)||0).toLocaleString(UI_LOCALE(),{minimumFractionDigits:2,maximumFractionDigits:2}); }
 // Export CSV (separatore ; per Excel IT; BOM per accenti)
 function toCSV(rows){ return rows.map(r=>r.map(c=>{ const s=String(c==null?'':c); return /[",\n;]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }).join(';')).join('\r\n'); }
 function downloadCSV(name,rows){ const blob=new Blob(['﻿'+toCSV(rows)],{type:'text/csv;charset=utf-8'});
@@ -2850,7 +2857,7 @@ async function listinoCSV(){ const P=await api('/price-items').catch(()=>[]);
 async function commesseCSV(){ const C=await api('/commesse').catch(()=>[]);
   downloadCSV('commesse.csv',[['Codice','Nome','Committente','Sede','Stato','Avanzamento%','Lavorazioni','Turni'],...C.map(c=>[c.code,c.name,c.client_name||'',c.site||'',COMM_STATI[c.status]||humanizeCode(c.status),c.progress,c.lav_count,c.shift_count])]); toast('CSV commesse scaricato','ok'); }
 async function interventiCSV(){ const O=await api('/orders').catch(()=>[]);
-  downloadCSV('interventi.csv',[['Titolo','Cliente','Sede','Assegnatario','Quando','Priorità','Stato'],...O.map(o=>[o.title,o.client_name||'',o.site||'',o.assignee||o.group_name||'',o.scheduled_start?new Date(o.scheduled_start).toLocaleString('it-IT'):'',o.priority,o.state])]); toast('CSV interventi scaricato','ok'); }
+  downloadCSV('interventi.csv',[['Titolo','Cliente','Sede','Assegnatario','Quando','Priorità','Stato'],...O.map(o=>[o.title,o.client_name||'',o.site||'',o.assignee||o.group_name||'',o.scheduled_start?new Date(o.scheduled_start).toLocaleString(UI_LOCALE()):'',o.priority,o.state])]); toast('CSV interventi scaricato','ok'); }
 let QUALS=[];
 // ---------------- CA-4: registro unico delle ore ----------------
 const ORE_KIND={intervento:'Intervento',ronda:'Ronda',presenza:'Presenza in cantiere',turno:'Turno in servizio'};
@@ -2859,7 +2866,7 @@ async function vOre(v,from,to){
   const d0=new Date(); const iso=x=>x.toISOString().slice(0,10);
   to=to||iso(d0); from=from||iso(new Date(d0.getTime()-6*864e5));
   let d; try{ d=await api(`/work-hours?from=${from}&to=${to}`); }catch(e){ return pageLoadError(v,'Ore lavorate',e); }
-  const dayRows=(d.days||[]).map(x=>`<tr><td>${esc(x.email)}</td><td>${new Date(x.day+'T12:00:00').toLocaleDateString('it-IT',{weekday:'short',day:'2-digit',month:'2-digit'})}</td>
+  const dayRows=(d.days||[]).map(x=>`<tr><td>${esc(x.email)}</td><td>${new Date(x.day+'T12:00:00').toLocaleDateString(UI_LOCALE(),{weekday:'short',day:'2-digit',month:'2-digit'})}</td>
       <td style="text-align:right"><b>${oreMin(x.effective_min)}</b></td><td style="text-align:right">${oreMin(x.billable_min)}</td>
       <td style="text-align:right">${x.overlap_min?`<span class="chip s-da_correggere" title="Tempo registrato due volte: conta una sola volta, vince la registrazione più specifica">${oreMin(x.overlap_min)} sovrapposte</span>`:'<span class="mut">—</span>'}</td></tr>`).join('')
     ||emptyRow(5, ICON.clock||'', 'Nessuna ora nel periodo', 'Le ore arrivano da interventi completati, ronde, presenze di cantiere e turni svolti.');
@@ -2882,7 +2889,7 @@ async function vListino(v){
   const P=await api('/price-items').catch(()=>[]);
   // CA-6: qualifiche (modulo Qualifiche) per le tariffe di manodopera
   QUALS=ACTIVE_MODS.has('qualifiche')?await api('/qualifications').catch(()=>[]):[];
-  const fmtD=d=>d?new Date(d+'T12:00:00').toLocaleDateString('it-IT'):'';
+  const fmtD=d=>d?new Date(d+'T12:00:00').toLocaleDateString(UI_LOCALE()):'';
   const validity=p=>(p.valid_from||p.valid_to)?`<div class="small mut">${p.valid_from?'dal '+fmtD(p.valid_from):''}${p.valid_to?' al '+fmtD(p.valid_to):''}</div>`:'';
   const canEdit=can(['pianificatore','tenant_admin'],'plan');
   const row=p=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick='priceForm(${jattr(p)})'`:''}><td><b>${esc(p.name)}</b>${p.code?`<div class="small mut">${esc(p.code)}</div>`:''}${p.qualification?`<div class="small"><span class="tag">qualifica: ${esc(p.qualification)}</span></div>`:''}${validity(p)}</td>
@@ -2965,7 +2972,7 @@ async function vDispatch(v){
   const day=v._day;
   const sameDay=o=>o.scheduled_start && new Date(o.scheduled_start).toISOString().slice(0,10)===day;
   const tostr=o=>`<div class="spread clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6) var(--s-8);margin:var(--s-4) 0">
-    <div style="min-width:0"><b class="small">${esc(o.title)}</b><div class="small mut">${esc(o.site||'—')}${o.client_name?' · '+esc(o.client_name):''} ${o.scheduled_start?'· '+new Date(o.scheduled_start).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}):''}</div></div>
+    <div style="min-width:0"><b class="small">${esc(o.title)}</b><div class="small mut">${esc(o.site||'—')}${o.client_name?' · '+esc(o.client_name):''} ${o.scheduled_start?'· '+new Date(o.scheduled_start).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'}):''}</div></div>
     <div class="row" style="gap:var(--s-6);align-items:center">${chip(o.state)}<span class="clk-go">›</span></div></div>`;
   const unassigned=O.filter(o=>!o.assignee && !o.group_name && o.state!=='completato' && o.state!=='annullato');
   const unRows=unassigned.map(o=>`<div class="spread clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6) var(--s-8);margin:var(--s-4) 0">
@@ -2987,7 +2994,7 @@ async function vDispatch(v){
     return `<div class="card pad" style="min-width:150px;flex:1;${d===today?'outline:2px solid var(--brand)':''}">
       <div class="small" style="font-weight:600">${dnames[i]} ${d.slice(8,10)}/${d.slice(5,7)}</div>
       ${list.map(o=>`<div class="clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:6px;padding:var(--s-4) var(--s-6);margin:var(--s-4) 0">
-        <b class="small">${new Date(o.scheduled_start).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}</b>
+        <b class="small">${new Date(o.scheduled_start).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'})}</b>
         <div class="small" style="overflow:hidden;text-overflow:ellipsis">${esc(o.title)}</div>
         <div class="small mut">${o.assignee?esc(o.assignee.split('@')[0]):'<span style="color:var(--bad)">—</span>'}</div></div>`).join('')||'<div class="small mut" style="margin-top:var(--s-6)">—</div>'}
     </div>`; }).join('');
@@ -3005,7 +3012,7 @@ async function vDispatch(v){
 async function dispCSV(){ const O=await api('/orders').catch(()=>[]);
   const rows=O.filter(o=>o.state!=='annullato').sort((a,b)=>new Date(a.scheduled_start||0)-new Date(b.scheduled_start||0));
   downloadCSV('agenda-tecnici.csv',[['Tecnico','Giorno','Ora','Titolo','Cliente','Sede','Stato'],
-    ...rows.map(o=>[o.assignee||o.group_name||'(da assegnare)',o.scheduled_start?new Date(o.scheduled_start).toLocaleDateString('it-IT'):'',o.scheduled_start?new Date(o.scheduled_start).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}):'',o.title,o.client_name||'',o.site||'',o.state])]);
+    ...rows.map(o=>[o.assignee||o.group_name||'(da assegnare)',o.scheduled_start?new Date(o.scheduled_start).toLocaleDateString(UI_LOCALE()):'',o.scheduled_start?new Date(o.scheduled_start).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'}):'',o.title,o.client_name||'',o.site||'',o.state])]);
   toast('CSV agenda tecnici scaricato','ok'); }
 // ===== Interventi A5: Richieste / ticket =====
 const REQ_STATI={nuova:'Nuova',presa:'Presa in carico',convertita:'Convertita',chiusa:'Chiusa'};
@@ -3163,7 +3170,7 @@ async function openOrder(id){
       <div class="card pad" style="margin-bottom:var(--s-14)">
         <b class="small">Esecuzione</b>
         <div class="small mut" style="margin-top:var(--s-4)">
-          ${o.arrived_at?`Arrivo ${new Date(o.arrived_at).toLocaleString('it-IT')}`:''}${o.work_started_at?` · Avvio ${new Date(o.work_started_at).toLocaleTimeString('it-IT')}`:''}${o.work_minutes?` · ${o.work_minutes} min`:''}${o.outcome_kind?` · <b>${esc(o.outcome_kind)}</b>`:''}</div>
+          ${o.arrived_at?`Arrivo ${new Date(o.arrived_at).toLocaleString(UI_LOCALE())}`:''}${o.work_started_at?` · Avvio ${new Date(o.work_started_at).toLocaleTimeString(UI_LOCALE())}`:''}${o.work_minutes?` · ${o.work_minutes} min`:''}${o.outcome_kind?` · <b>${esc(o.outcome_kind)}</b>`:''}</div>
         ${(o.checklist&&o.checklist.length)?`<div class="small" style="margin-top:var(--s-6)">${o.checklist.map(c=>`${c.done?'✓':'▢'} ${esc(c.label)}`).join('<br>')}</div>`:''}
         ${(o.materials&&o.materials.length)?`<div class="small mut" style="margin-top:var(--s-6)">Materiali: ${o.materials.map(mm=>esc((mm.descr||'')+' '+(mm.qta||'')+(mm.unita||''))).join(', ')}</div>`:''}</div>`:''}
     <div class="col">${acts||'<div class="chip">nessuna azione disponibile</div>'}${editBtn}</div>
@@ -3181,7 +3188,7 @@ async function openOrder(id){
       <div id="ordAtt" class="small mut" style="margin-top:var(--s-4)">carico…</div>
       <div class="row" style="gap:var(--s-6);margin-top:var(--s-6)"><input type="file" id="ordFile" accept="image/*,application/pdf" style="font-size:12px"><button class="btn ghost small" onclick="ordAttUpload('${id}')">⬆ Carica</button></div>
       <div class="small mut" style="margin-top:var(--s-14)">Firma cliente</div>
-      <canvas id="ordSig" width="300" height="120" style="border:1px solid var(--line);border-radius:8px;touch-action:none;background:#fff;max-width:100%"></canvas>
+      <canvas id="ordSig" width="300" height="120" style="border:1px solid var(--line);border-radius:8px;touch-action:none;background:var(--surface);max-width:100%"></canvas>
       <div class="row" style="gap:var(--s-6);margin-top:var(--s-4)"><button class="btn ghost small" onclick="ordSigClear()">pulisci</button><button class="btn ghost small" onclick="ordSigSave('${id}')">✍ Salva firma</button></div>`:''}`);
   if((mine||planner)&&(o.state==='in_corso'||o.state==='completato')){ ordAttLoad(id); ordSigInit(); }
   if(mine||planner){ orderLines(id); }
@@ -3193,7 +3200,7 @@ async function ordAttLoad(id){ const el=$('#ordAtt'); if(!el)return;
       const prev=a.content_type&&a.content_type.startsWith('image/')?`<img src="${url}" alt="" style="width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid var(--line)">`:`<span style="font-size:22px">📄</span>`;
       return `<div class="row" style="gap:var(--s-8);align-items:center;border:1px solid var(--line);border-radius:8px;padding:var(--s-6);margin-bottom:var(--s-4)">
         <a href="${url}" target="_blank" rel="noopener">${prev}</a>
-        <div class="grow small"><b>${esc(ATT_KIND_LAB[a.kind]||humanizeCode(a.kind)||'Allegato')}</b> ${esc(a.filename||'')}${a.caption?' · '+esc(a.caption):''}<div class="mut">${new Date(a.created_at).toLocaleString('it-IT')}</div></div>
+        <div class="grow small"><b>${esc(ATT_KIND_LAB[a.kind]||humanizeCode(a.kind)||'Allegato')}</b> ${esc(a.filename||'')}${a.caption?' · '+esc(a.caption):''}<div class="mut">${new Date(a.created_at).toLocaleString(UI_LOCALE())}</div></div>
         <button class="btn-ico btn ghost" onclick="ordAttDel('${a.id}','${id}')">${ICON.x}</button></div>`; }).join('')||'<div class="small mut">nessun allegato</div>';
   }catch(e){ el.innerHTML='<span style="color:var(--bad)">'+esc(friendlyError(e))+'</span>'; } }
 async function ordAttUpload(id){ const f=$('#ordFile'); const file=f&&f.files&&f.files[0]; if(!file){ toast('Scegli un file','bad'); return; }
@@ -3319,7 +3326,7 @@ async function openTimesheet(id){
       <div class="divider"></div><div class="spread"><b>Totale</b><b style="font-size:18px">${fmtEUR(t.total_cents)}</b></div>
       ${t.missing_rate?`<div class="small" style="color:var(--warn);margin-top:var(--s-6)">⚠ Alcune righe senza tariffa: nessun costo attribuito.</div>`:''}
       ${t.mixed_currency?`<div class="small" style="color:var(--warn);margin-top:var(--s-6)">⚠ Valute diverse: il totale è in ${esc(d.currency)}; ${Object.entries(t.by_currency||{}).filter(([c])=>c!==d.currency).map(([c,v])=>esc(c)+' '+(v.total_cents/100).toFixed(2)).join(', ')} a parte.</div>`:''}</div>
-    ${(d.history||[]).length?`<details style="margin-top:var(--s-12)"><summary class="small mut">Storico (${d.history.length})</summary><div class="small" style="margin-top:var(--s-6)">${d.history.map(ev=>`<div>${new Date(ev.at).toLocaleString('it-IT')} · ${esc(TS_EV_LAB[ev.kind]||humanizeCode(ev.kind))}${ev.detail&&ev.detail.by?' · '+esc(ev.detail.by):''}${ev.detail&&ev.detail.note?' — «'+esc(ev.detail.note)+'»':''}</div>`).join('')}</div></details>`:''}
+    ${(d.history||[]).length?`<details style="margin-top:var(--s-12)"><summary class="small mut">Storico (${d.history.length})</summary><div class="small" style="margin-top:var(--s-6)">${d.history.map(ev=>`<div>${new Date(ev.at).toLocaleString(UI_LOCALE())} · ${esc(TS_EV_LAB[ev.kind]||humanizeCode(ev.kind))}${ev.detail&&ev.detail.by?' · '+esc(ev.detail.by):''}${ev.detail&&ev.detail.note?' — «'+esc(ev.detail.note)+'»':''}</div>`).join('')}</div></details>`:''}
     ${lineForm}
     <div class="col" style="margin-top:var(--s-16)">${acts}</div>
     ${AI_FEAT.consuntivi_summary?`<div class="row" style="gap:var(--s-6);margin-top:var(--s-12)"><button class="btn ghost small" onclick="aiTsSummary('${id}',this)">✦ Sintesi AI</button></div><div id="aiTsOut"></div>`:''}`);
@@ -3414,7 +3421,7 @@ async function vDispositivi(v){
   const [D,sites,users]=await Promise.all([api('/devices').catch(loadFail),api('/sites').catch(()=>[]),api('/users').catch(()=>[])]);
   if(isLoadFail(D)) return pageLoadError(v, t('dev_title','Dispositivi'), D);
   v._sites=sites; v._users=users;
-  const seen=d=>d.last_seen?`<span title="${esc(d.last_etype||'')}">${new Date(d.last_seen).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>`:'<span class="mut">mai</span>';
+  const seen=d=>d.last_seen?`<span title="${esc(d.last_etype||'')}">${new Date(d.last_seen).toLocaleString(UI_LOCALE(),{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>`:'<span class="mut">mai</span>';
   const prov=p=>{ if(!p)return''; const m={attivo:'s-attivo',in_attesa_primo_fix:'',configurato:''}; const lab={in_attesa_primo_fix:'attesa 1° fix',configurato:'configurato',attivo:'attivo'}; return `<span class="chip ${m[p]||''}">${lab[p]||p}</span>`; };
   const who=d=> d.asset_name?('🚚 '+esc(d.asset_name)) : d.user_email?('👤 '+esc(d.user_email)) : '—';
   const model=d=> d.model_code?esc((d.manufacturer||'')+' '+(d.model_name||'')):'<span class="mut">generico</span>';
@@ -3437,7 +3444,7 @@ function devHay(d){
   const parts=[d.external_id, d.manufacturer, d.model_name, d.model_code, (!d.model_code?'generico':''),
     d.label, d.asset_name, d.user_email, (d.capabilities||[]).join(' '), d.last_etype,
     d.prov_step, (prov[d.prov_step]||''), (d.enabled?'attivo':'off disattivato'),
-    d.last_seen?new Date(d.last_seen).toLocaleString('it-IT'):'mai'];
+    d.last_seen?new Date(d.last_seen).toLocaleString(UI_LOCALE()):'mai'];
   return parts.filter(Boolean).join(' ').toLowerCase();
 }
 // Filtro full-text: ogni token deve comparire (AND). Aggiorna il conteggio e lo stato vuoto.
@@ -3606,11 +3613,11 @@ async function scanDevice(inputId){
     +'<div style="position:relative;max-width:min(94vw,560px);width:100%">'
     +'<video id="scanVid" playsinline muted autoplay style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:12px;background:#000;display:block;cursor:crosshair"></video>'
     +'<div style="position:absolute;inset:16% 20%;border:2px solid rgba(255,255,255,.65);border-radius:10px;pointer-events:none"></div></div>'
-    +'<div id="scanMsg" style="color:#cbd5e1;font-size:13px;min-height:18px;text-align:center;max-width:94vw"></div>'
-    +'<div id="scanDbg" style="color:#8aa0b6;font-size:12px;min-height:16px"></div>'
-    +'<div id="scanRaw" style="color:#9fb3c8;font-size:12px;min-height:16px;word-break:break-all;max-width:94vw;text-align:center"></div>'
-    +'<div class="row" style="gap:var(--s-10);align-items:center;color:#cbd5e1;font-size:13px;flex-wrap:wrap;justify-content:center">'
-    +'<span>Zoom</span><input id="scanZoom" type="range" min="1" max="5" step="0.5" value="1" style="width:140px">'
+    +'<div id="scanMsg" style="color:var(--line);font-size:13px;min-height:18px;text-align:center;max-width:94vw"></div>'
+    +'<div id="scanDbg" style="color:var(--faint);font-size:12px;min-height:16px"></div>'
+    +'<div id="scanRaw" style="color:var(--faint);font-size:12px;min-height:16px;word-break:break-all;max-width:94vw;text-align:center"></div>'
+    +'<div class="row" style="gap:var(--s-10);align-items:center;color:var(--line);font-size:13px;flex-wrap:wrap;justify-content:center">'
+    +'<span>Zoom</span><input id="scanZoom" type="range" min="1" max="5" step="0.5" value="1" style="width:min(140px,100%)">'
     +'<span id="scanZlab" style="min-width:34px">1.0×</span>'
     +'<label class="row" style="gap:4px"><input id="scanAuto" type="checkbox" checked> auto</label>'
     +'<button id="scanTorch" class="btn ghost small" onclick="scanToggleTorch()">🔦 Torcia</button></div>'
@@ -3834,7 +3841,7 @@ function devEdit(d){
   const posBlock = (!isNew && d.last_lat!=null && d.last_lon!=null) ? `
     <div class="card pad" style="margin-bottom:var(--s-12)">
       <div class="spread"><b>Ultima posizione</b>${d.last_battery!=null?`<span class="tag">🔋 ${Math.round(d.last_battery)}%</span>`:''}</div>
-      <div class="small mut" style="margin:var(--s-4) 0">${d.last_lat.toFixed(5)}, ${d.last_lon.toFixed(5)}${d.last_pos_at?' · '+new Date(d.last_pos_at).toLocaleString('it-IT'):''}</div>
+      <div class="small mut" style="margin:var(--s-4) 0">${d.last_lat.toFixed(5)}, ${d.last_lon.toFixed(5)}${d.last_pos_at?' · '+new Date(d.last_pos_at).toLocaleString(UI_LOCALE()):''}</div>
       <div id="addr" class="small" style="margin:var(--s-2) 0"></div>
       ${attrChips(d.last_attributes)}
       <div class="row" style="gap:var(--s-8);margin-top:var(--s-6)">
@@ -3921,7 +3928,7 @@ async function devCmdSend(id){ const method=$('#iotCmd').value.trim(); if(!metho
 async function devTelem(id){ const el=$('#telemBox'); if(!el)return; el.textContent='carico…';
   try{ const t=await api('/iot/devices/'+id+'/telemetry/latest');
     if(!t.length){ el.innerHTML='<span class="mut">Nessuna telemetria ricevuta.</span>'; return; }
-    el.innerHTML='<div class="row" style="flex-wrap:wrap;gap:var(--s-6)">'+t.map(x=>{const v=x.num!=null?x.num:esc(x.str||'');const u=x.unit?' '+esc(x.unit):'';const m=x.metric?` <span class="mut">→ ${esc(x.metric)}</span>`:'';return `<span class="tag" title="${new Date(x.ts).toLocaleString('it-IT')}"><b>${esc(x.key)}</b>: ${v}${u}${m}</span>`;}).join('')+'</div>';
+    el.innerHTML='<div class="row" style="flex-wrap:wrap;gap:var(--s-6)">'+t.map(x=>{const v=x.num!=null?x.num:esc(x.str||'');const u=x.unit?' '+esc(x.unit):'';const m=x.metric?` <span class="mut">→ ${esc(x.metric)}</span>`:'';return `<span class="tag" title="${new Date(x.ts).toLocaleString(UI_LOCALE())}"><b>${esc(x.key)}</b>: ${v}${u}${m}</span>`;}).join('')+'</div>';
   }catch(e){ el.innerHTML='<span style="color:var(--bad)">'+esc(friendlyError(e))+'</span>'; } }
 // Mappa di normalizzazione: chiave grezza del device -> metrica standard (con unità) + scala/offset.
 let _iotMetrics=null;
@@ -3929,7 +3936,7 @@ let _iotMetrics=null;
 // e romperebbe l'attributo). L'aggiunta riga passa per devMapAddRow().
 function _iotMapOpts(m){ return (_iotMetrics||[]).map(x=>`<option value="${x.metric}"${x.metric===m?' selected':''}>${esc(x.label)}${x.unit?' ('+esc(x.unit)+')':''}</option>`).join(''); }
 function _iotMapLine(rk,m,sc,of){ return `<div class="row mapRow" style="gap:var(--s-6);margin-bottom:var(--s-4);align-items:center">
-        <input class="in small mapRaw" placeholder="chiave grezza (es. t)" value="${esc(rk||'')}" style="width:140px">
+        <input class="in small mapRaw" placeholder="chiave grezza (es. t)" value="${esc(rk||'')}" style="width:min(140px,100%)">
         <span class="mut">→</span>
         <select class="in small mapMet">${_iotMapOpts(m)}</select>
         <input class="in small mapScale" title="scala" value="${sc!=null?sc:1}" style="width:60px">
@@ -3976,7 +3983,7 @@ function devServiceCard(d){
   const st=d.service_state||'in_attesa', on=st==='in_servizio';
   const lim=Number.isFinite(+d.silence_after_s)?+d.silence_after_s:600;
   const expl=on
-    ? `Il badge protegge ${esc(d.user_email||'il lavoratore assegnato')}: se non trasmette per ${lim>0?Math.round(lim/60)+' minuti':'— (controllo disattivato)'} si apre l'allarme <b>Perdita di contatto</b>, anche se non si è mai collegato. Il conteggio è partito il ${d.silence_armed_at?new Date(d.silence_armed_at).toLocaleString('it-IT'):'—'} (messa in servizio o ultimo passaggio di consegne).`
+    ? `Il badge protegge ${esc(d.user_email||'il lavoratore assegnato')}: se non trasmette per ${lim>0?Math.round(lim/60)+' minuti':'— (controllo disattivato)'} si apre l'allarme <b>Perdita di contatto</b>, anche se non si è mai collegato. Il conteggio è partito il ${d.silence_armed_at?new Date(d.silence_armed_at).toLocaleString(UI_LOCALE()):'—'} (messa in servizio o ultimo passaggio di consegne).`
     : st==='fuori_servizio'
       ? 'Ritirato (guasto, magazzino o disabilitato): resta visibile, ma non genera allarmi di silenzio.'
       : 'Censito ma non ancora in servizio: resta visibile e non genera allarmi di silenzio. Mettilo in servizio quando lo consegni acceso al lavoratore: da quel momento parte il controllo.';
@@ -4005,7 +4012,7 @@ async function devScnSave(id){ try{ await api('/devices/'+id+'/scenario',{method
   toast('Scenario del sensore salvato','ok'); }catch(e){ toast(e,'bad'); } }
 // Collegamento del badge: connesso adesso (TCP aperto), ultimo contatto, oppure rifiutato e perché.
 function devLinkBody(d){
-  const fmt=t=>new Date(t).toLocaleString('it-IT');
+  const fmt=t=>new Date(t).toLocaleString(UI_LOCALE());
   if(d.connected_since) return `<div style="color:var(--ok,green)">✓ <b>Collegato adesso</b> · da ${esc(fmt(d.connected_since))}</div>
     <div class="small mut">Il badge è in linea con YouWorkforce. Posizioni e allarmi arrivano in tempo reale.</div>`;
   if(d.rejected) return `<div style="color:var(--bad)">✕ <b>Il badge prova a collegarsi ma viene rifiutato</b></div>
@@ -4031,7 +4038,7 @@ function devOnlineChip(d){
   if(!d.last_seen_at) return '<span class="chip s-critico" title="in servizio: allarme alla soglia se non si collega">in servizio · mai collegato</span>';
   const secs=(Date.now()-new Date(d.last_seen_at).getTime())/1000;
   const lim=Number.isFinite(+d.silence_after_s)?+d.silence_after_s:600;
-  const when=new Date(d.last_seen_at).toLocaleString('it-IT');
+  const when=new Date(d.last_seen_at).toLocaleString(UI_LOCALE());
   const min=Math.round(secs/60), dur=min<120?min+' min':Math.round(min/60)+' h';
   if(lim<=0) return `<span class="chip" title="controllo del silenzio disattivato · ultimo contatto ${when}">ultimo contatto ${dur} fa</span>`;
   return secs<=lim ? `<span class="chip s-attivo" title="ultimo contatto ${when}">in linea</span>`
@@ -4044,7 +4051,7 @@ async function devCmd(id,type){ const m=$('#cmdMsg'); if(m){m.textContent='invio
   }catch(e){ if(m){m.textContent=friendlyError(e);m.style.color='var(--bad)';} toast(e,'bad'); } }
 async function devCmds(id){ const el=$('#cmdHist'); if(!el)return;
   try{ const H=await api('/devices/'+id+'/commands');
-    el.innerHTML = H.length? H.map(c=>`<div>${new Date(c.created_at).toLocaleString('it-IT')} · <b>${esc(humanizeCode(c.ctype)||'Comando')}</b> · ${c.status_code===200?'<span style="color:var(--ok,green)">'+esc(c.result||'inviato')+'</span>':'<span style="color:var(--bad)">'+esc(c.result||'non inviato')+'</span>'} <span class="mut">(${esc((c.actor||'').split('@')[0])})</span></div>`).join('')
+    el.innerHTML = H.length? H.map(c=>`<div>${new Date(c.created_at).toLocaleString(UI_LOCALE())} · <b>${esc(humanizeCode(c.ctype)||'Comando')}</b> · ${c.status_code===200?'<span style="color:var(--ok,green)">'+esc(c.result||'inviato')+'</span>':'<span style="color:var(--bad)">'+esc(c.result||'non inviato')+'</span>'} <span class="mut">(${esc((c.actor||'').split('@')[0])})</span></div>`).join('')
       : 'nessun comando inviato'; }catch(e){ el.textContent=friendlyError(e); } }
 async function devCmdTypes(id){ const el=$('#cmdBtns'); if(!el)return;
   try{ const T=await api('/devices/'+id+'/command-types');
@@ -4070,7 +4077,7 @@ async function devReport(id,kind){ const out=$('#devRepOut'); if(!out)return; ou
   try{ const env=await api('/devices/'+id+'/report/'+kind+'?from='+r.from+'&to='+r.to+'&envelope=1');
     // risultato parziale: troppe posizioni nell'intervallo, i calcoli si fermano a covered_until
     const warn=env.partial?`<div class="card pad" style="border-color:var(--bad);margin-bottom:var(--s-8)"><b style="color:var(--bad)">⚠ Risultato parziale</b>
-      <div class="small">Nell'intervallo ci sono più di ${env.max_points} posizioni: i dati coprono solo fino a ${env.covered_until?new Date(env.covered_until).toLocaleString('it-IT'):'—'}. Distanze, tragitti e soste sono incompleti. Riduci l'intervallo.</div></div>`:'';
+      <div class="small">Nell'intervallo ci sono più di ${env.max_points} posizioni: i dati coprono solo fino a ${env.covered_until?new Date(env.covered_until).toLocaleString(UI_LOCALE()):'—'}. Distanze, tragitti e soste sono incompleti. Riduci l'intervallo.</div></div>`:'';
     const d=kind==='summary'?(env.summary||{}):env.items;
     if(kind==='summary'){
       if(!d.points){ out.innerHTML='<span class="mut">Nessuna posizione negli ultimi 7 giorni.</span>'; return; }
@@ -4078,7 +4085,7 @@ async function devReport(id,kind){ const out=$('#devRepOut'); if(!out)return; ou
     const arr=Array.isArray(d)?d:[];
     if(!arr.length){ out.innerHTML='<span class="mut">Nessun dato negli ultimi 7 giorni.</span>'; return; }
     out.innerHTML=warn+'<table class="table" data-export="report-'+kind+'"><thead><tr><th>Inizio</th><th>Fine</th><th>'+(kind==='trips'?'Distanza':'Durata')+'</th></tr></thead><tbody>'+
-      arr.slice(0,20).map(t=>`<tr><td>${new Date(t.start).toLocaleString('it-IT')}</td><td>${new Date(t.end).toLocaleString('it-IT')}</td><td>${kind==='trips'?((t.distance_m/1000).toFixed(1)+' km'):(Math.round((t.duration_s||0)/60)+' min')}</td></tr>`).join('')+'</tbody></table>';
+      arr.slice(0,20).map(t=>`<tr><td>${new Date(t.start).toLocaleString(UI_LOCALE())}</td><td>${new Date(t.end).toLocaleString(UI_LOCALE())}</td><td>${kind==='trips'?((t.distance_m/1000).toFixed(1)+' km'):(Math.round((t.duration_s||0)/60)+' min')}</td></tr>`).join('')+'</tbody></table>';
   }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(friendlyError(e))+'</span>'; } }
 function devReportCsv(id,kind){ const r=_repRange();
   window.open('/api/devices/'+id+'/report/'+kind+'?from='+r.from+'&to='+r.to+'&csv=true','_blank'); }
@@ -4128,7 +4135,7 @@ function attrChips(a){ if(!a||typeof a!=='object')return '';
 }
 async function devTrail(id){ const el=$('#trail'); if(!el)return; el.textContent='…';
   try{ const P=await api('/devices/'+id+'/positions?limit=10');
-    el.innerHTML = P.length? P.map(p=>`<div>${new Date(p.fixed_at).toLocaleString('it-IT')} · ${p.lat.toFixed(5)},${p.lon.toFixed(5)}${p.battery!=null?' · 🔋'+Math.round(p.battery)+'%':''}</div>`).join('')
+    el.innerHTML = P.length? P.map(p=>`<div>${new Date(p.fixed_at).toLocaleString(UI_LOCALE())} · ${p.lat.toFixed(5)},${p.lon.toFixed(5)}${p.battery!=null?' · 🔋'+Math.round(p.battery)+'%':''}</div>`).join('')
       : 'nessuna posizione'; }catch(e){ el.textContent=friendlyError(e); } }
 
 // ---------------- Collegamento dispositivi ----------------
@@ -4169,19 +4176,19 @@ async function vConnettori(v){
     <div class="row" style="gap:var(--s-6);flex-wrap:wrap;margin:var(--s-8) 0">
       <select id="tkSrc" class="small" title="tipo di dispositivo">${[['gps','Dispositivi GPS / badge'],['iot','Sensori IoT']].map(([x,l])=>`<option value="${x}">${l}</option>`).join('')}</select>
       <select id="tkDev" class="small" title="lega a un dispositivo (opzionale)"><option value="">— tutti i device (tenant) —</option>${(DV||[]).map(d=>`<option value="${d.id}">${esc(d.name||d.external_id||'Dispositivo senza nome')}</option>`).join('')}</select>
-      <input id="tkLabel" class="small" placeholder="etichetta (opz.)" style="width:150px">
-      <input id="tkExp" type="number" min="0" max="3650" class="small" placeholder="scad. giorni (0=mai)" style="width:140px">
+      <input id="tkLabel" class="small" placeholder="etichetta (opz.)" style="width:min(150px,100%)">
+      <input id="tkExp" type="number" min="0" max="3650" class="small" placeholder="scad. giorni (0=mai)" style="width:min(140px,100%)">
       <button class="btn ghost small" onclick="tokNew()">+ genera token</button></div>
     <table class="table" data-export="credenziali-ingest"><thead><tr><th>Sorgente</th><th>Credenziale</th><th>Dispositivo</th><th>Scadenza</th><th>Ultimo uso</th><th>Stato</th><th></th></tr></thead>
     <tbody>${T.map(t=>{
-      const st=t.revoked?'<span class="tag" style="background:#fee2e2;color:#b91c1c">revocato</span>':(t.expired?'<span class="tag" style="background:#fef3c7;color:#92400e">scaduto</span>':'<span class="chip s-attivo">attivo</span>');
+      const st=t.revoked?'<span class="tag" style="background:var(--bad-soft);color:var(--bad)">revocato</span>':(t.expired?'<span class="tag" style="background:var(--warn-soft);color:var(--warn)">scaduto</span>':'<span class="chip s-attivo">attivo</span>');
       const copy=t.hashed?'':` <a onclick="navigator.clipboard&&navigator.clipboard.writeText(${jattr(t.token)})&&toast('Copiato','ok')">copia</a>`;
       const hh=t.hashed?' <span class="tag mut" title="salvato solo come hash; il segreto è stato mostrato alla creazione">hash</span>':'';
       return `<tr><td>${esc(devSrcLab(t.source))}</td>
       <td class="mono small"><span>${esc(t.token)}</span>${hh}${copy}${t.label?`<div class="small mut">${esc(t.label)}</div>`:''}</td>
       <td class="small">${t.device_name?esc(t.device_name):'<span class="mut">— tutti —</span>'}</td>
-      <td class="small mut">${t.expires_at?new Date(t.expires_at).toLocaleDateString('it-IT'):'mai'}</td>
-      <td class="small mut">${t.last_used_at?new Date(t.last_used_at).toLocaleString('it-IT'):'mai'}</td>
+      <td class="small mut">${t.expires_at?new Date(t.expires_at).toLocaleDateString(UI_LOCALE()):'mai'}</td>
+      <td class="small mut">${t.last_used_at?new Date(t.last_used_at).toLocaleString(UI_LOCALE()):'mai'}</td>
       <td>${st}</td>
       <td style="text-align:right;white-space:nowrap">${t.revoked?'':`<button class="btn ghost small" onclick="tokRevoke(${jattr(t.token)})">revoca</button> `}<button class="btn-ico btn ghost" onclick="tokDel(${jattr(t.token)})">${ICON.x}</button></td></tr>`}).join('')
       ||`<tr><td colspan="7" class="empty">nessun token</td></tr>`}</tbody></table>
@@ -4189,7 +4196,7 @@ async function vConnettori(v){
   ${ACTIVE_MODS.has('iot')?`<div class="card pad" style="margin-top:var(--s-16)"><div class="small">⚙️ Le <b>regole dei sensori</b> (soglie che aprono un allarme o un alert) sono in <a onclick="location.hash='#/regole-sensori'">IoT → Regole sensori</a>.</div></div>`:''}`;
   // segreto mostrato UNA sola volta subito dopo la creazione (poi solo hash a riposo)
   if(window._newToken){ const box=$('#newTokBox'); const tk=window._newToken; window._newToken=null;
-    if(box){ box.innerHTML=`<div class="card pad" style="background:#ecfdf5;border:1px solid #10b981">
+    if(box){ box.innerHTML=`<div class="card pad" style="background:var(--ok-soft);border:1px solid var(--ok)">
       <b>Token creato — copialo adesso, non sarà più mostrato:</b>
       <div class="mono" style="margin:var(--s-6) 0;word-break:break-all">${esc(tk)}</div>
       <button class="btn small" onclick="navigator.clipboard&&navigator.clipboard.writeText(${jattr(tk)})&&toast('Copiato','ok')">Copia token</button></div>`; } }
@@ -4248,12 +4255,12 @@ async function renderSensorRules(){
       ||emptyRow(6, null, 'Nessuna regola sensore', 'Le regole decidono quando un dato di un sensore diventa un incidente (es. temperatura oltre soglia). Senza regole si applica solo la soglia temperatura di base.', null)}</tbody></table>
     <div class="card pad" style="margin-top:var(--s-8);background:var(--bg2)"><b class="small">Nuova regola</b>
       <div class="row" style="gap:var(--s-6);margin-top:var(--s-8);flex-wrap:wrap;align-items:flex-end">
-        <label class="small mut">Metrica<input id="srMetric" placeholder="es. gas, co, smoke, temperature, water" style="width:200px"></label>
+        <label class="small mut">Metrica<input id="srMetric" placeholder="es. gas, co, smoke, temperature, water" style="width:min(200px,100%)"></label>
         <label class="small mut">Operatore<select id="srOp" onchange="srOpChange()">${RULE_OPS.map(o=>`<option value="${o[0]}">${o[1]}</option>`).join('')}</select></label>
         <label class="small mut" id="srThrWrap">Soglia<input id="srThr" type="number" step="any" style="width:90px"></label>
         <label class="small mut">Evento<select id="srEtype">${RULE_ETYPES.map(e=>`<option value="${e}">${esc(etypeLabel(e))}</option>`).join('')}</select></label>
         ${scopeFields('sr','tenant',null)}
-        <label class="small mut">Etichetta<input id="srLabel" placeholder="opz." style="width:140px"></label>
+        <label class="small mut">Etichetta<input id="srLabel" placeholder="opz." style="width:min(140px,100%)"></label>
         <button class="btn" onclick="ruleAdd(this)">+ Aggiungi</button>
       </div></div></div>`;
 }
@@ -4409,7 +4416,7 @@ async function loadReports(){ const box=$('#repList'); if(!box)return;
   let L=[]; try{ L=await api('/ai/reports'); }catch(e){}
   box.innerHTML=`<table class="table" data-export="report-ai"><thead><tr><th>Titolo</th><th>Tipo</th><th>Autore</th><th>Data</th></tr></thead>
     <tbody>${L.map(r=>`<tr class="clk" onclick="reportOpen('${r.id}')"><td>${esc(r.title)}</td><td>${esc(repKindLab(r.kind))}</td>
-      <td class="small mut">${esc((r.created_by||'').split('@')[0])}</td><td class="small mut">${new Date(r.created_at).toLocaleString('it-IT')}</td></tr>`).join('')
+      <td class="small mut">${esc((r.created_by||'').split('@')[0])}</td><td class="small mut">${new Date(r.created_at).toLocaleString(UI_LOCALE())}</td></tr>`).join('')
       ||'<tr><td colspan="4" class="empty">nessun report salvato</td></tr>'}</tbody></table>`;
 }
 async function reportOpen(id){ try{ const r=await api('/ai/reports/'+id);
@@ -4543,7 +4550,7 @@ function dashWidget(w){
 let DASHMAP=null;
 function dashKpis(k){ if(!k)return'';
   const tile=(ico,lab,val,bad)=>`<div style="${DASH_CARD};display:flex;align-items:center;gap:var(--s-12)">
-    <div style="width:42px;height:42px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px;background:${bad?'var(--brand-soft)':'var(--surface2,var(--bg2,#f4f5f7))'}">${ico}</div>
+    <div style="width:42px;height:42px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px;background:${bad?'var(--brand-soft)':'var(--surface2,var(--bg2,var(--surface2)))'}">${ico}</div>
     <div><div style="font-size:24px;font-weight:800;color:${bad?'var(--bad)':'var(--ink,inherit)'};line-height:1">${val}</div><div class="small mut" style="margin-top:var(--s-2)">${lab}</div></div></div>`;
   return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:var(--s-12);margin-bottom:var(--s-14)">
     ${tile('📟','Device',k.device_count)}${tile('📊','Metriche',k.metrics_tracked)}${tile('⚠️','Allarmi ora',k.alarms_now,k.alarms_now>0)}${tile('🚨','Incidenti aperti',k.open_incidents,k.open_incidents>0)}${tile('📈','Eventi 24h',k.events_24h)}</div>`;
@@ -4577,7 +4584,7 @@ async function renderScenarioDash(code){
   const geo=(d.devices||[]).filter(x=>x.lat!=null&&x.lon!=null);
   const mapCard=geo.length?`<div class="card" style="padding:0;overflow:hidden;margin-top:var(--s-14)"><div class="card-h"><h2 style="margin:0">Mappa device</h2></div><div id="dashMap" style="height:300px"></div></div>`:'';
   const inc=(d.incidents||[]).length?`<div class="card pad" style="margin-top:var(--s-14)"><div class="card-h" style="padding:0 0 var(--s-8)"><h2>Allarmi recenti</h2></div>
-    <table class="table"><tbody>${d.incidents.map(i=>`<tr><td><b>${esc(etypeLabel(i.etype))}</b></td><td>${chip(i.state)}</td><td class="small mut">${new Date(i.at).toLocaleString('it-IT')}</td></tr>`).join('')}</tbody></table></div>`:'';
+    <table class="table"><tbody>${d.incidents.map(i=>`<tr><td><b>${esc(etypeLabel(i.etype))}</b></td><td>${chip(i.state)}</td><td class="small mut">${new Date(i.at).toLocaleString(UI_LOCALE())}</td></tr>`).join('')}</tbody></table></div>`:'';
   box.innerHTML=`<div class="spread" style="margin-bottom:var(--s-10)"><div class="small mut">${esc(d.sector)} · ${d.device_count} device demo${d.generated?' · <span class="chip s-attivo">generato da descrizione+immagini</span>':''}${d.device_count?'':' (attiva la demo dal superadmin)'}</div>
       <button class="btn ghost small" onclick="scnAiAnalysis('${code}',this)">✦ Analisi AI</button></div>
     ${d.narrative?`<div class="card pad" style="margin-bottom:var(--s-12)"><div class="small mut">${esc(d.narrative)}</div></div>`:''}
@@ -4611,7 +4618,7 @@ function siloCard(code,s){
       <span class="chip ${s.alarm?'s-critico':'s-attivo'}">${s.alarm?'allarme':'ok'}</span></div>
     <div style="display:flex;gap:var(--s-14);align-items:flex-end">
       <div style="width:46px" title="Livello cereale">
-        <div style="height:118px;border:1px solid var(--line);border-radius:8px;position:relative;background:var(--surface2,#f4f5f7);overflow:hidden">
+        <div style="height:118px;border:1px solid var(--line);border-radius:8px;position:relative;background:var(--surface2,var(--surface2));overflow:hidden">
           <div style="position:absolute;bottom:0;left:0;right:0;height:${lvlPct}%;background:linear-gradient(0deg,var(--brand),var(--brand2,var(--brand)))"></div></div>
         <div class="small ${lvlBad?'':'mut'}" style="text-align:center;margin-top:var(--s-4);color:${lvlBad?'var(--bad)':''}">${lvl==null?'—':fmtNum(lvl)}%</div></div>
       <div style="flex:1">${arcGauge(tW,temp,tcol)}</div>
@@ -4639,7 +4646,7 @@ function renderGroupedDash(code,d){
   const geo=(d.silos||[]).filter(x=>x.lat!=null&&x.lon!=null);
   const mapCard=geo.length?`<div class="card" style="padding:0;overflow:hidden;margin-top:var(--s-14)"><div class="card-h"><h2 style="margin:0">Mappa ${esc((d.group_label||'')+'s')}</h2></div><div id="dashMap" style="height:300px"></div></div>`:'';
   const inc=(d.incidents||[]).length?`<div class="card pad" style="margin-top:var(--s-14)"><div class="card-h" style="padding:0 0 var(--s-8)"><h2>Allarmi recenti</h2></div>
-    <table class="table"><tbody>${d.incidents.map(i=>`<tr><td><b>${esc(etypeLabel(i.etype))}</b></td><td>${chip(i.state)}</td><td class="small mut">${new Date(i.at).toLocaleString('it-IT')}</td></tr>`).join('')}</tbody></table></div>`:'';
+    <table class="table"><tbody>${d.incidents.map(i=>`<tr><td><b>${esc(etypeLabel(i.etype))}</b></td><td>${chip(i.state)}</td><td class="small mut">${new Date(i.at).toLocaleString(UI_LOCALE())}</td></tr>`).join('')}</tbody></table></div>`:'';
   box.innerHTML=`<div class="spread" style="margin-bottom:var(--s-10)"><div class="small mut">${esc(d.sector)} · ${(d.silos||[]).length} ${esc((d.group_label||'gruppo').toLowerCase())}${(d.silos||[]).length===1?'':'s'}${d.device_count?'':' (attiva la demo dal superadmin)'}</div>
       <button class="btn ghost small" onclick="scnAiAnalysis('${code}',this)">✦ Analisi AI</button></div>
     ${d.narrative?`<div class="card pad" style="margin-bottom:var(--s-12)"><div class="small mut">${esc(d.narrative)}</div></div>`:''}
@@ -4715,7 +4722,7 @@ async function vTrigger(v){
   const d=await api('/safety/triggers').catch(e=>({error:friendlyError(e)}));
   if(d.error){ v.innerHTML=`<div class="page-h"><h1>${t('trigger_title','Trigger di sicurezza')}</h1></div><div class="card pad">${esc(d.error)}</div>`; return; }
   const c=d.config||{};
-  const badge=t=>t?'<span class="tag" style="background:#fee2e2;color:#b91c1c">critico → incidente</span>':'<span class="tag mut">solo registrato</span>';
+  const badge=t=>t?'<span class="tag" style="background:var(--bad-soft);color:var(--bad)">critico → incidente</span>':'<span class="tag mut">solo registrato</span>';
   const rows=(d.triggers||[]).map(x=>`<tr>
      <td><b>${esc(x.label)}</b><div class="small mut">${esc(x.desc||'')}</div></td>
      <td class="small">${(x.sources||[]).map(s=>`<span class="tag">${esc(s)}</span>`).join(' ')}</td>
@@ -4886,7 +4893,7 @@ function fbRender(){ const c=$('#fbCard'); if(!c) return;
       <span class="small mut" style="width:22px">${i+1}.</span>
       <select class="small" onchange="FB.contacts[${i}].channel=this.value"><option value="email" ${ct.channel==='email'?'selected':''}>Email</option><option value="sms" ${ct.channel==='sms'?'selected':''}>SMS</option></select>
       <input class="grow small" value="${esc(ct.value||'')}" placeholder="${ct.channel==='sms'?'+393331234567':'nome@azienda.it'}" oninput="FB.contacts[${i}].value=this.value">
-      <input class="small" style="width:160px" value="${esc(ct.label||'')}" placeholder="Chi è (facoltativo)" oninput="FB.contacts[${i}].label=this.value">
+      <input class="small" style="width:min(160px,100%)" value="${esc(ct.label||'')}" placeholder="Chi è (facoltativo)" oninput="FB.contacts[${i}].label=this.value">
       <button class="btn-ico btn ghost" title="Togli" onclick="FB.contacts.splice(${i},1);fbRender()">${ICON.x}</button></div>`).join('')}
     <div class="row" style="gap:var(--s-8);margin-top:var(--s-6)">
       <button class="btn ghost small" onclick="FB.contacts.push({channel:'email',value:'',label:''});fbRender()">+ email</button>
@@ -4972,7 +4979,7 @@ async function vGruppi(v){
                 <input id="hoT_${g.id}" type="time" value="${g.handoff_time||'09:00'}" title="ora di passaggio">
                 <select id="hoD_${g.id}" class="small" title="giorno (settimanale)">${['lun','mar','mer','gio','ven','sab','dom'].map((d,i)=>`<option value="${i}" ${g.handoff_day===i?'selected':''}>${d}</option>`).join('')}</select>
               </div>
-              <label class="row" style="gap:var(--s-6);align-items:center">Canale Slack <input id="slC_${g.id}" value="${esc(g.slack_channel_id||'')}" placeholder="ID canale Slack" style="width:140px"></label>
+              <label class="row" style="gap:var(--s-6);align-items:center">Canale Slack <input id="slC_${g.id}" value="${esc(g.slack_channel_id||'')}" placeholder="ID canale Slack" style="width:min(140px,100%)"></label>
               <label class="row" style="gap:var(--s-6);align-items:center">Avviso on-call Slack
                 <select id="slN_${g.id}" class="small">
                   <option value="off" ${(g.slack_notify||'off')==='off'?'selected':''}>off</option>
@@ -5118,7 +5125,7 @@ async function hbLoad(btn){ const out=$('#hbOut'); out.innerHTML='<span class="m
         <button class="btn-ico btn ghost" onclick="hbDel('${m.id}')">${ICON.x}</button></div>
       <code style="word-break:break-all">${esc(m.url)}</code> <button class="btn ghost small" onclick="navigator.clipboard.writeText('${m.url}');toast('Copiato','ok')">copia</button></div>`).join('')||'<div class="mut small">nessun monitor</div>';
     out.innerHTML=`${list}<div class="row small" style="gap:var(--s-6);align-items:center;margin-top:var(--s-6)">
-      <input id="hbName" placeholder="nome" style="width:120px"> timeout <input id="hbTo" type="number" min="1" value="15" style="width:56px"> min
+      <input id="hbName" placeholder="nome" style="width:min(120px,100%)"> timeout <input id="hbTo" type="number" min="1" value="15" style="width:56px"> min
       gruppo <select id="hbGrp" class="small"><option value="">(routing/default)</option>${grpOpts()}</select>
       <button class="btn small" onclick="hbAdd()">Crea</button></div>`;
   }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(friendlyError(e))+'</span>'; } }
@@ -5146,7 +5153,7 @@ async function ocTempScheds(btn){
     const list=(r.schedules||[]).map(s=>{
       const blocks=(s.blocks||[]).map(b=>`${esc(umap[b.user_id]||'utente rimosso')}:${b.hours}h`).join(' → ');
       return `<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:var(--s-6);margin-bottom:var(--s-4)">
-        <span>${new Date(s.start).toLocaleString('it-IT')}→${new Date(s.end).toLocaleString('it-IT')} · ${blocks}</span>
+        <span>${new Date(s.start).toLocaleString(UI_LOCALE())}→${new Date(s.end).toLocaleString(UI_LOCALE())} · ${blocks}</span>
         <button class="btn ghost small" onclick="ocTsDel('${s.id}','${gid}')">${ICON.x}</button></div>`; }).join('')||'<div class="small mut">Nessuna pianificazione temporanea.</div>';
     const uopts=(window._users||[]).map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('');
     out.innerHTML=`${list}
@@ -5184,7 +5191,7 @@ async function ocMaint(hours){
   const out=$('#ocMaintOut');
   if(hours>0 && !await askConfirm(`Sospendere l'escalation per ${hours}h? Gli allarmi verranno creati ma non inoltrati.`)) return;
   try{ const r=await api('/oncall-maintenance',{method:'POST',body:JSON.stringify({hours})});
-    out.innerHTML = r.active?`<span style="color:var(--warn,#b45309)">⏸ Manutenzione attiva su ${r.services} servizi fino alle ${new Date(r.until).toLocaleString('it-IT')}</span>`
+    out.innerHTML = r.active?`<span style="color:var(--warn,var(--warn))">⏸ Manutenzione attiva su ${r.services} servizi fino alle ${new Date(r.until).toLocaleString(UI_LOCALE())}</span>`
       :`<span style="color:var(--ok,green)">▶ Manutenzione terminata (${r.services} servizi)</span>`; }
   catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(friendlyError(e))+'</span>'; }
 }
@@ -5213,7 +5220,7 @@ async function ocContacts(btn){
       <b class="small">${esc(m.email)}</b>
       <div class="row small" style="gap:var(--s-6);align-items:center;flex-wrap:wrap;margin-top:var(--s-4)">
         <span class="tag">tel</span> <span>${m.phone?esc(m.phone):'<i class="mut">nessun numero</i>'}</span>
-        ${m.opted_out?'<span style="color:var(--bad)">⛔ opt-out (STOP)</span>':(m.verified?'<span style="color:var(--ok,green)">✓ verificato</span>':'<span style="color:var(--warn,#b45309)">⏳ da verificare</span>')}
+        ${m.opted_out?'<span style="color:var(--bad)">⛔ opt-out (STOP)</span>':(m.verified?'<span style="color:var(--ok,green)">✓ verificato</span>':'<span style="color:var(--warn,var(--warn))">⏳ da verificare</span>')}
         ${m.opted_out?`<button class="btn ghost small" onclick="ocReactivate('${m.user_id}')">riabilita</button>`
           :(m.phone?`<button class="btn ghost small" onclick="ocCmVerify('${m.user_id}')">invia codice</button>
         <button class="btn ghost small" onclick="ocCmCode('${m.user_id}')">inserisci codice</button>
@@ -5248,7 +5255,7 @@ async function ocUserRules(uid){
     out.innerHTML=`<div style="margin-bottom:var(--s-6)"><b>Recapiti</b>${cms}
         <div class="row small" style="gap:var(--s-4);align-items:center;margin-top:var(--s-4)">
           <select id="urk_${uid}" class="small">${UR_KINDS.map(k=>`<option value="${k[0]}">${k[1]}</option>`).join('')}</select>
-          <input id="urv_${uid}" placeholder="numero o email" style="width:150px">
+          <input id="urv_${uid}" placeholder="numero o email" style="width:min(150px,100%)">
           <button class="btn ghost small" onclick="ocCmAdd('${uid}')">+ recapito</button></div></div>
       <div><b>Regole di notifica (ladder)</b>${rules}
         ${cmOpts?`<div class="row small" style="gap:var(--s-4);align-items:center;margin-top:var(--s-4)">
@@ -5279,7 +5286,7 @@ async function ocAbsences(btn){
   const members=(grp?grp.members:[]);
   try{ const r=await api('/oncall-overrides?group_id='+gid);
     const list=(r.overrides||[]).map(o=>`<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:var(--s-6);margin-bottom:var(--s-4)">
-      <span>${o.remove_email?('➖ '+esc(o.remove_email)):''}${o.add_email?(' ➕ '+esc(o.add_email)):''} · ${new Date(o.start).toLocaleDateString('it-IT')}→${new Date(o.end).toLocaleDateString('it-IT')}</span>
+      <span>${o.remove_email?('➖ '+esc(o.remove_email)):''}${o.add_email?(' ➕ '+esc(o.add_email)):''} · ${new Date(o.start).toLocaleDateString(UI_LOCALE())}→${new Date(o.end).toLocaleDateString(UI_LOCALE())}</span>
       <span><button class="btn ghost small" onclick='ocAbsEdit(${jattr(o)})'>modifica</button>
       <button class="btn-ico btn ghost" onclick="ocAbsDel('${o.id}')">${ICON.x}</button></span></div>`).join('')||'<div class="small mut">Nessuna assenza.</div>';
     out.innerHTML=`${r.note?`<div class="small mut">${esc(r.note)}</div>`:list}
@@ -5350,7 +5357,7 @@ function grpShiftsRender(gid){
   let body;
   if(S.view==='cal'){ body=grpShiftsCalendar(shifts); }
   else { body=shifts.map(s=>`<div class="row small" style="gap:var(--s-6);border-bottom:1px solid var(--line);padding:var(--s-3) 0">
-      <span style="min-width:200px">${new Date(s.start).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})} → ${new Date(s.end).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+      <span style="min-width:200px">${new Date(s.start).toLocaleString(UI_LOCALE(),{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})} → ${new Date(s.end).toLocaleString(UI_LOCALE(),{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
       <span>${(s.oncall||[]).map(esc).join(', ')}</span></div>`).join('')||'<div class="mut">nessun turno</div>'; }
   $('#shf_'+gid).innerHTML=ctrl+body;
 }
@@ -5386,7 +5393,7 @@ async function grpAssignLoad(gid){ const out=$('#asg_'+gid); out.innerHTML='<spa
           <button class="btn ghost small" onclick="asgMemAdd('${gid}','${a.id}')">+ membro</button></div></div>`;
     }).join('')||'<div class="mut">Nessuna assegnazione. Aggiungi coperture (es. weekend, notte).</div>';
     out.innerHTML=`${list}<div class="col small" style="gap:var(--s-4);border-top:1px solid var(--line);padding-top:var(--s-8);margin-top:var(--s-4)">
-      <div class="row" style="gap:var(--s-4);align-items:center;flex-wrap:wrap"><input id="asgL_${gid}" placeholder="nome (es. Weekend)" style="width:130px">
+      <div class="row" style="gap:var(--s-4);align-items:center;flex-wrap:wrap"><input id="asgL_${gid}" placeholder="nome (es. Weekend)" style="width:min(130px,100%)">
         <select id="asgMode_${gid}" class="small"><option value="tutti">tutti insieme</option><option value="turni">a turni</option></select>
         <select id="asgType_${gid}" class="small"><option value="hourly">orario</option><option value="daily">giorn.</option><option value="weekly" selected>settim.</option><option value="monthly">mensile</option></select>
         giorni ${['L','M','M','G','V','S','D'].map((d,i)=>`<label class="small" style="display:inline-flex;flex-direction:column;align-items:center"><span>${d}</span><input type="checkbox" id="asgd_${gid}_${i}" checked></label>`).join('')}
@@ -5429,7 +5436,7 @@ function polTargetPicker(gid,i,s){
   let extra='';
   if(s.target_kind==='group') extra=`<select class="small" onchange="${P}.target_group_id=this.value"><option value="">—</option>${(window._groupsCache||[]).map(g=>`<option value="${g.id}" ${s.target_group_id===g.id?'selected':''}>${esc(g.name)}</option>`).join('')}</select>`;
   else if(s.target_kind==='user') extra=`<select class="small" onchange="${P}.target_user_id=this.value"><option value="">—</option>${(window._users||[]).map(u=>`<option value="${u.id}" ${s.target_user_id===u.id?'selected':''}>${esc(u.email)}</option>`).join('')}</select>`;
-  else if(s.target_kind==='slack') extra=`<input class="small" placeholder="ID canale Slack" value="${esc(s.target_slack||'')}" style="width:120px" onchange="${P}.target_slack=this.value">`;
+  else if(s.target_kind==='slack') extra=`<input class="small" placeholder="ID canale Slack" value="${esc(s.target_slack||'')}" style="width:min(120px,100%)" onchange="${P}.target_slack=this.value">`;
   return kinds+' '+extra;
 }
 function grpPolicyRender(gid){
@@ -5470,7 +5477,7 @@ async function grpHandoffLoad(gid){
   const out=$('#ho_'+gid); out.innerHTML='<span class="mut">Carico…</span>';
   try{ const r=await api('/groups/'+gid+'/handoff-notes');
     const list=(r.notes||[]).map(n=>`<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:6px;padding:var(--s-4) var(--s-6);margin-bottom:var(--s-3)">
-      <span><b>${esc(n.author)}</b> · ${new Date(n.at).toLocaleString('it-IT')}<br>${esc(n.body)}</span>
+      <span><b>${esc(n.author)}</b> · ${new Date(n.at).toLocaleString(UI_LOCALE())}<br>${esc(n.body)}</span>
       <button class="btn-ico btn ghost" onclick="grpHandoffDel('${gid}','${n.id}')">${ICON.x}</button></div>`).join('')||'<div class="mut">nessuna nota</div>';
     out.innerHTML=`<b>Note di passaggio turno</b>${list}
       <div class="row small" style="gap:var(--s-4);align-items:center;margin-top:var(--s-4)">
@@ -6024,7 +6031,7 @@ async function siteDel(id){ if(!await askConfirm('Eliminare sede?'))return;
   try{await api('/sites/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e,'bad');} }
 
 // ---------------- Turni (pianificazione) ----------------
-function dtLocal(iso){ const d=new Date(iso); return d.toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }
+function dtLocal(iso){ const d=new Date(iso); return d.toLocaleString(UI_LOCALE(),{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }
 function toISO(localVal){ if(!localVal)return null; const d=new Date(localVal); return isNaN(d)?null:d.toISOString(); }
 // ISO -> valore per <input type=datetime-local> in ora LOCALE (niente shift UTC).
 function dtInput(iso){ if(!iso)return''; const d=new Date(iso); if(isNaN(d))return''; const p=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes()); }
@@ -6289,27 +6296,37 @@ async function askAI(){
 }
 
 // ---------------- drawer ----------------
-function drawer(title,html){ $('#drawer').innerHTML=`<div class="dh"><h2>${title}</h2>
-  <button class="btn-ico btn ghost" onclick="closeDrawer()">${ICON.x}</button></div><div class="db">${html}</div>`;
-  $('#drawer').classList.add('open'); $('#scrim').classList.add('open'); $('#scrim').onclick=closeDrawer; }
-function closeDrawer(){ $('#drawer').classList.remove('open'); $('#scrim').classList.remove('open'); }
+let _drawerReturn=null;
+function drawer(title,html){ const d=$('#drawer'); _drawerReturn=document.activeElement;
+  d.innerHTML=`<div class="dh"><h2 id="drawerTitle">${title}</h2>
+  <button class="btn-ico btn ghost" onclick="closeDrawer()" aria-label="Chiudi">${ICON.x}</button></div><div class="db">${html}</div>`;
+  d.setAttribute('role','dialog'); d.setAttribute('aria-modal','true'); d.setAttribute('aria-labelledby','drawerTitle');
+  d.classList.add('open'); $('#scrim').classList.add('open'); $('#scrim').onclick=closeDrawer;
+  // FE-16: il focus entra nel pannello (primo campo, altrimenti il pannello stesso)
+  setTimeout(()=>{ const f=d.querySelector('.db input,.db select,.db textarea,.db button')||d; if(f===d) d.setAttribute('tabindex','-1'); f.focus(); },0); }
+function closeDrawer(){ $('#drawer').classList.remove('open'); $('#scrim').classList.remove('open');
+  if(_drawerReturn&&_drawerReturn.focus){ try{_drawerReturn.focus();}catch(e){} } _drawerReturn=null; }
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&$('#drawer')&&$('#drawer').classList.contains('open')) closeDrawer(); });
 // Conferma non-bloccante (window.confirm è bloccato in alcune webview): modale con Promise.
 function askConfirm(msg){ return new Promise(res=>{
   const m=document.createElement('div');
   m.style.cssText='position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)';
-  m.innerHTML=`<div class="card pad" style="max-width:430px;width:92%"><div style="margin-bottom:var(--s-14)">${esc(msg)}</div>
+  m.setAttribute('role','alertdialog'); m.setAttribute('aria-modal','true');
+  m.innerHTML=`<div class="card pad" style="max-width:430px;width:92%"><div style="margin-bottom:var(--s-14)" id="_acMsg">${esc(msg)}</div>
     <div class="row" style="gap:var(--s-8);justify-content:flex-end"><button class="btn ghost" data-no>Annulla</button><button class="btn" data-yes>Conferma</button></div></div>`;
   const done=v=>{ try{m.remove();}catch(e){} res(v); };
   m.addEventListener('click',e=>{ if(e.target===m) done(false); });
   m.querySelector('[data-no]').onclick=()=>done(false);
   m.querySelector('[data-yes]').onclick=()=>done(true);
+  m.setAttribute('aria-describedby','_acMsg'); m.addEventListener('keydown',e=>{ if(e.key==='Escape') done(false); });
   document.body.appendChild(m); const y=m.querySelector('[data-yes]'); if(y)y.focus();
 }); }
 // Prompt non-bloccante con un valore iniziale (per rinominare). Ritorna stringa o null.
 function askPrompt(msg,val){ return new Promise(res=>{
   const m=document.createElement('div');
   m.style.cssText='position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)';
-  m.innerHTML=`<div class="card pad" style="max-width:430px;width:92%"><div style="margin-bottom:var(--s-10)">${esc(msg)}</div>
+  m.setAttribute('role','dialog'); m.setAttribute('aria-modal','true');
+  m.innerHTML=`<div class="card pad" style="max-width:430px;width:92%"><label for="_apIn" style="display:block;margin-bottom:var(--s-10)">${esc(msg)}</label>
     <input id="_apIn" value="${esc(val||'')}" style="width:100%;margin-bottom:var(--s-12)">
     <div class="row" style="gap:var(--s-8);justify-content:flex-end"><button class="btn ghost" data-no>Annulla</button><button class="btn" data-yes>OK</button></div></div>`;
   const done=v=>{ try{m.remove();}catch(e){} res(v); };
