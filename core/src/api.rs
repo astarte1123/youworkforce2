@@ -138,7 +138,9 @@ async fn session_of(state: &AppState, h: &HeaderMap) -> Option<Session> {
          LEFT JOIN app.users u ON u.id = s.user_id AND u.tenant_id = s.tenant_id
          WHERE s.token=$1 AND s.expires_at > now()
            AND (s.tenant_id IS NULL OR s.impersonator IS NOT NULL OR t.status IS DISTINCT FROM 'sospeso')
-           AND (s.tenant_id IS NULL OR (u.id IS NOT NULL AND u.anonymized_at IS NULL))")
+           AND (s.tenant_id IS NULL OR (u.id IS NOT NULL AND u.anonymized_at IS NULL))
+           -- SA-12: superadmin (anche in attivazione MFA) disattivato -> sessione non valida
+           AND (s.tenant_id IS NOT NULL OR EXISTS (SELECT 1 FROM app.superadmins sa WHERE sa.id=s.user_id AND NOT sa.disabled))")
         .bind(&tok).fetch_optional(&state.owner_pool).await.ok().flatten()?;
     let tenant_id = r.try_get::<Option<Uuid>, _>("tenant_id").ok().flatten();
     let role: String = r.get("role");
@@ -335,31 +337,194 @@ async fn require_super(state: &AppState, h: &HeaderMap) -> Result<Session, (Stat
     Ok(s)
 }
 
+/// SA-12: MFA obbligatorio per i superadmin. Solo in sviluppo (YW_SEED_DEMO=1) si può non imporlo
+/// (YW_SUPERADMIN_MFA diverso da "on"), così i test automatici entrano con la sola password; un
+/// account che ha attivato l'MFA lo usa comunque sempre.
+pub fn superadmin_mfa_required() -> bool {
+    let dev = std::env::var("YW_SEED_DEMO").ok().as_deref() == Some("1");
+    !dev || std::env::var("YW_SUPERADMIN_MFA").ok().as_deref() == Some("on")
+}
+/// Superadmin completo OPPURE in attivazione dell'MFA (password già verificata).
+async fn require_super_or_setup(state: &AppState, h: &HeaderMap) -> Result<Session, (StatusCode, String)> {
+    let s = session_of(state, h).await.ok_or_else(|| err(StatusCode::UNAUTHORIZED, "no session"))?;
+    if s.is_super || (s.tenant_id.is_none() && s.role == "superadmin_setup") { Ok(s) }
+    else { Err(err(StatusCode::FORBIDDEN, "superadmin required")) }
+}
+async fn sa_audit(st: &AppState, actor: &str, action: &str, detail: Value) {
+    let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES(NULL,$1,$2,$3)")
+        .bind(format!("superadmin:{actor}")).bind(action).bind(detail).execute(&st.owner_pool).await;
+}
+/// Stato MFA dell'account corrente.
+pub async fn super_mfa_status(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_super_or_setup(&st, &h).await?;
+    let r = sqlx::query("SELECT totp_secret IS NOT NULL AS on, totp_enabled_at FROM app.superadmins WHERE id=$1").bind(s.user_id)
+        .fetch_one(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"enabled": r.get::<bool,_>("on"), "enabled_at": r.try_get::<Option<Dt>,_>("totp_enabled_at").ok().flatten().map(|d| d.to_rfc3339()),
+        "required": superadmin_mfa_required(), "setup_session": !s.is_super, "secrets_locked": !st.secrets.enabled(), "email": s.email})))
+}
+/// Avvia l'attivazione: nuovo segreto (cifrato, in attesa) + URI otpauth per l'app di autenticazione.
+pub async fn super_mfa_setup(State(st): State<AppState>, h: HeaderMap) -> R {
+    let s = require_super_or_setup(&st, &h).await?;
+    let secret = auth::totp_new_secret();
+    let enc = st.secrets.encrypt(&secret).map_err(|_| err(StatusCode::CONFLICT, "chiave dei segreti bloccata: sbloccala prima di attivare l'MFA"))?;
+    sqlx::query("UPDATE app.superadmins SET totp_pending=$2 WHERE id=$1").bind(s.user_id).bind(&enc).execute(&st.owner_pool).await.map_err(ise)?;
+    let issuer = "YouWorkforce";
+    let uri = format!("otpauth://totp/{}:{}?secret={}&issuer={}&algorithm=SHA1&digits=6&period=30",
+        issuer, urlenc(&s.email), secret, issuer);
+    Ok(Json(json!({"secret": secret, "otpauth": uri})))
+}
+fn urlenc(v: &str) -> String { v.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{:02X}", b) }).collect() }
+#[derive(Deserialize)] pub struct OtpReq { pub code: String }
+/// Conferma l'attivazione con un codice dell'app. Una sessione «in attivazione» diventa completa.
+pub async fn super_mfa_enable(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OtpReq>) -> axum::response::Response {
+    let s = match require_super_or_setup(&st, &h).await { Ok(s) => s, Err(e) => return e.into_response() };
+    let pend: Option<String> = sqlx::query_scalar("SELECT totp_pending FROM app.superadmins WHERE id=$1").bind(s.user_id)
+        .fetch_one(&st.owner_pool).await.ok().flatten();
+    let Some(pend) = pend else { return err(StatusCode::BAD_REQUEST, "avvia prima l'attivazione").into_response() };
+    let secret = st.secrets.decrypt(&pend);
+    let Some(step) = auth::totp_verify(&secret, &b.code, st.clock.now().timestamp(), None) else {
+        return err(StatusCode::BAD_REQUEST, "codice non valido: controlla l'ora del telefono e riprova").into_response() };
+    if sqlx::query("UPDATE app.superadmins SET totp_secret=totp_pending, totp_pending=NULL, totp_enabled_at=now(), totp_last_step=$2 WHERE id=$1")
+        .bind(s.user_id).bind(step).execute(&st.owner_pool).await.is_err() { return err(StatusCode::INTERNAL_SERVER_ERROR, "salvataggio non riuscito").into_response(); }
+    sa_audit(&st, &s.email, "superadmin_mfa_enabled", json!({"account":s.email})).await;
+    if s.is_super { return Json(json!({"ok":true})).into_response(); }
+    // sessione di attivazione -> nuova sessione completa (password + codice verificati)
+    let (tok, csrf) = (auth::new_token(), auth::new_token());
+    let sess = Session { user_id: s.user_id, tenant_id: None, email: s.email.clone(), role: "superadmin".into(), is_super: true, impersonator: None, caps: vec![] };
+    if let Some(old) = get_cookie(&h, "yw_session") { let _ = sqlx::query("DELETE FROM app.sessions WHERE token=$1").bind(old).execute(&st.owner_pool).await; }
+    persist_session(&st, &tok, &sess).await;
+    (StatusCode::OK, set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"csrf":csrf}))).into_response()
+}
+/// Elenco degli account superadmin.
+pub async fn super_admins_list(State(st): State<AppState>, h: HeaderMap) -> R {
+    let me = require_super(&st, &h).await?;
+    let rows = sqlx::query("SELECT id,email,disabled,created_at,created_by,last_login_at,totp_secret IS NOT NULL AS mfa FROM app.superadmins ORDER BY email")
+        .fetch_all(&st.owner_pool).await.map_err(ise)?;
+    Ok(Json(json!({"me": me.user_id, "mfa_required": superadmin_mfa_required(), "admins": rows.iter().map(|r| json!({
+        "id": r.get::<Uuid,_>("id"), "email": r.get::<String,_>("email"), "disabled": r.get::<bool,_>("disabled"),
+        "mfa": r.get::<bool,_>("mfa"), "created_at": r.get::<Dt,_>("created_at").to_rfc3339(),
+        "created_by": r.try_get::<Option<String>,_>("created_by").ok().flatten(),
+        "last_login_at": r.try_get::<Option<Dt>,_>("last_login_at").ok().flatten().map(|d| d.to_rfc3339())})).collect::<Vec<_>>()})))
+}
+fn sa_pass_ok(p: &str) -> Result<(), (StatusCode,String)> {
+    if p.chars().count() < 12 { return Err(err(StatusCode::BAD_REQUEST, "password di almeno 12 caratteri")); }
+    Ok(())
+}
+#[derive(Deserialize)] pub struct NewSuper { pub email: String, pub password: String }
+pub async fn super_admins_create(State(st): State<AppState>, h: HeaderMap, Json(b): Json<NewSuper>) -> R {
+    let me = require_super(&st, &h).await?;
+    let email = b.email.trim().to_lowercase();
+    if !valid_email(&email) { return Err(err(StatusCode::BAD_REQUEST, "email non valida")); }
+    sa_pass_ok(&b.password)?;
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.superadmins(email,pass_hash,created_by) VALUES($1,$2,$3) RETURNING id")
+        .bind(&email).bind(auth::hash_password(&b.password)).bind(format!("superadmin:{}", me.email))
+        .fetch_one(&st.owner_pool).await.map_err(|e| conflict_or(e, "esiste già un superadmin con questa email"))?;
+    sa_audit(&st, &me.email, "superadmin_create", json!({"account":email})).await;
+    Ok(Json(json!({"id":id})))
+}
+#[derive(Deserialize)] pub struct SuperUpd { #[serde(default)] pub disabled: Option<bool>, #[serde(default)] pub reset_mfa: Option<bool>, #[serde(default)] pub password: Option<String> }
+pub async fn super_admins_update(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<SuperUpd>) -> R {
+    let me = require_super(&st, &h).await?;
+    let email: String = sqlx::query_scalar("SELECT email FROM app.superadmins WHERE id=$1").bind(id)
+        .fetch_optional(&st.owner_pool).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "account inesistente"))?;
+    if let Some(d) = b.disabled {
+        if d && id == me.user_id { return Err(err(StatusCode::BAD_REQUEST, "non puoi disattivare il tuo account")); }
+        if d {
+            let active: i64 = sqlx::query_scalar("SELECT count(*) FROM app.superadmins WHERE NOT disabled AND id<>$1").bind(id).fetch_one(&st.owner_pool).await.map_err(ise)?;
+            if active == 0 { return Err(err(StatusCode::BAD_REQUEST, "deve restare almeno un superadmin attivo")); }
+        }
+        sqlx::query("UPDATE app.superadmins SET disabled=$2 WHERE id=$1").bind(id).bind(d).execute(&st.owner_pool).await.map_err(ise)?;
+        if d { let _ = sqlx::query("DELETE FROM app.sessions WHERE user_id=$1 AND tenant_id IS NULL").bind(id).execute(&st.owner_pool).await; }
+        sa_audit(&st, &me.email, if d { "superadmin_disable" } else { "superadmin_enable" }, json!({"account":email})).await;
+    }
+    if b.reset_mfa == Some(true) {
+        if id == me.user_id { return Err(err(StatusCode::BAD_REQUEST, "l'MFA del tuo account la cambi riattivandola, non azzerandola")); }
+        sqlx::query("UPDATE app.superadmins SET totp_secret=NULL, totp_pending=NULL, totp_enabled_at=NULL, totp_last_step=NULL WHERE id=$1")
+            .bind(id).execute(&st.owner_pool).await.map_err(ise)?;
+        let _ = sqlx::query("DELETE FROM app.sessions WHERE user_id=$1 AND tenant_id IS NULL").bind(id).execute(&st.owner_pool).await;
+        sa_audit(&st, &me.email, "superadmin_mfa_reset", json!({"account":email})).await;
+    }
+    if let Some(p) = b.password.as_deref() {
+        if id == me.user_id { return Err(err(StatusCode::BAD_REQUEST, "per la tua password usa «cambia password»")); }
+        sa_pass_ok(p)?;
+        sqlx::query("UPDATE app.superadmins SET pass_hash=$2 WHERE id=$1").bind(id).bind(auth::hash_password(p)).execute(&st.owner_pool).await.map_err(ise)?;
+        let _ = sqlx::query("DELETE FROM app.sessions WHERE user_id=$1 AND tenant_id IS NULL").bind(id).execute(&st.owner_pool).await;
+        sa_audit(&st, &me.email, "superadmin_password_reset", json!({"account":email})).await;
+    }
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)] pub struct OwnPass { pub current: String, pub new: String }
+pub async fn super_own_password(State(st): State<AppState>, h: HeaderMap, Json(b): Json<OwnPass>) -> R {
+    let me = require_super(&st, &h).await?;
+    let hash: String = sqlx::query_scalar("SELECT pass_hash FROM app.superadmins WHERE id=$1").bind(me.user_id).fetch_one(&st.owner_pool).await.map_err(ise)?;
+    if !auth::verify_password(&b.current, &hash) { return Err(err(StatusCode::FORBIDDEN, "password attuale errata")); }
+    sa_pass_ok(&b.new)?;
+    sqlx::query("UPDATE app.superadmins SET pass_hash=$2 WHERE id=$1").bind(me.user_id).bind(auth::hash_password(&b.new)).execute(&st.owner_pool).await.map_err(ise)?;
+    // le altre sessioni dello stesso account si chiudono
+    if let Some(cur) = get_cookie(&h, "yw_session") {
+        let _ = sqlx::query("DELETE FROM app.sessions WHERE user_id=$1 AND tenant_id IS NULL AND token<>$2").bind(me.user_id).bind(cur).execute(&st.owner_pool).await;
+    }
+    sa_audit(&st, &me.email, "superadmin_password_change", json!({"account":me.email})).await;
+    Ok(Json(json!({"ok":true})))
+}
+
 // ----------------------------- control plane -----------------------------
 #[derive(Deserialize)]
-pub struct LoginReq { pub email: String, pub password: String }
+pub struct LoginReq { pub email: String, pub password: String, #[serde(default)] pub otp: Option<String> }
 
 pub async fn superadmin_login(State(st): State<AppState>, h: HeaderMap, Json(b): Json<LoginReq>) -> impl IntoResponse {
     let key = rl_keys(&h, "", &b.email);
     if let Some(ra) = rl_check_all(&st, &key).await { return too_many(ra); }
-    let row = sqlx::query("SELECT id, pass_hash FROM app.superadmins WHERE email=$1")
+    let row = sqlx::query("SELECT id, pass_hash, disabled, totp_secret, totp_last_step FROM app.superadmins WHERE email=$1")
         .bind(&b.email).fetch_optional(&st.owner_pool).await;
     match row {
         Ok(Some(r)) => {
             let id: Uuid = r.get("id");
             let hash: String = r.get("pass_hash");
             if auth::verify_password(&b.password, &hash) {
-                rl_clear_all(&st, &key).await;
+                if r.get::<bool,_>("disabled") {
+                    rl_fail_all(&st, &key).await;
+                    return (StatusCode::FORBIDDEN, Json(json!({"error":"account superadmin disattivato"}))).into_response();
+                }
                 if auth::needs_rehash(&hash) {
                     let _ = sqlx::query("UPDATE app.superadmins SET pass_hash=$1 WHERE id=$2")
                         .bind(auth::hash_password(&b.password)).bind(id).execute(&st.owner_pool).await;
                 }
+                // SA-12: secondo fattore (TOTP). Senza MFA attivo, dove è obbligatorio, la sessione
+                // serve SOLO ad attivarlo (ruolo superadmin_setup, nessun accesso al piano di controllo).
+                let enc: Option<String> = r.try_get("totp_secret").ok().flatten();
+                let mut setup_reason: Option<&str> = None;
+                if let Some(enc) = enc {
+                    let secret = st.secrets.decrypt(&enc);
+                    if secret.starts_with("enc:") {
+                        // chiave dei segreti bloccata (server nuovo): il codice non si può verificare;
+                        // la sessione permette solo lo sblocco con la passphrase di recupero (2° fattore)
+                        setup_reason = Some("chiave_bloccata");
+                    } else {
+                        let Some(otp) = b.otp.as_deref().filter(|o| !o.trim().is_empty()) else {
+                            return (StatusCode::UNAUTHORIZED, Json(json!({"error":"inserisci il codice dell'app di autenticazione","mfa_required":true}))).into_response();
+                        };
+                        match auth::totp_verify(&secret, otp, st.clock.now().timestamp(), r.try_get::<Option<i64>,_>("totp_last_step").ok().flatten()) {
+                            Some(step) => { let _ = sqlx::query("UPDATE app.superadmins SET totp_last_step=$2 WHERE id=$1").bind(id).bind(step).execute(&st.owner_pool).await; }
+                            None => {
+                                rl_fail_all(&st, &key).await;
+                                return (StatusCode::UNAUTHORIZED, Json(json!({"error":"codice dell'app di autenticazione non valido","mfa_required":true}))).into_response();
+                            }
+                        }
+                    }
+                } else if superadmin_mfa_required() {
+                    setup_reason = Some("mfa_da_attivare");
+                }
+                rl_clear_all(&st, &key).await;
+                let _ = sqlx::query("UPDATE app.superadmins SET last_login_at=now() WHERE id=$1").bind(id).execute(&st.owner_pool).await;
                 let tok = auth::new_token();
                 let csrf = auth::new_token();
+                let full = setup_reason.is_none();
                 let sess = Session { user_id: id, tenant_id: None, email: b.email.clone(),
-                    role: "superadmin".into(), is_super: true, impersonator: None, caps: vec![] };
+                    role: if full { "superadmin".into() } else { "superadmin_setup".into() }, is_super: full, impersonator: None, caps: vec![] };
                 persist_session(&st, &tok, &sess).await;
-                (StatusCode::OK, set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"role":"superadmin","csrf":csrf}))).into_response()
+                (StatusCode::OK, set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"role":sess.role,"csrf":csrf,
+                    "mfa_setup_required": setup_reason == Some("mfa_da_attivare"), "secrets_locked": setup_reason == Some("chiave_bloccata")}))).into_response()
             } else {
                 rl_fail_all(&st, &key).await;
                 (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad credentials"}))).into_response()
@@ -785,7 +950,9 @@ pub async fn super_secrets_recovery(State(st): State<AppState>, h: HeaderMap, Js
 }
 /// Sblocca la chiave su QUESTO server con la passphrase di recupero e la risigilla qui.
 pub async fn super_secrets_unlock(State(st): State<AppState>, h: HeaderMap, Json(b): Json<PassReq>) -> R {
-    let sa = require_super(&st, &h).await?;
+    // SA-12: con la chiave bloccata l'MFA non si verifica: password + passphrase di recupero bastano
+    // per sbloccarla (poi si rientra con il codice). Con la chiave attiva serve il superadmin completo.
+    let sa = if st.secrets.enabled() { require_super(&st, &h).await? } else { require_super_or_setup(&st, &h).await? };
     let r = sqlx::query("SELECT key_id, recovery_salt, recovery_wrapped FROM app.secret_keys WHERE active").fetch_optional(&st.owner_pool).await.map_err(ise)?
         .ok_or_else(|| err(StatusCode::CONFLICT, "nessuna chiave attiva"))?;
     let kid: i32 = r.get("key_id");
@@ -848,6 +1015,9 @@ pub async fn super_secrets_reset(State(st): State<AppState>, h: HeaderMap, Json(
     // o della vecchia YW_SECRET_KEY li ricifra la conversione qui sotto.
     let lost = sqlx::query("UPDATE app.ai_connections SET api_key='' WHERE api_key LIKE 'enc:v3:%'").execute(&mut *tx).await.map_err(ise)?.rows_affected()
         + sqlx::query("DELETE FROM app.delivery_channels WHERE value LIKE 'enc:v3:%'").execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    // SA-12: con la chiave persa anche l'MFA dei superadmin va riattivato (al prossimo accesso)
+    sqlx::query("UPDATE app.superadmins SET totp_secret=NULL, totp_pending=NULL, totp_enabled_at=NULL, totp_last_step=NULL WHERE totp_secret LIKE 'enc:v3:%' OR totp_pending LIKE 'enc:v3:%'")
+        .execute(&mut *tx).await.map_err(ise)?;
     sqlx::query("DELETE FROM app.secret_keys").execute(&mut *tx).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.secret_keys(key_id,sealed_server,server_name,active,created_by) VALUES($1,$2,$3,true,$4)")
         .bind(new).bind(&sealed).bind(host_name()).bind(format!("superadmin:{}", sa.email)).execute(&mut *tx).await.map_err(ise)?;
@@ -877,7 +1047,8 @@ pub async fn secrets_sync(st: &AppState) {
     let old: Vec<i32> = sqlx::query_scalar("SELECT k.key_id FROM app.secret_keys k WHERE NOT k.active
             AND EXISTS (SELECT 1 FROM app.secret_keys a WHERE a.active AND a.created_at < now()-interval '5 minutes')
             AND NOT EXISTS (SELECT 1 FROM app.ai_connections c WHERE c.api_key LIKE 'enc:v3:'||k.key_id||':%')
-            AND NOT EXISTS (SELECT 1 FROM app.delivery_channels c WHERE c.value LIKE 'enc:v3:'||k.key_id||':%')")
+            AND NOT EXISTS (SELECT 1 FROM app.delivery_channels c WHERE c.value LIKE 'enc:v3:'||k.key_id||':%')
+            AND NOT EXISTS (SELECT 1 FROM app.superadmins a WHERE a.totp_secret LIKE 'enc:v3:'||k.key_id||':%' OR a.totp_pending LIKE 'enc:v3:'||k.key_id||':%')")
         .fetch_all(&st.owner_pool).await.unwrap_or_default();
     for k in old {
         if sqlx::query("DELETE FROM app.secret_keys WHERE key_id=$1 AND NOT active").bind(k).execute(&st.owner_pool).await.is_ok() {

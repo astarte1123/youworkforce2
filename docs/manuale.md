@@ -461,6 +461,23 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
 - e2e `qa/secret-key-e2e.sh` 15/15; unit test `crypto::tests` (3), compreso il sigillo DPAPI.
   Il test imposta sul database di sviluppo la passphrase di prova `e2e-passphrase-di-recupero`.
 
+- **Account superadmin e verifica in due passaggi (SA-12, decisione PO 25/11/2026, mig `0154`).**
+  Gli account del piano di controllo si gestiscono in *Sistema → «Account superadmin»*: nuovo
+  account (password di almeno 12 caratteri), disattiva/riattiva (mai sé stessi, sempre almeno uno
+  attivo), nuova password, azzeramento della verifica (telefono perso), cambio della propria
+  password. Le variabili `YW_SUPERADMIN_EMAIL/PASS` servono solo a creare il primo account.
+  - **MFA obbligatoria (TOTP, RFC 6238)**: al primo accesso con la password si apre solo la pagina
+    di attivazione (chiave da inserire in un'app di autenticazione, poi un codice di conferma);
+    da lì in avanti servono password **e** codice. Lo stesso codice non vale due volte. Il segreto
+    è cifrato con la chiave dei segreti; rotazione e azzeramento della chiave ne tengono conto.
+  - Se su un server nuovo la chiave dei segreti è bloccata, il codice non si può verificare:
+    password + passphrase di recupero permettono solo di sbloccarla, poi si rientra con il codice.
+  - Account disattivato, password cambiata o MFA azzerata: le sessioni aperte di quell'account si
+    chiudono. Tutto nel registro attività (`superadmin_*`).
+  - In sviluppo (`YW_SEED_DEMO=1`) l'MFA non è imposta, per i test automatici, salvo
+    `YW_SUPERADMIN_MFA=on`; un account che l'ha attivata la usa sempre. e2e
+    `qa/superadmin-mfa-e2e.sh` 20/20, unit test TOTP con i vettori dell'RFC.
+
 ## 13-bis. Privacy e audit (GDPR + registro attività)
 
 Voce menu **«Privacy e audit»** (Configurazione, solo `tenant_admin`): export dei dati personali

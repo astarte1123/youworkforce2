@@ -42,6 +42,18 @@ pub async fn crypto_migrate(st: &AppState) -> anyhow::Result<()> {
         sqlx::query("UPDATE app.ai_connections SET api_key=$2 WHERE tenant_id=$1 AND api_key=$3")
             .bind(tid).bind(enc).bind(&old).execute(&st.owner_pool).await?;
     }
+    // SA-12: segreti TOTP dei superadmin (attivi e in attivazione)
+    for col in ["totp_secret", "totp_pending"] {
+        let rows = sqlx::query(&format!("SELECT id,{col} AS v FROM app.superadmins WHERE {col} LIKE 'enc:%' AND {col} NOT LIKE $1"))
+            .bind(&prefix).fetch_all(&st.owner_pool).await?;
+        for r in rows {
+            let (id, old): (Uuid, String) = (r.get("id"), r.get("v"));
+            let plain = st.secrets.decrypt(&old);
+            if plain.starts_with("enc:") { continue; }
+            let Ok(enc) = st.secrets.encrypt(&plain) else { continue };
+            sqlx::query(&format!("UPDATE app.superadmins SET {col}=$2 WHERE id=$1 AND {col}=$3")).bind(id).bind(enc).bind(&old).execute(&st.owner_pool).await?;
+        }
+    }
     // SA-11: anche i segreti dei canali di consegna
     let rows = sqlx::query("SELECT key,value FROM app.delivery_channels WHERE value LIKE 'enc:%' AND value NOT LIKE $1")
         .bind(&prefix).fetch_all(&st.owner_pool).await?;
@@ -84,6 +96,12 @@ fn iot_routes() -> Router<AppState> {
 fn superadmin_routes() -> Router<AppState> {
     Router::new()
         .route("/api/superadmin/login", post(api::superadmin_login))
+        .route("/api/superadmin/mfa", get(api::super_mfa_status))
+        .route("/api/superadmin/mfa/setup", post(api::super_mfa_setup))
+        .route("/api/superadmin/mfa/enable", post(api::super_mfa_enable))
+        .route("/api/superadmin/admins", get(api::super_admins_list).post(api::super_admins_create))
+        .route("/api/superadmin/admins/:id", post(api::super_admins_update))
+        .route("/api/superadmin/password", post(api::super_own_password))
         .route("/api/superadmin/tenants", post(api::create_tenant).get(api::list_tenants))
         .route("/api/superadmin/tenants/:id/status", post(api::set_tenant_status))
         .route("/api/superadmin/tenants/:id", axum::routing::delete(api::delete_tenant))

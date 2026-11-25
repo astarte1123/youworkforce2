@@ -55,7 +55,7 @@
 <script src="/app.js"></script>
 <script>
 let TENANTS=[];
-(async function(){ try{ const me=await api('/me'); if(me.is_super) return shell(); }catch(e){} login(); })();
+(async function(){ try{ const me=await api('/me'); if(me.is_super) return shell(); if(me.role==='superadmin_setup') return mfaGate(); }catch(e){} login(); })();
 
 function login(){
   $('#root').innerHTML=`<div style="min-height:100vh;display:grid;place-items:center;padding:20px;background:
@@ -66,18 +66,51 @@ function login(){
       <div class="col">
         <div class="field"><label>Email</label><input id="email" type="email" autocomplete="username" placeholder="nome@azienda.it"></div>
         <div class="field"><label>Password</label><input id="pw" type="password" autocomplete="current-password"></div>
+        <div class="field hide" id="otpF"><label>Codice dell’app di autenticazione</label><input id="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="6 cifre"></div>
         <button class="btn block lg" id="go">Accedi</button>
         <div class="small" id="msg" style="color:var(--bad);min-height:16px"></div>
       </div></div></div></div>`;
-  $('#go').onclick=async()=>{ try{ await api('/superadmin/login',{method:'POST',
-    body:JSON.stringify({email:$('#email').value,password:$('#pw').value})}); shell();
-  }catch(e){ $('#msg').textContent=loginErrorText(e); } };
+  $('#go').onclick=async()=>{ try{
+    const body={email:$('#email').value,password:$('#pw').value}; if(!$('#otpF').classList.contains('hide')) body.otp=$('#otp').value;
+    const r=await api('/superadmin/login',{method:'POST',body:JSON.stringify(body)});
+    if(r&&(r.mfa_setup_required||r.secrets_locked)) return mfaGate(); shell();
+  }catch(e){
+    // SA-12: secondo fattore richiesto -> compare il campo del codice
+    if(e.body&&e.body.mfa_required){ $('#otpF').classList.remove('hide'); $('#otp').focus(); $('#msg').textContent=e.body.error||'Inserisci il codice'; return; }
+    $('#msg').textContent=loginErrorText(e); } };
   $('#pw').onkeydown=e=>{if(e.key==='Enter')$('#go').click();};
+  $('#otp').onkeydown=e=>{if(e.key==='Enter')$('#go').click();};
   // FE-12: credenziali di prova precompilate SOLO in ambiente demo/dev (default: produzione, campi vuoti).
   loginInfo().then(li=>{ if(!li.demo) return; const em=$('#email'), pw=$('#pw');
     if(em&&!em.value) em.value='admin@loneworker.eu'; if(pw&&!pw.value) pw.value='admin'; });
 }
 
+// ===== SA-12: attivazione MFA obbligatoria / chiave dei segreti bloccata =====
+async function mfaGate(){
+  let st; try{ st=await api('/superadmin/mfa'); }catch(e){ return login(); }
+  const wrap=inner=>`<div style="min-height:100vh;display:grid;place-items:center;padding:20px;background:var(--bg)"><div class="card" style="width:460px;max-width:100%"><div class="card-b">${inner}</div></div></div>`;
+  if(st.secrets_locked && st.enabled){
+    $('#root').innerHTML=wrap(`<h2 style="margin:0 0 8px">Chiave dei segreti bloccata</h2>
+      <div class="small mut" style="margin-bottom:10px">Questo server non apre la chiave che protegge i segreti, compreso il codice della tua app di autenticazione. Sbloccala con la <b>passphrase di recupero</b>; poi accedi di nuovo con il codice.</div>
+      <div class="field"><label>Passphrase di recupero</label><input id="rp" type="password" autocomplete="off"></div>
+      <button class="btn block" id="ub">Sblocca</button><div class="small" id="um" style="color:var(--bad);min-height:16px"></div>
+      <button class="btn ghost block" onclick="out()">Esci</button>`);
+    $('#ub').onclick=async()=>{ try{ await api('/superadmin/secrets/unlock',{method:'POST',body:JSON.stringify({passphrase:$('#rp').value})}); toast('Chiave sbloccata: accedi di nuovo con il codice','ok'); out(); }catch(e){ $('#um').textContent=friendlyError(e); } };
+    return; }
+  let su; try{ su=await api('/superadmin/mfa/setup',{method:'POST'}); }catch(e){ $('#root').innerHTML=wrap(`<div style="color:var(--bad)">${esc(friendlyError(e))}</div><button class="btn ghost" onclick="out()">Esci</button>`); return; }
+  const grp=String(su.secret).replace(/(.{4})/g,'$1 ').trim();
+  $('#root').innerHTML=wrap(`<h2 style="margin:0 0 8px">Attiva la verifica in due passaggi</h2>
+    <div class="small mut" style="margin-bottom:10px">Per il piano di controllo serve, oltre alla password, un codice che cambia ogni 30 secondi. Usa un’app di autenticazione (per esempio Google Authenticator, Microsoft Authenticator, FreeOTP).</div>
+    <ol class="small" style="padding-left:18px;margin:0 0 10px">
+      <li>Nell’app scegli «aggiungi account» e poi «inserisci una chiave», oppure, dal telefono, tocca <a href="${esc(su.otpauth)}">questo collegamento</a>.</li>
+      <li>Account: <b>${esc(st.email)}</b> · chiave: <code style="user-select:all">${esc(grp)}</code> · tipo: basato sull’ora.</li>
+      <li>Scrivi qui sotto il codice di 6 cifre che l’app mostra.</li></ol>
+    <div class="field"><label>Codice</label><input id="mc" inputmode="numeric" autocomplete="one-time-code" maxlength="7"></div>
+    <button class="btn block" id="mb">Attiva</button><div class="small" id="mm" style="color:var(--bad);min-height:16px"></div>
+    <button class="btn ghost block" onclick="out()">Esci</button>`);
+  $('#mc').focus(); $('#mc').onkeydown=e=>{if(e.key==='Enter')$('#mb').click();};
+  $('#mb').onclick=async()=>{ try{ await api('/superadmin/mfa/enable',{method:'POST',body:JSON.stringify({code:$('#mc').value})}); toast('Verifica in due passaggi attiva','ok'); shell(); }catch(e){ $('#mm').textContent=friendlyError(e); } };
+}
 async function shell(){
   $('#root').innerHTML=`
   <div class="topbar"><div class="logo" style="width:26px;height:26px">${ICON.logomark}</div><strong>Piano di controllo</strong>
@@ -183,6 +216,10 @@ async function shell(){
         <button class="btn ghost small" onclick="loadSecrets()">↻ aggiorna</button></div>
         <div class="card-b"><div class="small mut" style="margin-bottom:8px">La chiave che protegge i segreti (chiavi dei provider AI) è generata e custodita da YouWorkforce: nel database solo sigillata dal server e con la tua <b>passphrase di recupero</b>. Una copia del database da sola non basta per leggerli. La passphrase serve per sbloccare la chiave su un altro server (ripristino, migrazione): <b>conservala in un posto sicuro</b>, YouWorkforce non può recuperarla.</div>
         <div id="secBox"><div class="small mut">—</div></div></div></div>
+      <div class="card" style="margin-bottom:16px"><div class="card-h"><h2>Account superadmin</h2>
+        <div class="row" style="gap:6px"><button class="btn ghost small" onclick="saOwnPass()">Cambia la mia password</button><button class="btn small" onclick="saNew()">+ nuovo superadmin</button></div></div>
+        <div class="card-b"><div class="small mut" style="margin-bottom:8px">Chi può accedere al piano di controllo. Ogni account usa password e codice dell’app di autenticazione (verifica in due passaggi); ogni modifica è nel registro attività.</div>
+        <div id="saBox"><div class="small mut">—</div></div></div></div>
       <div class="card" style="margin-bottom:16px"><div class="card-h"><h2>Canali di consegna degli allarmi</h2>
         <button class="btn ghost small" onclick="loadChannels()">↻ aggiorna</button></div>
         <div class="card-b"><div class="small mut" style="margin-bottom:8px">Servono ad avvisare i reperibili che non hanno l’app aperta: SMS e chiamate (Twilio), Slack, email tramite relay. Sono le uniche connessioni esterne ammesse oltre all’AI. Le configuri solo tu; token e indirizzi del relay sono cifrati con la chiave dei segreti e non vengono più mostrati dopo il salvataggio.</div>
@@ -295,7 +332,31 @@ async function loadSystem(){
   loadAttempts();
   loadSecrets();
   loadChannels();
+  loadAdmins();
 }
+// ===== SA-12: gestione account superadmin =====
+async function loadAdmins(){ const box=$('#saBox'); if(!box) return;
+  let d; try{ d=await api('/superadmin/admins'); }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(friendlyError(e))}</div>`; return; }
+  const fmt=t=>t?new Date(t).toLocaleString('it-IT'):'mai';
+  box.innerHTML=`<table class="table"><thead><tr><th>Email</th><th>Verifica in due passaggi</th><th>Ultimo accesso</th><th>Stato</th><th></th></tr></thead><tbody>${(d.admins||[]).map(a=>{const me=a.id===d.me;return `<tr>
+    <td>${esc(a.email)}${me?' <span class="chip">tu</span>':''}</td>
+    <td>${a.mfa?'<span class="dot ok"></span>attiva':(d.mfa_required?'<span class="dot warn"></span>da attivare al prossimo accesso':'<span class="dot warn"></span>non attiva')}</td>
+    <td class="small">${esc(fmt(a.last_login_at))}</td>
+    <td>${a.disabled?'<span class="dot bad"></span>disattivato':'<span class="dot ok"></span>attivo'}</td>
+    <td class="small" style="white-space:nowrap">${me?'':`<button class="btn ghost small" onclick='saUpd(${jattr(a.id)},{disabled:${!a.disabled}})'>${a.disabled?'riattiva':'disattiva'}</button>
+      ${a.mfa?`<button class="btn ghost small" onclick='saResetMfa(${jattr(a.id)})'>azzera MFA</button>`:''}
+      <button class="btn ghost small" onclick='saResetPass(${jattr(a.id)})'>nuova password</button>`}</td></tr>`;}).join('')}</tbody></table>`; }
+async function saUpd(id,body){ try{ await api('/superadmin/admins/'+id,{method:'POST',body:JSON.stringify(body)}); toast('Account aggiornato','ok'); loadAdmins(); }catch(e){ toast(e,'bad'); } }
+async function saResetMfa(id){ if(!await askConfirm('Azzerare la verifica in due passaggi di questo account? Al prossimo accesso dovrà riattivarla (per esempio se ha perso il telefono).')) return; saUpd(id,{reset_mfa:true}); }
+async function saResetPass(id){ const v=await secAsk('Nuova password per questo account',['Nuova password (almeno 12 caratteri)','Ripeti la password'],'Comunicala alla persona in modo sicuro: le sue sessioni aperte vengono chiuse.'); if(!v) return;
+  if(v[0]!==v[1]) return toast('Le due password non coincidono','bad'); saUpd(id,{password:v[0]}); }
+async function saNew(){ const em=await askPrompt('Email del nuovo superadmin',''); if(!em) return;
+  const v=await secAsk('Password iniziale',['Password (almeno 12 caratteri)','Ripeti la password'],'Al primo accesso la persona dovrà attivare la verifica in due passaggi.'); if(!v) return;
+  if(v[0]!==v[1]) return toast('Le due password non coincidono','bad');
+  try{ await api('/superadmin/admins',{method:'POST',body:JSON.stringify({email:em,password:v[0]})}); toast('Superadmin creato','ok'); loadAdmins(); }catch(e){ toast(e,'bad'); } }
+async function saOwnPass(){ const v=await secAsk('Cambia la tua password',['Password attuale','Nuova password (almeno 12 caratteri)','Ripeti la nuova password'],'Le tue altre sessioni aperte vengono chiuse.'); if(!v) return;
+  if(v[1]!==v[2]) return toast('Le due password non coincidono','bad');
+  try{ await api('/superadmin/password',{method:'POST',body:JSON.stringify({current:v[0],new:v[1]})}); toast('Password cambiata','ok'); }catch(e){ toast(e,'bad'); } }
 // ===== SA-11: canali di consegna (eccezioni dichiarate, solo superadmin) =====
 const CHAN_SRC={superadmin:'impostato qui',installazione:'dalla configurazione di installazione','':'non impostato'};
 async function loadChannels(){ const box=$('#chanBox'); if(!box) return;
