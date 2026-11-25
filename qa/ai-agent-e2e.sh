@@ -58,7 +58,7 @@ login(){ curl -s -o /dev/null -c "$1" -X POST "$BASE/api/login" -H 'content-type
 csrf(){ awk '$6=="yw_csrf"{print $7}' "$1"|tail -1; }
 AD=$(mktemp); login "$AD" "admin@acme.loneworker.eu"; ACX=$(csrf "$AD")
 aapi(){ curl -s -b "$AD" -H 'x-tenant-slug: acme' -H "x-csrf-token: $ACX" "$@"; }
-aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"agent","enabled":true}' | grep -q '"ok":true' && ok "feature agent abilitata" || no "abilita agent fallito" "-"
+aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"agent","enabled":true,"privacy_ack":true}' | grep -q '"ok":true' && ok "feature agent abilitata" || no "abilita agent fallito" "-"
 
 # operatore session (scrive diario come se stesso)
 OPU=$(mktemp); login "$OPU" "operatore@acme.loneworker.eu"; OCX=$(csrf "$OPU")

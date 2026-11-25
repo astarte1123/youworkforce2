@@ -2253,12 +2253,19 @@ pub async fn scenario_ai_analysis(State(st): State<AppState>, h: HeaderMap, Path
 // - Abilitazione per-processo pilotata dall'admin del tenant (app.ai_features).
 // - Provider intercambiabile: contratto OpenAI-compatibile parametrico (path/model).
 // Invarianti di sicurezza: tenant/identita' SEMPRE dal contesto autenticato (mai dal
-// modello); l'API key non e' mai esposta ne' inviata come dato tenant; i processi AI sono
-// in SOLA LETTURA / proposta (nessuna azione critica eseguita dal modello); se la
+// modello); l'API key non e' mai esposta ne' inviata come dato tenant; nessuna azione sulla
+// catena di sicurezza e' eseguita dal modello (l'agente scrive solo note/diario/report e, dopo
+// aver letto dati, solo su conferma: IO-14); se la
 // connessione manca o fallisce, si degrada al piano deterministico locale senza mai
 // togliere l'inserimento manuale, il check-in o l'SOS.
 
 pub const AI_FEATURES: &[&str] = &["assistant","agent","incident_summary","sensor_suggest","checkin_anomaly","interventi_assist","consuntivi_summary","voice_diary"];
+/// IO-15 (decisione PO 25/11/2026): processi che mandano al provider AI dati personali (nomi,
+/// email, posizioni, note, audio). Partono SPENTI e si accendono solo con conferma dell'avviso
+/// privacy da parte dell'admin del tenant (registrata nell'audit). `sensor_suggest` lavora sui
+/// dati dei sensori e segue la regola generale (acceso con la connessione).
+pub const AI_PERSONAL_FEATURES: &[&str] = &["assistant","agent","incident_summary","checkin_anomaly","interventi_assist","consuntivi_summary","voice_diary"];
+fn ai_feature_default(feature: &str, configured: bool) -> bool { configured && !AI_PERSONAL_FEATURES.contains(&feature) }
 
 #[derive(Clone)]
 pub struct AiConn { pub provider: String, pub base_url: String, pub api_key: String, pub model: String, pub chat_path: String, pub stt_path: String }
@@ -2285,10 +2292,10 @@ pub async fn ai_conn(st: &AppState, tid: Uuid) -> Option<AiConn> {
 pub async fn ai_feature_on(st: &AppState, tid: Uuid, feature: &str) -> bool {
     if !module_active(st, tid, "assistant").await { return false; }
     if ai_conn(st, tid).await.is_none() { return false; }
-    // Auto: con un provider AI configurato le funzioni sono ATTIVE di default; l'admin può
-    // comunque disattivarne esplicitamente qualcuna (riga con enabled=false).
+    // IO-15: i processi su dati personali partono spenti; gli altri accesi con la connessione.
+    // La scelta esplicita dell'admin (riga in app.ai_features) vince sempre.
     sqlx::query_scalar::<_, bool>("SELECT enabled FROM app.ai_features WHERE tenant_id=$1 AND feature=$2")
-        .bind(tid).bind(feature).fetch_optional(&st.owner_pool).await.ok().flatten().unwrap_or(true)
+        .bind(tid).bind(feature).fetch_optional(&st.owner_pool).await.ok().flatten().unwrap_or_else(|| ai_feature_default(feature, true))
 }
 
 /// Compone base_url + path per l'endpoint AI, tollerando il caso comune in cui l'utente
@@ -2418,24 +2425,28 @@ pub async fn ai_features_get(State(st): State<AppState>, h: HeaderMap) -> R {
     let configured = ai_conn(&st, tid).await.is_some();
     let rows = sqlx::query("SELECT feature,enabled FROM app.ai_features WHERE tenant_id=$1")
         .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-    // default: ON quando il provider è configurato (altrimenti OFF); l'override esplicito vince.
+    // IO-15: processi su dati personali spenti finché l'admin non li accende; l'override vince.
     let mut map = serde_json::Map::new();
-    for f in AI_FEATURES { map.insert((*f).to_string(), json!(configured)); }
+    for f in AI_FEATURES { map.insert((*f).to_string(), json!(ai_feature_default(f, configured))); }
     for r in rows { map.insert(r.get::<String,_>("feature"), json!(r.get::<bool,_>("enabled"))); }
-    Ok(Json(json!({"connection_configured":configured,"features":map})))
+    Ok(Json(json!({"connection_configured":configured,"features":map,"personal":AI_PERSONAL_FEATURES})))
 }
 
 #[derive(Deserialize)]
-pub struct SetAiFeature { pub feature: String, pub enabled: bool }
+pub struct SetAiFeature { pub feature: String, pub enabled: bool, #[serde(default)] pub privacy_ack: bool }
 pub async fn ai_features_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SetAiFeature>) -> R {
     let s = require_tenant(&st, &h).await?;
     require_cap(&s, "settings.manage")?; // TA-4: permesso, non nome del ruolo
     let tid = s.tenant_id.unwrap();
     if !AI_FEATURES.contains(&b.feature.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "feature AI sconosciuta")); }
+    let personal = AI_PERSONAL_FEATURES.contains(&b.feature.as_str());
+    if b.enabled && personal && !b.privacy_ack {
+        return Err(err(StatusCode::BAD_REQUEST, "questo processo invia dati personali al provider AI: conferma l'avviso privacy per attivarlo"));
+    }
     sqlx::query("INSERT INTO app.ai_features(tenant_id,feature,enabled) VALUES($1,$2,$3)
         ON CONFLICT (tenant_id,feature) DO UPDATE SET enabled=EXCLUDED.enabled,updated_at=now()")
         .bind(tid).bind(&b.feature).bind(b.enabled).execute(&st.owner_pool).await.map_err(ise)?;
-    audit(&st, tid, &s.email, "set_ai_feature", json!({"feature":b.feature,"enabled":b.enabled})).await;
+    audit(&st, tid, &s.email, "set_ai_feature", json!({"feature":b.feature,"enabled":b.enabled,"personal_data":personal,"privacy_ack":b.privacy_ack && b.enabled})).await;
     Ok(Json(json!({"ok":true})))
 }
 
@@ -6892,33 +6903,9 @@ pub async fn place_device(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     Ok(Json(json!({"ok":true})))
 }
 
-// ----------------------------- #4 Geocoding inverso (Nominatim/OSM) -----------------------------
-/// Indirizzo da coordinate. Cache globale (coordinate arrotondate) per rispettare
-/// la usage policy di Nominatim. Richiede sessione tenant.
-pub async fn reverse_geocode(State(st): State<AppState>, h: HeaderMap,
-    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> R {
-    let _ = require_tenant(&st, &h).await?;
-    let lat: f64 = q.get("lat").and_then(|x| x.parse().ok()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "lat mancante"))?;
-    let lon: f64 = q.get("lon").and_then(|x| x.parse().ok()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "lon mancante"))?;
-    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) { return Err(err(StatusCode::BAD_REQUEST, "coordinate fuori range")); }
-    let (lk, ok) = (format!("{:.4}", lat), format!("{:.4}", lon));
-    if let Some(name) = sqlx::query_scalar::<_, String>("SELECT display_name FROM app.geocode_cache WHERE lat_key=$1::numeric AND lon_key=$2::numeric")
-        .bind(&lk).bind(&ok).fetch_optional(&st.owner_pool).await.map_err(ise)? {
-        return Ok(Json(json!({"address":name,"cached":true})));
-    }
-    let url = format!("https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lon}&zoom=18&addressdetails=0");
-    let resp = st.http.get(&url)
-        .header("User-Agent", "YouWorkforce/1.0 (lone-worker safety platform)")
-        .header("Accept-Language", "it")
-        .send().await.map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("geocoder non raggiungibile: {e}")))?;
-    if !resp.status().is_success() { return Err(err(StatusCode::BAD_GATEWAY, "geocoder: risposta non valida")); }
-    let body: Value = resp.json().await.map_err(|_| err(StatusCode::BAD_GATEWAY, "geocoder: json non valido"))?;
-    let name = body.get("display_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    if name.is_empty() { return Ok(Json(json!({"address":null,"cached":false}))); }
-    let _ = sqlx::query("INSERT INTO app.geocode_cache(lat_key,lon_key,display_name) VALUES($1::numeric,$2::numeric,$3) ON CONFLICT DO NOTHING")
-        .bind(&lk).bind(&ok).bind(&name).execute(&st.owner_pool).await;
-    Ok(Json(json!({"address":name,"cached":false})))
-}
+// TA-15 (decisione PO 25/11/2026): il server non fa più geocoding (prima chiamava Nominatim per
+// ogni scheda dispositivo aperta, mandando fuori le posizioni). L'indirizzo lo chiede il browser
+// dell'operatore, solo se lo vuole (pulsante «mostra indirizzo»).
 
 // ----------------------------- Ingest JSON HTTP nativo: posizioni -----------------------------
 /// Riceve posizioni `{position, device}` e aggiorna l'ultima posizione nota del device + lo

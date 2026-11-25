@@ -3761,7 +3761,7 @@ function devEdit(d){
     <div class="card pad" style="margin-bottom:var(--s-12)">
       <div class="spread"><b>Ultima posizione</b>${d.last_battery!=null?`<span class="tag">🔋 ${Math.round(d.last_battery)}%</span>`:''}</div>
       <div class="small mut" style="margin:var(--s-4) 0">${d.last_lat.toFixed(5)}, ${d.last_lon.toFixed(5)}${d.last_pos_at?' · '+new Date(d.last_pos_at).toLocaleString('it-IT'):''}</div>
-      <div id="addr" class="small" style="margin:var(--s-2) 0">📍 <span class="mut">indirizzo…</span></div>
+      <div id="addr" class="small" style="margin:var(--s-2) 0"></div>
       ${attrChips(d.last_attributes)}
       <div class="row" style="gap:var(--s-8);margin-top:var(--s-6)">
         <a class="btn ghost small" href="https://www.openstreetmap.org/?mlat=${d.last_lat}&mlon=${d.last_lon}#map=17/${d.last_lat}/${d.last_lon}" target="_blank" rel="noopener">Apri mappa</a>
@@ -3815,7 +3815,7 @@ function devEdit(d){
          <div class="small mut" style="margin-top:var(--s-2)">Richiede il device connesso via edge TCP nativo. Attende la risposta (max 5s).</div>
          <div id="gprsOut" class="small" style="margin-top:var(--s-4)"></div></div></div>`:''}
     <div class="cfg-msg small"></div></div>`);
-  if(!isNew && d.last_lat!=null && d.last_lon!=null) loadAddr(d.last_lat,d.last_lon);
+  if(!isNew && d.last_lat!=null && d.last_lon!=null) addrButton(d.last_lat,d.last_lon);
   if(!isNew && d.source==='gps'){ devCmds(d.id); devCmdTypes(d.id); }
   if(!isNew && d.id) devReadiness(d.id);
   if(!isNew && d.id) devTelem(d.id);
@@ -4008,10 +4008,16 @@ async function devReport(id,kind){ const out=$('#devRepOut'); if(!out)return; ou
   }catch(e){ out.innerHTML='<span style="color:var(--bad)">'+esc(friendlyError(e))+'</span>'; } }
 function devReportCsv(id,kind){ const r=_repRange();
   window.open('/api/devices/'+id+'/report/'+kind+'?from='+r.from+'&to='+r.to+'&csv=true','_blank'); }
+// TA-15: l'indirizzo lo chiede il BROWSER a OpenStreetMap, solo su richiesta dell'operatore
+// (il server YouWorkforce non contatta servizi esterni e non invia posizioni a nessuno)
+function addrButton(lat,lon){ const el=$('#addr'); if(!el)return;
+  el.innerHTML=`<button class="btn ghost small" onclick="loadAddr(${Number(lat)},${Number(lon)})" title="La richiesta parte dal tuo browser verso OpenStreetMap">📍 Mostra indirizzo</button>`; }
 async function loadAddr(lat,lon){ const el=$('#addr'); if(!el)return;
-  try{ const r=await api('/geocode/reverse?lat='+lat+'&lon='+lon);
-    el.innerHTML='📍 '+(r.address?esc(r.address):'<span class="mut">indirizzo non disponibile</span>'); }
-  catch(e){ el.innerHTML='📍 <span class="mut">geocoder non disponibile</span>'; } }
+  el.innerHTML='📍 <span class="mut">cerco l’indirizzo…</span>';
+  try{ const r=await fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=0&lat='+encodeURIComponent(lat)+'&lon='+encodeURIComponent(lon),{headers:{'Accept':'application/json','Accept-Language':'it'}});
+    const d=r.ok?await r.json():null;
+    el.innerHTML='📍 '+(d&&d.display_name?esc(d.display_name):'<span class="mut">indirizzo non disponibile</span>')+' <span class="small mut">(OpenStreetMap)</span>'; }
+  catch(e){ el.innerHTML='📍 <span class="mut">indirizzo non disponibile: OpenStreetMap non raggiungibile da questo browser</span>'; } }
 async function devSave(id){
   const m=$('.cfg-msg');
   const pick=(txt,list,key)=>{ if(!txt||!txt.trim())return null; const t=txt.trim().toLowerCase();
@@ -4214,7 +4220,7 @@ const AI_FEAT_LAB={
 const AI_FEAT_ORDER=['assistant','agent','incident_summary','sensor_suggest','checkin_anomaly','interventi_assist','consuntivi_summary','voice_diary'];
 async function vAI(v){
   let d; try{ d=await api('/ai/features'); }catch(e){ v.innerHTML='<div class="card pad" style="color:var(--bad)">'+esc(friendlyError(e))+'</div>'; return; }
-  const conf=d.connection_configured, F=d.features||{};
+  const conf=d.connection_configured, F=d.features||{}; AI_PERSONAL=d.personal||[];
   v.innerHTML=`<div class="page-h"><div><h1>AI · youworker.ai</h1><div class="mut">la piattaforma AI di YouCo, integrata nei processi della suite</div></div></div>
   <div class="card pad" style="margin-bottom:var(--s-14)"><div class="spread"><b>Connessione youworker.ai</b>
     ${conf?'<span class="chip s-attivo">configurata</span>':'<span class="chip">assente</span>'}</div>
@@ -4223,13 +4229,22 @@ async function vAI(v){
   <div class="card pad"><div class="card-h" style="padding:0 0 var(--s-10)"><h2>Processi AI</h2></div>
     <div class="col" style="gap:var(--s-10)">${AI_FEAT_ORDER.map(k=>{const L=AI_FEAT_LAB[k]||[k,''];const on=!!F[k];return `
       <div class="spread" style="align-items:flex-start;gap:var(--s-12);padding:var(--s-8) 0;border-bottom:1px solid var(--line)">
-        <div><b>${esc(L[0])}</b><div class="small mut">${esc(L[1])}</div></div>
+        <div><b>${esc(L[0])}</b>${AI_PERSONAL.includes(k)?' <span class="chip" title="Invia al provider AI dati personali: si attiva solo dopo l’avviso privacy">dati personali</span>':''}<div class="small mut">${esc(L[1])}</div></div>
         <label class="switch"><input type="checkbox" ${on?'checked':''} ${conf?'':'disabled'} onchange="aiFeatSet('${k}',this)"><span class="sl"></span></label>
       </div>`;}).join('')}</div>
     <div class="small mut" style="margin-top:var(--s-10)">Ogni processo è indipendente. Spegnere l'AI non rimuove mai l'inserimento manuale, il check-in o l'SOS. Le azioni sulla catena di sicurezza restano sempre manuali.</div></div>`;
 }
+// IO-15: i processi che inviano dati personali al provider AI si accendono solo dopo l'avviso privacy
+let AI_PERSONAL=[];
 async function aiFeatSet(feature,el){
-  try{ await api('/ai/features',{method:'POST',body:JSON.stringify({feature,enabled:el.checked})}); toast('Impostazione salvata','ok'); }
+  let privacy_ack=false;
+  if(el.checked && AI_PERSONAL.includes(feature)){
+    const L=AI_FEAT_LAB[feature]||[feature];
+    const ok=await askConfirm(`Attivare «${L[0]}»? Questo processo invia al provider AI configurato dati personali dell’azienda (per esempio nomi, email, posizioni, note o audio). Attivalo solo se il trattamento è coperto dalle vostre informative e dal contratto con il fornitore. La scelta resta registrata nel registro attività.`);
+    if(!ok){ el.checked=false; return; }
+    privacy_ack=true;
+  }
+  try{ await api('/ai/features',{method:'POST',body:JSON.stringify({feature,enabled:el.checked,privacy_ack})}); toast('Impostazione salvata','ok'); }
   catch(e){ el.checked=!el.checked; toast(e,'bad'); }
 }
 // ---------------- Agente AI (tool-calling che agisce su DB) ----------------

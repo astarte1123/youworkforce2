@@ -49,11 +49,19 @@ sapi -H 'content-type: application/json' -X POST "$BASE/api/superadmin/tenants/$
 F=$(aapi "$BASE/api/ai/features")
 echo "$F" | grep -q '"connection_configured":true' && ok "features: connessione vista configurata" || no "connection_configured errato" "$F"
 # 8) feature sconosciuta -> 400
-R=$(aapi -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"pippo","enabled":true}')
+R=$(aapi -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"pippo","enabled":true,"privacy_ack":true}')
 [ "$R" = "400" ] && ok "feature sconosciuta -> 400" || no "feature sconosciuta accettata" "$R"
 # 9) operatore non puo' impostare feature -> 403
-R=$(oapi -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"assistant","enabled":true}')
+R=$(oapi -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"assistant","enabled":true,"privacy_ack":true}')
 [ "$R" = "403" ] && ok "operatore non imposta feature -> 403" || no "operatore ha impostato feature" "$R"
+
+# 9b) IO-15: processi su dati personali spenti di default e accesi solo con l'avviso privacy
+sql "DELETE FROM app.ai_features WHERE tenant_id=$TIDQ AND feature='checkin_anomaly'" >/dev/null
+aapi "$BASE/api/ai/features" | python -c "import sys,json;d=json.load(sys.stdin);print(d['features']['checkin_anomaly'] is False and 'checkin_anomaly' in d['personal'])" | grep -q True \
+  && ok "processo su dati personali spento di default" || no "default personale" "-"
+R=$(aapi -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"checkin_anomaly","enabled":true}')
+[ "$R" = "400" ] && ok "attivazione senza avviso privacy rifiutata (400)" || no "privacy ack" "$R"
+sql "DELETE FROM app.ai_features WHERE tenant_id=$TIDQ AND feature='checkin_anomaly'" >/dev/null
 
 # 10) processo con feature OFF -> 403 (sintesi incidente). Con provider configurato le feature
 # sono ON di default: qui disattivo ESPLICITAMENTE incident_summary per testare il gating OFF.
@@ -65,8 +73,8 @@ if [ -n "$IID" ]; then
 fi
 
 # 11) abilita assistant + incident_summary
-aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"assistant","enabled":true}' | grep -q '"ok":true' && ok "abilita assistant" || no "abilita assistant fallito" "-"
-aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"incident_summary","enabled":true}' >/dev/null
+aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"assistant","enabled":true,"privacy_ack":true}' | grep -q '"ok":true' && ok "abilita assistant" || no "abilita assistant fallito" "-"
+aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/features" -d '{"feature":"incident_summary","enabled":true,"privacy_ack":true}' >/dev/null
 
 # 12) assistente: grounding resta (server AI giu' -> fallback deterministico, mai errore)
 A=$(oapi -H 'content-type: application/json' -X POST "$BASE/api/assistant" -d '{"q":"check-in scaduti"}')

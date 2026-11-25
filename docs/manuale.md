@@ -235,6 +235,12 @@ dati delimitati (`<dati>…</dati>`) con l'istruzione di non eseguire mai ordini
 Inoltre, dopo che l'agente ha letto dati del tenant (note, diari, messaggi dei dispositivi),
 **ogni scrittura** (anche una nota di diario) diventa una proposta da confermare: un testo letto
 non può far scrivere l'agente da solo. e2e `qa/ai-agent-e2e.sh` 19/19.
+**Dati personali e AI (IO-15, decisione PO 25/11/2026):** i processi che mandano al provider AI
+dati personali (assistente, agente, sintesi incidente, anomalie dei check-in, assistenza
+interventi, sintesi consuntivi, diario vocale) partono **spenti**. L'admin del tenant li accende
+uno per uno in *AI · youworker.ai*, dopo un avviso privacy; la conferma è nel registro attività
+(`set_ai_feature` con `privacy_ack`). Senza conferma l'API risponde 400. Il suggerimento delle
+regole dei sensori (`sensor_suggest`) non usa dati personali e si accende con la connessione.
 **Strumenti IoT nativi (IO-18):** `query_iot_alerts` (alert di processo non chiusi) e
 `iot_device_telemetry` (ultimi valori di un sensore), solo con il modulo IoT. Tolti gli strumenti
 ThingsBoard rimasti nell'elenco (il connettore è ritirato).

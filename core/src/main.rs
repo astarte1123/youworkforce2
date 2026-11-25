@@ -446,7 +446,6 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/ingress/gps/position", post(api::ingest_gps_position))
         .route("/api/ingress/osmand", get(api::ingest_osmand).post(api::ingest_osmand))
         .route("/api/devices/:id/positions", get(api::list_device_positions))
-        .route("/api/geocode/reverse", get(api::reverse_geocode))
         .route("/api/devices/:id/command", post(api::device_command))
         .route("/api/devices/:id/service", post(api::set_device_service))
         .route("/api/devices/:id/commands", get(api::list_device_commands))
