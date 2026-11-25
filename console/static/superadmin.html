@@ -86,6 +86,7 @@ async function shell(){
       <div class="tab on" data-t="panoramica" onclick="saTab('panoramica')">Panoramica</div>
       <div class="tab" data-t="tenant" onclick="saTab('tenant')">Tenant</div>
       <div class="tab" data-t="sistema" onclick="saTab('sistema')">Sistema</div>
+      <div class="tab" data-t="scenari" onclick="saTab('scenari')">Scenari IoT</div>
     </div>
 
     <div class="pane on" id="pane-panoramica">
@@ -182,6 +183,14 @@ async function shell(){
       <div class="card"><div class="card-h"><h2>Storico alert</h2></div>
         <div class="card-b" id="sysAlerts"><div class="small mut">—</div></div></div>
     </div>
+
+    <div class="pane" id="pane-scenari">
+      <div class="card"><div class="card-h"><h2>Catalogo scenari IoT</h2>
+        <button class="btn small" onclick="catEdit(null)">+ Nuovo scenario</button></div>
+        <div class="card-b"><div class="small mut" style="margin-bottom:8px">Ogni scenario è un caso d'uso IoT attivabile sui tenant: moduli da abilitare, regole sensori, dispositivi demo e cruscotto. Gli scenari predefiniti si possono modificare o disattivare ma non eliminare. Le modifiche valgono per le nuove attivazioni: per aggiornare un tenant riapplica lo scenario.</div>
+        <div id="catList"><div class="small mut">Carico…</div></div>
+        <div id="catForm" style="margin-top:12px"></div></div></div>
+    </div>
   </div>`;
   $('#c_go').onclick=create; ['c_cp','c_ca','c_ck','c_cs'].forEach(syncPair); slugPrev(); loadPlans(); load(); loadSystem();
 }
@@ -189,7 +198,75 @@ function saTab(k){
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.dataset.t===k));
   document.querySelectorAll('.pane').forEach(p=>p.classList.toggle('on',p.id==='pane-'+k));
   if(k==='sistema') loadSystem();
+  if(k==='scenari') catLoad();
 }
+// ===== IO-4: catalogo scenari IoT (DB) =====
+const CAT_OPS=[['>=','≥'],['<=','≤'],['>','>'],['<','<'],['==','='],['is_true','è vero'],['is_false','è falso']];
+const CAT_ET={sensore_critico:'Sensore critico',batteria_critica:'Batteria critica',man_down:'Uomo a terra',perdita_alimentazione:'Perdita alimentazione',telemetria:'Telemetria (nessun allarme)'};
+async function catLoad(){ const box=$('#catList'); if(!box) return;
+  let L=[]; try{ L=await api('/superadmin/scenarios'); }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; return; }
+  box.innerHTML=`<table class="table"><thead><tr><th>Scenario</th><th>Settore</th><th>Regole</th><th>Dispositivi demo</th><th>Stato</th><th></th></tr></thead><tbody>${
+    L.map(x=>`<tr><td><b>${esc(x.name)}</b><div class="small mut">${esc(x.desc||'')}</div></td><td class="small">${esc(x.sector||'—')}</td>
+      <td>${x.rule_count}</td><td>${x.device_count}</td>
+      <td>${x.enabled?'<span class="chip s-attivo">attivabile</span>':'<span class="chip">disattivato</span>'}${x.builtin?' <span class="chip" title="incluso nel prodotto">predefinito</span>':''}</td>
+      <td style="text-align:right;white-space:nowrap"><button class="btn ghost small" onclick="catEdit(${jattr(x.code)})">modifica</button>
+        <button class="btn ghost small" onclick="catToggle(${jattr(x.code)},${!x.enabled})">${x.enabled?'disattiva':'riattiva'}</button>
+        ${x.builtin?'':`<button class="btn ghost small" style="color:var(--bad)" onclick="catDel(${jattr(x.code)})">elimina</button>`}</td></tr>`).join('')
+    ||'<tr><td colspan="6" class="empty">Nessuno scenario</td></tr>'}</tbody></table>`; }
+function catRuleRow(r){ r=r||{}; return `<tr class="cat-rule">
+  <td><input data-k="metric" value="${esc(r.metric||'')}" placeholder="es. temperature" style="width:140px"></td>
+  <td><select data-k="op">${CAT_OPS.map(([v,l])=>`<option value="${v}" ${v===r.op?'selected':''}>${l}</option>`).join('')}</select></td>
+  <td><input data-k="threshold" type="number" step="any" value="${r.threshold??''}" style="width:90px"></td>
+  <td><select data-k="etype">${Object.entries(CAT_ET).map(([v,l])=>`<option value="${v}" ${v===r.etype?'selected':''}>${l}</option>`).join('')}</select></td>
+  <td><button class="btn-ico btn ghost" onclick="this.closest('tr').remove()" title="Togli">✕</button></td></tr>`; }
+function catDevRow(d){ d=d||{}; return `<tr class="cat-dev">
+  <td><input data-k="suffix" value="${esc(d.suffix||'')}" placeholder="es. meter-a" style="width:130px"></td>
+  <td><input data-k="label" value="${esc(d.label||'')}" placeholder="es. Contatore piano 1" style="width:240px"></td>
+  <td><button class="btn-ico btn ghost" onclick="this.closest('tr').remove()" title="Togli">✕</button></td></tr>`; }
+async function catEdit(code){ const box=$('#catForm');
+  let x={code:'',name:'',sector:'',descr:'',modules:['iot'],rules:[],devices:[],spec:null,ai_focus:'',enabled:true,builtin:false,tenants:0};
+  if(code){ try{ x=await api('/superadmin/scenario-catalog/'+encodeURIComponent(code)); }catch(e){ toast(e.message,'bad'); return; } }
+  box.innerHTML=`<div class="card" style="padding:14px;border:1px solid var(--line)">
+    <h3 style="margin:0 0 8px">${code?'Modifica «'+esc(x.name)+'»':'Nuovo scenario'}</h3>
+    ${code&&x.tenants?`<div class="small mut" style="margin-bottom:8px">Attivo su ${x.tenants} tenant: le modifiche valgono per le prossime attivazioni.</div>`:''}
+    <div class="ct-grid">
+      <div class="field"><label>Codice <span class="small mut">(lettere minuscole, cifre, _)</span></label><input id="cat_code" value="${esc(x.code)}" ${code?'disabled':''}></div>
+      <div class="field"><label>Nome</label><input id="cat_name" value="${esc(x.name)}"></div>
+      <div class="field"><label>Settore</label><input id="cat_sector" value="${esc(x.sector)}"></div>
+      <div class="field"><label>Moduli da abilitare <span class="small mut">(separati da virgola)</span></label><input id="cat_mods" value="${esc((x.modules||[]).join(', '))}"></div>
+      <div class="field span2"><label>Descrizione</label><input id="cat_descr" value="${esc(x.descr)}"></div>
+      <div class="field span2"><label>Indicazione per l'analisi AI <span class="small mut">(facoltativa)</span></label><input id="cat_ai" value="${esc(x.ai_focus||'')}"></div>
+    </div>
+    <div class="small" style="margin:10px 0 4px"><b>Regole sensori</b> <span class="mut">— quando un valore diventa un allarme</span></div>
+    <table class="table"><thead><tr><th>Metrica</th><th>Condizione</th><th>Soglia</th><th>Evento</th><th></th></tr></thead><tbody id="cat_rules">${(x.rules||[]).map(catRuleRow).join('')}</tbody></table>
+    <button class="btn ghost small" onclick="$('#cat_rules').insertAdjacentHTML('beforeend',catRuleRow())">+ regola</button>
+    <div class="small" style="margin:10px 0 4px"><b>Dispositivi demo</b> <span class="mut">— creati se si attiva lo scenario con la demo</span></div>
+    <table class="table"><thead><tr><th>Sigla</th><th>Nome</th><th></th></tr></thead><tbody id="cat_devs">${(x.devices||[]).map(catDevRow).join('')}</tbody></table>
+    <button class="btn ghost small" onclick="$('#cat_devs').insertAdjacentHTML('beforeend',catDevRow())">+ dispositivo demo</button>
+    <details style="margin-top:10px"><summary class="small mut">Cruscotto avanzato (spec JSON dei widget)</summary>
+      <textarea id="cat_spec" style="width:100%;height:160px;font-family:monospace;font-size:12px;margin-top:6px" placeholder="vuoto = widget derivati dalle regole">${x.spec?esc(JSON.stringify(x.spec,null,2)):''}</textarea></details>
+    <div class="row" style="gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn ghost" onclick="$('#catForm').innerHTML=''">Annulla</button>
+      <button class="btn" onclick="catSave(${jattr(code||'')})">Salva</button></div>
+    <div id="cat_msg" class="small" style="margin-top:6px"></div></div>`;
+  box.scrollIntoView({behavior:'smooth',block:'start'}); }
+async function catSave(code){ const m=$('#cat_msg'); m.textContent=''; m.style.color='';
+  let spec=null; const sp=$('#cat_spec').value.trim();
+  if(sp){ try{ spec=JSON.parse(sp); }catch(e){ m.style.color='var(--bad)'; m.textContent='Spec JSON non valida: '+e.message; return; } }
+  const rules=[...document.querySelectorAll('#cat_rules .cat-rule')].map(tr=>{ const g=k=>tr.querySelector(`[data-k="${k}"]`).value;
+    const t=g('threshold'); return {metric:g('metric').trim(),op:g('op'),threshold:t===''?null:Number(t),etype:g('etype')}; });
+  const devices=[...document.querySelectorAll('#cat_devs .cat-dev')].map(tr=>({suffix:tr.querySelector('[data-k="suffix"]').value.trim(),label:tr.querySelector('[data-k="label"]').value.trim()}));
+  const body={name:$('#cat_name').value.trim(),sector:$('#cat_sector').value.trim(),descr:$('#cat_descr').value.trim(),
+    modules:$('#cat_mods').value.split(',').map(x=>x.trim()).filter(Boolean),rules,devices,spec,ai_focus:$('#cat_ai').value.trim()||null};
+  try{ if(code){ await api('/superadmin/scenario-catalog/'+encodeURIComponent(code),{method:'POST',body:JSON.stringify(body)}); }
+       else { body.code=$('#cat_code').value.trim(); await api('/superadmin/scenario-catalog',{method:'POST',body:JSON.stringify(body)}); }
+    toast('Scenario salvato','ok'); $('#catForm').innerHTML=''; catLoad();
+  }catch(e){ m.style.color='var(--bad)'; m.textContent=e.message; } }
+async function catToggle(code,enabled){
+  try{ const x=await api('/superadmin/scenario-catalog/'+encodeURIComponent(code));
+    await api('/superadmin/scenario-catalog/'+encodeURIComponent(code),{method:'POST',body:JSON.stringify({name:x.name,sector:x.sector,descr:x.descr,modules:x.modules,rules:x.rules,devices:x.devices,spec:x.spec,ai_focus:x.ai_focus,enabled})});
+    toast(enabled?'Scenario riattivato':'Scenario disattivato: non si può più attivare sui tenant','ok'); catLoad(); }catch(e){ toast(e.message,'bad'); } }
+async function catDel(code){ if(!await askConfirm('Eliminare lo scenario dal catalogo?')) return;
+  try{ await api('/superadmin/scenario-catalog/'+encodeURIComponent(code),{method:'DELETE'}); toast('Scenario eliminato','ok'); catLoad(); }catch(e){ toast(e.message,'bad'); } }
 function toggleCreate(){ const c=$('#createCard'); const open=c.style.display==='none'; c.style.display=open?'':'none';
   $('#c_toggle').textContent=open?'× Chiudi':'+ Nuovo tenant'; if(open) $('#c_slug').focus(); }
 // ===== Stato sistema (monitoring) =====

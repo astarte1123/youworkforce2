@@ -78,6 +78,8 @@ fn superadmin_routes() -> Router<AppState> {
         .route("/api/superadmin/device-attempts", get(api::super_device_attempts))
         .route("/api/superadmin/system/settings", get(api::super_system_settings_get).post(api::super_system_settings_set))
         .route("/api/superadmin/scenarios", get(api::super_scenarios_list))
+        .route("/api/superadmin/scenario-catalog", post(api::super_scenario_create))
+        .route("/api/superadmin/scenario-catalog/:code", get(api::super_scenario_get).post(api::super_scenario_update).delete(api::super_scenario_delete))
         .route("/api/superadmin/tenants/:id/scenarios", get(api::super_tenant_scenarios).post(api::super_apply_scenario))
         .route("/api/superadmin/tenants/:id/scenarios/bulk", post(api::super_bulk_scenarios))
         .route("/api/superadmin/tenants/:id/map-visibility", get(api::super_map_visibility_get).post(api::super_map_visibility_set))
@@ -94,6 +96,7 @@ fn extra_routes() -> Router<AppState> {
     Router::new()
         // #7 GDPR
         .route("/api/gdpr/export/:uid", get(privacy::gdpr_export))
+        .route("/api/devices/:id/scenario", post(api::device_scenario_set))
         .route("/api/delivery-status", get(api::delivery_status_get))
         .route("/api/_test/stale-open-watchdog", post(api::test_stale_open_watchdog))
         // CA-8/CA-14: correzione dei consuntivi
@@ -180,6 +183,8 @@ async fn run() -> anyhow::Result<()> {
         started: std::time::Instant::now(),
         worker_heartbeat: Arc::new(std::sync::atomic::AtomicI64::new(0)),
     };
+    // IO-4: scenari IoT predefiniti nel catalogo DB (inserisce solo i mancanti)
+    api::seed_scenarios(&st).await;
     // P3: se la chiave e' presente, cifra a riposo i segreti ancora in chiaro.
     if st.secrets.enabled() {
         if let Err(e) = crypto_migrate(&st).await { tracing::warn!("crypto migrate: {e}"); }

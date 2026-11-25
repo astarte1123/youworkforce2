@@ -1234,98 +1234,265 @@ async fn oncall_cfg(st: &AppState, tid: Uuid) -> OncallCfg {
 // sensori (metrica/operatore/soglia -> etype) e, se richiesto, crea device + sito demo.
 // Reversibile (rimozione pulita di regole e demo). Catalogo parametrico nel codice.
 
-struct ScnRule { metric: &'static str, op: &'static str, threshold: Option<f64>, etype: &'static str }
-struct ScnDev { suffix: &'static str, label: &'static str }
-struct Scenario { code: &'static str, name: &'static str, sector: &'static str, desc: &'static str,
-    modules: Vec<&'static str>, rules: Vec<ScnRule>, devices: Vec<ScnDev> }
+struct BScnRule { metric: &'static str, op: &'static str, threshold: Option<f64>, etype: &'static str }
+struct BScnDev { suffix: &'static str, label: &'static str }
+struct BScenario { code: &'static str, name: &'static str, sector: &'static str, desc: &'static str,
+    modules: Vec<&'static str>, rules: Vec<BScnRule>, devices: Vec<BScnDev> }
 
-fn scenario_catalog() -> Vec<Scenario> {
+/// Scenari PREDEFINITI: sorgente del seed di app.iot_scenarios (IO-4). A runtime vale il DB.
+fn builtin_scenarios() -> Vec<BScenario> {
     // operatori numerici con soglia, oppure is_true/is_false (threshold None).
-    let r = |metric, op, threshold, etype| ScnRule{ metric, op, threshold, etype };
-    let d = |suffix, label| ScnDev{ suffix, label };
+    let r = |metric, op, threshold, etype| BScnRule{ metric, op, threshold, etype };
+    let d = |suffix, label| BScnDev{ suffix, label };
     let crit = "sensore_critico"; let tele = "telemetria";
     vec![
-      Scenario{ code:"smart_energy", name:"Smart Energy", sector:"Energia", desc:"Consumo elettrico per piano con uno smart meter per piano: tensione, corrente, frequenza, energia; allarmi su sovra/sotto-tensione e calo di frequenza.",
+      BScenario{ code:"smart_energy", name:"Smart Energy", sector:"Energia", desc:"Consumo elettrico per piano con uno smart meter per piano: tensione, corrente, frequenza, energia; allarmi su sovra/sotto-tensione e calo di frequenza.",
         modules:vec!["iot"],
         rules:vec![ r("voltage",">=",Some(253.0),crit), r("voltage","<=",Some(207.0),crit), r("frequency","<=",Some(49.5),crit), r("current",">=",Some(32.0),tele), r("energy_total",">=",Some(1000.0),tele) ],
         devices:vec![ d("meter-a","Smart Meter A (Piano 1)"), d("meter-b","Smart Meter B (Piano 2)"), d("meter-c","Smart Meter C (Piano 3)") ] },
-      Scenario{ code:"environment_monitoring", name:"Environment Monitoring", sector:"Ambiente", desc:"Monitoraggio ambientale indoor/outdoor con sensori multipli.",
+      BScenario{ code:"environment_monitoring", name:"Environment Monitoring", sector:"Ambiente", desc:"Monitoraggio ambientale indoor/outdoor con sensori multipli.",
         modules:vec!["iot"],
         rules:vec![ r("temperature",">=",Some(35.0),crit), r("humidity",">=",Some(85.0),tele), r("co2",">=",Some(1500.0),crit) ],
         devices:vec![ d("env-1","Sensore ambientale 1") ] },
-      Scenario{ code:"smart_office", name:"Smart Office", sector:"Edifici", desc:"Clima indoor ufficio, salute/sicurezza dipendenti, consumo risorse.",
+      BScenario{ code:"smart_office", name:"Smart Office", sector:"Edifici", desc:"Clima indoor ufficio, salute/sicurezza dipendenti, consumo risorse.",
         modules:vec!["iot"],
         rules:vec![ r("co2",">=",Some(1200.0),crit), r("temperature",">=",Some(30.0),tele), r("smoke","is_true",None,crit) ],
         devices:vec![ d("office-1","Sensore ufficio 1") ] },
-      Scenario{ code:"water_metering", name:"Water Metering", sector:"Utility", desc:"Consumo acqua dai contatori con rilevazione perdite/frodi.",
+      BScenario{ code:"water_metering", name:"Water Metering", sector:"Utility", desc:"Consumo acqua dai contatori con rilevazione perdite/frodi.",
         modules:vec!["iot"],
         rules:vec![ r("leak","is_true",None,crit), r("flow",">=",Some(100.0),tele), r("fraud","is_true",None,crit) ],
         devices:vec![ d("water-1","Contatore acqua 1") ] },
-      Scenario{ code:"smart_retail", name:"Smart Retail (catena freddo)", sector:"Retail", desc:"Frigo/freezer e asset di supermercato: qualita' alimentare e disponibilita'.",
+      BScenario{ code:"smart_retail", name:"Smart Retail (catena freddo)", sector:"Retail", desc:"Frigo/freezer e asset di supermercato: qualita' alimentare e disponibilita'.",
         modules:vec!["iot"],
         rules:vec![ r("temperature",">=",Some(8.0),crit), r("temperature","<=",Some(-25.0),crit), r("door_open","is_true",None,tele) ],
         devices:vec![ d("chiller-1","Frigo 1"), d("freezer-1","Freezer 1") ] },
-      Scenario{ code:"smart_farming", name:"Smart Farming", sector:"Agricoltura", desc:"Stoccaggio cereali in silos: livello, temperatura, umidità grano, aerazione. Allarmi su surriscaldamento, grano umido (muffa) e scorta bassa.",
+      BScenario{ code:"smart_farming", name:"Smart Farming", sector:"Agricoltura", desc:"Stoccaggio cereali in silos: livello, temperatura, umidità grano, aerazione. Allarmi su surriscaldamento, grano umido (muffa) e scorta bassa.",
         modules:vec!["iot"],
         rules:vec![ r("temperature",">=",Some(30.0),crit), r("moisture",">=",Some(25.0),crit), r("humidity",">=",Some(80.0),crit), r("crop_level","<=",Some(15.0),tele) ],
         devices:vec![ d("silo-a","Silo A"), d("silo-b","Silo B"), d("silo-c","Silo C") ] },
-      Scenario{ code:"site_fleet_tracking", name:"Site Fleet Tracking", sector:"Mezzi", desc:"Escavatori, camion e mezzi in cantiere/miniera: posizione e carburante.",
+      BScenario{ code:"site_fleet_tracking", name:"Site Fleet Tracking", sector:"Mezzi", desc:"Escavatori, camion e mezzi in cantiere/miniera: posizione e carburante.",
         modules:vec!["loneworker","iot"],
         rules:vec![ r("fuel","<=",Some(10.0),crit), r("engine_temp",">=",Some(110.0),crit) ],
         devices:vec![ d("vehicle-1","Mezzo 1") ] },
-      Scenario{ code:"smart_metering", name:"Smart Metering", sector:"Utility", desc:"Dati smart meter per consumo risorse: perdite, anomalie, frodi.",
+      BScenario{ code:"smart_metering", name:"Smart Metering", sector:"Utility", desc:"Dati smart meter per consumo risorse: perdite, anomalie, frodi.",
         modules:vec!["iot"],
         rules:vec![ r("leak","is_true",None,crit), r("fraud","is_true",None,crit), r("consumption",">=",Some(1000.0),tele) ],
         devices:vec![ d("smartmeter-1","Smart meter 1") ] },
-      Scenario{ code:"health_care", name:"Health Care (assisted living)", sector:"Sanita'", desc:"Metriche salute paziente da device connessi, allerta su variazioni critiche.",
+      BScenario{ code:"health_care", name:"Health Care (assisted living)", sector:"Sanita'", desc:"Metriche salute paziente da device connessi, allerta su variazioni critiche.",
         modules:vec!["loneworker","iot"],
         rules:vec![ r("heart_rate",">=",Some(120.0),crit), r("heart_rate","<=",Some(40.0),crit), r("fall","is_true",None,"man_down") ],
         devices:vec![ d("wearable-1","Wearable paziente 1") ] },
-      Scenario{ code:"air_quality", name:"Air Quality Monitoring", sector:"Ambiente", desc:"Qualita' dell'aria su piu' sedi: PM2.5, CO2, umidita', temperatura.",
+      BScenario{ code:"air_quality", name:"Air Quality Monitoring", sector:"Ambiente", desc:"Qualita' dell'aria su piu' sedi: PM2.5, CO2, umidita', temperatura.",
         modules:vec!["iot"],
         rules:vec![ r("pm25",">=",Some(35.0),crit), r("co2",">=",Some(1000.0),crit), r("humidity",">=",Some(90.0),tele), r("temperature",">=",Some(40.0),tele) ],
         devices:vec![ d("air-1","Centralina aria 1") ] },
-      Scenario{ code:"smart_irrigation", name:"Smart Irrigation", sector:"Agricoltura", desc:"Impianto di irrigazione e campi: umidita' suolo, posizione, statistiche.",
+      BScenario{ code:"smart_irrigation", name:"Smart Irrigation", sector:"Agricoltura", desc:"Impianto di irrigazione e campi: umidita' suolo, posizione, statistiche.",
         modules:vec!["iot"],
         rules:vec![ r("soil_moisture","<=",Some(15.0),crit), r("flow","<=",Some(1.0),tele) ],
         devices:vec![ d("irrig-1","Nodo irrigazione 1") ] },
-      Scenario{ code:"waste_management", name:"Waste Management", sector:"Utility", desc:"Cassonetti e raccolta: livello di riempimento e pattern di raccolta.",
+      BScenario{ code:"waste_management", name:"Waste Management", sector:"Utility", desc:"Cassonetti e raccolta: livello di riempimento e pattern di raccolta.",
         modules:vec!["iot"],
         rules:vec![ r("fill_level",">=",Some(90.0),crit), r("fill_level",">=",Some(70.0),tele) ],
         devices:vec![ d("bin-1","Cassonetto 1") ] },
-      Scenario{ code:"tank_level", name:"Tank Level Monitoring", sector:"Industria", desc:"Serbatoi carburante/acqua/chimici: livelli e trend di consumo.",
+      BScenario{ code:"tank_level", name:"Tank Level Monitoring", sector:"Industria", desc:"Serbatoi carburante/acqua/chimici: livelli e trend di consumo.",
         modules:vec!["iot"],
         rules:vec![ r("level","<=",Some(10.0),crit), r("level",">=",Some(95.0),crit) ],
         devices:vec![ d("tank-1","Serbatoio 1") ] },
-      Scenario{ code:"scada_pool", name:"SCADA Swimming Pool", sector:"SCADA", desc:"Sistemi piscina e processi industriali in tempo reale.",
+      BScenario{ code:"scada_pool", name:"SCADA Swimming Pool", sector:"SCADA", desc:"Sistemi piscina e processi industriali in tempo reale.",
         modules:vec!["iot"],
         rules:vec![ r("ph","<=",Some(6.8),crit), r("ph",">=",Some(7.8),crit), r("chlorine","<=",Some(0.5),crit), r("temperature",">=",Some(32.0),tele) ],
         devices:vec![ d("pool-1","Centralina piscina 1") ] },
-      Scenario{ code:"scada_oil_gas", name:"SCADA Oil & Gas Drilling", sector:"SCADA", desc:"Perforazione: parametri chiave (rig, pompe, BOP) con focus sicurezza.",
+      BScenario{ code:"scada_oil_gas", name:"SCADA Oil & Gas Drilling", sector:"SCADA", desc:"Perforazione: parametri chiave (rig, pompe, BOP) con focus sicurezza.",
         modules:vec!["iot"],
         rules:vec![ r("pressure",">=",Some(350.0),crit), r("gas",">=",Some(20.0),crit), r("vibration",">=",Some(80.0),crit) ],
         devices:vec![ d("rig-1","Rig 1") ] },
-      Scenario{ code:"scada_energy", name:"SCADA Energy Management", sector:"SCADA", desc:"Flussi energetici e infrastruttura: efficienza, picchi di domanda, costi.",
+      BScenario{ code:"scada_energy", name:"SCADA Energy Management", sector:"SCADA", desc:"Flussi energetici e infrastruttura: efficienza, picchi di domanda, costi.",
         modules:vec!["iot"],
         rules:vec![ r("demand_kw",">=",Some(500.0),crit), r("power_factor","<=",Some(0.8),tele) ],
         devices:vec![ d("grid-1","Nodo rete 1") ] },
     ]
 }
 
+// ---- IO-4 (25/11/2026): catalogo scenari nel DATABASE (app.iot_scenarios, mig 0143) ----
+/// Spec dei widget INCORPORATE nel binario (prima lette da file con percorso relativo).
+const BUILTIN_SPECS: &[(&str, &str)] = &[
+    ("air_quality", include_str!("../scenario_specs/air_quality.json")),
+    ("environment_monitoring", include_str!("../scenario_specs/environment_monitoring.json")),
+    ("health_care", include_str!("../scenario_specs/health_care.json")),
+    ("scada_energy", include_str!("../scenario_specs/scada_energy.json")),
+    ("scada_oil_gas", include_str!("../scenario_specs/scada_oil_gas.json")),
+    ("scada_pool", include_str!("../scenario_specs/scada_pool.json")),
+    ("site_fleet_tracking", include_str!("../scenario_specs/site_fleet_tracking.json")),
+    ("smart_energy", include_str!("../scenario_specs/smart_energy.json")),
+    ("smart_farming", include_str!("../scenario_specs/smart_farming.json")),
+    ("smart_irrigation", include_str!("../scenario_specs/smart_irrigation.json")),
+    ("smart_metering", include_str!("../scenario_specs/smart_metering.json")),
+    ("smart_office", include_str!("../scenario_specs/smart_office.json")),
+    ("smart_retail", include_str!("../scenario_specs/smart_retail.json")),
+    ("tank_level", include_str!("../scenario_specs/tank_level.json")),
+    ("waste_management", include_str!("../scenario_specs/waste_management.json")),
+    ("water_metering", include_str!("../scenario_specs/water_metering.json")),
+];
+#[derive(Clone, Debug)]
+struct ScnRule { metric: String, op: String, threshold: Option<f64>, etype: String }
+#[derive(Clone, Debug)]
+struct ScnDev { suffix: String, label: String }
+#[derive(Clone, Debug)]
+struct Scenario { code: String, name: String, sector: String, desc: String, modules: Vec<String>,
+    rules: Vec<ScnRule>, devices: Vec<ScnDev>, spec: Option<Value>, ai_focus: Option<String>, builtin: bool, enabled: bool }
+impl Scenario {
+    fn focus(&self) -> String { self.ai_focus.clone().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| scenario_ai_focus(&self.code).to_string()) }
+    fn from_row(r: &sqlx::postgres::PgRow) -> Scenario {
+        let rules: Vec<ScnRule> = r.try_get::<Value,_>("rules").ok().and_then(|v| v.as_array().cloned()).unwrap_or_default().iter()
+            .filter_map(|x| Some(ScnRule{ metric: x.get("metric")?.as_str()?.to_string(), op: x.get("op")?.as_str()?.to_string(),
+                threshold: x.get("threshold").and_then(|t| t.as_f64()), etype: x.get("etype")?.as_str()?.to_string() })).collect();
+        let devices: Vec<ScnDev> = r.try_get::<Value,_>("devices").ok().and_then(|v| v.as_array().cloned()).unwrap_or_default().iter()
+            .filter_map(|x| Some(ScnDev{ suffix: x.get("suffix")?.as_str()?.to_string(), label: x.get("label")?.as_str()?.to_string() })).collect();
+        Scenario{ code: r.get("code"), name: r.get("name"), sector: r.get("sector"), desc: r.get("descr"),
+            modules: r.try_get::<Vec<String>,_>("modules").unwrap_or_default(), rules, devices,
+            spec: r.try_get::<Option<Value>,_>("spec").ok().flatten(), ai_focus: r.try_get::<Option<String>,_>("ai_focus").ok().flatten(),
+            builtin: r.get("builtin"), enabled: r.get("enabled") }
+    }
+}
+/// Catalogo corrente dal DB (anche gli scenari disattivati: `enabled` dice se si possono applicare).
+async fn scenario_catalog(st: &AppState) -> Vec<Scenario> {
+    sqlx::query("SELECT code,name,sector,descr,modules,rules,devices,spec,ai_focus,builtin,enabled FROM app.iot_scenarios ORDER BY builtin DESC, name")
+        .fetch_all(&st.owner_pool).await.unwrap_or_default().iter().map(Scenario::from_row).collect()
+}
+/// Avvio: inserisce gli scenari predefiniti mancanti (mai sovrascrive quelli modificati dal superadmin).
+pub async fn seed_scenarios(st: &AppState) {
+    for b in builtin_scenarios() {
+        let spec: Option<Value> = BUILTIN_SPECS.iter().find(|(c, _)| *c == b.code).and_then(|(_, t)| serde_json::from_str(t).ok());
+        let rules: Vec<Value> = b.rules.iter().map(|r| json!({"metric":r.metric,"op":r.op,"threshold":r.threshold,"etype":r.etype})).collect();
+        let devs: Vec<Value> = b.devices.iter().map(|d| json!({"suffix":d.suffix,"label":d.label})).collect();
+        let mods: Vec<String> = b.modules.iter().map(|m| m.to_string()).collect();
+        if let Err(e) = sqlx::query("INSERT INTO app.iot_scenarios(code,name,sector,descr,modules,rules,devices,spec,builtin)
+                VALUES($1,$2,$3,$4,$5,$6,$7,$8,true) ON CONFLICT (code) DO NOTHING")
+            .bind(b.code).bind(b.name).bind(b.sector).bind(b.desc).bind(&mods).bind(json!(rules)).bind(json!(devs)).bind(spec)
+            .execute(&st.owner_pool).await { tracing::warn!("seed scenario {}: {e}", b.code); }
+    }
+}
 pub async fn super_scenarios_list(State(st): State<AppState>, h: HeaderMap) -> R {
     require_super(&st, &h).await?;
-    let out: Vec<Value> = scenario_catalog().iter().map(|s| json!({
+    let out: Vec<Value> = scenario_catalog(&st).await.iter().map(|s| json!({
         "code":s.code, "name":s.name, "sector":s.sector, "desc":s.desc,
-        "modules":s.modules, "rule_count":s.rules.len(), "device_count":s.devices.len() })).collect();
+        "modules":s.modules, "rule_count":s.rules.len(), "device_count":s.devices.len(),
+        "builtin":s.builtin, "enabled":s.enabled })).collect();
     Ok(Json(json!(out)))
+}
+// ---- IO-4: gestione del catalogo scenari (superadmin) ----
+#[derive(Deserialize)]
+pub struct ScenarioReq { pub code: Option<String>, pub name: String, #[serde(default)] pub sector: String,
+    #[serde(default)] pub descr: String, #[serde(default)] pub modules: Vec<String>, #[serde(default)] pub rules: Vec<Value>,
+    #[serde(default)] pub devices: Vec<Value>, #[serde(default)] pub spec: Option<Value>, #[serde(default)] pub ai_focus: Option<String>,
+    #[serde(default)] pub enabled: Option<bool> }
+/// Valida e normalizza moduli, regole e dispositivi demo di uno scenario.
+async fn scenario_validate(st: &AppState, b: &ScenarioReq) -> Result<(Vec<String>, Value, Value), (StatusCode,String)> {
+    let bad = |m: String| Err(err(StatusCode::BAD_REQUEST, &m));
+    if b.name.trim().is_empty() { return bad("nome richiesto".into()); }
+    let known: Vec<String> = sqlx::query_scalar("SELECT code FROM app.modules_catalog").fetch_all(&st.owner_pool).await.map_err(ise)?;
+    let mut mods: Vec<String> = b.modules.iter().map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).collect();
+    if mods.is_empty() { mods.push("iot".into()); }
+    for m in &mods { if !known.contains(m) { return bad(format!("modulo sconosciuto: {m}")); } }
+    let mut rules = Vec::new();
+    for (i, r) in b.rules.iter().enumerate() {
+        let metric = r.get("metric").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let op = r.get("op").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let etype = r.get("etype").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let thr = r.get("threshold").and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|x| x.trim().parse().ok())));
+        if metric.is_empty() { return bad(format!("regola {}: metrica richiesta", i+1)); }
+        if !RULE_OPS.contains(&op.as_str()) { return bad(format!("regola {}: operatore non valido", i+1)); }
+        if !RULE_ETYPES.contains(&etype.as_str()) { return bad(format!("regola {}: evento non ammesso", i+1)); }
+        let numeric = !matches!(op.as_str(), "is_true"|"is_false");
+        if numeric && thr.is_none() { return bad(format!("regola {}: soglia richiesta", i+1)); }
+        rules.push(json!({"metric":metric,"op":op,"threshold": if numeric { thr } else { None },"etype":etype}));
+    }
+    let mut devs = Vec::new();
+    for (i, d) in b.devices.iter().enumerate() {
+        let suffix = d.get("suffix").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
+        let label = d.get("label").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        if suffix.is_empty() || !suffix.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') || suffix.len() > 30 {
+            return bad(format!("dispositivo demo {}: sigla con sole lettere, cifre e trattini", i+1)); }
+        if label.is_empty() { return bad(format!("dispositivo demo {}: nome richiesto", i+1)); }
+        devs.push(json!({"suffix":suffix,"label":label}));
+    }
+    if let Some(sp) = &b.spec { if !sp.is_object() && !sp.is_null() { return bad("la spec deve essere un oggetto JSON".into()); } }
+    Ok((mods, json!(rules), json!(devs)))
+}
+pub async fn super_scenario_get(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>) -> R {
+    require_super(&st, &h).await?;
+    let r = sqlx::query("SELECT code,name,sector,descr,modules,rules,devices,spec,ai_focus,builtin,enabled,
+            (SELECT count(*) FROM app.tenant_scenarios t WHERE t.scenario_code=s.code) AS tenants FROM app.iot_scenarios s WHERE code=$1")
+        .bind(&code).fetch_optional(&st.owner_pool).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "scenario inesistente"))?;
+    Ok(Json(json!({"code":r.get::<String,_>("code"),"name":r.get::<String,_>("name"),"sector":r.get::<String,_>("sector"),
+        "descr":r.get::<String,_>("descr"),"modules":r.get::<Vec<String>,_>("modules"),"rules":r.get::<Value,_>("rules"),
+        "devices":r.get::<Value,_>("devices"),"spec":r.try_get::<Option<Value>,_>("spec").ok().flatten(),
+        "ai_focus":r.try_get::<Option<String>,_>("ai_focus").ok().flatten(),"builtin":r.get::<bool,_>("builtin"),
+        "enabled":r.get::<bool,_>("enabled"),"tenants":r.get::<i64,_>("tenants")})))
+}
+pub async fn super_scenario_create(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ScenarioReq>) -> R {
+    let s = require_super(&st, &h).await?;
+    let code = b.code.clone().unwrap_or_default().trim().to_lowercase();
+    if code.len() < 2 || code.len() > 40 || !code.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+        return Err(err(StatusCode::BAD_REQUEST, "codice: 2-40 caratteri, lettere minuscole, cifre e _")); }
+    let (mods, rules, devs) = scenario_validate(&st, &b).await?;
+    let n = sqlx::query("INSERT INTO app.iot_scenarios(code,name,sector,descr,modules,rules,devices,spec,ai_focus,enabled)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10,true)) ON CONFLICT (code) DO NOTHING")
+        .bind(&code).bind(b.name.trim()).bind(b.sector.trim()).bind(b.descr.trim()).bind(&mods).bind(&rules).bind(&devs)
+        .bind(&b.spec).bind(&b.ai_focus).bind(b.enabled).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+    if n == 0 { return Err(err(StatusCode::CONFLICT, "codice scenario già usato")); }
+    let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES(NULL,$1,'scenario_catalog_create',$2)")
+        .bind(&s.email).bind(json!({"code":code})).execute(&st.owner_pool).await;
+    Ok(Json(json!({"ok":true,"code":code})))
+}
+pub async fn super_scenario_update(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>, Json(b): Json<ScenarioReq>) -> R {
+    let s = require_super(&st, &h).await?;
+    let (mods, rules, devs) = scenario_validate(&st, &b).await?;
+    let n = sqlx::query("UPDATE app.iot_scenarios SET name=$2,sector=$3,descr=$4,modules=$5,rules=$6,devices=$7,spec=$8,ai_focus=$9,
+            enabled=COALESCE($10,enabled),updated_at=now() WHERE code=$1")
+        .bind(&code).bind(b.name.trim()).bind(b.sector.trim()).bind(b.descr.trim()).bind(&mods).bind(&rules).bind(&devs)
+        .bind(&b.spec).bind(&b.ai_focus).bind(b.enabled).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+    if n == 0 { return Err(err(StatusCode::NOT_FOUND, "scenario inesistente")); }
+    let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES(NULL,$1,'scenario_catalog_update',$2)")
+        .bind(&s.email).bind(json!({"code":code,"enabled":b.enabled})).execute(&st.owner_pool).await;
+    Ok(Json(json!({"ok":true,"note":"le regole già applicate ai tenant non cambiano: riapplica lo scenario per aggiornarle"})))
+}
+pub async fn super_scenario_delete(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>) -> R {
+    let s = require_super(&st, &h).await?;
+    let r = sqlx::query("SELECT builtin, (SELECT count(*) FROM app.tenant_scenarios t WHERE t.scenario_code=s.code) AS n FROM app.iot_scenarios s WHERE code=$1")
+        .bind(&code).fetch_optional(&st.owner_pool).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "scenario inesistente"))?;
+    if r.get::<bool,_>("builtin") { return Err(err(StatusCode::CONFLICT, "scenario predefinito: si disattiva, non si elimina")); }
+    if r.get::<i64,_>("n") > 0 { return Err(err(StatusCode::CONFLICT, "scenario attivo su alcuni tenant: rimuovilo prima da quei tenant")); }
+    sqlx::query("DELETE FROM app.iot_scenarios WHERE code=$1").bind(&code).execute(&st.owner_pool).await.map_err(ise)?;
+    let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES(NULL,$1,'scenario_catalog_delete',$2)")
+        .bind(&s.email).bind(json!({"code":code})).execute(&st.owner_pool).await;
+    Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)] pub struct DeviceScenarioReq { pub code: Option<String> }
+/// IO-4: collega un sensore REALE del tenant a uno scenario attivo (il cruscotto ne mostra la telemetria).
+pub async fn device_scenario_set(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<DeviceScenarioReq>) -> R {
+    let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
+    if !has_cap(&s, "iot.manage") && !has_cap(&s, "devices.admin") { return Err(err(StatusCode::FORBIDDEN, "permesso richiesto: IoT o amministrazione dispositivi")); }
+    let code = b.code.as_deref().map(|x| x.trim()).filter(|x| !x.is_empty());
+    if let Some(c) = code {
+        let ok: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app.tenant_scenarios WHERE tenant_id=$1 AND scenario_code=$2)")
+            .bind(tid).bind(c).fetch_one(&st.owner_pool).await.map_err(ise)?;
+        if !ok { return Err(err(StatusCode::BAD_REQUEST, "scenario non attivo per l'azienda")); }
+    }
+    let n = sqlx::query("UPDATE app.devices SET config = CASE WHEN $3::text IS NULL THEN config - 'scenario' ELSE config || jsonb_build_object('scenario',$3::text) END,
+            updated_at=now() WHERE id=$1 AND tenant_id=$2 AND source<>'scenario'")
+        .bind(id).bind(tid).bind(code).execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
+    if n == 0 { return Err(err(StatusCode::NOT_FOUND, "dispositivo inesistente (o demo)")); }
+    audit(&st, tid, &s.email, "device_scenario_set", json!({"device":id,"scenario":code})).await;
+    Ok(Json(json!({"ok":true})))
 }
 pub async fn super_tenant_scenarios(State(st): State<AppState>, h: HeaderMap, Path(tid): Path<Uuid>) -> R {
     require_super(&st, &h).await?;
     let rows = sqlx::query("SELECT scenario_code,with_demo,applied_by,applied_at FROM app.tenant_scenarios WHERE tenant_id=$1 ORDER BY applied_at")
         .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-    let cat = scenario_catalog();
+    let cat = scenario_catalog(&st).await;
     let out: Vec<Value> = rows.iter().map(|r| { let code: String = r.get("scenario_code");
-        let name = cat.iter().find(|s| s.code==code).map(|s| s.name).unwrap_or("?");
+        let name = cat.iter().find(|s| s.code==code).map(|s| s.name.clone()).unwrap_or_else(|| "?".into());
         json!({"code":code,"name":name,"with_demo":r.get::<bool,_>("with_demo"),
             "applied_by":r.get::<String,_>("applied_by"),"applied_at":r.get::<Dt,_>("applied_at").to_rfc3339()}) }).collect();
     Ok(Json(json!(out)))
@@ -1341,9 +1508,10 @@ pub async fn super_apply_scenario(State(st): State<AppState>, h: HeaderMap, Path
 }
 /// Logica pura di applicazione di uno scenario (riusata da apply singolo e bulk).
 /// Ritorna (code, rules_added, devices_added, modules).
-async fn scenario_apply_inner(st: &AppState, tid: Uuid, code: &str, with_demo: bool) -> Result<(String, i64, i64, Vec<&'static str>), (StatusCode, String)> {
-    let cat = scenario_catalog();
+async fn scenario_apply_inner(st: &AppState, tid: Uuid, code: &str, with_demo: bool) -> Result<(String, i64, i64, Vec<String>), (StatusCode, String)> {
+    let cat = scenario_catalog(st).await;
     let scn = cat.iter().find(|s| s.code==code).ok_or_else(|| err(StatusCode::BAD_REQUEST, "scenario sconosciuto"))?;
+    if !scn.enabled { return Err(err(StatusCode::CONFLICT, "scenario disattivato nel catalogo")); }
     // 1) moduli
     for m in &scn.modules {
         sqlx::query("INSERT INTO app.tenant_modules(tenant_id,module_code,state) VALUES($1,$2,'attivo')
@@ -1353,10 +1521,12 @@ async fn scenario_apply_inner(st: &AppState, tid: Uuid, code: &str, with_demo: b
     // 2) regole (idempotenti per label scn:<code>:<metric>:<op>)
     let mut rules_added = 0i64;
     for ru in &scn.rules {
-        let label = format!("scn:{}:{}:{}", scn.code, ru.metric, ru.op);
+        // IO-9: la soglia entra nell'etichetta (due regole sulla stessa metrica e operatore con soglie
+        // diverse non si scartano più a vicenda); la prima forma resta per le regole già inserite
+        let label = match ru.threshold { Some(t) => format!("scn:{}:{}:{}:{}", scn.code, ru.metric, ru.op, t), None => format!("scn:{}:{}:{}", scn.code, ru.metric, ru.op) };
         let n = sqlx::query("INSERT INTO app.sensor_rules(tenant_id,metric,op,threshold,etype,label,sort)
             SELECT $1,$2,$3,$4,$5,$6,100 WHERE NOT EXISTS(SELECT 1 FROM app.sensor_rules WHERE tenant_id=$1 AND label=$6)")
-            .bind(tid).bind(ru.metric).bind(ru.op).bind(ru.threshold).bind(ru.etype).bind(&label)
+            .bind(tid).bind(&ru.metric).bind(&ru.op).bind(ru.threshold).bind(&ru.etype).bind(&label)
             .execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
         rules_added += n as i64;
     }
@@ -1379,7 +1549,7 @@ async fn scenario_apply_inner(st: &AppState, tid: Uuid, code: &str, with_demo: b
             let n = sqlx::query("INSERT INTO app.devices(tenant_id,external_id,source,label,site_id,enabled,config,last_lat,last_lon,updated_at)
                 VALUES($1,$2,'scenario',$3,$4,true,$5,$6,$7,now())
                 ON CONFLICT (tenant_id,source,external_id) DO NOTHING")
-                .bind(tid).bind(&ext).bind(dev.label).bind(site_id).bind(json!({"scenario":scn.code})).bind(lat).bind(lon)
+                .bind(tid).bind(&ext).bind(&dev.label).bind(site_id).bind(json!({"scenario":scn.code})).bind(lat).bind(lon)
                 .execute(&st.owner_pool).await.map_err(ise)?.rows_affected();
             devices_added += n as i64;
         }
@@ -1441,8 +1611,8 @@ pub async fn super_bulk_scenarios(State(st): State<AppState>, h: HeaderMap, Path
         "apply" => {
             let with_demo = b.with_demo.unwrap_or(false);
             let (mut n, mut rules, mut devs) = (0i64, 0i64, 0i64);
-            for s in scenario_catalog() {
-                let (_c, r, d, _m) = scenario_apply_inner(&st, tid, s.code, with_demo).await?;
+            for s in scenario_catalog(&st).await.into_iter().filter(|s| s.enabled) {
+                let (_c, r, d, _m) = scenario_apply_inner(&st, tid, &s.code, with_demo).await?;
                 n += 1; rules += r; devs += d;
             }
             Ok(Json(json!({"ok":true,"action":"apply","applied":n,"rules_added":rules,"devices_added":devs})))
@@ -1489,14 +1659,14 @@ fn demo_normal_value(op: &str, thr: Option<f64>) -> Value {
 /// incidenti reali nella centrale.
 pub async fn super_scenario_demo(State(st): State<AppState>, h: HeaderMap, Path((tid,code)): Path<(Uuid,String)>) -> R {
     require_super(&st, &h).await?;
-    let cat = scenario_catalog();
+    let cat = scenario_catalog(&st).await;
     let scn = cat.iter().find(|s| s.code==code).ok_or_else(|| err(StatusCode::BAD_REQUEST, "scenario sconosciuto"))?;
     // nomi device demo (se lo scenario non ha device demo, usa un nome sintetico)
     let devs: Vec<String> = if scn.devices.is_empty() { vec![format!("scn-{}-demo", scn.code)] }
         else { scn.devices.iter().map(|d| format!("scn-{}-{}", scn.code, d.suffix)).collect() };
     // Telemetria demo: spec-driven (realistica, multi-metrica) se esiste la spec generata,
     // altrimenti derivata dalle regole (comportamento storico).
-    let spec = scenario_spec(scn.code);
+    let spec = scn.spec.clone();
     let mut payloads: Vec<Value> = Vec::new();
     if let Some(ms) = spec.as_ref().and_then(|s| s.get("metrics")).and_then(|m| m.as_array()) {
         use rand::Rng as _;
@@ -1524,10 +1694,10 @@ pub async fn super_scenario_demo(State(st): State<AppState>, h: HeaderMap, Path(
         for m in ms {
             if na >= 3 { break; }
             let k = m.get("key").and_then(|v| v.as_str()).unwrap_or("");
-            if let Some(rule) = scn.rules.iter().find(|r| r.metric==k && CRITICAL.contains(&r.etype)) {
+            if let Some(rule) = scn.rules.iter().find(|r| r.metric==k && CRITICAL.contains(&r.etype.as_str())) {
                 let mut p = serde_json::Map::new();
                 for mm in ms { if let Some(kk)=mm.get("key").and_then(|v| v.as_str()) { p.insert(kk.into(), normal_val(mm, &mut rng)); } }
-                let av = m.get("alarm").and_then(|v| v.as_f64()).map(|x| json!(x)).unwrap_or_else(|| demo_alarm_value(rule.op, rule.threshold));
+                let av = m.get("alarm").and_then(|v| v.as_f64()).map(|x| json!(x)).unwrap_or_else(|| demo_alarm_value(&rule.op, rule.threshold));
                 p.insert(k.into(), av);
                 payloads.push(Value::Object(p));
                 na += 1;
@@ -1535,11 +1705,11 @@ pub async fn super_scenario_demo(State(st): State<AppState>, h: HeaderMap, Path(
         }
     } else {
         let mut normal = serde_json::Map::new();
-        for ru in &scn.rules { normal.insert(ru.metric.to_string(), demo_normal_value(ru.op, ru.threshold)); }
+        for ru in &scn.rules { normal.insert(ru.metric.to_string(), demo_normal_value(&ru.op, ru.threshold)); }
         payloads.push(Value::Object(normal.clone()));
-        for ru in scn.rules.iter().filter(|r| CRITICAL.contains(&r.etype)).take(3) {
+        for ru in scn.rules.iter().filter(|r| CRITICAL.contains(&r.etype.as_str())).take(3) {
             let mut p = normal.clone();
-            p.insert(ru.metric.to_string(), demo_alarm_value(ru.op, ru.threshold));
+            p.insert(ru.metric.to_string(), demo_alarm_value(&ru.op, ru.threshold));
             payloads.push(Value::Object(p));
         }
     }
@@ -1594,13 +1764,13 @@ fn scenario_widgets(scn: &Scenario) -> Vec<Value> {
     let mut seen: Vec<&str> = Vec::new();
     let mut out: Vec<Value> = Vec::new();
     for ru in &scn.rules {
-        if seen.contains(&ru.metric) { continue; }
-        seen.push(ru.metric);
+        if seen.contains(&ru.metric.as_str()) { continue; }
+        seen.push(&ru.metric);
         let rules_m: Vec<&ScnRule> = scn.rules.iter().filter(|r| r.metric==ru.metric).collect();
-        let is_bool = rules_m.iter().any(|r| matches!(r.op, "is_true"|"is_false"));
-        let crit = rules_m.iter().find(|r| CRITICAL.contains(&r.etype)).and_then(|r| r.threshold);
+        let is_bool = rules_m.iter().any(|r| matches!(r.op.as_str(), "is_true"|"is_false"));
+        let crit = rules_m.iter().find(|r| CRITICAL.contains(&r.etype.as_str())).and_then(|r| r.threshold);
         let any_thr: Vec<f64> = rules_m.iter().filter_map(|r| r.threshold).collect();
-        let op = rules_m.iter().find(|r| CRITICAL.contains(&r.etype)).map(|r| r.op).unwrap_or(rules_m[0].op);
+        let op = rules_m.iter().find(|r| CRITICAL.contains(&r.etype.as_str())).map(|r| r.op.as_str()).unwrap_or(rules_m[0].op.as_str());
         let (min, max) = if is_bool { (0.0, 1.0) } else {
             let maxt = any_thr.iter().cloned().fold(f64::MIN, f64::max);
             let mint = any_thr.iter().cloned().fold(f64::MAX, f64::min);
@@ -1609,24 +1779,17 @@ fn scenario_widgets(scn: &Scenario) -> Vec<Value> {
             (lo, hi)
         };
         out.push(json!({
-            "metric": ru.metric, "label": metric_label(ru.metric), "unit": metric_unit(ru.metric),
+            "metric": ru.metric, "label": metric_label(&ru.metric), "unit": metric_unit(&ru.metric),
             "kind": if is_bool { "status" } else { "gauge" }, "op": op, "threshold": crit,
             "min": min, "max": max,
-            "critical": rules_m.iter().any(|r| CRITICAL.contains(&r.etype)),
+            "critical": rules_m.iter().any(|r| CRITICAL.contains(&r.etype.as_str())),
         }));
     }
     out
 }
 
-/// Spec di scenario GENERATA (dal progetto multiagentico da descrizione+immagini del sito):
-/// JSON opzionale in SCENARIO_SPECS_DIR/<code>.json che arricchisce widget/narrativa/demo.
-/// Additiva: se assente, si usa la derivazione dalle regole. Mai copia di asset del sito.
-fn scenario_spec(code: &str) -> Option<Value> {
-    let dir = std::env::var("SCENARIO_SPECS_DIR").unwrap_or_else(|_| "scenario_specs".into());
-    let path = std::path::Path::new(&dir).join(format!("{code}.json"));
-    let txt = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&txt).ok()
-}
+// IO-4: la spec dei widget (prima letta da SCENARIO_SPECS_DIR con percorso relativo) è nel campo
+// `spec` di app.iot_scenarios; i file in core/scenario_specs sono incorporati solo per il seed.
 /// Widget dal spec (se presente) altrimenti derivati dalle regole. Il spec definisce
 /// metrica/etichetta/unità/tipo/range; la soglia/direzione d'allarme viene dalle regole.
 fn scenario_widgets_spec(scn: &Scenario, spec: Option<&Value>) -> Vec<Value> {
@@ -1634,8 +1797,8 @@ fn scenario_widgets_spec(scn: &Scenario, spec: Option<&Value>) -> Vec<Value> {
         return ms.iter().map(|m| {
             let key = m.get("key").and_then(|v| v.as_str()).unwrap_or("");
             let rules_m: Vec<&ScnRule> = scn.rules.iter().filter(|r| r.metric==key).collect();
-            let critr = rules_m.iter().find(|r| CRITICAL.contains(&r.etype));
-            let op = critr.map(|r| r.op).or_else(|| rules_m.first().map(|r| r.op)).unwrap_or("");
+            let critr = rules_m.iter().find(|r| CRITICAL.contains(&r.etype.as_str()));
+            let op = critr.map(|r| r.op.as_str()).or_else(|| rules_m.first().map(|r| r.op.as_str())).unwrap_or("");
             json!({
                 "metric": key,
                 "label": m.get("label").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| metric_label(key)),
@@ -1657,7 +1820,7 @@ pub async fn tenant_scenarios_list(State(st): State<AppState>, h: HeaderMap) -> 
     let tid = s.tenant_id.unwrap();
     let rows = sqlx::query("SELECT scenario_code FROM app.tenant_scenarios WHERE tenant_id=$1 ORDER BY applied_at")
         .bind(tid).fetch_all(&st.owner_pool).await.map_err(ise)?;
-    let cat = scenario_catalog();
+    let cat = scenario_catalog(&st).await;
     let out: Vec<Value> = rows.iter().filter_map(|r| { let code: String = r.get("scenario_code");
         cat.iter().find(|s| s.code==code).map(|s| json!({"code":s.code,"name":s.name,"sector":s.sector})) }).collect();
     Ok(Json(json!(out)))
@@ -1698,16 +1861,32 @@ async fn scenario_applied<'a>(st: &AppState, tid: Uuid, code: &str, cat: &'a [Sc
 /// Dati completi del cruscotto: widget (valore/serie), KPI aggregati, device (coord mappa),
 /// multi-metrica, incidenti recenti. Riusato dal cruscotto e dall'analisi AI.
 async fn scenario_dash_json(st: &AppState, tid: Uuid, scn: &Scenario) -> Result<Value, (StatusCode,String)> {
-    let spec = scenario_spec(scn.code);
+    let spec = scn.spec.clone();
     let widgets = scenario_widgets_spec(scn, spec.as_ref());
     let narrative = spec.as_ref().and_then(|s| s.get("narrative")).and_then(|v| v.as_str()).map(|s| s.to_string());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let devs = sqlx::query("SELECT id,external_id,label,last_lat,last_lon,config FROM app.devices WHERE source='scenario' AND external_id LIKE $1 ORDER BY external_id")
-        .bind(format!("scn-{}-%", scn.code)).fetch_all(&mut *tx).await.map_err(ise)?;
+    // IO-4: dispositivi demo dello scenario + sensori REALI del tenant collegati allo scenario
+    let devs = sqlx::query("SELECT id,external_id,label,last_lat,last_lon,config,source FROM app.devices
+            WHERE (source='scenario' AND external_id LIKE $1) OR (source<>'scenario' AND config->>'scenario'=$2) ORDER BY source<>'scenario' DESC, external_id")
+        .bind(format!("scn-{}-%", scn.code)).bind(&scn.code).fetch_all(&mut *tx).await.map_err(ise)?;
     let ids: Vec<Uuid> = devs.iter().map(|r| r.get::<Uuid,_>("id")).collect();
-    let evs = if ids.is_empty() { Vec::new() } else {
+    let real_ids: Vec<Uuid> = devs.iter().filter(|r| r.get::<String,_>("source") != "scenario").map(|r| r.get::<Uuid,_>("id")).collect();
+    let mut evs: Vec<(Uuid, Value, Dt)> = if ids.is_empty() { Vec::new() } else {
         sqlx::query("SELECT device_id,payload_ref,origin_ts FROM app.events WHERE device_id = ANY($1) AND payload_ref IS NOT NULL ORDER BY origin_ts DESC LIMIT 400")
-            .bind(&ids).fetch_all(&mut *tx).await.map_err(ise)? };
+            .bind(&ids).fetch_all(&mut *tx).await.map_err(ise)?.iter()
+            .filter_map(|r| Some((r.try_get::<Uuid,_>("device_id").ok()?, r.try_get::<Value,_>("payload_ref").unwrap_or(json!({})), r.get::<Dt,_>("origin_ts")))).collect() };
+    // telemetria reale (time-series nativa): ogni lettura diventa un «payload» {metrica: valore}
+    if !real_ids.is_empty() {
+        let tel = sqlx::query("SELECT device_id, COALESCE(metric,key) AS m, num, str, ts FROM app.device_telemetry
+                WHERE device_id = ANY($1) ORDER BY ts DESC LIMIT 800").bind(&real_ids).fetch_all(&mut *tx).await.map_err(ise)?;
+        for r in &tel {
+            let v = r.try_get::<Option<f64>,_>("num").ok().flatten().map(|n| json!(n))
+                .or_else(|| r.try_get::<Option<String>,_>("str").ok().flatten().map(|x| json!(x))).unwrap_or(Value::Null);
+            let mut m = serde_json::Map::new(); m.insert(r.get::<String,_>("m"), v);
+            evs.push((r.get("device_id"), Value::Object(m), r.get("ts")));
+        }
+        evs.sort_by(|a, b| b.2.cmp(&a.2));
+    }
     let incs = if ids.is_empty() { Vec::new() } else {
         sqlx::query("SELECT i.etype,i.state,i.opened_at FROM app.incidents i JOIN app.events e ON e.id=i.event_id
             WHERE e.device_id = ANY($1) ORDER BY i.opened_at DESC LIMIT 10").bind(&ids).fetch_all(&mut *tx).await.map_err(ise)? };
@@ -1718,11 +1897,10 @@ async fn scenario_dash_json(st: &AppState, tid: Uuid, scn: &Scenario) -> Result<
         sqlx::query_scalar("SELECT count(*) FROM app.events WHERE device_id = ANY($1) AND origin_ts > now()-interval '24 hours'")
             .bind(&ids).fetch_one(&mut *tx).await.map_err(ise)? };
     tx.commit().await.ok();
-    let payloads: Vec<(Value, Dt)> = evs.iter().map(|r| (r.try_get::<Value,_>("payload_ref").unwrap_or(json!({})), r.get::<Dt,_>("origin_ts"))).collect();
+    let payloads: Vec<(Value, Dt)> = evs.iter().map(|(_, p, t)| (p.clone(), *t)).collect();
     // storico per-device (per il raggruppamento a silos)
     let mut by_dev: std::collections::HashMap<Uuid, Vec<(Value, Dt)>> = std::collections::HashMap::new();
-    for r in &evs { if let Ok(did) = r.try_get::<Uuid,_>("device_id") {
-        by_dev.entry(did).or_default().push((r.try_get::<Value,_>("payload_ref").unwrap_or(json!({})), r.get::<Dt,_>("origin_ts"))); } }
+    for (did, p, t) in &evs { by_dev.entry(*did).or_default().push((p.clone(), *t)); }
     let mut alarms_now = 0i64;
     let widgets_out: Vec<Value> = widgets.into_iter().map(|mut w| {
         let metric = w["metric"].as_str().unwrap_or("").to_string();
@@ -1745,7 +1923,8 @@ async fn scenario_dash_json(st: &AppState, tid: Uuid, scn: &Scenario) -> Result<
     let incidents: Vec<Value> = incs.iter().map(|r| json!({"etype":r.get::<String,_>("etype"),
         "state":r.get::<String,_>("state"),"at":r.get::<Dt,_>("opened_at").to_rfc3339()})).collect();
     let devices: Vec<Value> = devs.iter().map(|r| json!({"external_id":r.get::<String,_>("external_id"),
-        "label":r.try_get::<String,_>("label").ok(),"lat":r.try_get::<f64,_>("last_lat").ok(),"lon":r.try_get::<f64,_>("last_lon").ok()})).collect();
+        "label":r.try_get::<String,_>("label").ok(),"lat":r.try_get::<f64,_>("last_lat").ok(),"lon":r.try_get::<f64,_>("last_lon").ok(),
+        "real": r.get::<String,_>("source") != "scenario"})).collect();
     // --- Raggruppamento a "silos" (device): una scheda per device con tutte le metriche spec ---
     let grouped = spec.as_ref().and_then(|s| s.get("grouped")).and_then(|v| v.as_str()) == Some("device");
     let spec_metrics: Vec<(String, Value)> = spec.as_ref().and_then(|s| s.get("metrics")).and_then(|m| m.as_array())
@@ -1762,9 +1941,9 @@ async fn scenario_dash_json(st: &AppState, tid: Uuid, scn: &Scenario) -> Result<
             let mut val: Option<Value> = None;
             if let Some(h) = hist { for (p, _ts) in h { if let Some(v) = p.get(k) { val = Some(v.clone()); break; } } }
             if k == "aeration" && val.is_none() { if let Some(a) = cfg.get("aeration") { val = Some(a.clone()); } }
-            let rule = scn.rules.iter().find(|rr| rr.metric==k.as_str() && CRITICAL.contains(&rr.etype));
+            let rule = scn.rules.iter().find(|rr| rr.metric==k.as_str() && CRITICAL.contains(&rr.etype.as_str()));
             let tripped = if let (Some(v), Some(ru)) = (val.as_ref().and_then(|x| x.as_f64()), rule) {
-                match ru.op { ">="=>ru.threshold.map(|t|v>=t).unwrap_or(false), ">"=>ru.threshold.map(|t|v>t).unwrap_or(false),
+                match ru.op.as_str() { ">="=>ru.threshold.map(|t|v>=t).unwrap_or(false), ">"=>ru.threshold.map(|t|v>t).unwrap_or(false),
                     "<="=>ru.threshold.map(|t|v<=t).unwrap_or(false), "<"=>ru.threshold.map(|t|v<t).unwrap_or(false), _=>false }
             } else { false };
             if tripped { silo_alarm = true; }
@@ -1787,10 +1966,10 @@ async fn scenario_dash_json(st: &AppState, tid: Uuid, scn: &Scenario) -> Result<
             "metrics": metrics, "alarm": silo_alarm, "aeration": aer, "primary_series": series })
     }).collect() };
     Ok(json!({
-        "code":scn.code, "name":scn.name, "sector":scn.sector, "ai_focus":scenario_ai_focus(scn.code),
+        "code":scn.code, "name":scn.name, "sector":scn.sector, "ai_focus":scn.focus(),
         "narrative": narrative, "generated": spec.is_some(),
         "grouped": grouped, "group_label": group_label, "primary_metric": primary, "silos": silos,
-        "device_count": devs.len(), "widgets": widgets_out, "incidents": incidents, "devices": devices,
+        "device_count": devs.len(), "real_device_count": real_ids.len(), "widgets": widgets_out, "incidents": incidents, "devices": devices,
         "kpis": {"device_count":devs.len(),"open_incidents":open_inc,"events_24h":ev24,"metrics_tracked":widgets_out.len(),"alarms_now":alarms_now}
     }))
 }
@@ -1799,7 +1978,7 @@ async fn scenario_dash_json(st: &AppState, tid: Uuid, scn: &Scenario) -> Result<
 pub async fn scenario_dashboard(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
-    let cat = scenario_catalog();
+    let cat = scenario_catalog(&st).await;
     let scn = scenario_applied(&st, tid, &code, &cat).await?;
     Ok(Json(scenario_dash_json(&st, tid, scn).await?))
 }
@@ -1811,7 +1990,7 @@ pub async fn scenario_aeration_set(State(st): State<AppState>, h: HeaderMap, Pat
     let s = require_tenant(&st, &h).await?;
     if !has_cap(&s,"devices.manage") { return Err(err(StatusCode::FORBIDDEN, "ruolo non abilitato")); }
     let tid = s.tenant_id.unwrap();
-    let cat = scenario_catalog();
+    let cat = scenario_catalog(&st).await;
     let _scn = scenario_applied(&st, tid, &code, &cat).await?;
     // device deve appartenere a questo scenario
     let dev = sqlx::query("SELECT external_id, config FROM app.devices WHERE id=$1 AND tenant_id=$2 AND source='scenario' AND external_id LIKE $3")
@@ -1838,7 +2017,7 @@ pub struct ScnAnalysisReq { pub save: Option<bool> }
 pub async fn scenario_ai_analysis(State(st): State<AppState>, h: HeaderMap, Path(code): Path<String>, Json(b): Json<ScnAnalysisReq>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
-    let cat = scenario_catalog();
+    let cat = scenario_catalog(&st).await;
     let scn = scenario_applied(&st, tid, &code, &cat).await?;
     if !module_active(&st, tid, "assistant").await { return Err(err(StatusCode::FORBIDDEN, "modulo assistant non abilitato")); }
     let c = ai_conn(&st, tid).await.ok_or_else(|| err(StatusCode::BAD_REQUEST, "provider AI non configurato (superadmin)"))?;
@@ -1846,16 +2025,16 @@ pub async fn scenario_ai_analysis(State(st): State<AppState>, h: HeaderMap, Path
     let sys = format!("Sei un analista IoT di YouWorkforce per lo scenario «{}» (settore {}). {} \
         Usa SOLO i fatti forniti (widget con valori/serie, KPI, incidenti). Non inventare numeri. \
         Rispondi in italiano, breve e strutturato (stato, anomalie, azioni consigliate). Non agire \
-        sulla catena di sicurezza: resta manuale.", scn.name, scn.sector, scenario_ai_focus(scn.code));
+        sulla catena di sicurezza: resta manuale.", scn.name, scn.sector, scn.focus());
     let user = format!("Dati cruscotto: {}", serde_json::to_string(&facts).unwrap_or_default());
     let analysis = ai_chat(&st, &c, &sys, &user).await.map_err(|e| err(StatusCode::BAD_GATEWAY, &e))?;
     let mut report_id: Option<Uuid> = None;
     if b.save.unwrap_or(false) {
         let title = format!("Analisi {} — {}", scn.name, st.clock.now().format("%Y-%m-%d %H:%M"));
-        report_id = Some(ai_report_save(&st, &s, scn.code, &title, &analysis, json!({"scenario":scn.code})).await?);
+        report_id = Some(ai_report_save(&st, &s, &scn.code, &title, &analysis, json!({"scenario":scn.code})).await?);
     }
     audit(&st, tid, &s.email, "scenario_ai_analysis", json!({"code":scn.code,"saved":report_id.is_some()})).await;
-    Ok(Json(json!({"provider":c.provider,"analysis":analysis,"ai_focus":scenario_ai_focus(scn.code),"report_id":report_id})))
+    Ok(Json(json!({"provider":c.provider,"analysis":analysis,"ai_focus":scn.focus(),"report_id":report_id})))
 }
 
 // ======================= youworker.ai — piattaforma AI di YouCo =======================
@@ -7920,7 +8099,7 @@ async fn validate_rule_scope(st: &AppState, tid: Uuid, kind: &str, sref: Option<
         }
         "scenario" => {
             let Some(c) = r else { return bad("scegli lo scenario"); };
-            if scenario_catalog().iter().any(|s| s.code == c) { Ok(Some(c.to_string())) } else { bad("scenario sconosciuto") }
+            if scenario_catalog(st).await.iter().any(|s| s.code == c) { Ok(Some(c.to_string())) } else { bad("scenario sconosciuto") }
         }
         _ => bad("ambito non valido"),
     }
@@ -7944,7 +8123,7 @@ pub async fn list_sensor_rules(State(st): State<AppState>, h: HeaderMap) -> R {
           ORDER BY r.sort,r.created_at")
         .fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    let cat = scenario_catalog();
+    let cat = scenario_catalog(&st).await;
     let out: Vec<Value> = rows.iter().map(|r| {
         let kind: String = r.get("scope_kind"); let sref: Option<String> = r.try_get("scope_ref").ok().flatten();
         let scope_label = match kind.as_str() {

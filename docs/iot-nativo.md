@@ -159,6 +159,30 @@ l'ingest dei sensori e il downlink dei comandi. Disattivabile con `YW_MQTT_PORT=
 - Integra con **Lone Worker** (le soglie diventano incidenti con escalation), **Vigilanza/Cantieri**
   (i device sul campo), **Mappa dispositivi** (posizioni live).
 
+## Catalogo scenari IoT (IO-4, mig `0143`)
+
+- **Prima:** il catalogo dei casi d'uso era scritto nel codice e la spec dei widget si leggeva
+  da file con percorso relativo (`scenario_specs/`). Se il core partiva da un'altra cartella, i
+  cruscotti perdevano i widget.
+- **Ora:** il catalogo è la tabella `app.iot_scenarios`: codice, nome, settore, descrizione,
+  moduli, regole, dispositivi demo, spec dei widget, indicazione per l'AI, predefinito, attivo.
+  - All'avvio `seed_scenarios` inserisce i 16 scenari predefiniti mancanti, con la spec
+    incorporata nel binario (`BUILTIN_SPECS`). Non sovrascrive mai quelli modificati.
+- **Superadmin, scheda «Scenari IoT»:** crea, modifica, disattiva ed elimina gli scenari.
+  - Un predefinito si disattiva ma non si elimina.
+  - Uno scenario attivo su qualche tenant non si elimina.
+  - Uno scenario disattivato non si può più attivare.
+  - Le modifiche valgono per le nuove attivazioni: per aggiornare un tenant si riapplica lo scenario.
+  - API: `GET/POST /api/superadmin/scenario-catalog[/:code]`, `DELETE /api/superadmin/scenario-catalog/:code`.
+- **Sensori reali:** nella scheda di un dispositivo, il riquadro «Scenario IoT» (permesso
+  `iot.manage` o `devices.admin`) collega il sensore a uno scenario attivo per l'azienda
+  (`POST /api/devices/:id/scenario {code}`).
+  - Il cruscotto dello scenario mostra i dispositivi demo e i sensori collegati, con i valori
+    dalla telemetria nativa (`device_telemetry`). Prima mostrava solo i dati demo.
+- **Regole con la stessa metrica (IO-9):** due regole sulla stessa metrica e con lo stesso
+  operatore, con soglie diverse, non si scartano più a vicenda: la soglia entra nell'etichetta.
+- e2e `qa/scenario-catalog-e2e.sh` **18/18**.
+
 ## Tenant demo
 
 `iot` (IoT Demo SpA, `admin@iot.loneworker.eu` / `demo`) con dispositivi e telemetria d'esempio.

@@ -9,17 +9,33 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::state::AppState;
-use crate::api::{R, require_tenant, require_cap, require_grantable, user_caps, effective_caps, license_overage, ise, err, audit, USER_ROLES, is_e164};
+use crate::api::{R, require_tenant, require_cap, has_cap, require_grantable, user_caps, effective_caps, license_overage, ise, err, audit, USER_ROLES, is_e164};
 use crate::{db, auth};
 
+/// TA-10 (25/11/2026): prima ogni utente (anche un lavoratore) leggeva email, ruolo e telefono di
+/// tutti. Ora:
+/// - telefono: solo a chi gestisce utenti o escalation, o gestisce gli allarmi (deve poter
+///   chiamare il lavoratore in emergenza);
+/// - elenco (email e ruolo): a chi coordina (pianifica, segue allarmi, approva, amministra…);
+/// - chi non ha nessuna di queste capability vede solo sé stesso.
 pub async fn list_users(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
+    let phones = ["users.manage","escalation.manage","incidents.handle"].iter().any(|c| has_cap(&s, c));
+    let directory = phones || ["plan","incidents.view","approve","timesheets.view_all","orders.view_all","devices.admin",
+        "devices.manage","iot.manage","audit.view","gdpr.manage","settings.manage","dashboard.manage","config.view"]
+        .iter().any(|c| has_cap(&s, c));
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT id,email,role,phone FROM app.users ORDER BY role,email").fetch_all(&mut *tx).await.map_err(ise)?;
+    let rows = if directory {
+        sqlx::query("SELECT id,email,role,phone FROM app.users ORDER BY role,email").fetch_all(&mut *tx).await
+    } else {
+        sqlx::query("SELECT id,email,role,phone FROM app.users WHERE id=$1").bind(s.user_id).fetch_all(&mut *tx).await
+    }.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    let out: Vec<Value> = rows.iter().map(|r| json!({
-        "id": r.get::<Uuid,_>("id"), "email": r.get::<String,_>("email"), "role": r.get::<String,_>("role"),
-        "phone": r.try_get::<String,_>("phone").ok() })).collect();
+    let out: Vec<Value> = rows.iter().map(|r| {
+        let id: Uuid = r.get("id");
+        json!({
+        "id": id, "email": r.get::<String,_>("email"), "role": r.get::<String,_>("role"),
+        "phone": if phones || id == s.user_id { r.try_get::<String,_>("phone").ok() } else { None } }) }).collect();
     Ok(Json(json!(out)))
 }
 

@@ -3735,6 +3735,10 @@ function devEdit(d){
     <label class="row" style="gap:var(--s-8)"><input type="checkbox" id="dEn" ${d.enabled?'checked':''}> <span>Abilitato</span></label>
     <div class="row" style="gap:var(--s-8);margin-top:var(--s-8)"><button class="btn grow" onclick="devSave('${d.id||''}')">Salva</button>
       ${d.id?`<button class="btn ghost" onclick="devDel('${d.id}')">Elimina</button>`:''}</div>
+    ${(!isNew && d.source!=='scenario' && (hasCap('iot.manage')||hasCap('devices.admin')))?`<div class="card pad" style="margin-top:var(--s-8)"><b class="small">Scenario IoT</b>
+       <div class="small mut" style="margin:var(--s-4) 0">Collega il sensore a uno scenario attivo: il suo cruscotto mostrerà i valori reali di questo dispositivo.</div>
+       <div class="row" style="gap:var(--s-6)"><select id="devScn" class="grow"><option value="">— nessuno —</option></select>
+       <button class="btn ghost small" onclick="devScnSave('${d.id}')">Salva</button></div></div>`:''}
     ${(!isNew && d.source==='gps')?devLinkCard(d):''}
     ${(!isNew && d.source==='gps')?devServiceCard(d):''}
     ${(!isNew && d.source==='gps')?`<div class="card pad" style="margin-top:var(--s-8)">
@@ -3766,6 +3770,7 @@ function devEdit(d){
   if(!isNew && d.id) devTelem(d.id);
   if(!isNew && d.id) devMap(d.id);
   if(!isNew && d.id) devIot(d.id);
+  if(!isNew && d.id) devScnFill(d); // IO-4
 }
 // Attributi (client/shared/server) + comandi IoT nativi.
 async function devIot(id){ const el=$('#iotBox'); if(!el)return; el.textContent='carico…';
@@ -3866,6 +3871,13 @@ async function devService(id,state){
   if(!await askConfirm(msg)) return;
   try{ await api('/devices/'+id+'/service',{method:'POST',body:JSON.stringify({state})});
     toast(SERVICE_LABELS[state],'ok'); closeDrawer(); route(); }catch(e){ toast(e.message,'bad'); } }
+// IO-4: sensore reale <-> scenario IoT (riempie la tendina dopo l'apertura della scheda)
+async function devScnFill(d){ const sel=$('#devScn'); if(!sel) return;
+  const L=await api('/scenarios').catch(()=>[]); const cur=(d.config||{}).scenario||'';
+  sel.innerHTML='<option value="">— nessuno —</option>'+(L||[]).map(x=>`<option value="${esc(x.code)}" ${x.code===cur?'selected':''}>${esc(x.name)}</option>`).join('');
+  if(!(L||[]).length) sel.insertAdjacentHTML('beforeend','<option disabled>nessuno scenario attivo per l\'azienda</option>'); }
+async function devScnSave(id){ try{ await api('/devices/'+id+'/scenario',{method:'POST',body:JSON.stringify({code:$('#devScn').value||null})});
+  toast('Scenario del sensore salvato','ok'); }catch(e){ toast(e.message,'bad'); } }
 // Collegamento del badge: connesso adesso (TCP aperto), ultimo contatto, oppure rifiutato e perché.
 function devLinkBody(d){
   const fmt=t=>new Date(t).toLocaleString('it-IT');
