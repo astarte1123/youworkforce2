@@ -48,6 +48,14 @@ fatturabili.
 
 ## CA-5 · Squadre e gruppi di persone: un solo concetto
 
+> **FATTO (decisione PO 25/11/2026, opzione 1, mig `0155`).** Ogni squadra è diventata un gruppo di
+> persone di tipo «squadra» con lo stesso id (nome con « (squadra)» se esisteva già un gruppo omonimo:
+> i membri non si uniscono mai a un gruppo che dà permessi). `commessa_teams` → `commessa_groups`
+> (`group_id`), tabelle `teams`/`team_members` eliminate, controllo «stesso tenant» rigenerato.
+> `/api/teams` resta come alias dei gruppi (leggibile da chi pianifica, per assegnare un gruppo a una
+> commessa); in *Utenti e sedi* la sezione Squadre rimanda a *Utenti e ruoli → Gruppi*. Le presenze di
+> cantiere verificano l'appartenenza al gruppo assegnato.
+
 **Problema.** Esistono due modi per raggruppare persone:
 - **squadre** (`teams`, modulo *Forza lavoro e turni*): usate dalle commesse di cantiere;
 - **gruppi di persone** (`user_groups`, nel nucleo): usati da ordini, ronde, permessi, escalation.

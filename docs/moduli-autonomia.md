@@ -16,7 +16,8 @@ perimetri di prodotto devono funzionare **da soli** e **insieme**:
   di sezione vuoti non vengono resi. La **Sicurezza lavoratore** appare solo con un modulo safety
   attivo; il **Lavoro sul campo** solo con un modulo Campo attivo.
 - Primitive **module-neutral** (condivise, mai gated da un modulo): utenti, sedi, gruppi di persone,
-  capability, ruoli custom, privacy/audit, asset. Le **squadre** servono a `workforce` **e** a
+  capability, ruoli custom, privacy/audit, asset. Dal 25/11 (CA-5) le **squadre sono gruppi di
+  persone** (tipo «squadra»); l'alias `/api/teams` serve a `workforce` **e** a
   `cantieri` (CA-21: prima l'elenco era vietato a un tenant solo Cantieri, mentre crearle era
   permesso a chiunque); i **piani dei turni** richiedono `workforce` in ogni operazione.
 - **Matrice funzione → moduli (SL-20, 25/11/2026):** per le funzioni trasversali di sicurezza c'è

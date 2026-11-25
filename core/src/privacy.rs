@@ -68,7 +68,6 @@ const PII_EXPORT: &[(&str, &str, &str)] = &[
     ("assegnazioni_escalation", "esc_assignment_members", "user_id"),
     ("profili_protezione", "protection_profile_members", "user_id"),
     ("gruppi_persone", "user_group_members", "user_id"),
-    ("squadre", "team_members", "user_id"),
     ("sedi_visibili", "operator_sites", "user_id"),
     ("dispositivi_assegnati", "device_assignments", "user_id"),
     ("turni", "shifts", "user_id"),
@@ -89,7 +88,7 @@ const PII_REMOVE: &[(&str, &str)] = &[
     ("calendar_ical_tokens", "user_id"), ("oncall_ical_tokens", "user_id"), ("user_invites", "user_id"),
     ("alarm_group_members", "user_id"), ("esc_assignment_members", "user_id"),
     ("esc_overrides", "add_user"), ("esc_overrides", "remove_user"), ("esc_policy_steps", "target_user_id"),
-    ("protection_profile_members", "user_id"), ("team_members", "user_id"), ("user_group_members", "user_id"),
+    ("protection_profile_members", "user_id"), ("user_group_members", "user_id"),
     ("operator_sites", "user_id"), ("user_custom_roles", "user_id"),
 ];
 

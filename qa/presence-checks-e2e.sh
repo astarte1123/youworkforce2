@@ -43,6 +43,7 @@ call A GET "/api/commesse/$C1" | py "[p for p in d['presenze'] if p['clock_out']
 call T POST "/api/commesse/$C1/presenze/out" '{}' >/dev/null
 
 TM=$(call A POST /api/teams "{\"name\":\"Squadra $R\"}" | py "d['id']")
+call A GET /api/user-groups | py "[g['kind'] for g in d if g['id']=='$TM'][0]" | grep -q squadra && ok "CA-5: la squadra è un gruppo di persone (tipo «squadra»)" || no "squadra=gruppo" "-"
 call A POST "/api/commesse/$C2/teams" "{\"team_id\":\"$TM\"}" >/dev/null
 C=$(code T POST "/api/commesse/$C2/presenze/in" '{}'); [ "$C" = "403" ] && ok "commessa con squadre: chi non ne fa parte non timbra (403)" || no "squadra" "$C"
 call A POST "/api/teams/$TM/members" "{\"user_id\":\"$UT\"}" >/dev/null

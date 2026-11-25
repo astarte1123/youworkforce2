@@ -5404,11 +5404,8 @@ async function grpHandoffDel(gid,id){ try{ await api('/handoff-notes/'+id,{metho
 
 // ---------------- Anagrafiche: utenti e sedi ----------------
 async function vAnagrafiche(v){
-  // P3: le Squadre sono una primitiva del modulo "workforce" (turni). Senza workforce attivo la
-  // sezione non viene né caricata né mostrata (prima dava sezione vuota + bottone che andava in 403).
-  const wfOn = ACTIVE_MODS.has('workforce');
-  const [users,sites,teams,assets]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),
-    wfOn?api('/teams').catch(()=>[]):Promise.resolve([]),api('/assets').catch(()=>[])]);
+  // CA-5: le squadre sono i gruppi di persone (gestiti in Utenti e ruoli), niente più elenco separato
+  const [users,sites,assets]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),api('/assets').catch(()=>[])]);
   v._users=users;
   v.innerHTML=`<div class="page-h"><div><h1>${t('anag_title','Utenti e sedi')}</h1><div class="mut">anagrafiche del tenant · <a onclick="location.hash='#/utenti-ruoli'">gruppi e ruoli →</a></div></div></div>
   <div class="grid g2">
@@ -5422,13 +5419,7 @@ async function vAnagrafiche(v){
         <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();siteDel('${s.id}')">${ICON.x}</button></td></tr>`).join('')
         ||emptyRow(3, ICON.building, 'Nessuna sede', 'Le sedi sono i luoghi di lavoro: a loro colleghi dispositivi, turni e allarmi. Aggiungine una.', {fn:'siteForm()',label:'+ Aggiungi sede'})}</tbody></table></div>
   </div>
-  ${wfOn?`<div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><h2>Squadre (${teams.length})</h2><button class="btn ghost small" onclick="teamNew()">+ nuova squadra</button></div>
-    <div class="grid g2" style="margin-top:var(--s-10)">${teams.map(t=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10)">
-      <div class="spread"><b>${esc(t.name)}</b><button class="btn-ico btn ghost" onclick="teamDel('${t.id}')">${ICON.x}</button></div>
-      <div class="small mut" style="margin:var(--s-6) 0">${t.members.map(m=>`<span class="tag">${esc(m.email)} <a onclick="teamRm('${t.id}','${m.user_id}')">✕</a></span>`).join(' ')||'nessun membro'}</div>
-      <div class="row" style="gap:var(--s-6)"><select id="tm_${t.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
-        <button class="btn ghost small" onclick="teamAdd('${t.id}')">+ membro</button></div></div>`).join('')
-      ||'<div class="small mut">Nessuna squadra.</div>'}</div></div>`:''}
+  <div class="card pad" style="margin-top:var(--s-16)"><div class="small">👥 <b>Squadre</b>: sono i <b>gruppi di persone</b> (tipo «squadra»), uguali per turni, cantieri, ordini, ronde e permessi. Si gestiscono in <a onclick="location.hash='#/utenti-ruoli'">Utenti e ruoli → Gruppi</a>.</div></div>
   <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Asset / mezzi (${assets.length})</h2><button class="btn ghost small" onclick="assetNew()">+ nuovo asset</button></div>
     <table class="table" data-export="asset-mezzi"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th>Sede</th><th></th></tr></thead>
     <tbody>${assets.map(a=>`<tr class="clk" data-asset='${jattr(a)}'><td><b>${esc(a.name)}</b></td><td><span class="chip">${esc(ASSET_KIND_LABELS[a.kind]||humanizeCode(a.kind)||'—')}</span></td><td class="small mut">${esc(a.identifier||'—')}</td><td class="small mut">${esc(a.site||'—')}</td>
@@ -5727,10 +5718,6 @@ async function gdprAnon(uid,email){
   try{ await api('/gdpr/anonymize/'+uid,{method:'POST'}); toast('Utente anonimizzato','ok'); gdReload(false); }catch(e){ toast(e,'bad'); }
 }
 async function assetDel(id){ if(!await askConfirm('Eliminare asset?'))return; try{await api('/assets/'+id,{method:'DELETE'}); toast('Eliminato','ok'); closeDrawer&&closeDrawer(); route();}catch(e){toast(e,'bad');} }
-function teamNew(){ simpleCreateDrawer('Nuova squadra','Nome squadra','', v=>api('/teams',{method:'POST',body:JSON.stringify({name:v})})); }
-async function teamDel(id){ if(!await askConfirm('Eliminare squadra?'))return; try{await api('/teams/'+id,{method:'DELETE'}); toast('Eliminata','ok'); route();}catch(e){toast(e,'bad');} }
-async function teamAdd(tid){ const uid=$('#tm_'+tid).value; if(!uid)return; try{await api('/teams/'+tid+'/members',{method:'POST',body:JSON.stringify({user_id:uid})}); toast('Aggiunto','ok'); route();}catch(e){toast(e,'bad');} }
-async function teamRm(tid,uid){ try{await api('/teams/'+tid+'/members/'+uid,{method:'DELETE'}); toast('Rimosso','ok'); route();}catch(e){toast(e,'bad');} }
 // Etichette CHIARE per ogni permesso (nome + spiegazione in parole semplici). La chiave è il
 // codice capability del backend; il valore è come lo mostriamo all'utente.
 const CAP_LABELS={

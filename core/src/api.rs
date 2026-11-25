@@ -4693,15 +4693,17 @@ pub async fn list_teams(State(st): State<AppState>, h: HeaderMap) -> R {
     // cantieri l'elenco era vietato mentre crearle era permesso a chiunque)
     require_any_module(&st, tid, crate::modules::feature_modules("teams")).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let teams = sqlx::query("SELECT id,name FROM app.teams ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
-    let mem = sqlx::query("SELECT m.team_id,m.user_id,u.email FROM app.team_members m JOIN app.users u ON u.id=m.user_id")
+    // CA-5: le squadre SONO i gruppi di persone (alias compatibile di /api/user-groups, leggibile da
+    // chi pianifica): tutti i gruppi, con il tipo («squadra», «reparto», …)
+    let teams = sqlx::query("SELECT id,name,kind FROM app.user_groups ORDER BY name").fetch_all(&mut *tx).await.map_err(ise)?;
+    let mem = sqlx::query("SELECT m.group_id AS team_id,m.user_id,u.email FROM app.user_group_members m JOIN app.users u ON u.id=m.user_id")
         .fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = teams.iter().map(|t| {
         let id: Uuid = t.get("id");
         let ms: Vec<Value> = mem.iter().filter(|m| m.get::<Uuid,_>("team_id")==id)
             .map(|m| json!({"user_id":m.get::<Uuid,_>("user_id"),"email":m.get::<String,_>("email")})).collect();
-        json!({"id":id,"name":t.get::<String,_>("name"),"members":ms})
+        json!({"id":id,"name":t.get::<String,_>("name"),"kind":t.get::<String,_>("kind"),"members":ms})
     }).collect();
     Ok(Json(json!(out)))
 }
@@ -4711,8 +4713,8 @@ pub async fn create_team(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     let tid = s.tenant_id.unwrap();
     if b.name.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "nome richiesto")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let row = sqlx::query("INSERT INTO app.teams(tenant_id,name) VALUES($1,$2) RETURNING id")
-        .bind(tid).bind(b.name.trim()).fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "squadra gia' presente"))?;
+    let row = sqlx::query("INSERT INTO app.user_groups(tenant_id,name,kind) VALUES($1,$2,'squadra') RETURNING id")
+        .bind(tid).bind(b.name.trim()).fetch_optional(&mut *tx).await.map_err(|e| conflict_or(e, "esiste già un gruppo con questo nome"))?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":row.ok_or_else(|| err(StatusCode::CONFLICT,"gia' presente"))?.get::<Uuid,_>("id")})))
 }
@@ -4720,7 +4722,7 @@ pub async fn delete_team(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("teams")).await?; // CA-21
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
-    let n = sqlx::query("DELETE FROM app.teams WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    let n = sqlx::query("DELETE FROM app.user_groups WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "squadra inesistente")); }
     Ok(Json(json!({"ok":true})))
@@ -4730,8 +4732,8 @@ pub async fn add_team_member(State(st): State<AppState>, h: HeaderMap, Path(tid_
     require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("teams")).await?; // CA-21
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    sqlx::query("INSERT INTO app.team_members(tenant_id,team_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
-        .bind(tid).bind(tid_p).bind(b.user_id).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.user_group_members(tenant_id,group_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+        .bind(tid).bind(tid_p).bind(b.user_id).execute(&mut *tx).await.map_err(|e| conflict_or(e, "gruppo o persona non validi"))?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
@@ -4739,7 +4741,7 @@ pub async fn remove_team_member(State(st): State<AppState>, h: HeaderMap, Path((
     let s = require_tenant(&st, &h).await?; require_cap(&s, "users.manage")?;
     require_any_module(&st, s.tenant_id.unwrap(), crate::modules::feature_modules("teams")).await?; // CA-21
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
-    sqlx::query("DELETE FROM app.team_members WHERE team_id=$1 AND user_id=$2").bind(team).bind(uid).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.user_group_members WHERE group_id=$1 AND user_id=$2").bind(team).bind(uid).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
@@ -5425,7 +5427,7 @@ pub async fn get_commessa(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
     let deprows = sqlx::query("SELECT d.lav_id,d.depends_on_id FROM app.commessa_lav_deps d JOIN app.commessa_lavorazioni l ON l.id=d.lav_id WHERE l.commessa_id=$1").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let sal = sqlx::query("SELECT s.id,s.sal_date,s.pct,s.amount::float8 AS amount,s.note,s.created_at,u.email AS author FROM app.commessa_sal s LEFT JOIN app.users u ON u.id=s.created_by WHERE s.commessa_id=$1 ORDER BY s.sal_date DESC,s.created_at DESC").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let shifts = sqlx::query("SELECT p.id,p.starts_at,p.ends_at,p.state,u.email FROM app.shift_plans p JOIN app.users u ON u.id=p.user_id WHERE p.commessa_id=$1 AND p.state<>'annullato' ORDER BY p.starts_at").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
-    let teams = sqlx::query("SELECT t.id,t.name,(SELECT count(*) FROM app.team_members m WHERE m.team_id=t.id)::int AS members FROM app.commessa_teams ct JOIN app.teams t ON t.id=ct.team_id WHERE ct.commessa_id=$1 ORDER BY t.name").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
+    let teams = sqlx::query("SELECT t.id,t.name,(SELECT count(*) FROM app.user_group_members m WHERE m.group_id=t.id)::int AS members FROM app.commessa_groups ct JOIN app.user_groups t ON t.id=ct.group_id WHERE ct.commessa_id=$1 ORDER BY t.name").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let pres = sqlx::query("SELECT p.id,p.clock_in,p.clock_out,p.auto_closed,p.distance_m,p.outside_area,u.email FROM app.commessa_presenze p JOIN app.users u ON u.id=p.user_id WHERE p.commessa_id=$1 ORDER BY p.clock_in DESC LIMIT 50").bind(id).fetch_all(&mut *tx).await.map_err(ise)?;
     let my_open: Option<Uuid> = sqlx::query_scalar("SELECT id FROM app.commessa_presenze WHERE commessa_id=$1 AND user_id=$2 AND clock_out IS NULL").bind(id).bind(s.user_id).fetch_optional(&mut *tx).await.map_err(ise)?;
     // C3 — costi: voci (materiali/noli/...) + ore di presenza chiuse valorizzate al costo orario
@@ -5629,13 +5631,13 @@ pub async fn create_sal(State(st): State<AppState>, h: HeaderMap, Path(cid): Pat
     Ok(Json(json!({"id":id})))
 }
 // ----- Cantieri C1: squadre assegnate + presenze (timbrature) -----
-#[derive(Deserialize)] pub struct AssignTeamReq { pub team_id: Uuid }
+#[derive(Deserialize)] pub struct AssignTeamReq { #[serde(alias = "group_id")] pub team_id: Uuid }
 pub async fn commessa_assign_team(State(st): State<AppState>, h: HeaderMap, Path(cid): Path<Uuid>, Json(b): Json<AssignTeamReq>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    sqlx::query("INSERT INTO app.commessa_teams(tenant_id,commessa_id,team_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
-        .bind(tid).bind(cid).bind(b.team_id).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("INSERT INTO app.commessa_groups(tenant_id,commessa_id,group_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+        .bind(tid).bind(cid).bind(b.team_id).execute(&mut *tx).await.map_err(|e| conflict_or(e, "gruppo non valido"))?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
@@ -5643,7 +5645,7 @@ pub async fn commessa_remove_team(State(st): State<AppState>, h: HeaderMap, Path
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    sqlx::query("DELETE FROM app.commessa_teams WHERE commessa_id=$1 AND team_id=$2").bind(cid).bind(team).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("DELETE FROM app.commessa_groups WHERE commessa_id=$1 AND group_id=$2").bind(cid).bind(team).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"ok":true})))
 }
@@ -5663,9 +5665,9 @@ pub async fn commessa_clock_in(State(st): State<AppState>, h: HeaderMap, Path(ci
         return Err(err(StatusCode::CONFLICT, &format!("hai già una presenza aperta sulla commessa «{}»: timbra l'uscita lì prima di entrare qui", o.get::<String,_>("name"))));
     }
     // CA-15: se alla commessa sono assegnate squadre, timbra solo chi ne fa parte (o chi pianifica)
-    let teams: i64 = sqlx::query_scalar("SELECT count(*) FROM app.commessa_teams WHERE commessa_id=$1").bind(cid).fetch_one(&mut *tx).await.map_err(ise)?;
+    let teams: i64 = sqlx::query_scalar("SELECT count(*) FROM app.commessa_groups WHERE commessa_id=$1").bind(cid).fetch_one(&mut *tx).await.map_err(ise)?;
     if teams > 0 && !is_planner(&s) {
-        let member: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app.commessa_teams ct JOIN app.team_members m ON m.team_id=ct.team_id
+        let member: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app.commessa_groups ct JOIN app.user_group_members m ON m.group_id=ct.group_id
                 WHERE ct.commessa_id=$1 AND m.user_id=$2)").bind(cid).bind(s.user_id).fetch_one(&mut *tx).await.map_err(ise)?;
         if !member { return Err(err(StatusCode::FORBIDDEN, "non fai parte di una squadra assegnata a questa commessa")); }
     }
