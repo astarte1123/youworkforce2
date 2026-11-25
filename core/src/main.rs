@@ -42,6 +42,16 @@ pub async fn crypto_migrate(st: &AppState) -> anyhow::Result<()> {
         sqlx::query("UPDATE app.ai_connections SET api_key=$2 WHERE tenant_id=$1 AND api_key=$3")
             .bind(tid).bind(enc).bind(&old).execute(&st.owner_pool).await?;
     }
+    // SA-11: anche i segreti dei canali di consegna
+    let rows = sqlx::query("SELECT key,value FROM app.delivery_channels WHERE value LIKE 'enc:%' AND value NOT LIKE $1")
+        .bind(&prefix).fetch_all(&st.owner_pool).await?;
+    for r in rows {
+        let (k, old): (String, String) = (r.get("key"), r.get("value"));
+        let plain = st.secrets.decrypt(&old);
+        if plain.starts_with("enc:") { continue; }
+        let Ok(enc) = st.secrets.encrypt(&plain) else { continue };
+        sqlx::query("UPDATE app.delivery_channels SET value=$2 WHERE key=$1 AND value=$3").bind(&k).bind(enc).bind(&old).execute(&st.owner_pool).await?;
+    }
     Ok(())
 }
 
@@ -88,6 +98,7 @@ fn superadmin_routes() -> Router<AppState> {
         .route("/api/superadmin/secrets/unlock", post(api::super_secrets_unlock))
         .route("/api/superadmin/secrets/rotate", post(api::super_secrets_rotate))
         .route("/api/superadmin/secrets/reset", post(api::super_secrets_reset))
+        .route("/api/superadmin/channels", get(api::super_channels_get).post(api::super_channels_set))
         .route("/api/superadmin/device-attempts", get(api::super_device_attempts))
         .route("/api/superadmin/system/settings", get(api::super_system_settings_get).post(api::super_system_settings_set))
         .route("/api/superadmin/scenarios", get(api::super_scenarios_list))
@@ -200,6 +211,7 @@ async fn run() -> anyhow::Result<()> {
     api::seed_scenarios(&st).await;
     // Chiave dei segreti dal DB (sigillata dal server); prima volta: generata. Poi migrazione.
     api::secrets_init(&st).await;
+    api::load_delivery_channels(&st).await; // SA-11
     if st.secrets.enabled() {
         if let Err(e) = crypto_migrate(&st).await { tracing::warn!("crypto migrate: {e}"); }
         tracing::info!("cifratura dei segreti attiva (chiave {:?}, {})", st.secrets.active_id(), crypto::seal_method());

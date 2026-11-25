@@ -734,7 +734,7 @@ async fn secrets_init_existing(st: &AppState) {
 async fn secrets_status(st: &AppState) -> Result<Value, (StatusCode,String)> {
     let r = sqlx::query("SELECT key_id, server_name, created_at, created_by, recovery_set_at, recovery_wrapped IS NOT NULL AS rec
             FROM app.secret_keys WHERE active").fetch_optional(&st.owner_pool).await.map_err(ise)?;
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM app.ai_connections WHERE api_key<>''").fetch_one(&st.owner_pool).await.map_err(ise)?;
+    let n: i64 = sqlx::query_scalar("SELECT (SELECT count(*) FROM app.ai_connections WHERE api_key<>'') + (SELECT count(*) FROM app.delivery_channels WHERE value LIKE 'enc:%')").fetch_one(&st.owner_pool).await.map_err(ise)?;
     let legacy: i64 = sqlx::query_scalar("SELECT count(*) FROM app.ai_connections WHERE api_key<>'' AND api_key NOT LIKE 'enc:v3:%'")
         .fetch_one(&st.owner_pool).await.map_err(ise)?;
     Ok(json!({
@@ -846,7 +846,8 @@ pub async fn super_secrets_reset(State(st): State<AppState>, h: HeaderMap, Json(
     let new: i32 = sqlx::query_scalar("SELECT COALESCE(max(key_id),0)+1 FROM app.secret_keys").fetch_one(&mut *tx).await.map_err(ise)?;
     // i segreti già nel formato nuovo sono illeggibili (chiave persa): si svuotano. Quelli in chiaro
     // o della vecchia YW_SECRET_KEY li ricifra la conversione qui sotto.
-    let lost = sqlx::query("UPDATE app.ai_connections SET api_key='' WHERE api_key LIKE 'enc:v3:%'").execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    let lost = sqlx::query("UPDATE app.ai_connections SET api_key='' WHERE api_key LIKE 'enc:v3:%'").execute(&mut *tx).await.map_err(ise)?.rows_affected()
+        + sqlx::query("DELETE FROM app.delivery_channels WHERE value LIKE 'enc:v3:%'").execute(&mut *tx).await.map_err(ise)?.rows_affected();
     sqlx::query("DELETE FROM app.secret_keys").execute(&mut *tx).await.map_err(ise)?;
     sqlx::query("INSERT INTO app.secret_keys(key_id,sealed_server,server_name,active,created_by) VALUES($1,$2,$3,true,$4)")
         .bind(new).bind(&sealed).bind(host_name()).bind(format!("superadmin:{}", sa.email)).execute(&mut *tx).await.map_err(ise)?;
@@ -870,11 +871,13 @@ pub async fn secrets_sync(st: &AppState) {
         secrets_init_existing(st).await;
         if st.secrets.active_id() != db_active { st.secrets.set_locked(true); }
     }
+    load_delivery_channels(st).await; // SA-11: modifiche fatte da altre istanze
     if !st.secrets.enabled() { return; }
     let _ = crate::crypto_migrate_hook(st).await;
     let old: Vec<i32> = sqlx::query_scalar("SELECT k.key_id FROM app.secret_keys k WHERE NOT k.active
             AND EXISTS (SELECT 1 FROM app.secret_keys a WHERE a.active AND a.created_at < now()-interval '5 minutes')
-            AND NOT EXISTS (SELECT 1 FROM app.ai_connections c WHERE c.api_key LIKE 'enc:v3:'||k.key_id||':%')")
+            AND NOT EXISTS (SELECT 1 FROM app.ai_connections c WHERE c.api_key LIKE 'enc:v3:'||k.key_id||':%')
+            AND NOT EXISTS (SELECT 1 FROM app.delivery_channels c WHERE c.value LIKE 'enc:v3:'||k.key_id||':%')")
         .fetch_all(&st.owner_pool).await.unwrap_or_default();
     for k in old {
         if sqlx::query("DELETE FROM app.secret_keys WHERE key_id=$1 AND NOT active").bind(k).execute(&st.owner_pool).await.is_ok() {
@@ -882,6 +885,54 @@ pub async fn secrets_sync(st: &AppState) {
             tracing::info!("chiave dei segreti {k} eliminata: nessun segreto la usa più");
         }
     }
+}
+// ---- SA-11: canali di consegna (eccezioni dichiarate), configurati dal superadmin ----
+fn chan_secret(key: &str) -> Option<bool> { crate::delivery::CHANNEL_KEYS.iter().find(|(k,_,_)| *k == key).map(|(_,s,_)| *s) }
+/// Carica in memoria i canali impostati dal superadmin (decifrando i segreti). Avvio, salvataggio,
+/// ogni minuto (altre istanze). Un segreto non decifrabile (chiave bloccata) resta fuori: vale
+/// allora il valore di installazione, mai il testo cifrato.
+pub async fn load_delivery_channels(st: &AppState) {
+    let rows = match sqlx::query("SELECT key,value FROM app.delivery_channels").fetch_all(&st.owner_pool).await { Ok(r) => r, Err(_) => return };
+    let mut m = std::collections::HashMap::new();
+    for r in rows {
+        let (k, v): (String, String) = (r.get("key"), r.get("value"));
+        let plain = if chan_secret(&k) == Some(true) { st.secrets.decrypt(&v) } else { v };
+        if plain.starts_with("enc:") { tracing::warn!("canale {k}: segreto non decifrabile (chiave bloccata)"); continue; }
+        m.insert(k, plain);
+    }
+    crate::delivery::set_channels(m);
+}
+pub async fn super_channels_get(State(st): State<AppState>, h: HeaderMap) -> R {
+    require_super(&st, &h).await?;
+    let out: Vec<Value> = crate::delivery::CHANNEL_KEYS.iter().map(|(k, secret, label)| {
+        let v = crate::delivery::chan(k);
+        json!({"key":k,"label":label,"secret":secret,"set":v.is_some(),"source":crate::delivery::chan_source(k),
+               "value": if *secret { Value::Null } else { v.map(Value::String).unwrap_or(Value::Null) }})
+    }).collect();
+    Ok(Json(json!({"channels":out,"delivery":crate::delivery::delivery_status(),"encryption":st.secrets.enabled()})))
+}
+#[derive(Deserialize)] pub struct ChannelSet { pub key: String, #[serde(default)] pub value: Option<String> }
+pub async fn super_channels_set(State(st): State<AppState>, h: HeaderMap, Json(b): Json<ChannelSet>) -> R {
+    let sa = require_super(&st, &h).await?;
+    let secret = chan_secret(&b.key).ok_or_else(|| err(StatusCode::BAD_REQUEST, "canale sconosciuto"))?;
+    let v = b.value.as_deref().map(str::trim).filter(|x| !x.is_empty());
+    match v {
+        None => { sqlx::query("DELETE FROM app.delivery_channels WHERE key=$1").bind(&b.key).execute(&st.owner_pool).await.map_err(ise)?; }
+        Some(val) => {
+            if b.key == "YW_ESC_FROM" && !is_e164(val) { return Err(err(StatusCode::BAD_REQUEST, "numero mittente in formato internazionale, es. +390212345678")); }
+            if b.key == "YW_ESC_TWILIO_LIVE" && val != "0" && val != "1" { return Err(err(StatusCode::BAD_REQUEST, "invio reale: 1 = acceso, 0 = spento")); }
+            if b.key == "YW_ESC_SMTP_RELAY_URL" && !(val.starts_with("https://") || val.starts_with("http://")) { return Err(err(StatusCode::BAD_REQUEST, "URL del relay non valido")); }
+            let stored = if secret { st.secrets.encrypt(val).map_err(|e| err(StatusCode::CONFLICT, &format!("cifratura dei segreti non disponibile: {e}")))? } else { val.to_string() };
+            sqlx::query("INSERT INTO app.delivery_channels(key,value,updated_by) VALUES($1,$2,$3)
+                    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now(), updated_by=EXCLUDED.updated_by")
+                .bind(&b.key).bind(&stored).bind(format!("superadmin:{}", sa.email)).execute(&st.owner_pool).await.map_err(ise)?;
+        }
+    }
+    load_delivery_channels(&st).await;
+    // mai il valore nell'audit: solo quale canale e se è stato impostato o tolto
+    let _ = sqlx::query("INSERT INTO app.audit_log(tenant_id,actor,action,detail) VALUES(NULL,$1,'delivery_channel_set',$2)")
+        .bind(format!("superadmin:{}", sa.email)).bind(json!({"key":b.key,"set":v.is_some()})).execute(&st.owner_pool).await;
+    super_channels_get(State(st), h).await
 }
 pub async fn super_system(State(st): State<AppState>, h: HeaderMap) -> R {
     require_super(&st, &h).await?;
@@ -980,7 +1031,7 @@ async fn system_alert_notify(st: &AppState, sev: &str, kind: &str, detail: &str)
         if crate::delivery::deliver_to_sink(&st.http, &sink, &body).await.state == "sent" { any = true; }
     }}
     // 2) email relay ai superadmin + destinatari extra dal pannello
-    if let Ok(relay) = std::env::var("YW_ESC_SMTP_RELAY_URL") { if !relay.trim().is_empty() {
+    if let Some(relay) = crate::delivery::chan("YW_ESC_SMTP_RELAY_URL") { if !relay.trim().is_empty() {
         for e in &emails { let body = json!({"to":e,"subject":subj,"text":detail});
             if crate::delivery::deliver_email_relay(&st.http, &relay, &body).await.state == "live" { any = true; } }
     }}
@@ -12096,10 +12147,10 @@ async fn cm_fetch(st: &AppState, tid: Uuid, cmid: Uuid) -> Option<(String,String
 /// Invia un testo (es. OTP) sul canale del recapito, riusando gli adapter: sms/voice via Twilio o
 /// sink, email via relay o sink.
 async fn esc_send_code_native(st: &AppState, kind: &str, value: &str, text: &str) -> crate::delivery::SinkResult {
-    let from = std::env::var("YW_ESC_FROM").unwrap_or_else(|_| "+10000000000".into());
+    let from = crate::delivery::chan("YW_ESC_FROM").unwrap_or_else(|| "+10000000000".into());
     let sink = std::env::var("YW_ESC_SINK_URL").unwrap_or_default();
-    let relay = std::env::var("YW_ESC_SMTP_RELAY_URL").unwrap_or_default();
-    let slack_token = std::env::var("YW_ESC_SLACK_TOKEN").unwrap_or_default();
+    let relay = crate::delivery::chan("YW_ESC_SMTP_RELAY_URL").unwrap_or_default();
+    let slack_token = crate::delivery::chan("YW_ESC_SLACK_TOKEN").unwrap_or_default();
     let public_base = std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_default();
     let live_cfg = crate::delivery::TwilioCfg::from_env();
     let ch = esc_channel_from_kind(kind);
@@ -13164,10 +13215,10 @@ async fn esc_user_rotation_shifts_g(
 /// Twilio LIVE se configurato, altrimenti sink/dry (dev).
 async fn esc_send_sms_native(st: &AppState, to: &str, text: &str) -> crate::delivery::SinkResult {
     use crate::delivery::Channel;
-    let from = std::env::var("YW_ESC_FROM").unwrap_or_else(|_| "+10000000000".into());
+    let from = crate::delivery::chan("YW_ESC_FROM").unwrap_or_else(|| "+10000000000".into());
     let sink = std::env::var("YW_ESC_SINK_URL").unwrap_or_default();
-    let relay = std::env::var("YW_ESC_SMTP_RELAY_URL").unwrap_or_default();
-    let slack_token = std::env::var("YW_ESC_SLACK_TOKEN").unwrap_or_default();
+    let relay = crate::delivery::chan("YW_ESC_SMTP_RELAY_URL").unwrap_or_default();
+    let slack_token = crate::delivery::chan("YW_ESC_SLACK_TOKEN").unwrap_or_default();
     let public_base = std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_default();
     let live_cfg = crate::delivery::TwilioCfg::from_env();
     let live_on = live_cfg.is_some();
@@ -13529,11 +13580,11 @@ pub async fn escalation_delivery_run_tenant(st: &AppState, tid: Uuid) -> (i64, i
     // con TEST_CLOCK (in prod offset=0 -> identico al wall-clock).
     let now = st.clock.now();
     let sink = std::env::var("YW_ESC_SINK_URL").unwrap_or_default();
-    let from = std::env::var("YW_ESC_FROM").unwrap_or_else(|_| "+10000000000".into());
+    let from = crate::delivery::chan("YW_ESC_FROM").unwrap_or_else(|| "+10000000000".into());
     // adapter LIVE (gate): Twilio reale, Slack, relay email. Default OFF -> sink/dry.
     let live_cfg = crate::delivery::TwilioCfg::from_env();
-    let slack_token = std::env::var("YW_ESC_SLACK_TOKEN").unwrap_or_default();
-    let relay = std::env::var("YW_ESC_SMTP_RELAY_URL").unwrap_or_default();
+    let slack_token = crate::delivery::chan("YW_ESC_SLACK_TOKEN").unwrap_or_default();
+    let relay = crate::delivery::chan("YW_ESC_SMTP_RELAY_URL").unwrap_or_default();
     let public_base = std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_default();
     // config vocale + repeat del tenant
     let vrow = sqlx::query("SELECT voice_fallback_on,voice_fallback_min,esc_repeat FROM app.tenant_oncall_cfg WHERE tenant_id=$1")
@@ -13743,7 +13794,7 @@ pub async fn escalation_fallback_set(State(st): State<AppState>, h: HeaderMap, J
 /// (cambia lo shift_start della rotation); `HH:MM` = una volta al giorno dopo quell'ora.
 /// Best-effort: senza token Slack live non fa nulla.
 pub async fn slack_announce_scan(st: &AppState) {
-    let token = std::env::var("YW_ESC_SLACK_TOKEN").unwrap_or_default();
+    let token = crate::delivery::chan("YW_ESC_SLACK_TOKEN").unwrap_or_default();
     if token.trim().is_empty() { return; }
     // wall-clock: annuncio verso Slack (sistema esterno) + cadenza giornaliera HH:MM e
     // slack_last_announce (SQL) sono su tempo reale; il TEST_CLOCK non deve spammare Slack.
@@ -13842,7 +13893,7 @@ fn twiml(body: &str) -> Response {
 /// Valida la firma Twilio dell'inbound. Se `YW_ESC_TWILIO_AUTH` è impostato la firma è
 /// OBBLIGATORIA (403 se assente/errata); in dev senza token si accetta e si logga.
 fn esc_verify_inbound(h: &HeaderMap, path: &str, params: &[(String,String)]) -> Result<(), Response> {
-    let auth = std::env::var("YW_ESC_TWILIO_AUTH").unwrap_or_default();
+    let auth = crate::delivery::chan("YW_ESC_TWILIO_AUTH").unwrap_or_default();
     if auth.is_empty() { return Ok(()); } // dev/shadow senza carrier reale
     let base = std::env::var("YW_ESC_PUBLIC_BASE").unwrap_or_default();
     let url = format!("{}{}", base.trim_end_matches('/'), path);

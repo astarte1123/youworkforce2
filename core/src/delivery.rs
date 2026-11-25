@@ -10,6 +10,36 @@
 
 use serde_json::{json, Value};
 
+// ---------------- SA-11: configurazione dei canali di consegna ----------------
+/// Chiavi configurabili dal superadmin (eccezioni dichiarate: servono ad avvisare persone fuori
+/// dal sistema). `true` = segreta (cifrata a riposo, mai mostrata).
+pub const CHANNEL_KEYS: &[(&str, bool, &str)] = &[
+    ("YW_ESC_TWILIO_SID",     false, "Twilio · Account SID"),
+    ("YW_ESC_TWILIO_AUTH",    true,  "Twilio · Auth token"),
+    ("YW_ESC_FROM",           false, "Numero mittente di SMS e chiamate (E.164)"),
+    ("YW_ESC_TWILIO_LIVE",    false, "Invio reale con Twilio (1 = acceso)"),
+    ("YW_ESC_SLACK_TOKEN",    true,  "Slack · token del bot"),
+    ("YW_ESC_SMTP_RELAY_URL", true,  "Email · URL del relay (webhook che inoltra a SMTP)"),
+];
+static CHANNELS: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<String, String>>> = std::sync::OnceLock::new();
+fn channels() -> &'static std::sync::RwLock<std::collections::HashMap<String, String>> {
+    CHANNELS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+/// Valore di un canale: prima quello impostato dal superadmin (DB, già decifrato in memoria),
+/// poi la variabile d'ambiente di installazione. Vuoto = non configurato.
+pub fn chan(key: &str) -> Option<String> {
+    if let Some(v) = channels().read().unwrap().get(key).cloned() { return Some(v).filter(|v| !v.trim().is_empty()); }
+    std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+}
+/// Da dove arriva il valore: "superadmin" | "installazione" | "".
+pub fn chan_source(key: &str) -> &'static str {
+    if channels().read().unwrap().contains_key(key) { "superadmin" }
+    else if std::env::var(key).ok().filter(|v| !v.trim().is_empty()).is_some() { "installazione" } else { "" }
+}
+/// Sostituisce in memoria la configurazione letta dal DB (valori già decifrati).
+pub fn set_channels(m: std::collections::HashMap<String, String>) { *channels().write().unwrap() = m; }
+
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channel { Sms, Voice, Email, Slack }
 impl Channel {
@@ -103,9 +133,9 @@ pub async fn deliver_to_sink(http: &reqwest::Client, sink_url: &str, body: &Valu
 /// - `simulata`: nessun canale, solo log: NESSUN reperibile viene avvisato.
 /// Pura su variabili d'ambiente: la usano il pannello di sistema e l'avviso in Centrale.
 pub fn delivery_status() -> Value {
-    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    let env = |k: &str| chan(k);
     let twilio = TwilioCfg::live_enabled() && TwilioCfg::from_env().is_some();
-    let sink = env("YW_ESC_SINK_URL").is_some();
+    let sink = std::env::var("YW_ESC_SINK_URL").ok().filter(|v| !v.trim().is_empty()).is_some();
     let phone = if twilio { "reale" } else if sink { "prova" } else { "simulata" };
     let email = if env("YW_ESC_SMTP_RELAY_URL").is_some() { "reale" } else if sink { "prova" } else { "simulata" };
     let slack = if env("YW_ESC_SLACK_TOKEN").is_some() { "reale" } else { "spento" };
@@ -124,12 +154,13 @@ pub fn delivery_status() -> Value {
 pub struct TwilioCfg { pub sid: String, pub auth: String, pub from: String }
 impl TwilioCfg {
     pub fn from_env() -> Option<TwilioCfg> {
-        let sid = std::env::var("YW_ESC_TWILIO_SID").ok().filter(|s| !s.is_empty())?;
-        let auth = std::env::var("YW_ESC_TWILIO_AUTH").ok().filter(|s| !s.is_empty())?;
-        let from = std::env::var("YW_ESC_FROM").ok().filter(|s| !s.is_empty())?;
+        // SA-11: dalla configurazione del superadmin, con l'ambiente come valore iniziale
+        let sid = chan("YW_ESC_TWILIO_SID")?;
+        let auth = chan("YW_ESC_TWILIO_AUTH")?;
+        let from = chan("YW_ESC_FROM")?;
         Some(TwilioCfg { sid, auth, from })
     }
-    pub fn live_enabled() -> bool { std::env::var("YW_ESC_TWILIO_LIVE").ok().as_deref() == Some("1") }
+    pub fn live_enabled() -> bool { chan("YW_ESC_TWILIO_LIVE").as_deref() == Some("1") }
 }
 
 /// Consegna REALE via Twilio REST. SMS → `Messages.json`; VOICE → `Calls.json` con TwiML inline

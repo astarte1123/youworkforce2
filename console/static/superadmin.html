@@ -183,6 +183,10 @@ async function shell(){
         <button class="btn ghost small" onclick="loadSecrets()">↻ aggiorna</button></div>
         <div class="card-b"><div class="small mut" style="margin-bottom:8px">La chiave che protegge i segreti (chiavi dei provider AI) è generata e custodita da YouWorkforce: nel database solo sigillata dal server e con la tua <b>passphrase di recupero</b>. Una copia del database da sola non basta per leggerli. La passphrase serve per sbloccare la chiave su un altro server (ripristino, migrazione): <b>conservala in un posto sicuro</b>, YouWorkforce non può recuperarla.</div>
         <div id="secBox"><div class="small mut">—</div></div></div></div>
+      <div class="card" style="margin-bottom:16px"><div class="card-h"><h2>Canali di consegna degli allarmi</h2>
+        <button class="btn ghost small" onclick="loadChannels()">↻ aggiorna</button></div>
+        <div class="card-b"><div class="small mut" style="margin-bottom:8px">Servono ad avvisare i reperibili che non hanno l’app aperta: SMS e chiamate (Twilio), Slack, email tramite relay. Sono le uniche connessioni esterne ammesse oltre all’AI. Le configuri solo tu; token e indirizzi del relay sono cifrati con la chiave dei segreti e non vengono più mostrati dopo il salvataggio.</div>
+        <div id="chanBox"><div class="small mut">—</div></div></div></div>
       <div class="card" style="margin-bottom:16px"><div class="card-h"><h2>Dispositivi rifiutati</h2>
         <button class="btn ghost small" onclick="loadAttempts()">↻ aggiorna</button></div>
         <div class="card-b"><div class="small mut" style="margin-bottom:8px">Badge che provano a collegarsi (Teltonika, porta TCP) e vengono rifiutati: IMEI non censito, censito in più aziende, o azienda senza modulo dispositivi. Il badge riprova da solo: quando il problema è risolto la riga sparisce al collegamento successivo. Righe ferme da 30 giorni vengono cancellate.</div>
@@ -290,7 +294,25 @@ async function loadSystem(){
   loadSysSettings();
   loadAttempts();
   loadSecrets();
+  loadChannels();
 }
+// ===== SA-11: canali di consegna (eccezioni dichiarate, solo superadmin) =====
+const CHAN_SRC={superadmin:'impostato qui',installazione:'dalla configurazione di installazione','':'non impostato'};
+async function loadChannels(){ const box=$('#chanBox'); if(!box) return;
+  let d; try{ d=await api('/superadmin/channels'); }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(friendlyError(e))}</div>`; return; }
+  const dl=d.delivery||{};
+  box.innerHTML=`<div class="srow"><span class="k">Consegna oggi</span><span class="v">${dl.mode==='reale'?'<span class="dot ok"></span>reale':(dl.mode==='prova'?'<span class="dot warn"></span>di prova':'<span class="dot bad"></span>simulata')}</span></div>
+    ${(d.channels||[]).map(c=>`<div class="srow"><span class="k">${esc(c.label)}</span><span class="v">${c.set?(c.secret?'••••••':esc(c.value||'')):'<span class="mut">—</span>'}
+      <span class="small mut">· ${esc(CHAN_SRC[c.source]??'')}</span>
+      <button class="btn ghost small" onclick='chanEdit(${jattr(c.key)},${jattr(c.label)},${c.secret?'true':'false'})'>modifica</button>
+      ${c.source==='superadmin'?`<button class="btn ghost small" onclick='chanClear(${jattr(c.key)})'>togli</button>`:''}</span></div>`).join('')}
+    ${d.encryption?'':'<div class="small" style="color:var(--bad);margin-top:6px">La chiave dei segreti è bloccata: i valori segreti non si possono salvare finché non la sblocchi.</div>'}`; }
+async function chanEdit(key,label,secret){
+  const v=await askPrompt(label+(secret?' (il valore non verrà più mostrato)':''),'');
+  if(v===null||v===undefined) return;
+  try{ await api('/superadmin/channels',{method:'POST',body:JSON.stringify({key,value:v})}); toast('Canale salvato','ok'); loadChannels(); loadSystem(); }catch(e){ toast(e,'bad'); } }
+async function chanClear(key){ if(!await askConfirm('Togliere questo valore? Resta valido solo quello della configurazione di installazione, se c’è.')) return;
+  try{ await api('/superadmin/channels',{method:'POST',body:JSON.stringify({key,value:null})}); toast('Valore tolto','ok'); loadChannels(); loadSystem(); }catch(e){ toast(e,'bad'); } }
 // ===== Chiave dei segreti (decisione PO 25/11/2026) =====
 async function loadSecrets(){ const box=$('#secBox'); if(!box) return;
   let d; try{ d=await api('/superadmin/secrets'); }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(friendlyError(e))}</div>`; return; }

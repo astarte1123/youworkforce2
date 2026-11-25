@@ -368,6 +368,17 @@ worker: se il worker si blocca, il battito invecchia e parte l'alert «worker» 
 lo stesso ciclo e si fermava con lui). Se il task del worker termina per un errore viene riavviato
 dopo 2 s, così i controlli salva-vita non restano fermi.
 
+**Canali di consegna = eccezioni dichiarate (SA-11, decisione PO 25/11/2026).** YouWorkforce non si
+collega a servizi esterni, con due sole eccezioni: il provider AI e i **canali che avvisano i
+reperibili** fuori dal sistema (Twilio per SMS e chiamate, Slack, email tramite relay). Le
+credenziali le imposta **solo il superadmin** in *Sistema → «Canali di consegna degli allarmi»*
+(`GET/POST /api/superadmin/channels`, tabella `app.delivery_channels`, mig `0152`): token Twilio,
+token Slack e URL del relay sono cifrati con la chiave dei segreti (`enc:v3`), non vengono più
+mostrati e non finiscono nel registro attività (solo quale canale è stato impostato o tolto). Le
+variabili d'ambiente `YW_ESC_*` restano solo come valore iniziale dell'installazione; il valore
+del superadmin vince. Rotazione e azzeramento della chiave trattano anche questi segreti; più
+istanze del core ricaricano i canali ogni minuto. e2e `qa/delivery-channels-e2e.sh` 10/10.
+
 **Consegna allarmi: reale, di prova o simulata (SA-3, 25/11/2026).** Prima, senza
 configurazione, gli avvisi di escalation finivano solo nel log e nessuno se ne accorgeva. Ora
 `delivery::delivery_status()` ricava dalla configurazione il modo di consegna:
