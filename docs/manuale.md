@@ -134,6 +134,15 @@ istruzioni, checklist, assegnatario.
 - **Revisione** in console: esecuzione, report, allegati, firma.
 - **Chi opera sull'ordine**: avviano, completano e vedono gli allegati solo l'assegnatario, i
   membri del gruppo assegnato e il pianificatore.
+- **Intervento chiuso** (completato o annullato): rapporto, firma, materiali, allegati e
+  pianificazione non si modificano più (CA-13).
+- **Richieste di intervento**: una richiesta si converte in ordine una volta sola (anche con due
+  clic contemporanei); una richiesta chiusa non si converte.
+- **Fatture di commessa** (Cantieri): numero unico nel tenant, importo positivo; *emessa* →
+  *pagata* o *annullata*, poi lo stato non cambia; una fattura pagata non si cancella (si
+  annulla); cambi di stato e cancellazioni finiscono nel registro attività. e2e
+  `qa/state-guards-e2e.sh` 18/18 (mig `0140`: indice unico sul numero creato se i dati esistenti
+  non hanno doppioni).
 - Indipendente da Consuntivi/Workforce. Vedi la sezione Campo in
   [console-ui-manuale](console-ui-manuale.md).
 

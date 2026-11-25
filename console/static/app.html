@@ -2459,7 +2459,7 @@ async function openCommessa(id){
   // C5 — fatture da SAL
   const fattRows=(c.fatture||[]).map(f=>`<tr><td class="small"><b>${esc(f.number)}</b><div class="small mut">${esc(f.issue_date)}</div></td>
     <td style="text-align:right">${eur(f.amount)}</td><td><span class="chip ${f.status==='pagata'?'s-attivo':''}">${esc(f.status)}</span></td>
-    <td style="text-align:right">${planner?`<select onchange="fatturaStatus('${id}','${f.id}',this.value)" class="small"><option ${f.status==='emessa'?'selected':''}>emessa</option><option ${f.status==='pagata'?'selected':''}>pagata</option><option ${f.status==='annullata'?'selected':''}>annullata</option></select> <button class="btn-ico btn ghost" onclick="fatturaDel('${id}','${f.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
+    <td style="text-align:right">${planner&&f.status==='emessa'?`<select onchange="fatturaStatus('${id}','${f.id}',this.value)" class="small"><option ${f.status==='emessa'?'selected':''}>emessa</option><option ${f.status==='pagata'?'selected':''}>pagata</option><option ${f.status==='annullata'?'selected':''}>annullata</option></select> <button class="btn-ico btn ghost" onclick="fatturaDel('${id}','${f.id}')">${ICON.x}</button>`:(planner&&f.status==='annullata'?`<button class="btn-ico btn ghost" title="Elimina" onclick="fatturaDel('${id}','${f.id}')">${ICON.x}</button>`:'')}</td></tr>`).join('')
     ||`<tr><td colspan="4" class="empty">Nessuna fattura</td></tr>`;
   const fatt_tot=(c.fatture||[]).filter(f=>f.status!=='annullata').reduce((a,f)=>a+(f.amount||0),0);
   const fattureSection=c.costs_hidden?costsHidden('Fatturazione (da SAL)'):`<div><h3 style="margin:0">Fatturazione (da SAL)</h3>

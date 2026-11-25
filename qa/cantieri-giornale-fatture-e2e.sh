@@ -37,7 +37,7 @@ SID=$(get | jq1 "print(json.load(sys.stdin)['sal'][0]['id'])")
 [ -n "$SID" ] && ok || no "no sal"
 
 say "4 emetti fattura da SAL (5000)"
-curl -s $H -X POST $BASE/api/commesse/$CID/fatture -d "{\"number\":\"2026/001\",\"amount\":5000,\"sal_id\":\"$SID\"}" -o /dev/null
+curl -s $H -X POST $BASE/api/commesse/$CID/fatture -d "{\"number\":\"2026/$$-$RANDOM\",\"amount\":5000,\"sal_id\":\"$SID\"}" -o /dev/null
 FT=$(get | jq1 "print(len(json.load(sys.stdin).get('fatture',[])))")
 [ "$FT" = "1" ] && ok || no "fatture=$FT"
 

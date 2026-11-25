@@ -5047,8 +5047,13 @@ pub async fn add_commessa_fattura(State(st): State<AppState>, h: HeaderMap, Path
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
     if b.number.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "numero richiesto")); }
+    if b.amount <= 0.0 { return Err(err(StatusCode::BAD_REQUEST, "importo maggiore di zero")); }
     let d = parse_date_opt(&b.issue_date).unwrap_or_else(|| st.clock.now().date_naive());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    // CA-13: numero di fattura unico nel tenant (anche vincolo DB, mig 0140)
+    let dup: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app.commessa_fatture WHERE tenant_id=$1 AND number=$2)")
+        .bind(tid).bind(b.number.trim()).fetch_one(&mut *tx).await.map_err(ise)?;
+    if dup { return Err(err(StatusCode::CONFLICT, "numero di fattura già usato")); }
     let id: Uuid = sqlx::query_scalar("INSERT INTO app.commessa_fatture(tenant_id,commessa_id,sal_id,number,amount,issue_date,note,created_by) VALUES($1,$2,$3,$4,$5::numeric,$6,$7,$8) RETURNING id")
         .bind(tid).bind(cid).bind(b.sal_id).bind(b.number.trim()).bind(b.amount).bind(d).bind(&b.note).bind(s.user_id)
         .fetch_one(&mut *tx).await.map_err(ise)?;
@@ -5062,17 +5067,29 @@ pub async fn update_commessa_fattura(State(st): State<AppState>, h: HeaderMap, P
     require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
     if !["emessa","pagata","annullata"].contains(&b.status.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "stato non valido")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.commessa_fatture SET status=$2 WHERE id=$1").bind(id).bind(&b.status).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+    // CA-13: emessa -> pagata | annullata; pagata e annullata sono stati finali
+    let cur: Option<(String,String)> = sqlx::query_as("SELECT status,number FROM app.commessa_fatture WHERE id=$1 AND tenant_id=$2 FOR UPDATE")
+        .bind(id).bind(tid).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let Some((cur, number)) = cur else { return Err(err(StatusCode::NOT_FOUND, "fattura non trovata")); };
+    if cur == b.status { return Ok(Json(json!({"ok":true,"unchanged":true}))); }
+    if cur != "emessa" { return Err(err(StatusCode::CONFLICT, &format!("fattura {cur}: stato finale, non si cambia"))); }
+    sqlx::query("UPDATE app.commessa_fatture SET status=$2 WHERE id=$1").bind(id).bind(&b.status).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    if n==0 { return Err(err(StatusCode::NOT_FOUND, "fattura non trovata")); }
+    audit(&st, tid, &s.email, "commessa_fattura_stato", json!({"fattura":id,"numero":number,"da":cur,"a":b.status})).await;
     Ok(Json(json!({"ok":true})))
 }
 pub async fn delete_commessa_fattura(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "cantieri").await?; require_cap(&s, "plan")?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    sqlx::query("DELETE FROM app.commessa_fatture WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
+    // CA-13: si cancella solo una fattura emessa per errore (mai una pagata: si annulla); con audit
+    let row: Option<(String,String,Option<f64>)> = sqlx::query_as("SELECT status,number,amount::float8 FROM app.commessa_fatture WHERE id=$1 AND tenant_id=$2")
+        .bind(id).bind(tid).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let Some((status, number, amount)) = row else { return Err(err(StatusCode::NOT_FOUND, "fattura non trovata")); };
+    if status == "pagata" { return Err(err(StatusCode::CONFLICT, "fattura pagata: non si cancella (va annullata)")); }
+    sqlx::query("DELETE FROM app.commessa_fatture WHERE id=$1 AND tenant_id=$2").bind(id).bind(tid).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "commessa_fattura_delete", json!({"fattura":id,"numero":number,"stato":status,"importo":amount})).await;
     Ok(Json(json!({"ok":true})))
 }
 // ----- Cantieri R3: allegati di commessa (bytea, self-contained) -----
@@ -9104,6 +9121,7 @@ pub async fn edit_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
+    if module_active(&st, tid, "interventi").await { order_open(&st, tid, id).await?; } // CA-13
     let ss = b.scheduled_start.as_deref().filter(|x| !x.is_empty()).map(parse_ts).transpose()?;
     let se = b.scheduled_end.as_deref().filter(|x| !x.is_empty()).map(parse_ts).transpose()?;
     if let (Some(a),Some(z))=(ss,se) { if z<=a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); } }
@@ -9359,6 +9377,9 @@ pub async fn add_order_line(State(st): State<AppState>, h: HeaderMap, Path(wo): 
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "interventi").await?;
     if b.description.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "descrizione richiesta")); }
+    if let Some(q) = b.qty { if q <= 0.0 { return Err(err(StatusCode::BAD_REQUEST, "quantità maggiore di zero")); } }
+    if let Some(p) = b.unit_price { if p < 0.0 { return Err(err(StatusCode::BAD_REQUEST, "prezzo negativo")); } }
+    order_open(&st, tid, wo).await?; // CA-13
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     if !order_line_allowed(&mut tx, &s, wo).await? { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore o assegnatario")); }
     let id: Uuid = sqlx::query_scalar(
@@ -9379,6 +9400,7 @@ pub async fn delete_order_line(State(st): State<AppState>, h: HeaderMap, Path(id
     // consenti a pianificatore o assegnatario dell'ordine a cui appartiene la riga
     let wo: Option<Uuid> = sqlx::query_scalar("SELECT work_order_id FROM app.work_order_lines WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
     let wo = match wo { Some(x)=>x, None=>{ return Err(err(StatusCode::NOT_FOUND,"riga non trovata")); } };
+    order_open(&st, tid, wo).await?; // CA-13
     if !order_line_allowed(&mut tx, &s, wo).await? { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore o assegnatario")); }
     sqlx::query("DELETE FROM app.work_order_lines WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
@@ -9611,15 +9633,24 @@ pub async fn convert_request(State(st): State<AppState>, h: HeaderMap, Path(id):
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "interventi").await?; require_cap(&s, "plan")?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let r = sqlx::query("SELECT title,description,client_id,priority,status FROM app.service_requests WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
-    let r = match r { Some(x)=>x, None=>{ return Err(err(StatusCode::NOT_FOUND,"richiesta non trovata")); } };
-    if r.get::<String,_>("status")=="convertita" { return Err(err(StatusCode::CONFLICT,"richiesta già convertita")); }
+    // CA-13: presa atomica (due conversioni contemporanee non creano due ordini); una richiesta
+    // chiusa o già convertita non si converte
+    let r = sqlx::query("UPDATE app.service_requests SET status='convertita' WHERE id=$1 AND status NOT IN ('convertita','chiusa')
+                         RETURNING title,description,client_id,priority").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+    let r = match r { Some(x)=>x, None=>{
+        let st0: Option<String> = sqlx::query_scalar("SELECT status FROM app.service_requests WHERE id=$1").bind(id).fetch_optional(&mut *tx).await.map_err(ise)?;
+        return Err(match st0.as_deref() {
+            None => err(StatusCode::NOT_FOUND,"richiesta non trovata"),
+            Some("chiusa") => err(StatusCode::CONFLICT,"richiesta chiusa: non si converte"),
+            _ => err(StatusCode::CONFLICT,"richiesta già convertita"),
+        }); } };
     let oid: Uuid = sqlx::query_scalar(
         "INSERT INTO app.work_orders(tenant_id,title,instructions,state,created_by,priority,client_id) VALUES($1,$2,$3,'bozza',$4,$5,$6) RETURNING id")
         .bind(tid).bind(r.get::<String,_>("title")).bind(r.try_get::<String,_>("description").ok()).bind(s.user_id).bind(r.get::<i32,_>("priority")).bind(r.try_get::<Uuid,_>("client_id").ok())
         .fetch_one(&mut *tx).await.map_err(ise)?;
-    sqlx::query("UPDATE app.service_requests SET status='convertita',order_id=$2 WHERE id=$1").bind(id).bind(oid).execute(&mut *tx).await.map_err(ise)?;
+    sqlx::query("UPDATE app.service_requests SET order_id=$2 WHERE id=$1").bind(id).bind(oid).execute(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
+    audit(&st, tid, &s.email, "request_convert", json!({"request_id":id,"order_id":oid})).await;
     Ok(Json(json!({"id":oid})))
 }
 
@@ -9701,6 +9732,17 @@ pub async fn order_cancel(State(st): State<AppState>, h: HeaderMap, Path(id): Pa
 
 // ---- Intervento end-to-end: report, allegati (foto/doc), firma ----
 /// Chi può operare sull'esecuzione di un ordine: il pianificatore/admin oppure l'assegnatario.
+/// CA-13: un intervento completato o annullato non si modifica più (rapporto, firma, materiali,
+/// allegati, pianificazione): è un documento chiuso.
+async fn order_open(st: &AppState, tid: Uuid, oid: Uuid) -> Result<(),(StatusCode,String)> {
+    let state: Option<String> = sqlx::query_scalar("SELECT state FROM app.work_orders WHERE id=$1 AND tenant_id=$2")
+        .bind(oid).bind(tid).fetch_optional(&st.owner_pool).await.map_err(ise)?;
+    match state.as_deref() {
+        None => Err(err(StatusCode::NOT_FOUND, "ordine inesistente")),
+        Some("completato") | Some("annullato") => Err(err(StatusCode::CONFLICT, "intervento chiuso: non si modifica più")),
+        _ => Ok(()),
+    }
+}
 /// CA-10: lettura di un ordine = chi può lavorarci (order_edit_allowed) oppure chi ha
 /// `orders.view_all` e l'ordine è in una delle sue sedi.
 async fn order_view_allowed(st: &AppState, s: &Session, oid: Uuid) -> Result<Uuid,(StatusCode,String)> {
@@ -9737,6 +9779,7 @@ async fn order_edit_allowed(st: &AppState, s: &Session, oid: Uuid) -> Result<Uui
 pub async fn order_report_set(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderReport>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = order_edit_allowed(&st, &s, id).await?;
+    order_open(&st, tid, id).await?; // CA-13: rapporto e firma di un intervento chiuso non cambiano
     let signed_by = b.signed_by.as_deref().map(|x| x.trim()).filter(|x| !x.is_empty());
     let signed_at = signed_by.map(|_| st.clock.now());
     let ok = b.outcome_kind.as_deref().filter(|x| matches!(*x, "completato"|"parziale"|"cliente_assente"|"accesso_impedito"|"ritorno"));
@@ -9771,6 +9814,7 @@ pub async fn order_attachment_add(State(st): State<AppState>, h: HeaderMap, Path
     body: axum::body::Bytes) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = order_edit_allowed(&st, &s, id).await?;
+    order_open(&st, tid, id).await?; // CA-13
     if body.len() < 4 { return Err(err(StatusCode::BAD_REQUEST, "file vuoto")); }
     if body.len() > 10_000_000 { return Err(err(StatusCode::BAD_REQUEST, "file troppo grande (max 10MB)")); }
     let kind = match q.get("kind").map(|s| s.as_str()) { Some("doc") => "doc", Some("signature") => "signature", _ => "photo" };
