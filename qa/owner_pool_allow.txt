@@ -1,0 +1,41 @@
+# AR-2: query sul pool privilegiato senza tenant_id, PER SCELTA. Formato: funzione:tabelle # motivo
+# Ammesse solo se l'id arriva da una riga già filtrata per tenant, da un token univoco, o se la
+# query è di sistema su tutti i tenant. Un id preso dalla richiesta dell'utente va SEMPRE filtrato.
+persist_session:sessions # pulizia delle sessioni scadute di tutti i tenant
+super_mfa_enable:sessions # sessione identificata dal proprio token
+impersonate_stop:sessions # sessione identificata dal proprio token
+logout:sessions # sessione identificata dal proprio token
+secrets_status:ai_connections # stato della cifratura di sistema (superadmin, conteggi globali)
+secrets_sync:ai_connections # chiave dei segreti di sistema: verifica che nessun segreto la usi
+super_scenario_get:tenant_scenarios # catalogo scenari (superadmin): quanti tenant lo usano
+super_scenario_delete:tenant_scenarios # catalogo scenari (superadmin): quanti tenant lo usano
+resolve_ingest_token:ingest_tokens # token di ingest univoco
+immobility_watchdog:devices # watchdog di sistema: id dalla scansione appena fatta
+scenario_aeration_set:devices # dispositivo verificato prima con tenant_id e scenario
+assignments_list:esc_assignment_members,users # assegnazioni lette prima per tenant
+patrol_missed_watchdog:patrol_missed # watchdog di sistema: id appena inserito
+ingest_osmand:devices # dispositivo risolto dal token del tenant
+persist_telemetry:devices # dispositivo risolto dal token del tenant
+raise_iot_alert:iot_alerts # alert trovato prima per tenant_id
+process_gps_position:device_provisioning # dispositivo risolto dal token del tenant
+geofence_crossing_alarm:geofence_events # area trovata prima per tenant_id
+user_in_group:user_group_members # gruppo letto da un ordine del tenant
+group_calendar_ics:alarm_groups # gruppo dal token iCal univoco
+esc_native_oncall_contacts:alarm_group_members,users # gruppo dalla configurazione del tenant
+esc_group_shifts:alarm_group_members,users # gruppo dalla configurazione del tenant
+esc_group_shifts:esc_assignment_members # assegnazione dalla configurazione del tenant
+esc_assignments_oncall:esc_assignment_members # assegnazione dalla configurazione del tenant
+esc_user_rotation_shifts_g:alarm_group_members # gruppo dalla configurazione del tenant
+esc_persist_delivery:esc_delivery_log # riga di consegna appena creata
+slack_announce_scan:alarm_groups # watchdog di sistema: id dalla scansione
+ingest_heartbeat:heartbeat_monitors # monitor dal token univoco
+heartbeat_watchdog:heartbeat_monitors # watchdog di sistema: id dalla scansione
+esc_optout_mark:user_contact_methods # STOP via SMS: il numero si disiscrive dal mittente condiviso, per tutti i tenant
+esc_optout_mark:users # STOP via SMS: il numero si disiscrive dal mittente condiviso, per tutti i tenant
+esc_optout_clear:user_contact_methods # START via SMS: vale per il numero su tutti i tenant
+esc_optout_clear:users # START via SMS: vale per il numero su tutti i tenant
+purge_retention:incident_timeline,incidents # ritenzione GDPR di sistema su tutti i tenant
+purge_retention:incidents # ritenzione GDPR di sistema su tutti i tenant
+purge_retention:events,incidents # ritenzione GDPR di sistema su tutti i tenant
+purge_retention:audit_log # ritenzione GDPR di sistema su tutti i tenant
+drain_outbox:outbox # riga appena presa in carico dal worker

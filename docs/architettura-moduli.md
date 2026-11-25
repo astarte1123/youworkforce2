@@ -116,8 +116,49 @@ moduli-feature.
 | Permessi e ruoli (IAM) | `core/src/iam.rs` | estratto (fondamenta login/sessione restano in api.rs) |
 | Identità/utenti | `core/src/users.rs` | estratto (CRUD anagrafica + ACL sedi; login/sessione/impersonazione restano in api.rs) |
 
-I moduli di prodotto e il resto dei servizi vivono ancora in `api.rs` e migrano con lo stesso
-pattern (piano: `analisi-miglioramento-yw.md`, Fase 1). Già estratto: report di tracciamento (`track.rs`).
+**Split di `api.rs` (25/11/2026, punto 3).** `api.rs` è passato da ~14.800 a ~3.000 righe: i
+moduli di prodotto sono in file propri, spostati **senza cambiare comportamento** (stesse funzioni,
+stesse rotte; `api.rs` li riesporta con `pub(crate) use crate::<modulo>::*`, quindi `main.rs` e i
+richiami `api::nome` restano validi; gli elementi di primo livello sono `pub(crate)`):
+
+| Area | File |
+|------|------|
+| Piano di controllo (superadmin): tenant, moduli, monitoraggio, chiave dei segreti, canali di consegna, account e MFA, impersonazione | `core/src/superadmin.rs` |
+| Dispositivi e localizzazione: ingest nativo (GPS, OsmAnd, Teltonika, JSON), comandi, geofence, report, mappe, beacon, piantine, catalogo, onboarding | `core/src/devices.rs` |
+| IoT nativo: telemetria, attributi, comandi, blueprint, MQTT, alert e monitoraggio, scenari | `core/src/iot.rs` |
+| Lavoro sul campo: clienti, interventi, listino, consuntivi, registro ore, ronde, turni, cantieri | `core/src/field.rs` |
+| Escalation nativa e reperibilità: impostazioni, recapiti, assenze, manutenzione, calendari, consegna, ack Twilio, servizi | `core/src/oncall.rs` |
+| Assistente e processi AI: assistente, processi nei moduli, agente con strumenti, report AI, connessione | `core/src/ai.rs` |
+
+In `api.rs` restano gli helper trasversali (sessione, permessi, errori, audit, rate limit), utenti
+e gruppi di allarme/instradamento, centrale e incidenti, SOS e check-in, configurazione dei moduli.
+Già estratti prima: report di tracciamento (`track.rs`), Teltonika (`teltonika.rs`), MQTT (`mqtt.rs`).
+
+## Controlli statici delle protezioni (AR-1, AR-2 — 25/11/2026)
+
+I controlli di permesso, modulo e tenant restano nei gestori (difesa in profondità), ma ora sono
+**verificati in automatico** a ogni esecuzione di `qa/run-all.sh` (quindi anche in CI), senza core:
+
+- **`qa/handler-guards.sh` (AR-1).** Legge tutte le rotte di `main.rs`, apre il gestore e verifica
+  che abbia autenticazione (sessione, token o firma), controllo del modulo (rotte tenant) e
+  permesso (scritture tenant). Le eccezioni volute stanno in `qa/handler_guards_allow.txt` con il
+  motivo (nucleo indipendente dai moduli, calendari con token, …); un'eccezione per una rotta che
+  non esiste più fa fallire il controllo. La prima esecuzione ha trovato **37 gestori senza
+  controllo del modulo** (reperibilità classica, annullo e assegnazione degli ordini, approvazione
+  dei consuntivi, alert IoT, regole sensori, chiavi di collegamento, impostazioni e report AI, report
+  CSV, consegna escalation, immobilità, calendario, allegati di commessa) e un permesso mancante
+  sugli **allegati di commessa** (ora fatture e SAL solo a chi vede i costi, foto e diario a chi è nel
+  gruppo assegnato): tutti corretti.
+- **`qa/owner-pool-audit.sh` (AR-2).** Il pool privilegiato (`owner_pool`) non applica l'RLS:
+  l'isolamento dipende dal `tenant_id` scritto nella query. Il controllo trova ogni query su
+  `owner_pool` che tocca una tabella con `tenant_id` (ricavate dalle migrazioni) senza filtrarlo.
+  Le eccezioni (watchdog di sistema su tutti i tenant, token univoci, id appena letti da una riga
+  filtrata) stanno in `qa/owner_pool_allow.txt` con il motivo. Trovata e corretta una lettura per id
+  dal percorso senza tenant (impostazione del reperibile attivo di un gruppo).
+  Limite: il controllo vede se `tenant_id` compare nella query, non se il filtro è corretto.
+
+Regola per il codice nuovo: una rotta senza controlli o una query privilegiata senza `tenant_id`
+non passa la CI finché non è corretta o motivata nell'elenco delle eccezioni.
 
 ## Riferimento temporale: orologio unico controllabile
 

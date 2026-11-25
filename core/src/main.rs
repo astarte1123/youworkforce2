@@ -1,4 +1,10 @@
-mod state; mod clock; mod auth; mod db; mod worker; mod api; mod crypto;
+mod state; mod clock; mod auth; mod db; mod worker; mod api;
+mod superadmin;
+mod devices;
+mod iot;
+mod field;
+mod ai;
+mod oncall; mod crypto;
 #[allow(dead_code)] mod escalation; // calcolo dei gradini di escalation (libreria pura, testata)
 mod delivery; // canali di consegna nativi dell'escalation (SMS/voce/email, sink di prova)
 mod modules; // #3 FASE 1: registry manifest moduli (dipendenze + metadata)

@@ -1,0 +1,96 @@
+# AR-1: rotte senza uno dei controlli richiesti da qa/handler_guards.py, PER SCELTA.
+# Formato: METODO PATH CONTROLLI-MANCANTI(separati da virgola) # motivo
+# Una rotta nuova senza controlli che non sta qui fa fallire il controllo.
+
+# --- nucleo, indipendente dai moduli (utenti, sedi, gruppi, permessi, privacy, impostazioni) ---
+GET    /api/me                          module  # profilo della sessione
+GET    /api/branding                    module  # aspetto del tenant
+GET    /api/branding/logo               module  # aspetto del tenant
+GET    /api/modules                     module  # elenco moduli del tenant
+GET    /api/modules/:code/tools         module  # configurazione dei moduli (settings.manage nel gestore)
+POST   /api/modules/:code/tools/:tool   module  # configurazione dei moduli (settings.manage nel gestore)
+GET    /api/ui/features                 module  # preferenze di interfaccia
+POST   /api/ui/features                 module  # preferenze di interfaccia
+GET    /api/settings/timezone           module  # impostazione del tenant
+PUT    /api/settings/timezone           module  # impostazione del tenant
+GET    /api/dashboard/layout            module  # cruscotto comune a tutti i moduli
+PUT    /api/dashboard/layout            module  # cruscotto comune a tutti i moduli
+GET    /api/stream                      module  # eventi in tempo reale filtrati per permessi
+GET    /api/users                       module  # anagrafica del nucleo
+POST   /api/users                       module  # anagrafica del nucleo
+POST   /api/users/:id                   module  # anagrafica del nucleo
+DELETE /api/users/:id                   module  # anagrafica del nucleo
+GET    /api/users/:id/sites             module  # anagrafica del nucleo
+POST   /api/users/:id/sites             module  # anagrafica del nucleo
+GET    /api/sites                       module  # anagrafica del nucleo
+POST   /api/sites                       module  # anagrafica del nucleo
+POST   /api/sites/:id                   module  # anagrafica del nucleo
+DELETE /api/sites/:id                   module  # anagrafica del nucleo
+GET    /api/assets                      module  # anagrafica del nucleo
+POST   /api/assets                      module  # anagrafica del nucleo
+POST   /api/assets/:id                  module  # anagrafica del nucleo
+DELETE /api/assets/:id                  module  # anagrafica del nucleo
+GET    /api/user-groups                 module  # gruppi di persone (nucleo, CA-5)
+POST   /api/user-groups                 module  # gruppi di persone (nucleo, CA-5)
+POST   /api/user-groups/:id             module  # gruppi di persone (nucleo, CA-5)
+DELETE /api/user-groups/:id             module  # gruppi di persone (nucleo, CA-5)
+POST   /api/user-groups/:id/members     module  # gruppi di persone (nucleo, CA-5)
+GET    /api/capabilities                module  # permessi (nucleo)
+POST   /api/capabilities                module  # permessi (nucleo)
+DELETE /api/capabilities                module  # permessi (nucleo)
+GET    /api/custom-roles                module  # ruoli personalizzati (nucleo)
+POST   /api/custom-roles                module  # ruoli personalizzati (nucleo)
+POST   /api/custom-roles/:id            module  # ruoli personalizzati (nucleo)
+DELETE /api/custom-roles/:id            module  # ruoli personalizzati (nucleo)
+POST   /api/custom-roles/:id/users      module  # ruoli personalizzati (nucleo)
+POST   /api/custom-roles/:id/groups     module  # ruoli personalizzati (nucleo)
+GET    /api/gdpr/export/:uid            module  # privacy (nucleo, gdpr.manage)
+POST   /api/gdpr/anonymize/:uid         module  # privacy (nucleo, gdpr.manage)
+GET    /api/gdpr/retention              module  # privacy (nucleo)
+GET    /api/gdpr/users                  module  # privacy (nucleo, gdpr.manage)
+GET    /api/gdpr/users/export           module  # privacy (nucleo, gdpr.manage)
+GET    /api/audit-log                   module  # registro attività (nucleo, audit.view)
+GET    /api/audit-log/export            module  # registro attività (nucleo, audit.view)
+GET    /api/invite/check                module  # pubblico: verifica di un invito con token
+POST   /api/impersonate/stop            module,perm  # chiude l'impersonazione della propria sessione
+
+# --- servizio dispositivi e mappe indoor: nucleo (AR-4), permessi devices.admin nel gestore ---
+POST   /api/devices                     module  # servizio dispositivi del nucleo (AR-4)
+POST   /api/devices/onboarding-kit      module  # servizio dispositivi del nucleo (AR-4)
+POST   /api/devices/:id                 module  # servizio dispositivi del nucleo (AR-4)
+DELETE /api/devices/:id                 module  # servizio dispositivi del nucleo (AR-4)
+POST   /api/devices/:id/assign          module  # servizio dispositivi del nucleo (AR-4)
+GET    /api/devices/:id/readiness       module  # servizio dispositivi del nucleo (AR-4)
+POST   /api/devices/:id/place           module  # piantine: comuni a Sicurezza e Campo
+GET    /api/devices/:id/report/:kind    auth,module  # controlli nel helper track::build_report (sessione, incidents.view, DEVICE_MODS)
+GET    /api/catalog/facets              module  # catalogo modelli (sola lettura)
+POST   /api/geofences                   module  # aree: comuni a Sicurezza e Campo
+GET    /api/beacons                     module  # piantine: comuni a Sicurezza e Campo
+POST   /api/beacons                     module  # piantine: comuni a Sicurezza e Campo
+POST   /api/beacons/:id/place           module  # piantine: comuni a Sicurezza e Campo
+GET    /api/floorplans                  module  # piantine: comuni a Sicurezza e Campo
+POST   /api/floorplans                  module  # piantine: comuni a Sicurezza e Campo
+POST   /api/floorplans/:id              module  # piantine: comuni a Sicurezza e Campo
+DELETE /api/floorplans/:id              module  # piantine: comuni a Sicurezza e Campo
+GET    /api/floorplans/:id/image        module  # piantine: comuni a Sicurezza e Campo
+GET    /api/floorplans/:id/devices      module  # piantine: comuni a Sicurezza e Campo
+
+# --- calendari personali: il token è creato solo dentro il modulo ---
+GET    /api/oncall-calendar/url         module  # link personale (il calendario lo legge il token)
+DELETE /api/oncall-calendar             module  # revoca del proprio link
+GET    /api/oncall-calendar.ics         module  # autenticato dal token personale
+GET    /api/calendar/my-url             module  # link personale
+GET    /api/calendar.ics                module  # autenticato dal token personale
+GET    /api/group-calendar.ics          module  # autenticato dal token del gruppo
+
+# --- turno nell'app: si deve poter sempre chiudere un turno aperto ---
+POST   /api/shifts/end                  module  # chiudere un turno aperto non dipende dal modulo
+GET    /api/shifts/current              module  # stato del proprio turno
+
+# --- scritture senza capability per scelta ---
+POST   /api/events                      perm  # ingest autenticato dal token del dispositivo
+POST   /api/assistant                   perm  # domanda all'assistente: sola lettura sui dati dell'utente
+POST   /api/ai/reports/generate         perm  # report AI sui dati che l'utente può leggere (processo AI acceso)
+POST   /api/scenarios/:code/ai-analysis perm  # analisi in sola lettura
+POST   /api/diary/transcribe            perm  # trascrizione del proprio audio
+POST   /api/commesse/:id/attachments    perm  # regole nel gestore: costi per fatture/SAL, gruppo assegnato per foto/diario
