@@ -4009,28 +4009,49 @@ async function vConnettori(v){
 const RULE_OPS=[['>=','≥'],['<=','≤'],['>','>'],['<','<'],['==','='],['is_true','è vero'],['is_false','è falso']];
 const RULE_ETYPES=['sensore_critico','batteria_critica','man_down','perdita_alimentazione','telemetria'];
 const RULE_ET_LAB={sensore_critico:'Sensore critico',batteria_critica:'Batteria critica',man_down:'Uomo a terra',perdita_alimentazione:'Perdita alimentazione',telemetria:'Telemetria (nessun allarme)'};
+// IO-1: ambito di una regola (a cosa si applica). Elenchi caricati con le regole.
+let RULE_SCOPE={devices:[],sites:[],models:[],scenarios:[]};
+const SCOPE_KINDS=[['tenant','Tutti i dispositivi'],['device','Un dispositivo'],['model','Un modello di dispositivo'],['site','Una sede'],['scenario','Uno scenario']];
+function scopeRefOptions(kind,sel){ const L=RULE_SCOPE;
+  const o=(v,l)=>`<option value="${esc(v)}" ${v===sel?'selected':''}>${esc(l)}</option>`;
+  if(kind==='device') return L.devices.map(d=>o(d.id,(d.label||d.external_id)+(d.site_name?' · '+d.site_name:''))).join('');
+  if(kind==='site') return L.sites.map(x=>o(x.id,x.name)).join('');
+  if(kind==='model') return L.models.map(m=>o(m.code,m.name)).join('');
+  if(kind==='scenario') return L.scenarios.map(x=>o(x.code,x.name)).join('');
+  return ''; }
+function scopeKindChange(pfx){ const k=$('#'+pfx+'ScopeKind').value, w=$('#'+pfx+'ScopeRefWrap');
+  if(w){ w.style.display=k==='tenant'?'none':'inline-flex'; $('#'+pfx+'ScopeRef').innerHTML=scopeRefOptions(k,null)||'<option value="">— nessuno disponibile —</option>'; } }
+function scopeFields(pfx,kind,sref){ kind=kind||'tenant';
+  return `<label class="small mut">Vale per<select id="${pfx}ScopeKind" onchange="scopeKindChange('${pfx}')">${SCOPE_KINDS.map(([k,l])=>`<option value="${k}" ${k===kind?'selected':''}>${l}</option>`).join('')}</select></label>
+    <label class="small mut" id="${pfx}ScopeRefWrap" style="${kind==='tenant'?'display:none':''}">Quale<select id="${pfx}ScopeRef">${scopeRefOptions(kind,sref)}</select></label>`; }
+function scopeBody(pfx){ const k=$('#'+pfx+'ScopeKind').value; return {scope_kind:k, scope_ref:k==='tenant'?null:($('#'+pfx+'ScopeRef').value||null)}; }
 async function renderSensorRules(){
   const box=$('#sensorRulesCard'); if(!box)return;
   let R=[]; try{ R=await api('/sensor-rules'); }catch(e){}
+  const [DV,SI,SC]=await Promise.all([api('/devices').catch(()=>[]),api('/sites').catch(()=>[]),api('/scenarios').catch(()=>[])]);
+  const models={}; (DV||[]).forEach(d=>{ if(d.model_code) models[d.model_code]=((d.manufacturer||'')+' '+(d.model_name||d.model_code)).trim(); });
+  RULE_SCOPE={devices:DV||[],sites:SI||[],models:Object.entries(models).map(([code,name])=>({code,name})),scenarios:(SC||[]).filter(x=>x&&x.code)};
   const opLab=o=>(RULE_OPS.find(x=>x[0]===o)||[o,o])[1];
   const numeric=o=>!['is_true','is_false'].includes(o);
   box.innerHTML=`<div class="card pad"><div class="card-h" style="padding:0 0 var(--s-10)"><h2>Regole sensori (IoT)</h2>
     <button class="btn ghost small" onclick="aiSuggestRules(this)">✦ Suggerisci regole (AI)</button></div>
     <div id="srSuggest"></div>
-    <div class="small mut" style="margin-bottom:var(--s-8)">Trasformano la telemetria in allarmi, in modo parametrico: <b>metrica</b> (chiave nel payload) + <b>operatore</b> + <b>soglia</b> → <b>evento</b>. Gli eventi critici attivano la catena allarmi nativa (incidente + escalation).</div>
-    <table class="table" data-export="regole-sensori"><thead><tr><th>Metrica</th><th>Condizione</th><th>Evento</th><th>Etichetta</th><th></th></tr></thead>
+    <div class="small mut" style="margin-bottom:var(--s-8)">Trasformano la telemetria in allarmi, in modo parametrico: <b>metrica</b> (chiave nel payload) + <b>operatore</b> + <b>soglia</b> → <b>evento</b>. Gli eventi critici attivano la catena allarmi nativa (incidente + escalation). Ogni regola vale per tutti i dispositivi o solo per uno, un modello, una sede o uno scenario. Si valutano <b>tutte</b> le regole: se più regole scattano insieme vale la più grave.</div>
+    <table class="table" data-export="regole-sensori"><thead><tr><th>Metrica</th><th>Condizione</th><th>Evento</th><th>Vale per</th><th>Etichetta</th><th></th></tr></thead>
     <tbody>${R.map(r=>`<tr class="clk" onclick='ruleEdit(${JSON.stringify(r).replace(/'/g,"&#39;")})'><td class="mono small">${esc(r.metric)}</td>
       <td class="small">${opLab(r.op)}${numeric(r.op)?' '+(r.threshold??''):''}</td>
       <td><span class="chip ${r.etype==='telemetria'?'':'s-critico'}">${esc(RULE_ET_LAB[r.etype]||r.etype)}</span></td>
+      <td class="small">${esc(r.scope_label||'Tutti i dispositivi')}</td>
       <td class="small mut">${esc(r.label||'')}</td>
       <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();ruleDel('${r.id}')">${ICON.x}</button></td></tr>`).join('')
-      ||emptyRow(5, null, 'Nessuna regola sensore', 'Le regole decidono quando un dato di un sensore diventa un incidente (es. temperatura oltre soglia). Senza regole si applica solo la soglia temperatura di base.', null)}</tbody></table>
+      ||emptyRow(6, null, 'Nessuna regola sensore', 'Le regole decidono quando un dato di un sensore diventa un incidente (es. temperatura oltre soglia). Senza regole si applica solo la soglia temperatura di base.', null)}</tbody></table>
     <div class="card pad" style="margin-top:var(--s-8);background:var(--bg2)"><b class="small">Nuova regola</b>
       <div class="row" style="gap:var(--s-6);margin-top:var(--s-8);flex-wrap:wrap;align-items:flex-end">
         <label class="small mut">Metrica<input id="srMetric" placeholder="es. gas, co, smoke, temperature, water" style="width:200px"></label>
         <label class="small mut">Operatore<select id="srOp" onchange="srOpChange()">${RULE_OPS.map(o=>`<option value="${o[0]}">${o[1]}</option>`).join('')}</select></label>
         <label class="small mut" id="srThrWrap">Soglia<input id="srThr" type="number" step="any" style="width:90px"></label>
         <label class="small mut">Evento<select id="srEtype">${RULE_ETYPES.map(e=>`<option value="${e}">${RULE_ET_LAB[e]}</option>`).join('')}</select></label>
+        ${scopeFields('sr','tenant',null)}
         <label class="small mut">Etichetta<input id="srLabel" placeholder="opz." style="width:140px"></label>
         <button class="btn" onclick="ruleAdd(this)">+ Aggiungi</button>
       </div></div></div>`;
@@ -4038,7 +4059,7 @@ async function renderSensorRules(){
 function srOpChange(){ const num=!['is_true','is_false'].includes($('#srOp').value); const w=$('#srThrWrap'); if(w)w.style.display=num?'inline-flex':'none'; }
 async function ruleAdd(btn){
   const op=$('#srOp').value, numeric=!['is_true','is_false'].includes(op);
-  const body={metric:$('#srMetric').value.trim(), op, etype:$('#srEtype').value, label:$('#srLabel').value.trim()||null};
+  const body={metric:$('#srMetric').value.trim(), op, etype:$('#srEtype').value, label:$('#srLabel').value.trim()||null, ...scopeBody('sr')};
   if(numeric){ const t=$('#srThr').value; if(t==='') return toast('Soglia richiesta','bad'); body.threshold=Number(t); }
   if(!body.metric) return toast('Metrica richiesta','bad');
   try{ await api('/sensor-rules',{method:'POST',body:JSON.stringify(body)}); toast('Regola aggiunta','ok'); renderSensorRules(); }
@@ -4050,11 +4071,12 @@ function ruleEdit(r){ r=r||{}; const numeric=!['is_true','is_false'].includes(r.
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Operatore<select id="reOp" onchange="reOpChange()">${RULE_OPS.map(o=>`<option value="${o[0]}" ${o[0]===r.op?'selected':''}>${o[1]}</option>`).join('')}</select></label>
       <label class="small mut grow" id="reThrWrap" style="${numeric?'':'display:none'}">Soglia<input id="reThr" type="number" step="any" value="${r.threshold??''}"></label></div>
     <label class="small mut">Evento<select id="reEtype">${RULE_ETYPES.map(e=>`<option value="${e}" ${e===r.etype?'selected':''}>${RULE_ET_LAB[e]}</option>`).join('')}</select></label>
+    <div class="row" style="gap:var(--s-8);flex-wrap:wrap">${scopeFields('re',r.scope_kind,r.scope_ref)}</div>
     <label class="small mut">Etichetta<input id="reLabel" value="${esc(r.label||'')}" placeholder="opz."></label>
     <button class="btn" onclick="ruleSave('${r.id}')">Salva</button><div class="cfg-msg small"></div></div>`); }
 function reOpChange(){ const num=!['is_true','is_false'].includes($('#reOp').value); const w=$('#reThrWrap'); if(w)w.style.display=num?'inline-flex':'none'; }
 async function ruleSave(id){ const m=$('.cfg-msg'); const op=$('#reOp').value, numeric=!['is_true','is_false'].includes(op);
-  const body={metric:$('#reMetric').value.trim(), op, etype:$('#reEtype').value, label:$('#reLabel').value.trim()||null};
+  const body={metric:$('#reMetric').value.trim(), op, etype:$('#reEtype').value, label:$('#reLabel').value.trim()||null, ...scopeBody('re')};
   if(!body.metric){m.textContent='metrica richiesta';m.style.color='var(--bad)';return;}
   if(numeric){ const t=$('#reThr').value; if(t===''){m.textContent='soglia richiesta';m.style.color='var(--bad)';return;} body.threshold=Number(t); }
   try{ await api('/sensor-rules/'+id,{method:'POST',body:JSON.stringify(body)}); toast('Regola aggiornata','ok'); closeDrawer(); renderSensorRules(); }

@@ -20,6 +20,16 @@ esterno** (coerente con la direzione self-contained; unica integrazione esterna 
   alzano un **alert IoT** in **vista separata** (`iot_alerts`, non la Centrale sicurezza). In
   **coesistenza** col modulo Lone Worker la soglia alza **anche** un incidente di sicurezza
   (centrale + escalation); un tenant puramente IoT resta nel solo mondo alert.
+- **Ambito e gravità delle regole** (IO-1, mig `0138`): ogni regola vale per **tutti i dispositivi**
+  del tenant (default, come prima) oppure per **un dispositivo**, **un modello**, **una sede** o
+  **uno scenario** (`scope_kind` `tenant|device|model|site|scenario` + `scope_ref`, validato). Il
+  motore valuta **tutte** le regole applicabili e tiene la **più grave** (uomo a terra > sensore
+  critico > perdita alimentazione > batteria critica > telemetria); a parità vince la prima per
+  ordinamento. Prima contava solo la prima regola che scattava: una «telemetria» poteva nascondere
+  una «critica» sulla stessa metrica. L'alert riporta soglia ed etichetta della regola che ha
+  deciso. Una regola **«telemetria» non apre alert** (registra solo il dato). Le regole degli
+  scenari restano di tenant. Prove: `api::sensor_rule_scope_tests` (4) e
+  `qa/sensor-rule-scope-e2e.sh` **12/12**.
 - **Alert IoT in vista separata** (Fase 3, vedi sotto): soglia / offline / ripristino, con ciclo
   di vita proprio (aperto → preso in carico → chiuso) e **watchdog offline** nativo.
 - **Monitoraggio flotta** (Fase 4, vedi sotto): stato online/offline, ultimi valori canonici,
@@ -49,7 +59,7 @@ esterno** (coerente con la direzione self-contained; unica integrazione esterna 
 | Mappa normalizzazione | `GET/PUT /api/iot/devices/:id/map` (`{rows:[{raw_key,metric,scale?,offset?}]}`) |
 | Attributi | `GET/POST /api/iot/devices/:id/attributes` (`{scope, values}`) |
 | Comando/RPC | `POST /api/iot/devices/:id/command` (`{method, params?}`) · `GET …/commands` |
-| Soglie | `GET/POST /api/sensor-rules` · `POST /api/sensor-rules/:id` (modifica) · `DELETE …/:id` — regole metric/op/threshold/etype, riga cliccabile = modifica |
+| Soglie | `GET/POST /api/sensor-rules` · `POST /api/sensor-rules/:id` (modifica) · `DELETE …/:id` — regole metric/op/threshold/etype + ambito (`scope_kind`/`scope_ref`, `scope_label` leggibile), riga cliccabile = modifica |
 | Blueprint (lavori) | `GET /api/iot/blueprints` (ogni blueprint include i `models` reali consigliati) |
 | Catalogo modelli | `GET /api/catalog/devices?scope=iot` (o `safety`) — include `blueprint` + `capabilities`; `scope=iot` ritorna solo sensori |
 | Attivazione zero-touch | `POST /api/iot/activate` (`{blueprint? | model_code?, external_id, label?}`) → device+token+mappa+soglie+istruzioni |

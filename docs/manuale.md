@@ -164,7 +164,7 @@ Modulo **giri**: giri di controllo per guardie/manutentori.
 
 ## 10. IoT e scenari
 
-- **IoT (nativo)**: regole sensori parametriche, telemetria time-series, attributi e comandi/RPC,
+- **IoT (nativo)**: regole sensori parametriche (per tutti i dispositivi o per un dispositivo, modello, sede o scenario; se più regole scattano vale la più grave), telemetria time-series, attributi e comandi/RPC,
   soglie→incidenti, tutto senza server esterni. Vedi [iot-nativo](iot-nativo.md). 
 - **Scenari/casi d'uso**: 16 ambienti attivabili dal superadmin su ogni tenant (moduli + regole
   sensori + demo). Generatore di scenari da descrizione/immagini.

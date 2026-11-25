@@ -1528,7 +1528,8 @@ pub async fn super_scenario_demo(State(st): State<AppState>, h: HeaderMap, Path(
     let mut events = 0i64; let mut incidents = 0i64;
     for (i, payload) in payloads.iter().enumerate() {
         let device = devs[i % devs.len()].clone();
-        let etype = eval_sensor_rules(&st, tid, payload).await.unwrap_or_else(|| "telemetria".into());
+        let dev_id = device_id_by_ext(&st, tid, "scenario", &device).await;
+        let etype = eval_sensor_rules(&st, tid, dev_id, payload).await.unwrap_or_else(|| "telemetria".into());
         let is_crit = CRITICAL.contains(&etype.as_str());
         let corr = format!("scndemo-{}-{}", scn.code, Uuid::new_v4());
         let _ = persist_ingest(&st, tid, Normalized{
@@ -5236,7 +5237,9 @@ pub async fn ingest_event(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     // viene elevato (il dispositivo generico non deve decidere da solo la criticita').
     let mut etype = b.etype.clone();
     if let Some(p) = &b.payload {
-        if let Some(e) = eval_sensor_rules(&st, tid, p).await {
+        let ext = bound_ext.clone().or_else(|| b.device_external_id.clone());
+        let dev_id = match &ext { Some(x) => device_id_by_ext(&st, tid, &source, x).await, None => None };
+        if let Some(e) = eval_sensor_rules(&st, tid, dev_id, p).await {
             if CRITICAL.contains(&e.as_str()) { etype = e; }
         }
     }
@@ -6618,9 +6621,11 @@ pub async fn persist_telemetry(st: &AppState, tid: Uuid, dev_id: Uuid,
     let mut incident = json!(null);
     let mut alert = json!(null);
     let payload = Value::Object(canon.clone());
-    if let Some(etype) = eval_sensor_rules(st, tid, &payload).await {
+    // IO-1: «telemetria» = dato registrato, nessun allarme (come dice la UI)
+    if let Some(hit) = eval_sensor_rules_hit(st, tid, Some(dev_id), &payload).await.filter(|h| h.etype != "telemetria") {
+        let etype = hit.etype.clone();
         // 1) alert IoT in VISTA SEPARATA (sempre): è il mestiere IoT, non la sicurezza del lavoratore.
-        alert = raise_iot_soglia_alert(st, tid, dev_id, &etype, &canon).await;
+        alert = raise_iot_soglia_alert(st, tid, dev_id, &hit).await;
         // 2) COESISTENZA: se il tenant ha anche Lone Worker, la soglia alza ANCHE l'incidente di
         //    sicurezza (centrale + escalation), come prima. Un tenant puramente IoT non lo fa.
         if module_active(st, tid, "loneworker").await {
@@ -7081,14 +7086,10 @@ pub async fn raise_iot_alert(st: &AppState, tid: Uuid, device_id: Uuid, kind: &s
 }
 /// Soglia telemetria -> alert IoT. Ritrova la regola che ha fatto scattare (metric/threshold/label)
 /// e costruisce un alert leggibile. Ritorna l'alert (o {deduplicated} / null) per la risposta d'ingest.
-async fn raise_iot_soglia_alert(st: &AppState, tid: Uuid, device_id: Uuid, etype: &str, canon: &serde_json::Map<String,Value>) -> Value {
-    let rules = sqlx::query("SELECT metric,op,threshold,label FROM app.sensor_rules WHERE tenant_id=$1 AND etype=$2 AND enabled=true ORDER BY sort,created_at")
-        .bind(tid).bind(etype).fetch_all(&st.owner_pool).await.unwrap_or_default();
-    let mut metric=String::new(); let mut threshold:Option<f64>=None; let mut value:Option<f64>=None; let mut label:Option<String>=None;
-    for r in &rules {
-        let m: String = r.get("metric"); let op: String = r.get("op"); let thr: Option<f64> = r.try_get("threshold").ok();
-        if let Some(v) = canon.get(&m) { if rule_matches(&op, thr, v) { value=v.as_f64(); metric=m; threshold=thr; label=r.try_get("label").ok(); break; } }
-    }
+async fn raise_iot_soglia_alert(st: &AppState, tid: Uuid, device_id: Uuid, hit: &RuleHit) -> Value {
+    // IO-1: la regola è quella che ha deciso (nel suo ambito, la più grave), non la prima con lo stesso evento
+    let etype = hit.etype.as_str();
+    let (metric, threshold, value, label) = (hit.metric.clone(), hit.threshold, hit.value, hit.label.clone());
     let severity = iot_severity_for(etype);
     let msg = label.filter(|s| !s.is_empty()).unwrap_or_else(|| {
         let ml = if metric.is_empty() { etype.to_string() } else { metric.clone() };
@@ -7716,37 +7717,140 @@ fn rule_matches(op: &str, thr: Option<f64>, v: &Value) -> bool {
         }
     }
 }
-/// Valuta le regole sensori del tenant sul payload telemetria. Ritorna l'etype della
-/// prima regola abilitata che fa match (ordine: sort, poi creazione). System scope.
-pub async fn eval_sensor_rules(st: &AppState, tid: Uuid, payload: &Value) -> Option<String> {
-    let rows = sqlx::query("SELECT metric,op,threshold,etype FROM app.sensor_rules WHERE tenant_id=$1 AND enabled=true ORDER BY sort,created_at")
-        .bind(tid).fetch_all(&st.owner_pool).await.ok()?;
-    for r in &rows {
-        let metric: String = r.get("metric");
-        let op: String = r.get("op");
-        let thr: Option<f64> = r.try_get("threshold").ok();
-        let et: String = r.get("etype");
-        if let Some(v) = payload.get(&metric) {
-            if rule_matches(&op, thr, v) { return Some(et); }
+/// IO-1: gravità di un evento prodotto da una regola sensori (più alto = più grave).
+pub fn rule_etype_rank(e: &str) -> i32 {
+    match e {
+        "man_down" => 50, "sensore_critico" => 40, "perdita_alimentazione" => 30, "batteria_critica" => 20,
+        "telemetria" => 0,
+        x if CRITICAL.contains(&x) || x.ends_with("_critico") => 30,
+        _ => 10,
+    }
+}
+/// A quale dispositivo si applica una valutazione (per l'ambito delle regole).
+#[derive(Debug, Clone, Default)]
+pub struct RuleCtx { pub device_id: Option<Uuid>, pub model: Option<String>, pub site: Option<Uuid>, pub scenario: Option<String> }
+/// Una regola come la vede il motore (pura, testabile).
+#[derive(Debug, Clone)]
+pub struct RuleRow { pub scope_kind: String, pub scope_ref: Option<String>, pub metric: String, pub op: String,
+    pub threshold: Option<f64>, pub etype: String, pub label: Option<String> }
+/// Esito: la regola che ha deciso l'evento, con il valore letto.
+#[derive(Debug, Clone)]
+pub struct RuleHit { pub etype: String, pub metric: String, pub threshold: Option<f64>, pub value: Option<f64>, pub label: Option<String> }
+pub fn rule_in_scope(kind: &str, sref: Option<&str>, ctx: &RuleCtx) -> bool {
+    match (kind, sref) {
+        ("tenant", _) => true,
+        ("device", Some(r)) => ctx.device_id.map(|d| d.to_string() == r).unwrap_or(false),
+        ("model", Some(r)) => ctx.model.as_deref() == Some(r),
+        ("site", Some(r)) => ctx.site.map(|s| s.to_string() == r).unwrap_or(false),
+        ("scenario", Some(r)) => ctx.scenario.as_deref() == Some(r),
+        _ => false,
+    }
+}
+/// Valuta TUTTE le regole applicabili (in ordine) e tiene la più grave; a parità vince la prima.
+pub fn select_rule(rules: &[RuleRow], ctx: &RuleCtx, payload: &Value) -> Option<RuleHit> {
+    let mut best: Option<(i32, RuleHit)> = None;
+    for r in rules {
+        if !rule_in_scope(&r.scope_kind, r.scope_ref.as_deref(), ctx) { continue; }
+        let Some(v) = payload.get(&r.metric) else { continue; };
+        if !rule_matches(&r.op, r.threshold, v) { continue; }
+        let rank = rule_etype_rank(&r.etype);
+        if best.as_ref().map(|(b, _)| rank > *b).unwrap_or(true) {
+            best = Some((rank, RuleHit{ etype: r.etype.clone(), metric: r.metric.clone(), threshold: r.threshold,
+                value: rule_num(v), label: r.label.clone() }));
         }
     }
-    None
+    best.map(|(_, h)| h)
+}
+/// Contesto di un dispositivo (modello, sede, scenario) per l'ambito delle regole.
+pub async fn rule_ctx(st: &AppState, tid: Uuid, dev: Option<Uuid>) -> RuleCtx {
+    let Some(d) = dev else { return RuleCtx::default(); };
+    match sqlx::query("SELECT model_code, site_id, config->>'scenario' AS scn FROM app.devices WHERE tenant_id=$1 AND id=$2")
+        .bind(tid).bind(d).fetch_optional(&st.owner_pool).await.ok().flatten() {
+        Some(r) => RuleCtx{ device_id: Some(d), model: r.try_get("model_code").ok().flatten(),
+            site: r.try_get("site_id").ok().flatten(), scenario: r.try_get("scn").ok().flatten() },
+        None => RuleCtx{ device_id: Some(d), ..Default::default() },
+    }
+}
+/// Id del dispositivo (tenant, source, external_id), per dare il contesto alle regole.
+pub async fn device_id_by_ext(st: &AppState, tid: Uuid, source: &str, ext: &str) -> Option<Uuid> {
+    sqlx::query_scalar("SELECT id FROM app.devices WHERE tenant_id=$1 AND source=$2 AND external_id=$3")
+        .bind(tid).bind(source).bind(ext).fetch_optional(&st.owner_pool).await.ok().flatten()
+}
+/// Valuta le regole sensori del tenant sul payload telemetria per il dispositivo `dev` (se noto).
+/// IO-1: tutte le regole abilitate nel loro ambito; vince la più grave. System scope.
+pub async fn eval_sensor_rules_hit(st: &AppState, tid: Uuid, dev: Option<Uuid>, payload: &Value) -> Option<RuleHit> {
+    let rows = sqlx::query("SELECT scope_kind,scope_ref,metric,op,threshold,etype,label FROM app.sensor_rules WHERE tenant_id=$1 AND enabled=true ORDER BY sort,created_at")
+        .bind(tid).fetch_all(&st.owner_pool).await.ok()?;
+    let rules: Vec<RuleRow> = rows.iter().map(|r| RuleRow{
+        scope_kind: r.get("scope_kind"), scope_ref: r.try_get("scope_ref").ok().flatten(),
+        metric: r.get("metric"), op: r.get("op"), threshold: r.try_get("threshold").ok().flatten(),
+        etype: r.get("etype"), label: r.try_get("label").ok().flatten() }).collect();
+    let ctx = rule_ctx(st, tid, dev).await;
+    select_rule(&rules, &ctx, payload)
+}
+pub async fn eval_sensor_rules(st: &AppState, tid: Uuid, dev: Option<Uuid>, payload: &Value) -> Option<String> {
+    eval_sensor_rules_hit(st, tid, dev, payload).await.map(|h| h.etype)
+}
+/// Valida l'ambito di una regola; ritorna lo scope_ref normalizzato.
+async fn validate_rule_scope(st: &AppState, tid: Uuid, kind: &str, sref: Option<&str>) -> Result<Option<String>, (StatusCode,String)> {
+    let r = sref.map(|x| x.trim()).filter(|x| !x.is_empty());
+    let bad = |m: &str| Err(err(StatusCode::BAD_REQUEST, m));
+    match kind {
+        "tenant" => Ok(None),
+        "device" | "site" => {
+            let Some(id) = r.and_then(|x| Uuid::parse_str(x).ok()) else { return bad("scegli il dispositivo o la sede a cui si applica la regola"); };
+            let q = if kind == "device" { "SELECT EXISTS(SELECT 1 FROM app.devices WHERE tenant_id=$1 AND id=$2)" }
+                    else { "SELECT EXISTS(SELECT 1 FROM app.sites WHERE tenant_id=$1 AND id=$2)" };
+            let ok: bool = sqlx::query_scalar(q).bind(tid).bind(id).fetch_one(&st.owner_pool).await.map_err(ise)?;
+            if ok { Ok(Some(id.to_string())) } else { bad("dispositivo o sede inesistente") }
+        }
+        "model" => {
+            let Some(m) = r else { return bad("scegli il modello di dispositivo"); };
+            let ok: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app.device_models WHERE model_code=$1)").bind(m)
+                .fetch_one(&st.owner_pool).await.map_err(ise)?;
+            if ok { Ok(Some(m.to_string())) } else { bad("modello di dispositivo sconosciuto") }
+        }
+        "scenario" => {
+            let Some(c) = r else { return bad("scegli lo scenario"); };
+            if scenario_catalog().iter().any(|s| s.code == c) { Ok(Some(c.to_string())) } else { bad("scenario sconosciuto") }
+        }
+        _ => bad("ambito non valido"),
+    }
 }
 const RULE_ETYPES: &[&str] = &["sensore_critico","batteria_critica","man_down","perdita_alimentazione","telemetria"];
 const RULE_OPS: &[&str] = &[">=","<=",">","<","==","is_true","is_false"];
 #[derive(Deserialize)]
-pub struct SensorRuleReq { pub metric: String, pub op: String, pub threshold: Option<f64>, pub etype: String, pub label: Option<String>, pub sort: Option<i32> }
+pub struct SensorRuleReq { pub metric: String, pub op: String, pub threshold: Option<f64>, pub etype: String, pub label: Option<String>, pub sort: Option<i32>,
+    /// IO-1: tenant (default) | device | model | site | scenario
+    #[serde(default)] pub scope_kind: Option<String>, #[serde(default)] pub scope_ref: Option<String> }
 pub async fn list_sensor_rules(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT id,metric,op,threshold,etype,label,enabled,sort FROM app.sensor_rules ORDER BY sort,created_at")
+    let rows = sqlx::query("SELECT r.id,r.metric,r.op,r.threshold,r.etype,r.label,r.enabled,r.sort,r.scope_kind,r.scope_ref,
+            COALESCE(d.label,d.external_id) AS dev_name, si.name AS site_name, m.manufacturer||' '||m.model_name AS model_name
+          FROM app.sensor_rules r
+          LEFT JOIN app.devices d ON r.scope_kind='device' AND d.id::text=r.scope_ref
+          LEFT JOIN app.sites si ON r.scope_kind='site' AND si.id::text=r.scope_ref
+          LEFT JOIN app.device_models m ON r.scope_kind='model' AND m.model_code=r.scope_ref
+          ORDER BY r.sort,r.created_at")
         .fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
-    let out: Vec<Value> = rows.iter().map(|r| json!({
+    let cat = scenario_catalog();
+    let out: Vec<Value> = rows.iter().map(|r| {
+        let kind: String = r.get("scope_kind"); let sref: Option<String> = r.try_get("scope_ref").ok().flatten();
+        let scope_label = match kind.as_str() {
+            "tenant" => "Tutti i dispositivi".to_string(),
+            "device" => format!("Dispositivo: {}", r.try_get::<String,_>("dev_name").ok().unwrap_or_else(|| "(eliminato)".into())),
+            "site" => format!("Sede: {}", r.try_get::<String,_>("site_name").ok().unwrap_or_else(|| "(eliminata)".into())),
+            "model" => format!("Modello: {}", r.try_get::<String,_>("model_name").ok().unwrap_or_else(|| sref.clone().unwrap_or_default())),
+            "scenario" => format!("Scenario: {}", sref.as_deref().and_then(|c| cat.iter().find(|s| s.code==c)).map(|s| s.name.to_string()).unwrap_or_else(|| sref.clone().unwrap_or_default())),
+            _ => kind.clone() };
+        json!({
         "id": r.get::<Uuid,_>("id"), "metric": r.get::<String,_>("metric"), "op": r.get::<String,_>("op"),
         "threshold": r.try_get::<f64,_>("threshold").ok(), "etype": r.get::<String,_>("etype"),
-        "label": r.try_get::<String,_>("label").ok(), "enabled": r.get::<bool,_>("enabled"), "sort": r.get::<i32,_>("sort") })).collect();
+        "label": r.try_get::<String,_>("label").ok(), "enabled": r.get::<bool,_>("enabled"), "sort": r.get::<i32,_>("sort"),
+        "scope_kind": kind, "scope_ref": sref, "scope_label": scope_label }) }).collect();
     Ok(Json(json!(out)))
 }
 pub async fn create_sensor_rule(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SensorRuleReq>) -> R {
@@ -7757,10 +7861,12 @@ pub async fn create_sensor_rule(State(st): State<AppState>, h: HeaderMap, Json(b
     if !RULE_ETYPES.contains(&b.etype.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "etype non ammesso")); }
     let numeric = !matches!(b.op.as_str(), "is_true"|"is_false");
     if numeric && b.threshold.is_none() { return Err(err(StatusCode::BAD_REQUEST, "soglia richiesta per questo operatore")); }
+    let kind = b.scope_kind.clone().unwrap_or_else(|| "tenant".into());
+    let sref = validate_rule_scope(&st, tid, &kind, b.scope_ref.as_deref()).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let row = sqlx::query("INSERT INTO app.sensor_rules(tenant_id,metric,op,threshold,etype,label,sort) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+    let row = sqlx::query("INSERT INTO app.sensor_rules(tenant_id,metric,op,threshold,etype,label,sort,scope_kind,scope_ref) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id")
         .bind(tid).bind(b.metric.trim()).bind(&b.op).bind(if numeric { b.threshold } else { None })
-        .bind(&b.etype).bind(&b.label).bind(b.sort.unwrap_or(100)).fetch_one(&mut *tx).await.map_err(ise)?;
+        .bind(&b.etype).bind(&b.label).bind(b.sort.unwrap_or(100)).bind(&kind).bind(&sref).fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     audit(&st, tid, &s.email, "sensor_rule_create", json!({"metric":b.metric,"op":b.op,"etype":b.etype})).await;
     Ok(Json(json!({"id": row.get::<Uuid,_>("id")})))
@@ -7773,10 +7879,14 @@ pub async fn update_sensor_rule(State(st): State<AppState>, h: HeaderMap, Path(i
     if !RULE_ETYPES.contains(&b.etype.as_str()) { return Err(err(StatusCode::BAD_REQUEST, "etype non ammesso")); }
     let numeric = !matches!(b.op.as_str(), "is_true"|"is_false");
     if numeric && b.threshold.is_none() { return Err(err(StatusCode::BAD_REQUEST, "soglia richiesta per questo operatore")); }
+    let scope = match &b.scope_kind { Some(k) => Some((k.clone(), validate_rule_scope(&st, tid, k, b.scope_ref.as_deref()).await?)), None => None };
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let n = sqlx::query("UPDATE app.sensor_rules SET metric=$2,op=$3,threshold=$4,etype=$5,label=$6,sort=COALESCE($7,sort) WHERE id=$1")
+    let n = sqlx::query("UPDATE app.sensor_rules SET metric=$2,op=$3,threshold=$4,etype=$5,label=$6,sort=COALESCE($7,sort),
+                         scope_kind=CASE WHEN $8 THEN $9 ELSE scope_kind END, scope_ref=CASE WHEN $8 THEN $10 ELSE scope_ref END WHERE id=$1")
         .bind(id).bind(b.metric.trim()).bind(&b.op).bind(if numeric { b.threshold } else { None })
-        .bind(&b.etype).bind(&b.label).bind(b.sort).execute(&mut *tx).await.map_err(ise)?.rows_affected();
+        .bind(&b.etype).bind(&b.label).bind(b.sort)
+        .bind(scope.is_some()).bind(scope.as_ref().map(|s| s.0.clone())).bind(scope.and_then(|s| s.1))
+        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "regola inesistente")); }
     audit(&st, tid, &s.email, "sensor_rule_update", json!({"metric":b.metric,"op":b.op,"etype":b.etype})).await;
@@ -13451,5 +13561,49 @@ mod sms_reply_tests {
         assert_eq!(parse_sms_reply("OK 1a2b3c4d"), (Some("ack"), Some("1a2b3c4d".into())));
         assert_eq!(parse_sms_reply("chiudi 1A2B3C4D"), (Some("close"), Some("1a2b3c4d".into())));
         assert_eq!(parse_sms_reply("OK grazie"), (Some("ack"), None));
+    }
+}
+
+#[cfg(test)]
+mod sensor_rule_scope_tests {
+    use super::*;
+    fn rule(kind: &str, sref: Option<&str>, metric: &str, op: &str, thr: f64, etype: &str) -> RuleRow {
+        RuleRow{ scope_kind: kind.into(), scope_ref: sref.map(|s| s.into()), metric: metric.into(), op: op.into(),
+            threshold: Some(thr), etype: etype.into(), label: None }
+    }
+    #[test]
+    fn minor_rule_first_does_not_hide_critical() {
+        // IO-1: una «telemetria» prima nell'ordine non nasconde più una «critica» sulla stessa metrica
+        let rules = vec![rule("tenant", None, "gas", ">=", 10.0, "telemetria"), rule("tenant", None, "gas", ">=", 50.0, "sensore_critico")];
+        let hit = select_rule(&rules, &RuleCtx::default(), &json!({"gas": 80})).unwrap();
+        assert_eq!(hit.etype, "sensore_critico");
+        assert_eq!(hit.threshold, Some(50.0));
+        let low = select_rule(&rules, &RuleCtx::default(), &json!({"gas": 20})).unwrap();
+        assert_eq!(low.etype, "telemetria");
+    }
+    #[test]
+    fn scope_limits_rule_to_its_device_model_site_scenario() {
+        let d = Uuid::new_v4(); let s = Uuid::new_v4();
+        let rules = vec![rule("device", Some(&d.to_string()), "t", ">", 30.0, "sensore_critico")];
+        assert!(select_rule(&rules, &RuleCtx::default(), &json!({"t": 40})).is_none(), "senza dispositivo non si applica");
+        assert!(select_rule(&rules, &RuleCtx{device_id: Some(Uuid::new_v4()), ..Default::default()}, &json!({"t": 40})).is_none());
+        assert!(select_rule(&rules, &RuleCtx{device_id: Some(d), ..Default::default()}, &json!({"t": 40})).is_some());
+        let site = vec![rule("site", Some(&s.to_string()), "t", ">", 30.0, "sensore_critico")];
+        assert!(select_rule(&site, &RuleCtx{site: Some(s), ..Default::default()}, &json!({"t": 40})).is_some());
+        let model = vec![rule("model", Some("GH5200"), "t", ">", 30.0, "batteria_critica")];
+        assert!(select_rule(&model, &RuleCtx{model: Some("GH5200".into()), ..Default::default()}, &json!({"t": 40})).is_some());
+        assert!(select_rule(&model, &RuleCtx{model: Some("FMB920".into()), ..Default::default()}, &json!({"t": 40})).is_none());
+        let scn = vec![rule("scenario", Some("smart_energy"), "t", ">", 30.0, "sensore_critico")];
+        assert!(select_rule(&scn, &RuleCtx{scenario: Some("smart_energy".into()), ..Default::default()}, &json!({"t": 40})).is_some());
+    }
+    #[test]
+    fn same_severity_first_in_order_wins() {
+        let rules = vec![rule("tenant", None, "t", ">", 30.0, "sensore_critico"), rule("tenant", None, "t", ">", 35.0, "sensore_critico")];
+        assert_eq!(select_rule(&rules, &RuleCtx::default(), &json!({"t": 40})).unwrap().threshold, Some(30.0));
+    }
+    #[test]
+    fn man_down_beats_sensor_critical() {
+        let rules = vec![rule("tenant", None, "t", ">", 30.0, "sensore_critico"), rule("tenant", None, "fall", ">=", 1.0, "man_down")];
+        assert_eq!(select_rule(&rules, &RuleCtx::default(), &json!({"t": 40, "fall": 1})).unwrap().etype, "man_down");
     }
 }
