@@ -16,7 +16,24 @@ perimetri di prodotto devono funzionare **da soli** e **insieme**:
   di sezione vuoti non vengono resi. La **Sicurezza lavoratore** appare solo con un modulo safety
   attivo; il **Lavoro sul campo** solo con un modulo Campo attivo.
 - Primitive **module-neutral** (condivise, mai gated da un modulo): utenti, sedi, gruppi di persone,
-  capability, ruoli custom, privacy/audit, asset. Le **squadre** invece appartengono a `workforce`.
+  capability, ruoli custom, privacy/audit, asset. Le **squadre** servono a `workforce` **e** a
+  `cantieri` (CA-21: prima l'elenco era vietato a un tenant solo Cantieri, mentre crearle era
+  permesso a chiunque); i **piani dei turni** richiedono `workforce` in ogni operazione.
+- **Matrice funzione → moduli (SL-20, 25/11/2026):** per le funzioni trasversali di sicurezza c'è
+  un'unica tabella, `modules::FEATURE_MODULES` (basta uno dei moduli elencati):
+
+  | Funzione | Moduli |
+  |---|---|
+  | SOS dall'app (`app_sos`) | loneworker, gps, iot, giri (serve una Centrale che lo veda) |
+  | Check-in, silenzio e battito dell'app | loneworker |
+  | Silenzio di badge e tracker | gps |
+  | Immobilità | loneworker, gps |
+  | Ronde mancate | giri |
+  | Squadre / piani dei turni | workforce, cantieri / workforce |
+
+  Senza nessuno dei moduli l'SOS dall'app è **rifiutato** con «chiama subito i soccorsi»: prima
+  veniva accettato anche se nessuno poteva vederlo. Un unit test verifica che ogni modulo citato
+  esista nel registro. e2e `qa/feature-gating-e2e.sh`.
 
 ## Perché check-in/SOS sono legati a loneworker
 

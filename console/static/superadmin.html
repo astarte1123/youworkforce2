@@ -64,15 +64,18 @@ function login(){
       <div class="row" style="gap:10px;margin-bottom:14px"><div class="logo">${ICON.logomark}</div>
         <div><h1 style="font-size:18px">Piano di controllo</h1><div class="small mut">tenants.loneworker.eu</div></div></div>
       <div class="col">
-        <div class="field"><label>Email</label><input id="email" value="admin@loneworker.eu"></div>
-        <div class="field"><label>Password</label><input id="pw" type="password" value="admin"></div>
+        <div class="field"><label>Email</label><input id="email" type="email" autocomplete="username" placeholder="nome@azienda.it"></div>
+        <div class="field"><label>Password</label><input id="pw" type="password" autocomplete="current-password"></div>
         <button class="btn block lg" id="go">Accedi</button>
         <div class="small" id="msg" style="color:var(--bad);min-height:16px"></div>
       </div></div></div></div>`;
   $('#go').onclick=async()=>{ try{ await api('/superadmin/login',{method:'POST',
     body:JSON.stringify({email:$('#email').value,password:$('#pw').value})}); shell();
-  }catch(e){ $('#msg').textContent='Credenziali non valide'; } };
+  }catch(e){ $('#msg').textContent=loginErrorText(e); } };
   $('#pw').onkeydown=e=>{if(e.key==='Enter')$('#go').click();};
+  // FE-12: credenziali di prova precompilate SOLO in ambiente demo/dev (default: produzione, campi vuoti).
+  loginInfo().then(li=>{ if(!li.demo) return; const em=$('#email'), pw=$('#pw');
+    if(em&&!em.value) em.value='admin@loneworker.eu'; if(pw&&!pw.value) pw.value='admin'; });
 }
 
 async function shell(){
@@ -172,7 +175,7 @@ async function shell(){
             <div class="field span2"><label>Email destinatari alert <span class="small mut">(una o più, separate da virgola)</span></label><input id="ss_email" placeholder="ops@azienda.it, noc@azienda.it"></div>
             <div class="field"><label>Telefono SMS <span class="small mut">(E.164)</span></label><input id="ss_phone" placeholder="+39..."></div>
           </div>
-          <div class="ct-foot"><div class="small mut">Le notifiche partono su email/SMS/webhook configurati. I canali esterni richiedono le relative credenziali lato prodotto.</div>
+          <div class="ct-foot"><div class="small mut">Le notifiche partono sui canali configurati (email, SMS, webhook). Email e SMS reali richiedono le credenziali del fornitore di invio impostate sul server.</div>
             <button class="btn" onclick="sysSettingsSave()">Salva configurazione</button></div>
           <div id="ss_msg" class="small" style="margin-top:6px"></div>
         </div></div>
@@ -208,7 +211,7 @@ function saTab(k){
 const CAT_OPS=[['>=','≥'],['<=','≤'],['>','>'],['<','<'],['==','='],['is_true','è vero'],['is_false','è falso']];
 const CAT_ET={sensore_critico:'Sensore critico',batteria_critica:'Batteria critica',man_down:'Uomo a terra',perdita_alimentazione:'Perdita alimentazione',telemetria:'Telemetria (nessun allarme)'};
 async function catLoad(){ const box=$('#catList'); if(!box) return;
-  let L=[]; try{ L=await api('/superadmin/scenarios'); }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; return; }
+  let L=[]; try{ L=await api('/superadmin/scenarios'); }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(friendlyError(e))}</div>`; return; }
   box.innerHTML=`<table class="table"><thead><tr><th>Scenario</th><th>Settore</th><th>Regole</th><th>Dispositivi demo</th><th>Stato</th><th></th></tr></thead><tbody>${
     L.map(x=>`<tr><td><b>${esc(x.name)}</b><div class="small mut">${esc(x.desc||'')}</div></td><td class="small">${esc(x.sector||'—')}</td>
       <td>${x.rule_count}</td><td>${x.device_count}</td>
@@ -229,7 +232,7 @@ function catDevRow(d){ d=d||{}; return `<tr class="cat-dev">
   <td><button class="btn-ico btn ghost" onclick="this.closest('tr').remove()" title="Togli">✕</button></td></tr>`; }
 async function catEdit(code){ const box=$('#catForm');
   let x={code:'',name:'',sector:'',descr:'',modules:['iot'],rules:[],devices:[],spec:null,ai_focus:'',enabled:true,builtin:false,tenants:0};
-  if(code){ try{ x=await api('/superadmin/scenario-catalog/'+encodeURIComponent(code)); }catch(e){ toast(e.message,'bad'); return; } }
+  if(code){ try{ x=await api('/superadmin/scenario-catalog/'+encodeURIComponent(code)); }catch(e){ toast(e,'bad'); return; } }
   box.innerHTML=`<div class="card" style="padding:14px;border:1px solid var(--line)">
     <h3 style="margin:0 0 8px">${code?'Modifica «'+esc(x.name)+'»':'Nuovo scenario'}</h3>
     ${code&&x.tenants?`<div class="small mut" style="margin-bottom:8px">Attivo su ${x.tenants} tenant: le modifiche valgono per le prossime attivazioni.</div>`:''}
@@ -264,13 +267,13 @@ async function catSave(code){ const m=$('#cat_msg'); m.textContent=''; m.style.c
   try{ if(code){ await api('/superadmin/scenario-catalog/'+encodeURIComponent(code),{method:'POST',body:JSON.stringify(body)}); }
        else { body.code=$('#cat_code').value.trim(); await api('/superadmin/scenario-catalog',{method:'POST',body:JSON.stringify(body)}); }
     toast('Scenario salvato','ok'); $('#catForm').innerHTML=''; catLoad();
-  }catch(e){ m.style.color='var(--bad)'; m.textContent=e.message; } }
+  }catch(e){ m.style.color='var(--bad)'; m.textContent=friendlyError(e); } }
 async function catToggle(code,enabled){
   try{ const x=await api('/superadmin/scenario-catalog/'+encodeURIComponent(code));
     await api('/superadmin/scenario-catalog/'+encodeURIComponent(code),{method:'POST',body:JSON.stringify({name:x.name,sector:x.sector,descr:x.descr,modules:x.modules,rules:x.rules,devices:x.devices,spec:x.spec,ai_focus:x.ai_focus,enabled})});
-    toast(enabled?'Scenario riattivato':'Scenario disattivato: non si può più attivare sui tenant','ok'); catLoad(); }catch(e){ toast(e.message,'bad'); } }
+    toast(enabled?'Scenario riattivato':'Scenario disattivato: non si può più attivare sui tenant','ok'); catLoad(); }catch(e){ toast(e,'bad'); } }
 async function catDel(code){ if(!await askConfirm('Eliminare lo scenario dal catalogo?')) return;
-  try{ await api('/superadmin/scenario-catalog/'+encodeURIComponent(code),{method:'DELETE'}); toast('Scenario eliminato','ok'); catLoad(); }catch(e){ toast(e.message,'bad'); } }
+  try{ await api('/superadmin/scenario-catalog/'+encodeURIComponent(code),{method:'DELETE'}); toast('Scenario eliminato','ok'); catLoad(); }catch(e){ toast(e,'bad'); } }
 function toggleCreate(){ const c=$('#createCard'); const open=c.style.display==='none'; c.style.display=open?'':'none';
   $('#c_toggle').textContent=open?'× Chiudi':'+ Nuovo tenant'; if(open) $('#c_slug').focus(); }
 // ===== Stato sistema (monitoring) =====
@@ -290,7 +293,7 @@ async function loadSystem(){
 }
 // ===== Chiave dei segreti (decisione PO 25/11/2026) =====
 async function loadSecrets(){ const box=$('#secBox'); if(!box) return;
-  let d; try{ d=await api('/superadmin/secrets'); }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; return; }
+  let d; try{ d=await api('/superadmin/secrets'); }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(friendlyError(e))}</div>`; return; }
   const fmt=t=>t?new Date(t).toLocaleString('it-IT'):'—';
   const locked=d.state!=='attiva';
   box.innerHTML=`<div class="srow"><span class="k">Stato</span><span class="v">${locked?'<span class="dot bad"></span>bloccata: questo server non apre la chiave':'<span class="dot ok"></span>attiva'}</span></div>
@@ -319,22 +322,22 @@ async function secRecovery(change){
   const v=await secAsk(change?'Cambia passphrase di recupero':'Imposta passphrase di recupero', f, 'Conservala fuori da YouWorkforce (es. gestore di password o cassaforte): senza di essa, se il server cambia, i segreti non sono recuperabili.');
   if(!v) return; const [cur,np,np2]=change?v:[null,v[0],v[1]];
   if(np!==np2) return toast('Le due passphrase non coincidono','bad');
-  try{ await api('/superadmin/secrets/recovery',{method:'POST',body:JSON.stringify({passphrase:np,current:cur})}); toast('Passphrase di recupero salvata','ok'); loadSecrets(); }catch(e){ toast(e.message,'bad'); } }
+  try{ await api('/superadmin/secrets/recovery',{method:'POST',body:JSON.stringify({passphrase:np,current:cur})}); toast('Passphrase di recupero salvata','ok'); loadSecrets(); }catch(e){ toast(e,'bad'); } }
 async function secUnlock(){ const v=await secAsk('Sblocca la chiave dei segreti',['Passphrase di recupero'],'La chiave viene sbloccata e sigillata per questo server.'); if(!v) return;
-  try{ await api('/superadmin/secrets/unlock',{method:'POST',body:JSON.stringify({passphrase:v[0]})}); toast('Chiave sbloccata','ok'); loadSecrets(); loadSystem(); }catch(e){ toast(e.message,'bad'); } }
+  try{ await api('/superadmin/secrets/unlock',{method:'POST',body:JSON.stringify({passphrase:v[0]})}); toast('Chiave sbloccata','ok'); loadSecrets(); loadSystem(); }catch(e){ toast(e,'bad'); } }
 // ultima risorsa: chiave persa (server cambiato e niente passphrase). Le chiavi AI vanno reinserite.
 async function secReset(){
   const v=await secAsk('Azzera la chiave dei segreti',['Scrivi AZZERA per confermare'],'Da usare solo se la passphrase di recupero non c’è o è persa. Viene creata una chiave nuova e <b>le chiavi dei provider AI salvate finora vengono cancellate</b>: andranno reinserite tenant per tenant. L’operazione è registrata nel log.');
   if(!v) return;
   try{ const r=await api('/superadmin/secrets/reset',{method:'POST',body:JSON.stringify({confirm:v[0]})});
-    toast(`Chiave azzerata: ${r.secrets_cleared||0} chiavi AI da reinserire`,'ok'); loadSecrets(); loadSystem(); }catch(e){ toast(e.message,'bad'); } }
+    toast(`Chiave azzerata: ${r.secrets_cleared||0} chiavi AI da reinserire`,'ok'); loadSecrets(); loadSystem(); }catch(e){ toast(e,'bad'); } }
 async function secRotate(rec){
   if(!rec){ if(!await askConfirm('Ruotare la chiave dei segreti? Verrà generata una nuova chiave e tutti i segreti saranno ricifrati.')) return;
-    try{ await api('/superadmin/secrets/rotate',{method:'POST',body:JSON.stringify({passphrase:''})}); toast('Chiave ruotata','ok'); loadSecrets(); }catch(e){ toast(e.message,'bad'); } return; }
+    try{ await api('/superadmin/secrets/rotate',{method:'POST',body:JSON.stringify({passphrase:''})}); toast('Chiave ruotata','ok'); loadSecrets(); }catch(e){ toast(e,'bad'); } return; }
   const v=await secAsk('Ruota la chiave dei segreti',['Passphrase di recupero'],'Serve per proteggere anche la nuova chiave. Tutti i segreti vengono ricifrati.'); if(!v) return;
-  try{ await api('/superadmin/secrets/rotate',{method:'POST',body:JSON.stringify({passphrase:v[0]})}); toast('Chiave ruotata','ok'); loadSecrets(); }catch(e){ toast(e.message,'bad'); } }
+  try{ await api('/superadmin/secrets/rotate',{method:'POST',body:JSON.stringify({passphrase:v[0]})}); toast('Chiave ruotata','ok'); loadSecrets(); }catch(e){ toast(e,'bad'); } }
 async function loadAttempts(){ const box=$('#sysAttempts'); if(!box) return;
-  let rows=[]; try{ rows=await api('/superadmin/device-attempts'); }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; return; }
+  let rows=[]; try{ rows=await api('/superadmin/device-attempts'); }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(friendlyError(e))}</div>`; return; }
   if(!rows.length){ box.innerHTML='<div class="small mut">Nessun tentativo rifiutato.</div>'; return; }
   const fmt=t=>new Date(t).toLocaleString('it-IT');
   box.innerHTML=`<table class="table"><thead><tr><th>IMEI</th><th>Motivo</th><th>Aziende in cui è censito</th><th>Tentativi</th><th>Ultimo</th><th>Da</th></tr></thead><tbody>${
@@ -355,7 +358,7 @@ async function sysSettingsSave(){
     worker_stale_secs:num('ss_worker'), alert_email:$('#ss_email').value.trim()||null, alert_phone:$('#ss_phone').value.trim()||null };
   try{ await api('/superadmin/system/settings',{method:'POST',body:JSON.stringify(body)});
     toast('Configurazione salvata','ok'); m.style.color='var(--ok,green)'; m.textContent='✓ salvato'; loadSystem();
-  }catch(e){ m.style.color='var(--bad)'; m.textContent=e.message; }
+  }catch(e){ m.style.color='var(--bad)'; m.textContent=friendlyError(e); }
 }
 function sysGridHtml(){
   const s=SYS, sv=s.server||{}, th=s.thresholds||{}, db=s.db||{}, q=s.queues||{}, w=s.worker||{}, app=s.app||{};
@@ -454,7 +457,7 @@ async function doCreate(){
     ['c_slug','c_name','c_email','c_lic_m','c_lic_i'].forEach(id=>$('#'+id).value=''); if($('#c_pw'))$('#c_pw').value='';
     $('#c_plan').value=''; $('#c_scn').value=''; $('#c_scn_demo').checked=false; planPrev(); if($('#c_logo'))$('#c_logo').value=''; if($('#c_logo_name'))$('#c_logo_name').textContent=''; slugPrev();
     load();
-  }catch(e){ toast(e.message,'bad'); } }
+  }catch(e){ toast(e,'bad'); } }
 function copyText(t,btn){ navigator.clipboard&&navigator.clipboard.writeText(t).then(()=>{ if(btn){const o=btn.textContent;btn.textContent='✓ copiato';setTimeout(()=>btn.textContent=o,1500);} }); }
 function showCreated(r){
   const url=tenantUrl(r.slug); const box=$('#c_created'); if(!box)return;
@@ -603,14 +606,14 @@ async function setStatus(tid,status){
   let body={status};
   if(status==='sospeso'){ const r=await askSuspend(t.name||t.slug||''); if(!r) return; body={status,at:r.at,note:r.note}; }
   try{ const r=await api('/superadmin/tenants/'+tid+'/status',{method:'POST',body:JSON.stringify(body)});
-    toast(r.suspend_at?('Sospensione programmata il '+fmtDT(r.suspend_at)):status==='sospeso'?'Tenant sospeso: allarmi e accessi fermi':'Tenant attivo','ok'); load(); }catch(e){ toast(e.message,'bad'); }
+    toast(r.suspend_at?('Sospensione programmata il '+fmtDT(r.suspend_at)):status==='sospeso'?'Tenant sospeso: allarmi e accessi fermi':'Tenant attivo','ok'); load(); }catch(e){ toast(e,'bad'); }
 }
 async function delTenant(tid,slug){
   const c=await askPrompt('ELIMINAZIONE DEFINITIVA di «'+slug+'» e di TUTTI i suoi dati.\nScrivi lo slug per confermare:','');
   if(c===null) return;
   if(c.trim()!==slug){ toast('slug non corrispondente: eliminazione annullata','bad'); return; }
   try{ await api('/superadmin/tenants/'+tid,{method:'DELETE',body:JSON.stringify({slug})});
-    toast('Tenant eliminato','ok'); load(); }catch(e){ toast(e.message,'bad'); }
+    toast('Tenant eliminato','ok'); load(); }catch(e){ toast(e,'bad'); }
 }
 function tenantDetailHtml(t,mods){
   return `
@@ -629,7 +632,7 @@ function tenantDetailHtml(t,mods){
           : `<button class="btn ghost" onclick="setStatus('${t.id}','sospeso')">⏸ Sospendi</button>`}
         <button class="btn ghost" style="color:var(--bad)" onclick="delTenant('${t.id}',${jattr(t.slug)})">🗑 Elimina</button></div>
       <div class="small mut" style="margin:12px 0 5px;text-transform:uppercase;letter-spacing:.5px">Integrazioni</div>
-      <div class="small mut" style="margin-bottom:6px">YouWorkforce è <b>self-contained</b>: escalation, tracking (edge Teltonika/OsmAnd) e IoT sono motori <b>nativi</b>, nessuna connessione a servizi esterni. I provider AI sono l'unica integrazione esterna, opzionale: richiedono la chiave del cliente.</div>
+      <div class="small mut" style="margin-bottom:6px">YouWorkforce funziona <b>in autonomia</b>: escalation e reperibilità, localizzazione di GPS e badge (ricezione diretta da dispositivi Teltonika e app OsmAnd) e sensori IoT sono gestiti <b>dalla piattaforma stessa</b>, senza collegarsi a servizi esterni di tracciamento, allarmistica o IoT. L’unica integrazione esterna, facoltativa, è il fornitore di intelligenza artificiale: richiede la chiave del cliente.</div>
       <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn ghost cfgbtn" onclick="aiConn('${t.id}',this)">Connessione AI</button></div>
     </div>
     <div id="admin_${t.id}" style="margin-top:8px"></div>
@@ -690,7 +693,7 @@ async function saveAdmin(tid){
   const body={ mobile_app_licenses:numv('lm'), iot_device_licenses:numv('li'),
     brand_primary:hex('cp'), brand_ink:hex('ck'), brand_soft:hex('cs'), brand_accent:hex('ca') };
   try{ await api('/superadmin/tenants/'+tid+'/admin',{method:'POST',body:JSON.stringify(body)}); toast('Amministrazione salvata','ok'); load(); }
-  catch(e){ toast(e.message,'bad'); }
+  catch(e){ toast(e,'bad'); }
 }
 // messaggio leggibile dal server (formato non ammesso, troppo grande), mai il solo codice HTTP
 async function logoErr(res){ try{ const t=(await res.text()).trim(); if(t){ try{ const j=JSON.parse(t); if(j&&j.error) return j.error; }catch(e){} return t; } }catch(e){} return 'caricamento non riuscito'; }
@@ -700,9 +703,9 @@ async function logoUpload(tid){
   try{ const res=await fetch('/api/superadmin/tenants/'+tid+'/logo',{method:'POST',credentials:'include',
       headers:{'x-csrf-token':csrfToken(),'content-type':f.type||'image/png'}, body:f});
     if(!res.ok) throw new Error(await logoErr(res)); toast('Logo caricato','ok'); load();
-  }catch(e){ toast(e.message,'bad'); }
+  }catch(e){ toast(e,'bad'); }
 }
-async function logoDel(tid){ try{ await api('/superadmin/tenants/'+tid+'/logo',{method:'DELETE'}); toast('Logo rimosso','ok'); load(); }catch(e){ toast(e.message,'bad'); } }
+async function logoDel(tid){ try{ await api('/superadmin/tenants/'+tid+'/logo',{method:'DELETE'}); toast('Logo rimosso','ok'); load(); }catch(e){ toast(e,'bad'); } }
 function askConfirm(msg){ return new Promise(res=>{
   const m=document.createElement('div');
   m.style.cssText='position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)';
@@ -733,7 +736,7 @@ async function impersonate(tid){
   const t=tenantOf(tid);
   if(!await askConfirm('Impersonare l\'admin di '+(t.name||'questo tenant')+'? Entrerai nella sua console per supporto. L\'azione è tracciata.')) return;
   try{ await api('/superadmin/tenants/'+tid+'/impersonate',{method:'POST'}); location.href='/app.html'; }
-  catch(e){ toast(e.message,'bad'); }
+  catch(e){ toast(e,'bad'); }
 }
 async function toggle(tid,code,cb){
   const state=cb.checked?'attivo':'non_abilitato';
@@ -742,7 +745,7 @@ async function toggle(tid,code,cb){
     const st=document.querySelector(`[data-modstate="${tid}_${code}"]`); if(st) st.innerHTML=chip(state);
     // aggiorna conteggi locali senza ricaricare (la riga resta aperta)
     const t=TENANTS.find(x=>x.id===tid); if(t){ t.mods_active=Math.max(0,(t.mods_active||0)+(cb.checked?1:-1)); renderKpis(TENANTS); refreshRowHead(tid); }
-  }catch(e){ cb.checked=!cb.checked; toast('Bloccato: '+e.message,'bad'); }
+  }catch(e){ cb.checked=!cb.checked; toast('Bloccato: '+friendlyError(e),'bad'); }
 }
 // Superadmin scope: decide WHICH tools each tenant may configure.
 async function openTools(tid,btn){
@@ -805,14 +808,14 @@ async function aiConnSave(tid){
     await api('/superadmin/tenants/'+tid+'/ai',{method:'POST',body:JSON.stringify(body)});
     toast('Connessione AI salvata e attiva','ok'); if(msg)msg.innerHTML='<span class="s-attivo">salvata e attiva</span> — verifico la raggiungibilità…';
     aiVerify(tid); // feedback immediato sulla raggiungibilità (opzionale)
-  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
+  }catch(e){ toast(e,'bad'); if(msg)msg.textContent=friendlyError(e); }
 }
 async function aiVerify(tid){
   const msg=document.getElementById('ai_msg_'+tid); if(msg && msg.textContent.indexOf('verifico')<0) msg.textContent='Verifico…';
   try{ const r=await api('/superadmin/tenants/'+tid+'/ai/verify',{method:'POST'});
     if(msg) msg.innerHTML=r.reachable?`<span class="s-attivo">✓ ${esc(r.verdict)}</span>${r.sample?' · '+esc(r.sample):''}`:`<span style="color:var(--bad)">✗ ${esc(r.verdict)}</span> — la connessione è comunque salvata; controlla URL/chiave/rete.`;
     toast(r.reachable?'Provider AI collegato':'Salvata, ma provider non raggiungibile', r.reachable?'ok':'warn');
-  }catch(e){ if(msg)msg.textContent=e.message; toast(e.message,'bad'); }
+  }catch(e){ if(msg)msg.textContent=friendlyError(e); toast(e,'bad'); }
 }
 async function scnOpen(tid,btn){
   const box=document.getElementById('cfg_'+tid);
@@ -825,8 +828,8 @@ async function mapVisOpen(tid,btn){
   const box=document.getElementById('cfg_'+tid);
   if(box.dataset.open==='mapvis'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
   box.dataset.open='mapvis'; cfgExclusive(btn); btnOn(btn,true); box.innerHTML='<div class="small mut">carico…</div>';
-  let v; try{ v=await api('/superadmin/tenants/'+tid+'/map-visibility'); }catch(e){ box.innerHTML='<div class="small" style="color:var(--bad)">'+e.message+'</div>'; return; }
-  box.innerHTML=`<div class="card" style="padding:12px"><div class="small mut" style="margin-bottom:8px">Quali voci di menu mappa vede l'admin del tenant (sezione Operations). Richiede un modulo dispositivi attivo (Traccar/IoT).</div>
+  let v; try{ v=await api('/superadmin/tenants/'+tid+'/map-visibility'); }catch(e){ box.innerHTML='<div class="small" style="color:var(--bad)">'+friendlyError(e)+'</div>'; return; }
+  box.innerHTML=`<div class="card" style="padding:12px"><div class="small mut" style="margin-bottom:8px">Quali voci di menu mappa vede l'admin del tenant (sezione Operations). Richiede un modulo dispositivi attivo (GPS/badge o sensori IoT).</div>
     <label style="display:block;margin-bottom:6px"><input type="checkbox" id="mv_out_${tid}" ${v.map_outdoor?'checked':''}> <b>Mappa</b> (outdoor)</label>
     <label style="display:block;margin-bottom:10px"><input type="checkbox" id="mv_in_${tid}" ${v.map_indoor?'checked':''}> <b>Piantine</b> (indoor)</label>
     <button class="btn small" onclick="mapVisSave('${tid}')">Salva</button>
@@ -837,14 +840,14 @@ async function mapVisSave(tid){
   const msg=document.getElementById('mv_msg_'+tid); if(msg)msg.textContent='Salvo…';
   try{ await api('/superadmin/tenants/'+tid+'/map-visibility',{method:'POST',body:JSON.stringify({map_outdoor:out,map_indoor:ind})});
     toast('Visibilità menu mappa aggiornata','ok'); if(msg)msg.innerHTML='<span class="s-attivo">salvato</span> — l\'admin del tenant la vede al prossimo caricamento';
-  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
+  }catch(e){ toast(e,'bad'); if(msg)msg.textContent=friendlyError(e); }
 }
 // Render del pannello scenari, indipendente dal toggle/pulsante (richiamabile dopo attiva/rimuovi).
 async function scnRender(tid){
   const box=document.getElementById('cfg_'+tid); if(!box)return;
   box.innerHTML='<div class="small mut">carico…</div>';
   let cat=[], app=[];
-  try{ [cat,app]=await Promise.all([api('/superadmin/scenarios'), api('/superadmin/tenants/'+tid+'/scenarios')]); }catch(e){ box.innerHTML='<div class="small" style="color:var(--bad)">'+e.message+'</div>'; return; }
+  try{ [cat,app]=await Promise.all([api('/superadmin/scenarios'), api('/superadmin/tenants/'+tid+'/scenarios')]); }catch(e){ box.innerHTML='<div class="small" style="color:var(--bad)">'+friendlyError(e)+'</div>'; return; }
   const applied=new Set(app.map(a=>a.code));
   const bySector={}; cat.forEach(s=>{ (bySector[s.sector]=bySector[s.sector]||[]).push(s); });
   let h=`<div class="card" style="padding:12px"><div class="small mut" style="margin-bottom:8px">Ambienti per casi d'uso IoT. Attivare uno scenario abilita i moduli, inserisce il bundle di regole sensori e (se spuntato) crea device + sito demo. Rimozione pulita; i moduli restano abilitati.</div>
@@ -870,13 +873,13 @@ async function scnApply(tid,code){
   const demo=document.getElementById('scn_demo_'+tid).checked; const msg=document.getElementById('scn_msg_'+tid); if(msg)msg.textContent='Attivo…';
   try{ const r=await api('/superadmin/tenants/'+tid+'/scenarios',{method:'POST',body:JSON.stringify({code,with_demo:demo})});
     toast('Scenario attivato ('+r.rules_added+' regole, '+r.devices_added+' device)','ok'); scnRender(tid);
-  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
+  }catch(e){ toast(e,'bad'); if(msg)msg.textContent=friendlyError(e); }
 }
 async function scnApplyAll(tid){
   const demo=document.getElementById('scn_demo_'+tid).checked; const msg=document.getElementById('scn_msg_'+tid); if(msg)msg.textContent='Attivo tutti gli ambienti…';
   try{ const r=await api('/superadmin/tenants/'+tid+'/scenarios/bulk',{method:'POST',body:JSON.stringify({action:'apply',with_demo:demo})});
     toast('Attivati '+r.applied+' ambienti ('+r.rules_added+' regole, '+r.devices_added+' device)','ok'); scnRender(tid);
-  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
+  }catch(e){ toast(e,'bad'); if(msg)msg.textContent=friendlyError(e); }
 }
 // Rimozione di massa in due passi (no confirm() in webview): primo click arma, secondo conferma.
 async function scnRemoveAll(tid){
@@ -886,14 +889,14 @@ async function scnRemoveAll(tid){
   window._scnArmAll=null; if(msg)msg.textContent='Rimuovo tutti gli ambienti…';
   try{ const r=await api('/superadmin/tenants/'+tid+'/scenarios/bulk',{method:'POST',body:JSON.stringify({action:'remove'})});
     toast('Rimossi '+r.removed+' ambienti ('+r.rules_removed+' regole)','ok'); scnRender(tid);
-  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
+  }catch(e){ toast(e,'bad'); if(msg)msg.textContent=friendlyError(e); }
 }
 async function scnDemo(tid,code){
   const msg=document.getElementById('scn_msg_'+tid); if(msg)msg.textContent='Genero telemetria demo…';
   try{ const r=await api('/superadmin/tenants/'+tid+'/scenarios/'+code+'/demo',{method:'POST'});
     toast('Telemetria demo: '+r.events+' eventi, '+r.incidents+' incidenti','ok');
     if(msg)msg.innerHTML=`<span class="s-attivo">✓ ${r.events} eventi · ${r.incidents} incidenti</span> (vedi Centrale allarmi del tenant)`;
-  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
+  }catch(e){ toast(e,'bad'); if(msg)msg.textContent=friendlyError(e); }
 }
 // Rimozione in due passi senza confirm() (bloccato in alcune webview): primo click arma (il
 // bottone diventa "Conferma rimozione"), secondo click conferma. Rimozione COMPLETA lato server
@@ -910,7 +913,7 @@ async function scnRemove(tid,code,btn){
   window._scnArm=null; if(msg)msg.textContent='Rimuovo…';
   try{ const r=await api('/superadmin/tenants/'+tid+'/scenarios/'+code,{method:'DELETE'});
     toast('Scenario rimosso ('+r.rules_removed+' regole, '+r.devices_removed+' device demo)','ok'); scnRender(tid);
-  }catch(e){ toast(e.message,'bad'); if(msg)msg.textContent=e.message; }
+  }catch(e){ toast(e,'bad'); if(msg)msg.textContent=friendlyError(e); }
 }
 </script>
 </body></html>

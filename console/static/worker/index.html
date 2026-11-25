@@ -53,8 +53,8 @@ function login(){
       <strong style="font-size:18px">App lavoratore</strong></div>
     <div class="card"><div class="card-b col">
       <div class="field"><label>Tenant${store.slugFromHost?' <span class="small mut">(dal dominio)</span>':''}</label><input id="slug" value="${store.slug}" ${store.slugFromHost?'readonly':''}></div>
-      <div class="field"><label>Email</label><input id="email" value="mario@acme.loneworker.eu"></div>
-      <div class="field"><label>Password</label><input id="pw" type="password" value="demo"></div>
+      <div class="field"><label>Email</label><input id="email" type="email" autocomplete="username" placeholder="nome@azienda.it"></div>
+      <div class="field"><label>Password</label><input id="pw" type="password" autocomplete="current-password"></div>
       <button class="btn block lg" id="go">Accedi</button>
       <div class="small center" id="msg" style="color:var(--bad);min-height:16px"></div>
     </div></div></div>`;
@@ -62,7 +62,11 @@ function login(){
     await api('/login',{method:'POST',body:JSON.stringify({email:$('#email').value.trim(),password:$('#pw').value})});
     ME=await api('/me'); await loadMods();
     try{ const A=await api('/ai/features'); AIVOICE=!!(A&&A.features&&A.features.voice_diary); AIAGENT=!!(A&&A.features&&A.features.agent); }catch(e){}
-    app(); }catch(e){ $('#msg').textContent='Credenziali non valide'; } };
+    app(); }catch(e){ $('#msg').textContent=loginErrorText(e); } };
+  $('#pw').onkeydown=e=>{ if(e.key==='Enter') $('#go').click(); };
+  // FE-12: credenziali di prova precompilate SOLO in ambiente demo/dev (default: produzione, campi vuoti).
+  loginInfo().then(li=>{ if(!li.demo) return; const em=$('#email'), pw=$('#pw');
+    if(em&&!em.value) em.value='mario@acme.loneworker.eu'; if(pw&&!pw.value) pw.value='demo'; });
 }
 
 function app(){
@@ -120,7 +124,7 @@ async function loadPlans(){
     ${p.state==='pianificato'?`<button class="btn block" style="margin-top:10px" onclick="planConfirm('${p.id}')">Conferma turno</button>`:''}
   </div></div>`).join('');
 }
-async function planConfirm(id){ try{ await api('/shift-plans/'+id,{method:'POST',body:JSON.stringify({action:'confirm'})}); toast('Turno confermato','ok'); loadPlans(); }catch(e){toast(e.message,'bad');} }
+async function planConfirm(id){ try{ await api('/shift-plans/'+id,{method:'POST',body:JSON.stringify({action:'confirm'})}); toast('Turno confermato','ok'); loadPlans(); }catch(e){toast(e,'bad');} }
 
 async function out(){ try{ await api('/logout',{method:'POST'}); }catch(e){} location.reload(); }
 
@@ -177,7 +181,7 @@ function immShow(sec){
   IMM_SHOWN=true;
 }
 function immHide(){ const m=document.getElementById('immModal'); if(m) m.remove(); IMM_SHOWN=false; }
-async function immOk(){ try{ await api('/worker/immobility/ok',{method:'POST'}); immHide(); toast('Grazie, conteggio azzerato','ok'); }catch(e){ toast('Errore: '+e.message,'bad'); } }
+async function immOk(){ try{ await api('/worker/immobility/ok',{method:'POST'}); immHide(); toast('Grazie, conteggio azzerato','ok'); }catch(e){ toast(friendlyError(e),'bad'); } }
 // Q4: battito dell'app (~ogni minuto). Durante il turno, se l'app tace oltre la soglia (telefono
 // spento/scarico/senza rete, app chiusa) si apre una Perdita di contatto; si chiude al ritorno.
 let HB_TIMER=null, HB_STATE=null;
@@ -245,7 +249,7 @@ function renderCheckin(){
 }
 async function startCI(){ try{ const r=await api('/checkins',{method:'POST',body:JSON.stringify({minutes:Number($('#min').value)})});
   CI={id:r.id,due:new Date(r.due_at).getTime()}; renderCheckin(); toast('Check-in avviato','ok');
-}catch(e){ toast(e.message,'bad'); } }
+}catch(e){ toast(e,'bad'); } }
 function tickCI(){ clearInterval(CITimer); CITimer=setInterval(()=>{ if(!CI)return clearInterval(CITimer);
   let s=Math.max(0,Math.round((CI.due-Date.now())/1000)); const cd=$('#cd'); if(!cd)return clearInterval(CITimer);
   cd.textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
@@ -257,7 +261,7 @@ async function restoreCI(){
 }
 async function confirmCI(){ if(!CI)return; try{ const r=await api('/checkins/'+CI.id+'/confirm',{method:'POST'});
   if(r.ok) toast('Presenza confermata','ok'); else toast('Già scaduto','warn');
-  CI=null; clearInterval(CITimer); renderCheckin(); }catch(e){ toast(e.message,'bad'); } }
+  CI=null; clearInterval(CITimer); renderCheckin(); }catch(e){ toast(e,'bad'); } }
 
 // ---- orders ----
 async function loadOrders(){
@@ -275,7 +279,7 @@ async function loadOrders(){
   </div>`).join('');
   flushDrafts();
 }
-async function oAct(id,act,v){ try{ await api('/orders/'+id+'/'+act,{method:'POST',body:JSON.stringify({version:v})}); toast('Avviato','ok'); loadOrders(); }catch(e){toast(e.message,'bad');} }
+async function oAct(id,act,v){ try{ await api('/orders/'+id+'/'+act,{method:'POST',body:JSON.stringify({version:v})}); toast('Avviato','ok'); loadOrders(); }catch(e){toast(e,'bad');} }
 // ---- ronde (giri) ----
 let PATROL_ROUND=null;
 async function loadPatrols(){
@@ -291,7 +295,7 @@ async function loadPatrols(){
     <button class="btn block" onclick="startRound('${r.id}')">Avvia ronda</button></div>`).join('')
     : '<div class="card pad mut center">Nessun giro disponibile</div>';
 }
-async function startRound(rid){ try{ PATROL_ROUND=await api('/patrol-routes/'+rid+'/rounds',{method:'POST',body:'{}'}); renderRound(); }catch(e){toast(e.message,'bad');} }
+async function startRound(rid){ try{ PATROL_ROUND=await api('/patrol-routes/'+rid+'/rounds',{method:'POST',body:'{}'}); renderRound(); }catch(e){toast(e,'bad');} }
 function renderRound(){ const r=PATROL_ROUND, box=$('#patrols'); if(!r)return loadPatrols();
   box.innerHTML=`<div class="card pad">
     <div class="spread"><b>${esc(r.route_name)}</b><span class="tag">${r.done}/${r.total}</span></div>
@@ -324,7 +328,7 @@ async function doPunch(cid,kind){
       body.lat=pos.coords.latitude; body.lon=pos.coords.longitude; }catch(e){} }
   }
   try{ const r=await api('/patrol-rounds/'+PATROL_ROUND.id+'/punch',{method:'POST',body:JSON.stringify(body)});
-    PATROL_ROUND=r.round; toast(r.ok?'Punzonatura registrata':('Punzonatura non riuscita: '+(r.reason||'codice non valido')), r.ok?'ok':'bad'); renderRound(); }catch(e){toast(e.message,'bad');}
+    PATROL_ROUND=r.round; toast(r.ok?'Punzonatura registrata':('Punzonatura non riuscita: '+(r.reason||'codice non valido')), r.ok?'ok':'bad'); renderRound(); }catch(e){toast(e,'bad');}
 }
 // Scanner QR nativo (BarcodeDetector + camera). null = non disponibile/annullato -> fallback manuale.
 async function scanQR(){
@@ -365,7 +369,7 @@ async function scanNFC(){
 }
 async function closeRound(){ try{ const r=await api('/patrol-rounds/'+PATROL_ROUND.id+'/close',{method:'POST',body:'{}'});
   toast(r.status==='completato'?'Ronda completata ✓':'Ronda chiusa incompleta', r.status==='completato'?'ok':'warn');
-  PATROL_ROUND=null; loadPatrols(); }catch(e){toast(e.message,'bad');} }
+  PATROL_ROUND=null; loadPatrols(); }catch(e){toast(e,'bad');} }
 // --- Esecuzione intervento (PWA «Oggi») ---
 let _exMat=[];
 // Navigazione verso il luogo: usa le coordinate se presenti (precise), altrimenti l'indirizzo.
@@ -409,12 +413,12 @@ function openOrderExec(o){
     <button class="btn ghost block" style="margin-top:12px" onclick="this.closest('.modal').remove()">Chiudi</button></div>`;
   document.body.appendChild(m); if(exec){ exMatRender(); exAttLoad(o.id); }
 }
-async function oArrive(id){ try{ await api('/orders/'+id+'/arrive',{method:'POST',body:'{}'}); toast('Arrivo registrato','ok'); const m=document.querySelector('.modal'); if(m)m.remove(); loadOrders(); }catch(e){toast(e.message,'bad');} }
-async function oStartExec(id,v){ try{ await api('/orders/'+id+'/start',{method:'POST',body:JSON.stringify({version:v})}); toast('Lavoro avviato','ok'); const m=document.querySelector('.modal'); if(m)m.remove(); loadOrders(); }catch(e){toast(e.message,'bad');} }
+async function oArrive(id){ try{ await api('/orders/'+id+'/arrive',{method:'POST',body:'{}'}); toast('Arrivo registrato','ok'); const m=document.querySelector('.modal'); if(m)m.remove(); loadOrders(); }catch(e){toast(e,'bad');} }
+async function oStartExec(id,v){ try{ await api('/orders/'+id+'/start',{method:'POST',body:JSON.stringify({version:v})}); toast('Lavoro avviato','ok'); const m=document.querySelector('.modal'); if(m)m.remove(); loadOrders(); }catch(e){toast(e,'bad');} }
 // Ponte intervento->consuntivo: genera/riusa la bozza prefillata (idempotente). Salva prima il rapporto se servono i minuti.
 async function oGenTimesheet(id){ try{ const r=await api('/orders/'+id+'/timesheet',{method:'POST',body:'{}'});
     toast(r.created?'Bozza consuntivo creata dall\'intervento':(r.line_added?'Riga aggiunta al consuntivo':'Consuntivo già presente (nessun duplicato)'),'ok');
-  }catch(e){ toast('Consuntivo: '+e.message,'bad'); } }
+  }catch(e){ toast('Consuntivo: '+friendlyError(e),'bad'); } }
 function exMatRender(){ const el=$('#exMat'); if(el) el.innerHTML=_exMat.map((mm,i)=>`<div class="small" style="display:flex;gap:6px;align-items:center">• ${esc(mm.descr||'')} ${mm.qta||''}${esc(mm.unita||'')} <button class="btn ghost" style="padding:0 6px" onclick="exMatDel(${i})">×</button></div>`).join('')||'<span class="small mut">—</span>'; }
 function exMatAdd(){ const d=$('#exMd').value.trim(); if(!d)return; _exMat.push({descr:d,qta:Number($('#exMq').value)||1,unita:'pz'}); $('#exMd').value='';$('#exMq').value=''; exMatRender(); }
 function exMatDel(i){ _exMat.splice(i,1); exMatRender(); }
@@ -423,7 +427,7 @@ function exCollect(){ const cl=[...document.querySelectorAll('#exCl input[type=c
 async function exSave(id,send){ const body=exCollect();
   try{ await api('/orders/'+id+'/report',{method:'POST',body:JSON.stringify(body)});
     try{ localStorage.removeItem('yw_draft_'+id); }catch(e){}
-    if(send){ const o=(ORDERS||[]).find(x=>x.id===id)||{}; try{ await api('/orders/'+id+'/complete',{method:'POST',body:JSON.stringify({version:o.version,outcome:body.outcome_kind||'completato'})}); toast('Rapporto inviato','ok'); }catch(e){ toast('Salvato, chiusura: '+e.message,'warn'); } }
+    if(send){ const o=(ORDERS||[]).find(x=>x.id===id)||{}; try{ await api('/orders/'+id+'/complete',{method:'POST',body:JSON.stringify({version:o.version,outcome:body.outcome_kind||'completato'})}); toast('Rapporto inviato','ok'); }catch(e){ toast('Salvato, chiusura: '+friendlyError(e),'warn'); } }
     else toast('Bozza salvata (server)','ok');
     const m=document.querySelector('.modal'); if(m)m.remove(); loadOrders();
   }catch(e){ // offline: conserva SOLO i dati testuali (no foto/doc)
@@ -436,7 +440,7 @@ async function exAttLoad(id){ const el=$('#exAtt'); if(!el)return; try{ const A=
 async function exPhoto(id){ const f=$('#exFile'); const file=f&&f.files&&f.files[0]; if(!file){ toast('Scegli una foto','bad'); return; }
   try{ const res=await fetch('/api/orders/'+id+'/attachments?'+new URLSearchParams({kind:'photo',filename:file.name}),{method:'POST',credentials:'include',headers:{'x-tenant-slug':store.slug,'x-csrf-token':csrfToken(),'content-type':file.type||'image/jpeg'},body:file});
     if(!res.ok) throw new Error('HTTP '+res.status); f.value=''; toast('Foto caricata','ok'); exAttLoad(id);
-  }catch(e){ toast('Foto: '+e.message,'bad'); } }
+  }catch(e){ toast('Foto: '+friendlyError(e),'bad'); } }
 // Prompt non-bloccante (window.prompt è bloccato in alcune webview): bottom-sheet con Promise.
 function askPrompt(msg,val){ return new Promise(res=>{
   const m=document.createElement('div'); m.className='modal';
@@ -450,7 +454,7 @@ function askPrompt(msg,val){ return new Promise(res=>{
   document.body.appendChild(m); inp.focus(); inp.select();
 }); }
 async function oComplete(id,v){ const o=await askPrompt('Esito intervento?','completato'); if(o==null)return;
-  try{ await api('/orders/'+id+'/complete',{method:'POST',body:JSON.stringify({version:v,outcome:o})}); toast('Completato','ok'); loadOrders(); }catch(e){toast(e.message,'bad');} }
+  try{ await api('/orders/'+id+'/complete',{method:'POST',body:JSON.stringify({version:v,outcome:o})}); toast('Completato','ok'); loadOrders(); }catch(e){toast(e,'bad');} }
 
 // ---- Prompt 8: turni (server-confirmed) ----
 async function renderShift(){
@@ -469,9 +473,9 @@ async function renderShift(){
 }
 async function shiftStart(){ try{ const r=await api('/shifts/start',{method:'POST',body:'{}'});
   toast(r.reused?'Turno già in corso':'Turno iniziato (confermato dal server)','ok'); renderShift();
-  startTracking(true); if(safetyWorker()) hbTick(); }catch(e){toast(e.message,'bad');} }
+  startTracking(true); if(safetyWorker()) hbTick(); }catch(e){toast(e,'bad');} }
 async function shiftEnd(){ try{ await api('/shifts/end',{method:'POST'}); toast('Turno terminato (confermato dal server)','ok'); renderShift();
-  stopTracking(true); }catch(e){toast(e.message,'bad');} }
+  stopTracking(true); }catch(e){toast(e,'bad');} }
 
 // ---- Prompt 8: nota di lavoro (dettatura browser + fallback offline) ----
 let REC=null, dictationUsed=false;
@@ -515,12 +519,12 @@ async function agentGo(btn){
     (r.pending||[]).forEach(p=>{ h+=`<div class="card pad" style="margin-top:6px"><div class="small">Confermi: <b>${esc(p.name)}</b>?</div>
       <button class="btn block" onclick='agentConf(this,${jattr(p)})'>Conferma</button></div>`; });
     box.innerHTML=h||'<div class="small mut">Nessuna azione.</div>'; loadDiary();
-  }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; }
+  }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(friendlyError(e))}</div>`; }
   finally{ btn.disabled=false; }
 }
 async function agentConf(btn,p){ btn.disabled=true;
   try{ await api('/ai/agent/confirm',{method:'POST',body:JSON.stringify({name:p.name,args:p.args})}); toast('Fatto','ok'); btn.outerHTML='<span class="small">✓ salvato</span>'; loadDiary(); }
-  catch(e){ btn.disabled=false; toast(e.message,'bad'); } }
+  catch(e){ btn.disabled=false; toast(e,'bad'); } }
 function toggleDictation(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   const st=$('#micState');
@@ -552,7 +556,7 @@ async function toggleServerRec(){
     try{ const r=await fetch('/api/diary/transcribe',{method:'POST',headers:{'content-type':blob.type,'x-tenant-slug':store.slug||'','x-csrf-token':csrfToken()},body:blob});
       if(!r.ok){ throw new Error((await r.json().catch(()=>({}))).error||('HTTP '+r.status)); }
       const j=await r.json(); const ta=$('#noteBody'); ta.value=(ta.value?ta.value+' ':'')+(j.text||''); dictationUsed=true; st.textContent='Trascritta — rivedi e salva'; }
-    catch(e){ st.textContent='Trascrizione non riuscita: '+e.message+' — scrivi a mano'; } };
+    catch(e){ st.textContent='Trascrizione non riuscita: '+friendlyError(e)+' — scrivi a mano'; } };
   MR.start(); if(b)b.classList.add('on'); st.textContent='Registrazione… premi di nuovo per fermare';
 }
 async function saveNote(){

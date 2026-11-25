@@ -88,6 +88,33 @@ pub const REGISTRY: &[Manifest] = &[
         description:"Piattaforma IoT NATIVA: dispositivi, telemetria time-series, attributi, comandi/RPC, regole/soglie→incidenti, dashboard e scenari attivabili." },
 ];
 
+/// SL-20: matrice esplicita FUNZIONE -> moduli che la abilitano (basta uno attivo). Unica fonte per
+/// le funzioni di sicurezza trasversali; i controlli nel codice usano `feature_modules`.
+///  - app_sos: l'SOS dall'app arriva in Centrale, quindi serve un modulo che porta Centrale ed
+///    escalation (senza nessuno di questi l'allarme non lo vedrebbe nessuno: meglio rifiutarlo e far
+///    chiamare i soccorsi dall'app);
+///  - app_checkin / app_silence / app_heartbeat: protezione del lavoratore isolato via app;
+///  - badge_silence: silenzio dei badge e tracker personali;
+///  - immobility: immobilità da badge (gps) o da app (loneworker);
+///  - patrol_missed: ronde pianificate non svolte;
+///  - teams: squadre (turni e cantieri); shift_plans: piani dei turni (modulo workforce).
+pub const FEATURE_MODULES: &[(&str, &[&str])] = &[
+    ("app_sos",       &["loneworker", "gps", "iot", "giri"]),
+    ("app_checkin",   &["loneworker"]),
+    ("app_silence",   &["loneworker"]),
+    ("app_heartbeat", &["loneworker"]),
+    ("badge_silence", &["gps"]),
+    ("immobility",    &["loneworker", "gps"]),
+    ("patrol_missed", &["giri"]),
+    // CA-21: funzioni di pianificazione condivise
+    ("teams",         &["workforce", "cantieri"]),
+    ("shift_plans",   &["workforce"]),
+];
+/// Moduli che abilitano una funzione (vuoto = funzione sconosciuta: nessun modulo la abilita).
+pub fn feature_modules(feature: &str) -> &'static [&'static str] {
+    FEATURE_MODULES.iter().find(|(f, _)| *f == feature).map(|(_, m)| *m).unwrap_or(&[])
+}
+
 pub fn manifest(code: &str) -> Option<&'static Manifest> {
     REGISTRY.iter().find(|m| m.code == code)
 }
@@ -140,5 +167,18 @@ mod tests {
         assert!(manifest("loneworker").is_some());
         assert!(manifest("core.dashboard").is_some());
         assert!(manifest("inesistente").is_none());
+    }
+}
+
+#[cfg(test)]
+mod feature_matrix_tests {
+    use super::*;
+    #[test]
+    fn every_feature_module_exists_in_registry() {
+        for (f, mods) in FEATURE_MODULES {
+            assert!(!mods.is_empty(), "{f} senza moduli");
+            for m in *mods { assert!(manifest(m).is_some(), "{f}: modulo {m} non nel registro"); }
+        }
+        assert!(feature_modules("sconosciuta").is_empty());
     }
 }

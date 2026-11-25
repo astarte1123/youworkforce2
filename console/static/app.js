@@ -21,7 +21,9 @@ async function api(path, opts={}){
   const headers = {'content-type':'application/json','x-tenant-slug':store.slug, ...(opts.headers||{})};
   const method=(opts.method||'GET').toUpperCase();
   if(!['GET','HEAD','OPTIONS'].includes(method)){ const t=csrfToken(); if(t) headers['x-csrf-token']=t; }
-  const r = await fetch('/api'+path, {credentials:'include', headers, ...opts});
+  let r;
+  try{ r = await fetch('/api'+path, {credentials:'include', headers, ...opts}); }
+  catch(ne){ const e=new Error('Failed to fetch'); e.status=0; e.network=true; e.cause=ne; throw e; }
   let body=null; const ct=r.headers.get('content-type')||'';
   if(ct.includes('json')) body = await r.json().catch(()=>null);
   else body = await r.text().catch(()=>null);
@@ -41,14 +43,92 @@ function jattr(o){ return esc(JSON.stringify(o)); }
 // «order_complete» → «Order complete». Le pagine usano prima le proprie mappe *_LABELS.
 function humanizeCode(k){ const t=String(k??'').replace(/[_.:-]+/g,' ').replace(/\s+/g,' ').trim(); return t?t.charAt(0).toUpperCase()+t.slice(1):''; }
 
+// FE-11: errori comprensibili. Il testo del server si mostra solo se è già una frase leggibile
+// (ha spazi, nessun SQL/stack/sigla tecnica); altrimenti si traduce per codice HTTP.
+function looksTechnical(m){
+  const s=String(m??'').trim();
+  if(!s||s.length>300) return true;
+  if(/^HTTP \d+$/.test(s)) return true;
+  if(!/\s/.test(s)) return true; // codice singolo: "db", "forbidden", "not_found"…
+  return /sqlx|error returned from database|database|SQLSTATE|violates|constraint|duplicate key|relation "|column "|syntax error|panick|stack|traceback|deserializ|serde|invalid type|missing field|unknown variant|expected .* at line|unexpected token|json|failed to fetch|networkerror|load failed|typeerror|referenceerror|cannot read propert|is not a function|is not defined|bundefinedb|bnullb|bNaNb|<html|<!doctype|internal server error|econn|\bat [\w.$]+ \(|::|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|^(bad|no|missing|invalid|not|unauthorized|forbidden|tenant not)\b/i.test(s);
+}
+function _cap(s){ s=String(s||'').trim(); return s?s.charAt(0).toUpperCase()+s.slice(1):s; }
+function friendlyError(e){
+  if(e==null) return 'Operazione non riuscita: riprova';
+  const raw=String(typeof e==='string'?e:(e.message||'')).trim();
+  let st=(typeof e==='object'&&e)?(Number(e.status)||0):0;
+  const hm=/^HTTP (\d{3})$/.exec(raw); if(!st&&hm) st=Number(hm[1]);
+  const human=!looksTechnical(raw);
+  if((typeof e==='object'&&e&&e.network)||/failed to fetch|networkerror|load failed|network request failed/i.test(raw))
+    return 'Connessione al server non riuscita: riprova tra poco';
+  if(st===401) return 'Sessione scaduta: accedi di nuovo';
+  if(st>=500||/internal server error|sqlx|error returned from database/i.test(raw)||raw==='db')
+    return 'Errore del server: l’operazione non è stata completata';
+  if(st===403) return human?_cap(raw):'Non hai il permesso per questa operazione';
+  if(st===404) return human?_cap(raw):'Elemento non trovato (forse è stato eliminato)';
+  if(st===409) return human?_cap(raw):'Operazione in conflitto con una modifica recente: ricarica e riprova';
+  if(st===413) return 'File o dati troppo grandi per essere inviati';
+  if(st===429) return 'Troppe richieste ravvicinate: attendi qualche secondo e riprova';
+  if(human) return _cap(raw);
+  if(st>=400) return 'Operazione non riuscita: controlla i dati inseriti e riprova';
+  return 'Operazione non riuscita: riprova';
+}
+// Errori della pagina di accesso: 401 = credenziali errate (non "sessione scaduta").
+function loginErrorText(e){
+  const st=(e&&e.status)||0, raw=String((e&&e.message)||'');
+  if(st===401||(st===400&&/credential/i.test(raw))) return 'Credenziali non valide';
+  if(st===403&&!looksTechnical(raw)) return _cap(raw);
+  if(st===404&&/tenant/i.test(raw)) return 'Azienda non trovata: controlla il nome del tenant';
+  return friendlyError(e);
+}
+// FE-12: la pagina di accesso mostra password e accessi rapidi di prova SOLO in ambiente demo.
+// Se l'informazione non arriva si assume produzione (nessun dato di prova visibile).
+async function loginInfo(){
+  try{ const r=await fetch('/api/login-info',{credentials:'omit'}); if(!r.ok) return {demo:false};
+    const j=await r.json().catch(()=>null); return {demo:!!(j&&j.demo===true)}; }catch(e){ return {demo:false}; }
+}
+// FE-11b: stato di errore per un caricamento principale (mai mostrato come «nessun dato»).
+// retry: nome di funzione globale o espressione JS da eseguire al click su «Riprova».
+function errorBox(e, retry){
+  const msg=friendlyError(e);
+  return `<div class="card pad load-err" role="alert" style="border-left:3px solid var(--bad)">
+    <div class="row" style="gap:var(--s-8,8px);align-items:center;flex-wrap:wrap">${ICON.alert||''}
+      <div class="grow"><b>Impossibile caricare i dati</b><div class="small mut">${esc(msg)}</div></div>
+      ${retry?`<button class="btn ghost small" onclick="${esc(retry)}">Riprova</button>`:''}</div></div>`;
+}
+function errorRow(colspan, e, retry){
+  return `<tr><td colspan="${Number(colspan)||1}" style="padding:0">${errorBox(e,retry)}</td></tr>`;
+}
+
 function toast(msg, kind=''){ let w=$('#toasts'); if(!w){w=el('<div id="toasts"></div>');document.body.append(w);}
+  // Error passato direttamente → messaggio comprensibile; stringhe tecniche negli avvisi d'errore → idem.
+  if(msg&&typeof msg==='object') msg=friendlyError(msg);
+  else if(kind==='bad'&&/sqlx|error returned from database|SQLSTATE|failed to fetch|networkerror|load failed|^HTTP \d+$|^db$|<html|<!doctype|internal server error|panick|traceback/i.test(String(msg??'').trim())) msg=friendlyError(String(msg));
   const t=el(`<div class="toast ${kind}">${ICON[kind==='bad'?'alert':kind==='ok'?'check':'info']||''}<div>${esc(msg)}</div></div>`);
   w.append(t); setTimeout(()=>{t.style.opacity='0';t.style.transition='.3s';setTimeout(()=>t.remove(),300)}, 4200); }
 
 const fmtEUR = c => (c==null?'—':new Intl.NumberFormat('it-IT',{style:'currency',currency:'EUR'}).format(c/100));
 const fmtMin = m => { const h=Math.floor(m/60), mm=m%60; return (h?h+'h ':'')+(mm||!h?mm+'m':''); };
 const fmtTime = s => new Date(s).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
-const chip = (s)=>`<span class="chip s-${s}">${esc((s||'').replace(/_/g,' '))}</span>`;
+// FE-5: etichette degli stati mostrati con chip() (incidenti, interventi, consuntivi, turni,
+// check-in, moduli, comandi). Valori reali dal core (migrations/0003, order_transition, ecc.).
+const STATE_LABELS={
+  // interventi
+  bozza:'Bozza',assegnato:'Assegnato',in_corso:'In corso',completato:'Completato',annullato:'Annullato',sospeso:'Sospeso',
+  // incidenti / allarmi
+  aperto:'Aperto',preso_in_carico:'Preso in carico',chiuso:'Chiuso',escalato:'In escalation',
+  // consuntivi
+  in_revisione:'In revisione',da_correggere:'Da correggere',approvato:'Approvato',
+  // turni, check-in, piani
+  pianificato:'Pianificato',confermato:'Confermato',attivo:'Attivo',scaduto:'Scaduto',terminato:'Terminato',
+  // dispositivi / moduli
+  in_servizio:'In servizio',in_attesa:'In attesa',fuori_servizio:'Fuori servizio',non_abilitato:'Non abilitato',
+  in_disattivazione:'In disattivazione',da_configurare:'Da configurare',degradato:'Funziona con limitazioni',
+  // comandi, code, esiti
+  pending:'In coda',sent:'Inviato',in_flight:'In invio',done:'Eseguito',acked:'Confermato',failed:'Non riuscito',error:'Non riuscito',
+  ok:'OK',down:'Non raggiungibile',incompleto:'Incompleto',completata:'Completata',annullata:'Annullata',chiusa:'Chiusa',aperta:'Aperta'};
+function stateLabel(s){ return STATE_LABELS[s]||humanizeCode(s)||'—'; }
+const chip = (s)=>`<span class="chip s-${String(s||'').replace(/[^a-z0-9_-]/gi,'')}">${esc(stateLabel(s))}</span>`;
 const initials = e => (e||'?').split('@')[0].split(/[.\-_]/).map(x=>x[0]).join('').slice(0,2).toUpperCase();
 
 function theme(){ try{return localStorage.getItem('yw_theme')||''}catch(e){return ''} }

@@ -254,6 +254,31 @@ Le aree sono anche **selezionabili dall'elenco**: clic sul nome evidenzia la rig
 sulla mappa (o sulla piantina, per le indoor), con un breve lampeggio — utile quando l'area non è
 in vista.
 
+## 11. Etichette, errori e login (25/11/2026)
+
+- **Niente codici grezzi (FE-5, SA-14, TA-14, CA-22, IO-19).** Ogni codice mostrato passa da una
+  mappa di etichette; quello che non ha etichetta viene reso leggibile da `humanizeCode` (app.js),
+  mai mostrato così com'è. Fonti uniche:
+  - tipi di allarme: `ETYPE_LAB` + `etypeLabel()` (app.html; prima erano 4 mappe diverse);
+  - stati (ordini, allarmi, consuntivi, turni, check-in, moduli, comandi): `STATE_LABELS` +
+    `stateLabel()` usati da `chip()` (app.js, condiviso con superadmin e app del lavoratore);
+  - audit: `AUDIT_LABELS` (tutte le azioni) e dettaglio come «Campo: valore», gli ID solo nel
+    tooltip; azioni dell'agente AI: `AG_ACT_LAB` + riepilogo leggibile degli argomenti.
+  - Gli identificativi (UUID) non si mostrano: la correlazione di un allarme appare come
+    riferimento breve `#AB12CD34`.
+- **Errori comprensibili (FE-11).** `api()` marca gli errori di rete; `friendlyError(e)` traduce in
+  italiano chiaro (connessione assente, sessione scaduta, permesso mancante, elemento non trovato,
+  errore del server) e tiene il messaggio del server quando è già leggibile. `toast(e,'bad')` lo
+  applica da solo. Se il caricamento principale di una pagina fallisce si vede «Impossibile caricare
+  i dati» con **Riprova**, non una pagina vuota: Centrale, I miei allarmi, Alert IoT, Ronde,
+  Vigilanza, Interventi, Consuntivi, Dispositivi, Utenti e ruoli. In Centrale, se falliscono solo i
+  check-in, gli allarmi restano visibili con un avviso rosso.
+- **Login senza dati demo in produzione (FE-12).** `GET /api/login-info` (pubblico) dice solo se
+  l'ambiente è demo (`YW_SEED_DEMO=1`). Solo allora le tre pagine di accesso (console, superadmin,
+  app del lavoratore) mostrano il bollino DEMO, la password precompilata e gli accessi rapidi; se la
+  chiamata fallisce vale «non demo».
+- **Testi dei connettori ritirati (FE-18):** tolti dalle pagine; restano solo chiavi interne.
+
 ## Note tecniche
 - File coinvolti: `console/static/app.html`, `console/static/app.js`, `console/static/app.css`.
 - Avvio console: dalla cartella `console/`, `./console.exe` (o `go run .`) → `:8081`,

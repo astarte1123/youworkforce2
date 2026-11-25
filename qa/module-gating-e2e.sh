@@ -16,10 +16,15 @@ for t in json.load(sys.stdin):
 setmod(){ curl -s -o /dev/null -b "$JS" -H "x-csrf-token: $CS" -H 'content-type: application/json' -X POST "$BASE/api/superadmin/tenants/$TID/modules" -d "{\"module_code\":\"$1\",\"state\":\"$2\"}"; }
 code(){ curl -s -o /dev/null -w '%{http_code}' -b "$JA" -H 'x-tenant-slug: acme' "$BASE$1"; }
 
-# WORKFORCE
-setmod workforce non_abilitato
+# WORKFORCE (CA-21: le squadre servono anche a Cantieri -> per vederle sparire si spengono entrambi)
+CANT=$(docker exec -i ywdb psql -U postgres -d youworkforce -tAc "SELECT state FROM app.tenant_modules WHERE tenant_id='$TID' AND module_code='cantieri'" | tr -d '[:space:]')
+setmod workforce non_abilitato; setmod cantieri non_abilitato
 [ "$(code /api/teams)" = "403" ] && [ "$(code /api/shift-plans)" = "403" ] && [ "$(code /api/oncall)" = "403" ] \
-  && ok "workforce spento -> teams/turni/reperibilita API 403" || no "workforce off" "teams=$(code /api/teams) plans=$(code /api/shift-plans)"
+  && ok "workforce e cantieri spenti -> teams/turni/reperibilita API 403" || no "workforce off" "teams=$(code /api/teams) plans=$(code /api/shift-plans)"
+setmod cantieri attivo
+[ "$(code /api/teams)" = "200" ] && [ "$(code /api/shift-plans)" = "403" ] \
+  && ok "solo cantieri -> squadre 200, piani turni 403" || no "cantieri teams" "teams=$(code /api/teams) plans=$(code /api/shift-plans)"
+setmod cantieri "${CANT:-non_abilitato}"
 setmod workforce attivo
 [ "$(code /api/teams)" = "200" ] && ok "workforce riacceso -> teams API 200" || no "workforce on" "$(code /api/teams)"
 

@@ -1,6 +1,6 @@
 mod state; mod clock; mod auth; mod db; mod worker; mod api; mod crypto;
-#[allow(dead_code)] mod escalation; // #4 FASE 0: libreria pura (non ancora wirata; YWAlert resta il motore)
-mod delivery; // #4 FASE 2: adapter di consegna in ombra (sink di prova; YWAlert resta il motore)
+#[allow(dead_code)] mod escalation; // calcolo dei gradini di escalation (libreria pura, testata)
+mod delivery; // canali di consegna nativi dell'escalation (SMS/voce/email, sink di prova)
 mod modules; // #3 FASE 1: registry manifest moduli (dipendenze + metadata)
 mod teltonika; // edge nativo Teltonika Codec8/8E su TCP
 mod track; // report di tracciamento nativi (percorsi, soste, riepilogo) dallo storico posizioni
@@ -207,7 +207,19 @@ async fn run() -> anyhow::Result<()> {
         tracing::warn!("cifratura dei segreti BLOCCATA: questo server non apre la chiave; sbloccala con la passphrase di recupero (superadmin, scheda Sistema)");
     }
 
-    tokio::spawn(worker::run(st.clone()));
+    // AR-6: il worker è sorvegliato: se il suo task termina per un panic viene riavviato (i
+    // watchdog salva-vita non devono fermarsi per un errore isolato); il watchdog di sistema
+    // gira in un task separato e segnala il worker fermo.
+    { let wst = st.clone(); tokio::spawn(async move {
+        loop {
+            match tokio::spawn(worker::run(wst.clone())).await {
+                Err(e) => tracing::error!("worker terminato ({e}): riavvio tra 2 s"),
+                Ok(()) => tracing::error!("worker uscito dal ciclo: riavvio tra 2 s"),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    }); }
+    tokio::spawn(worker::system_watchdog_loop(st.clone()));
     tokio::spawn(teltonika::serve(st.clone())); // edge nativo Teltonika (TCP Codec8/8E)
     tokio::spawn(mqtt::serve(st.clone())); // broker MQTT nativo IoT (TCP 1883)
 
@@ -246,6 +258,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/metrics", get(api::metrics))
         // control plane
         .merge(superadmin_routes())
+        .route("/api/login-info", get(api::login_info))
         .route("/api/branding", get(api::branding))
         .route("/api/branding/logo", get(api::branding_logo))
         .route("/api/impersonate/stop", post(api::impersonate_stop))
@@ -391,7 +404,7 @@ async fn run() -> anyhow::Result<()> {
     let app = app
         .route("/api/oncall", get(api::list_oncall).post(api::create_oncall))
         .route("/api/oncall/:id", post(api::update_oncall).delete(api::delete_oncall))
-        // YWAlert parity: impostazioni, recapiti+verifica, assenze, manutenzione, calendario
+        // Escalation nativa: impostazioni, recapiti+verifica, assenze, manutenzione, calendario
         .route("/api/oncall-settings", get(api::oncall_settings_get).post(api::oncall_settings_set))
         .route("/api/oncall-contacts", get(api::oncall_contacts))
         .route("/api/oncall-contacts/verify", post(api::oncall_contact_verify))

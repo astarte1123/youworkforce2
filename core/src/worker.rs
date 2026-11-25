@@ -6,12 +6,22 @@ use crate::state::{AppState, TenantEvent};
 use crate::{api, privacy};
 
 /// Background worker (system scope, owner connection bypasses RLS).
-/// 1) drains the outbox to YWAlert (at-least-once, retry with backoff)
+/// 1) drains the outbox into the native escalation runner (at-least-once)
 /// 2) sweeps durable check-in timers using the controllable clock
 pub async fn run(st: AppState) {
     loop {
         if let Err(e) = tick(&st).await { tracing::warn!("worker tick error: {e}"); }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
+/// AR-6: watchdog infrastrutturale (server/DB/worker) in un task INDIPENDENTE dal ciclo del
+/// worker. Prima girava dentro `tick`: se il worker si bloccava (query appesa, sotto-watchdog
+/// lento) si fermava anche chi doveva accorgersene. Ora il battito vecchio apre l'alert «worker».
+pub async fn system_watchdog_loop(st: AppState) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        Box::pin(api::system_watchdog(&st)).await;
     }
 }
 
@@ -45,8 +55,7 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     if n % 15 == 3 { Box::pin(api::heartbeat_watchdog(st)).await; }
     // IoT Fase 3: watchdog offline dei device IoT (alert in vista separata) ~ogni 6s
     if n % 3 == 1 { if let Err(e) = Box::pin(api::iot_offline_watchdog(st)).await { tracing::warn!("iot watchdog: {e}"); } }
-    // watchdog infrastrutturale (server/DB/worker): ~ogni 60s, apre alert + notifica superadmin
-    if n % 30 == 13 { Box::pin(api::system_watchdog(st)).await; }
+    // (AR-6) il watchdog infrastrutturale NON gira più qui: vedi system_watchdog_loop
     // SA-5: sospensioni programmate dal superadmin giunte a scadenza: ~ogni 60s
     if n % 30 == 17 { Box::pin(api::tenant_suspension_scan(st)).await; }
     if n % 30 == 19 { Box::pin(api::secrets_sync(st)).await; } // chiave dei segreti tra istanze
@@ -88,13 +97,15 @@ pub async fn gps_silence_watchdog(st: &AppState) -> anyhow::Result<()> {
                   AND p.state<>'annullato' AND p.starts_at <= $1 AND p.ends_at > $1) q) sh ON true
          WHERE COALESCE(d.enabled,true) AND d.assigned_user IS NOT NULL AND (
                (d.source='gps' AND d.service_state='in_servizio' AND d.silence_armed_at IS NOT NULL
-                AND EXISTS (SELECT 1 FROM app.tenant_modules m WHERE m.tenant_id=d.tenant_id AND m.module_code='gps' AND m.state='attivo'))
+                AND EXISTS (SELECT 1 FROM app.tenant_modules m WHERE m.tenant_id=d.tenant_id AND m.module_code=ANY($2) AND m.state='attivo'))
             OR (d.source='pwa' AND sh.since IS NOT NULL
-                AND EXISTS (SELECT 1 FROM app.tenant_modules m WHERE m.tenant_id=d.tenant_id AND m.module_code='loneworker' AND m.state='attivo')
+                AND EXISTS (SELECT 1 FROM app.tenant_modules m WHERE m.tenant_id=d.tenant_id AND m.module_code=ANY($3) AND m.state='attivo')
                 -- chi ha un badge in servizio è sorvegliato dal badge: l'app non raddoppia gli allarmi
                 AND NOT EXISTS (SELECT 1 FROM app.devices g WHERE g.tenant_id=d.tenant_id AND g.assigned_user=d.assigned_user
                                   AND g.source='gps' AND g.service_state='in_servizio' AND COALESCE(g.enabled,true))))")
-        .bind(now).fetch_all(&st.owner_pool).await?;
+        // SL-20: moduli dalla matrice unica modules::FEATURE_MODULES
+        .bind(now).bind(crate::modules::feature_modules("badge_silence")).bind(crate::modules::feature_modules("app_silence"))
+        .fetch_all(&st.owner_pool).await?;
     let mut gcfg: std::collections::HashMap<Uuid, (i64, bool)> = std::collections::HashMap::new();
     let mut acfg: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
     for r in rows {

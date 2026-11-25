@@ -348,12 +348,16 @@ server (host/OS, CPU%, memoria usata/totale, disco — via `sysinfo`), applicazi
 database (online, dimensione, connessioni/max), worker (heartbeat), code (outbox in coda/errore,
 sessioni) e aggregati (tenant/utenti/dispositivi/incidenti). Ogni metrica ha una **soglia** (env
 `YW_SYS_*`, default: disco/mem 90%, CPU 95%, worker >120s) con semaforo verde/giallo/rosso. Un
-**watchdog** nel worker (~60s) apre un alert per ogni problema nuovo (dedup 60 min per tipo), lo
+**watchdog** (~60s) apre un alert per ogni problema nuovo (dedup 60 min per tipo), lo
 **notifica al superadmin** (sink webhook / email relay / SMS Twilio, riuso motore nativo), lo risolve
 quando rientra, e lo storicizza in `app.system_alerts` (mig 0121, `GET /api/superadmin/system/alerts`).
 Le **soglie e i destinatari** (email/SMS) sono configurabili **dal pannello** (scheda Sistema →
 «Configurazione monitoring»): `GET/POST /api/superadmin/system/settings` (tabella `app.system_settings`,
 mig 0122); un campo vuoto usa il default env/prodotto. e2e: `qa/system-monitoring-e2e.sh` (9/9).
+**Watchdog indipendente (AR-6, 25/11/2026):** il watchdog di sistema gira in un task separato dal
+worker: se il worker si blocca, il battito invecchia e parte l'alert «worker» (prima girava dentro
+lo stesso ciclo e si fermava con lui). Se il task del worker termina per un errore viene riavviato
+dopo 2 s, così i controlli salva-vita non restano fermi.
 
 **Consegna allarmi: reale, di prova o simulata (SA-3, 25/11/2026).** Prima, senza
 configurazione, gli avvisi di escalation finivano solo nel log e nessuno se ne accorgeva. Ora
