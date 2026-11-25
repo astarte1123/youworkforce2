@@ -326,7 +326,7 @@ function showCreated(r){
     const inv=url+'/invite.html?token='+encodeURIComponent(r.invite_token)+'&slug='+encodeURIComponent(r.slug);
     inner=`<div style="font-weight:600;margin-bottom:6px">✓ Tenant «${esc(r.slug)}» creato — invia questo link di attivazione all'admin (valido 7 giorni):</div>
       <div class="row" style="gap:8px;align-items:center"><input readonly value="${esc(inv)}" style="flex:1;min-width:0" onclick="this.select()">
-        <button class="btn ghost small" onclick="copyText('${esc(inv)}',this)">Copia invito</button></div>
+        <button class="btn ghost small" onclick="copyText(${jattr(inv)},this)">Copia invito</button></div>
       <div class="small mut" style="margin-top:6px">Accesso tenant: <a href="${esc(url)}" target="_blank">${esc(url)}</a>. L'admin imposta da solo la password; nessuna password è nota al superadmin.</div>`;
   } else {
     inner=`<div style="font-weight:600;margin-bottom:6px">✓ Tenant «${esc(r.slug)}» creato (password impostata manualmente).</div>
@@ -489,7 +489,7 @@ function tenantDetailHtml(t,mods){
           : t.suspend_at
           ? `<button class="btn ghost" onclick="setStatus('${t.id}','attivo')">✖ Annulla sospensione programmata</button>`
           : `<button class="btn ghost" onclick="setStatus('${t.id}','sospeso')">⏸ Sospendi</button>`}
-        <button class="btn ghost" style="color:var(--bad)" onclick="delTenant('${t.id}','${esc(t.slug)}')">🗑 Elimina</button></div>
+        <button class="btn ghost" style="color:var(--bad)" onclick="delTenant('${t.id}',${jattr(t.slug)})">🗑 Elimina</button></div>
       <div class="small mut" style="margin:12px 0 5px;text-transform:uppercase;letter-spacing:.5px">Integrazioni</div>
       <div class="small mut" style="margin-bottom:6px">YouWorkforce è <b>self-contained</b>: escalation, tracking (edge Teltonika/OsmAnd) e IoT sono motori <b>nativi</b>, nessuna connessione a servizi esterni. I provider AI sono l'unica integrazione esterna, opzionale: richiedono la chiave del cliente.</div>
       <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn ghost cfgbtn" onclick="aiConn('${t.id}',this)">Connessione AI</button></div>
@@ -617,7 +617,7 @@ async function openTools(tid,btn){
     ${groups[mc].map(t=>`<div class="row" style="justify-content:space-between;margin-top:4px">
       <div class="small">${esc(t.name)}</div>
       <label class="switch"><input type="checkbox" ${t.enabled?'checked':''}
-        onchange="toggleTool('${tid}','${esc(t.module_code)}','${esc(t.tool_code)}',this)"><span class="sl"></span></label>
+        onchange="toggleTool('${tid}',${jattr(t.module_code)},${jattr(t.tool_code)},this)"><span class="sl"></span></label>
     </div>`).join('')}</div>`).join('')||'<div class="small mut">nessuno strumento</div>';
 }
 async function aiConn(tid,btn){

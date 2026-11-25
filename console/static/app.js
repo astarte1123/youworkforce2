@@ -32,7 +32,11 @@ async function api(path, opts={}){
 const $  = (s,r=document)=>r.querySelector(s);
 const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
 function el(html){ const t=document.createElement('template'); t.innerHTML=html.trim(); return t.content.firstElementChild; }
-function esc(s){ return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function esc(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// IO-2 (25/11/2026): oggetto da passare a un gestore inline (onclick='f(${jattr(o)})').
+// Escape HTML COMPLETO del JSON: il browser lo decodifica e il JS riceve esattamente il JSON.
+// Prima si sostituiva solo l'apice: un dato con &quot; usciva dalla stringa ed eseguiva codice.
+function jattr(o){ return esc(JSON.stringify(o)); }
 
 function toast(msg, kind=''){ let w=$('#toasts'); if(!w){w=el('<div id="toasts"></div>');document.body.append(w);}
   const t=el(`<div class="toast ${kind}">${ICON[kind==='bad'?'alert':kind==='ok'?'check':'info']||''}<div>${esc(msg)}</div></div>`);

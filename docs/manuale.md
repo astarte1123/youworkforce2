@@ -191,6 +191,22 @@ L'AI è **attore** nei processi (multi-provider): agente con strumenti che leggo
 sistema (le operazioni sensibili richiedono conferma), report persistiti, diario vocale sul campo.
 Modulo **assistant**.
 
+**Sicurezza dell'agente (IO-2, IO-3, IO-5, IO-6 · mig `0142`, 25/11/2026).**
+- **Conferma delle azioni sensibili:** l'agente salva la proposta sul server
+  (`app.ai_agent_pending`). La console mostra una descrizione leggibile e conferma **solo l'id**
+  (`POST /api/ai/agent/confirm {pending_id}`). La conferma vale una volta, per lo stesso utente,
+  entro 30 minuti. Un'azione costruita a mano dal browser non si esegue più.
+- **Letture con le regole della Centrale:** incidenti, check-in ed eventi letti dall'agente, e i
+  dati usati nei report AI, richiedono il permesso «vedere/gestire allarmi», il modulo giusto e
+  rispettano le sedi consentite. I report AI li vede chi li ha creati, oppure chi ha `audit.view`.
+- **Regole sensori create dall'agente:** servono `iot.manage` e il modulo IoT. Una regola «uomo a
+  terra» si crea solo a mano.
+- **Console:** gli oggetti passati ai pulsanti sono codificati per intero (`jattr` in `app.js`) e
+  `esc` codifica anche l'apostrofo. Prima un dato con `&quot;`, per esempio nel nome di una commessa
+  o in un argomento scelto dal modello, poteva eseguire codice nella pagina (XSS).
+- `qa/console-syntax.sh` controlla che ogni script della console sia JavaScript valido. Il
+  25/11 un apostrofo non escapato nella scheda dispositivo aveva bloccato tutta la console.
+
 ## 12. Console: usabilità, lingua, responsive
 
 - **Combo con ricerca** ovunque, ricerche full-text (Dispositivi, Centrale), mappe separate,

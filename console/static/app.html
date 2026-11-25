@@ -1894,7 +1894,7 @@ function gfNewForm(geom, kind, opts){ opts=opts||{};
     <div class="small mut">Con l'allarme attivo, l'attraversamento in quella direzione apre un incidente + escalation. Potrai cambiare tipo ed eventi anche dopo, da «Associa».</div>
     <label class="row small" style="gap:var(--s-8);align-items:center">Colore
       <input type="color" id="gfnColor" value="${window._gfColor||'#16a34a'}" style="width:40px;height:30px;padding:2px"></label>
-    <button class="btn" onclick='gfNewSave(${JSON.stringify(o).replace(/'/g,"&#39;")})'>Crea area</button>
+    <button class="btn" onclick='gfNewSave(${jattr(o)})'>Crea area</button>
     <div class="cfg-msg small"></div></div>`);
   setTimeout(()=>{ const n=$('#gfnName'); if(n)n.focus(); },60);
 }
@@ -2052,7 +2052,7 @@ async function vRonde(v){
     <div class="card pad"><h2>Giri configurati (${routes.length})</h2>
       ${routes.map(r=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10);margin-top:var(--s-8)">
         <div class="spread"><b>${esc(r.name)} ${r.active?'':'<span class="chip bad">inattivo</span>'}</b>
-          <span>${canCfg?`<button class="btn ghost small" onclick="ronCp('${r.id}','${esc(r.name).replace(/'/g,"&#39;")}')">checkpoint (${r.checkpoints.length})</button><button class="btn-ico btn ghost" onclick="ronDel('${r.id}')">${ICON.x}</button>`:`<span class="small mut">${r.checkpoints.length} checkpoint</span>`}</span></div>
+          <span>${canCfg?`<button class="btn ghost small" onclick="ronCp('${r.id}',${jattr(r.name)})">checkpoint (${r.checkpoints.length})</button><button class="btn-ico btn ghost" onclick="ronDel('${r.id}')">${ICON.x}</button>`:`<span class="small mut">${r.checkpoints.length} checkpoint</span>`}</span></div>
         <div class="small mut" style="margin-top:var(--s-4)">${r.site_name?('📍 '+esc(r.site_name)+' · '):''}${r.group_name?('👥 '+esc(r.group_name)+' · '):''}${r.window_minutes?('finestra '+r.window_minutes+' min · '):''}${r.checkpoints.map(c=>esc(c.name)+' ['+(CP_KIND_LAB[c.kind]||c.kind)+']').join(' → ')||'nessun checkpoint'}${r.manual_code_allowed===false?' · <b>solo scansione</b>':''}</div>
       </div>`).join('')||'<div class="small mut" style="margin-top:var(--s-8)">Nessun giro. Crea un giro e aggiungi i checkpoint.</div>'}
     </div>
@@ -2083,9 +2083,9 @@ async function ronDel(id){ if(!await askConfirm('Eliminare il giro? (ronde e che
 async function ronCp(rid,rname){ const all=await api('/patrol-routes').catch(()=>[]); const r=all.find(x=>x.id===rid); if(!r)return;
   window._ronRoutes=all;
   drawer('Checkpoint — '+rname, `<div class="col" style="gap:var(--s-8)">
-    ${r.checkpoints.map(c=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6)"><span>${c.position}. <b>${esc(c.name)}</b> <span class="chip">${CP_KIND_LAB[c.kind]||c.kind}</span> <span class="small mut">${c.kind==='gps'?((c.lat||'?')+','+(c.lon||'?')+' r'+c.radius_m+'m'):('codice <code>'+esc(c.code||'')+'</code>')}${c.max_min!=null?' · ⏱ max '+c.max_min+'min':''}</span></span><button class="btn-ico btn ghost" onclick="ronCpDel('${c.id}','${rid}','${esc(rname).replace(/'/g,"&#39;")}')">${ICON.x}</button></div>`).join('')||'<div class="small mut">nessun checkpoint</div>'}
+    ${r.checkpoints.map(c=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6)"><span>${c.position}. <b>${esc(c.name)}</b> <span class="chip">${CP_KIND_LAB[c.kind]||c.kind}</span> <span class="small mut">${c.kind==='gps'?((c.lat||'?')+','+(c.lon||'?')+' r'+c.radius_m+'m'):('codice <code>'+esc(c.code||'')+'</code>')}${c.max_min!=null?' · ⏱ max '+c.max_min+'min':''}</span></span><button class="btn-ico btn ghost" onclick="ronCpDel('${c.id}','${rid}',${jattr(rname)})">${ICON.x}</button></div>`).join('')||'<div class="small mut">nessun checkpoint</div>'}
     <hr><div class="small mut">Riusa un checkpoint esistente (altro giro)</div>
-    <div class="row" style="gap:var(--s-6)"><select id="cpImp" class="grow small"></select><button class="btn ghost small" onclick="ronCpImport('${rid}','${esc(rname).replace(/'/g,"&#39;")}')">↳ importa</button></div>
+    <div class="row" style="gap:var(--s-6)"><select id="cpImp" class="grow small"></select><button class="btn ghost small" onclick="ronCpImport('${rid}',${jattr(rname)})">↳ importa</button></div>
     <hr><div class="small mut">Nuovo checkpoint</div>
     <label class="small">Nome<input id="cpN"></label>
     <label class="small">Tipo<select id="cpK" onchange="ronCpKind()"><option value="qr">QR</option><option value="nfc">NFC</option><option value="beacon">Beacon</option><option value="gps">GPS</option></select></label>
@@ -2093,7 +2093,7 @@ async function ronCp(rid,rname){ const all=await api('/patrol-routes').catch(()=
       <div class="small mut">Lascia vuoto per QR e NFC: il sistema genera un codice casuale da stampare sull'etichetta o scrivere sul tag. Per il beacon indica il suo identificativo. Il codice non viene mai mostrato nell'app della guardia.</div></div>
     <div id="cpGps" style="display:none"><div class="row" style="gap:var(--s-6)"><label class="small grow">Lat<input id="cpLat"></label><label class="small grow">Lon<input id="cpLon"></label><label class="small" style="width:90px">Raggio m<input id="cpR" value="50"></label></div></div>
     <div class="row" style="gap:var(--s-6)"><label class="small grow">Tempo atteso dalla tappa prec. (min)<input id="cpExp" type="number" min="0"></label><label class="small grow">Tempo max (min, oltre = ritardo)<input id="cpMax" type="number" min="0"></label></div>
-    <button class="btn" onclick="ronCpAdd('${rid}','${esc(rname).replace(/'/g,"&#39;")}')">+ aggiungi checkpoint</button></div>`);
+    <button class="btn" onclick="ronCpAdd('${rid}',${jattr(rname)})">+ aggiungi checkpoint</button></div>`);
   // popola il selettore di riuso con i checkpoint di TUTTI gli altri giri
   const sel=$('#cpImp'); if(sel){ const opts=[];
     (window._ronRoutes||[]).forEach(rt=>{ if(rt.id===rid)return; (rt.checkpoints||[]).forEach(c=>opts.push(`<option value="${c.id}">${esc(rt.name)} · ${esc(c.name)} [${CP_KIND_LAB[c.kind]||c.kind}]</option>`)); });
@@ -2282,13 +2282,13 @@ async function vMappaCantieri(v){
     if(pts.length) CANTMAP.fitBounds(pts,{padding:[40,40],maxZoom:15});
     setTimeout(()=>CANTMAP&&CANTMAP.invalidateSize(),150);
   },60);
-  const list=open.map(c=>`<div class="spread clk-card" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)" onclick='cantSide(${JSON.stringify(c).replace(/'/g,"&#39;")})'>
+  const list=open.map(c=>`<div class="spread clk-card" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)" onclick='cantSide(${jattr(c)})'>
     <div><b class="small">${esc(c.code)}</b> <span class="small mut">${esc(c.name)}</span><div class="small mut">${esc(c.client_name||'—')} · ${c.progress}%</div></div>
     <span class="chip">${esc(COMM_STATI[c.status]||c.status)}</span></div>`).join('')||'<div class="small mut">Nessun cantiere aperto geolocalizzato.</div>';
   const planner=can(['pianificatore','tenant_admin'],'plan');
   const noGeoList=noGeo.map(c=>`<div class="spread" style="border:1px dashed var(--line);border-radius:8px;padding:var(--s-8);margin-bottom:var(--s-6)">
     <div><b class="small">${esc(c.code)}</b> <span class="small mut">${esc(c.name)}</span></div>
-    ${planner?`<button class="btn ghost small" onclick='comGeoForm("${c.id}",${JSON.stringify(c).replace(/'/g,"&#39;")})'>📍 posiziona</button>`:'<span class="small mut">senza posizione</span>'}</div>`).join('');
+    ${planner?`<button class="btn ghost small" onclick='comGeoForm("${c.id}",${jattr(c)})'>📍 posiziona</button>`:'<span class="small mut">senza posizione</span>'}</div>`).join('');
   const side=document.getElementById('cantSide'); if(side) side.innerHTML=`<h2 style="margin:0 0 var(--s-8)">Cantieri aperti (${open.length})</h2>${list}
     ${noGeo.length?`<div class="card-note" style="margin-top:var(--s-10)">${noGeo.length} cantieri senza posizione: non compaiono sulla mappa. ${planner?'Dai loro un indirizzo per geolocalizzarli.':''}</div>${noGeoList}`:''}
     <div class="small mut" style="margin-top:var(--s-8)">📟 ${devs.length} dispositivi nei siti${loneOn?' · 🚨 allarmi Lone Worker integrati':''}</div>`;
@@ -2413,7 +2413,7 @@ async function openCommessa(id){
       <button class="btn-ico btn ghost" onclick="lavDel('${l.id}')">${ICON.x}</button>`:`<span class="small">${l.progress_pct}%</span>`}</div></div>`).join('')
     ||'<div class="small mut">Nessuna lavorazione. Aggiungine per misurare l\'avanzamento.</div>';
   const gantt=ganttHtml(c.lavorazioni||[]);
-  const sal=(c.sal||[]).map(s=>`<tr><td class="small">${esc(s.sal_date)}</td><td>${s.pct}%</td><td class="small">${s.amount!=null?eur(s.amount):'—'}</td><td class="small mut">${esc(s.note||'')}</td><td style="text-align:right">${planner?`<button class="btn ghost small" onclick='fatturaNew("${id}",${JSON.stringify(s).replace(/'/g,"&#39;")})'>fattura</button>`:''}</td></tr>`).join('')
+  const sal=(c.sal||[]).map(s=>`<tr><td class="small">${esc(s.sal_date)}</td><td>${s.pct}%</td><td class="small">${s.amount!=null?eur(s.amount):'—'}</td><td class="small mut">${esc(s.note||'')}</td><td style="text-align:right">${planner?`<button class="btn ghost small" onclick='fatturaNew("${id}",${jattr(s)})'>fattura</button>`:''}</td></tr>`).join('')
     ||`<tr><td colspan="5" class="empty">Nessun SAL registrato</td></tr>`;
   const shifts=(c.shifts||[]).map(s=>`<tr><td class="small">${esc(s.email)}</td><td class="small">${dtLocal(s.starts_at)} → ${dtLocal(s.ends_at)}</td><td>${chip(s.state)}</td></tr>`).join('')
     ||`<tr><td colspan="3" class="empty">Nessun turno legato</td></tr>`;
@@ -2477,7 +2477,7 @@ async function openCommessa(id){
     <div style="margin-top:var(--s-8)">${attRows}</div></div>`;
   drawer('Commessa · '+esc(c.code),`<div class="col" style="gap:var(--s-12)">
     <div class="row" style="gap:var(--s-6);flex-wrap:wrap"><button class="btn ghost small" onclick="comPrint('${id}')">📄 Stampa dossier</button>
-      ${planner?`<button class="btn ghost small" onclick='comGeoForm("${id}",${JSON.stringify({code:c.code,name:c.name,address:c.address,lat:c.lat,lon:c.lon}).replace(/'/g,"&#39;")})'>📍 ${(c.lat!=null&&c.lon!=null)?'Posizione':'Imposta posizione'}</button>`:''}</div>
+      ${planner?`<button class="btn ghost small" onclick='comGeoForm("${id}",${jattr({code:c.code,name:c.name,address:c.address,lat:c.lat,lon:c.lon})})'>📍 ${(c.lat!=null&&c.lon!=null)?'Posizione':'Imposta posizione'}</button>`:''}</div>
     <div><div class="spread"><b>${esc(c.name)}</b>${statusSel}</div>
       <div class="small mut" style="margin-top:var(--s-4)">${esc(c.client_name||'—')}${c.site?' · '+esc(c.site):''}${c.start_date?' · '+esc(c.start_date):''}${c.end_date?' → '+esc(c.end_date):''}${c.budget!=null?' · € '+c.budget.toLocaleString('it-IT'):''}${(c.cig||c.cup)?`<br>${c.cig?'CIG: '+esc(c.cig):''}${c.cup?' · CUP: '+esc(c.cup):''}`:''}</div>
       <div class="row" style="gap:var(--s-8);align-items:center;margin-top:var(--s-8)">${progBar(c.progress)}<b>${c.progress}%</b><span class="small mut">avanzamento complessivo (media pesata)</span></div></div>
@@ -2752,7 +2752,7 @@ async function interventiCSV(){ const O=await api('/orders').catch(()=>[]);
 async function vListino(v){
   const P=await api('/price-items').catch(()=>[]);
   const canEdit=can(['pianificatore','tenant_admin'],'plan');
-  const row=p=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick='priceForm(${JSON.stringify(p).replace(/'/g,"&#39;")})'`:''}><td><b>${esc(p.name)}</b>${p.code?`<div class="small mut">${esc(p.code)}</div>`:''}</td>
+  const row=p=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick='priceForm(${jattr(p)})'`:''}><td><b>${esc(p.name)}</b>${p.code?`<div class="small mut">${esc(p.code)}</div>`:''}</td>
     <td class="small">${esc(PRICE_CAT[p.category]||p.category)}</td><td class="small">${esc(p.unit)}</td>
     <td style="text-align:right">${eur(p.unit_price)}</td>
     <td>${p.active?'<span class="chip s-attivo">attiva</span>':'<span class="chip">sospesa</span>'}</td>
@@ -2926,11 +2926,11 @@ async function reqDel(id){ if(!await askConfirm('Eliminare la richiesta?'))retur
 async function vContratti(v){
   const [C,P,clients,sites]=await Promise.all([api('/contracts').catch(()=>[]),api('/maintenance-plans').catch(()=>[]),api('/clients').catch(()=>[]),api('/sites').catch(()=>[])]);
   v._clients=clients; v._sites=sites; const canEdit=can(['pianificatore','tenant_admin'],'plan');
-  const crow=c=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick='contrForm(${JSON.stringify(c).replace(/'/g,"&#39;")})'`:''}><td><b class="small">${esc(c.name)}</b></td><td class="small">${esc(c.client_name||'—')}</td>
+  const crow=c=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick='contrForm(${jattr(c)})'`:''}><td><b class="small">${esc(c.name)}</b></td><td class="small">${esc(c.client_name||'—')}</td>
     <td class="small">${c.sla_hours!=null?c.sla_hours+'h':'—'}</td><td class="small">${c.hours_bundle!=null?c.hours_bundle+'h':'—'}</td>
     <td>${c.active?'<span class="chip s-attivo">attivo</span>':'<span class="chip">chiuso</span>'}</td>
     <td style="text-align:right">${canEdit?`<button class="btn-ico btn ghost" onclick="event.stopPropagation();contrDel('${c.id}')">${ICON.x}</button>`:''}</td></tr>`;
-  const prow=p=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick='planForm(${JSON.stringify(p).replace(/'/g,"&#39;")})'`:''}><td><b class="small">${esc(p.title)}</b></td><td class="small">${esc(p.client_name||'—')}${p.site?' · '+esc(p.site):''}</td>
+  const prow=p=>`<tr class="${canEdit?'clk':''}" ${canEdit?`onclick='planForm(${jattr(p)})'`:''}><td><b class="small">${esc(p.title)}</b></td><td class="small">${esc(p.client_name||'—')}${p.site?' · '+esc(p.site):''}</td>
     <td class="small">ogni ${p.every_days} gg</td><td class="small">prossimo: ${esc(p.next_date)}</td>
     <td style="text-align:right">${canEdit?`<button class="btn ghost small" onclick="event.stopPropagation();planGen('${p.id}')">genera ora</button> <button class="btn-ico btn ghost" onclick="event.stopPropagation();planDel('${p.id}')">${ICON.x}</button>`:''}</td></tr>`;
   v.innerHTML=`<div class="page-h"><div><h1>Contratti</h1><div class="mut">${C.length} contratti · ${P.length} piani di manutenzione</div></div>
@@ -3014,7 +3014,7 @@ async function openOrder(id){
   if((mine||planner)&&o.state==='in_corso') acts+=`<button class="btn ok block" onclick="ordComplete('${id}',${o.version})">${ICON.check} Completa</button>`;
   if(planner&&['bozza','assegnato','in_corso'].includes(o.state)) acts+=`<button class="btn ghost block" onclick="ordCancel('${id}',${o.version})">Annulla</button>`;
   const editBtn = (planner && o.state!=='completato' && o.state!=='annullato')
-    ? `<button class="btn ghost block" onclick='editOrder(${JSON.stringify(o).replace(/'/g,"&#39;")})'>✎ Modifica / ripianifica</button>` : '';
+    ? `<button class="btn ghost block" onclick='editOrder(${jattr(o)})'>✎ Modifica / ripianifica</button>` : '';
   drawer('Ordine · '+esc(o.title), `
     <div class="row" style="margin-bottom:var(--s-14)">${chip(o.state)}${o.client_name?`<span class="chip">👤 ${esc(o.client_name)}</span>`:''}<span class="chip">${esc(o.site||'—')}</span>${priBadge(o.priority)}<span class="chip">v${o.version}</span></div>
     <div class="small mut">Assegnatario</div><div style="margin-bottom:var(--s-12)">${esc(o.assignee||'non assegnato')}</div>
@@ -3227,7 +3227,7 @@ async function vModuli(v){
     <div class="spread"><b>${esc(m.name)}</b>${chip(m.state)}</div>
     <div class="small mut" style="margin-top:var(--s-6)">${esc(m.code)} · ${esc(m.kind)}</div>
     ${!m.available?'<div class="small" style="color:var(--warn);margin-top:var(--s-6)">non disponibile in questa release</div>':''}
-    ${m.state==='attivo'?`<div style="margin-top:var(--s-10)"><button class="btn ghost" onclick="openModuleConfig('${esc(m.code)}','${esc(m.name)}')">Configura strumenti</button></div>`:''}
+    ${m.state==='attivo'?`<div style="margin-top:var(--s-10)"><button class="btn ghost" onclick="openModuleConfig(${jattr(m.code)},${jattr(m.name)})">Configura strumenti</button></div>`:''}
   </div>`).join('')}</div>`;
 }
 
@@ -3246,7 +3246,7 @@ async function openModuleConfig(code,name){
       else { input=`<input id="${id}" value="${esc(String(val))}" ${t.editable?'':'disabled'}>`; }
       return `<label class="small mut" style="display:block;margin-top:var(--s-8)">${esc(f.label||f.key)}${f.min!=null||f.max!=null?` <span class="tag">${f.min??''}–${f.max??''}</span>`:''}<div style="margin-top:var(--s-3)">${input}</div></label>`;
     }).join('');
-    const save=t.editable?`<button class="btn" style="margin-top:var(--s-10)" onclick="saveToolConfig('${esc(code)}','${esc(t.tool_code)}',this)">Salva</button>`:'<div class="small mut" style="margin-top:var(--s-8)">sola lettura</div>';
+    const save=t.editable?`<button class="btn" style="margin-top:var(--s-10)" onclick="saveToolConfig(${jattr(code)},${jattr(t.tool_code)},this)">Salva</button>`:'<div class="small mut" style="margin-top:var(--s-8)">sola lettura</div>';
     return `<div class="card pad" data-tool="${esc(t.tool_code)}" style="margin-bottom:var(--s-12)"><b>${esc(t.name)}</b>
       <div class="small mut">${esc(t.description||'')}</div>${fields}
       <div class="cfg-msg small" style="margin-top:var(--s-6)"></div>${save}</div>`;
@@ -3329,7 +3329,7 @@ async function wizardStart(){
   const run=async()=>{ const p=new URLSearchParams({q:$('#wzQ').value,manufacturer:$('#wzMan').value,category:$('#wzCat').value,scope:'safety'});
     let L; try{ L=await api('/catalog/devices?'+p); }catch(e){ $('#wzList').innerHTML=`<div class="small" style="color:var(--bad)">Errore nel caricare il catalogo: ${esc(e.message)}</div>`; return; }
     const box=$('#wzList');
-    box.innerHTML=L.map(m=>`<div class="card pad clk-card" onclick='wizardStep2(${JSON.stringify(m).replace(/'/g,"&#39;")})'>
+    box.innerHTML=L.map(m=>`<div class="card pad clk-card" onclick='wizardStep2(${jattr(m)})'>
       <div class="spread"><b>${esc(m.manufacturer)} ${esc(m.model_name)}</b>${m.recommended?'<span class="chip s-attivo">consigliato</span>':''}</div>
       <div class="small mut" style="margin:var(--s-3) 0">${esc(catLabel(m.category))} · ${esc(m.protocol)}${m.default_port?':'+m.default_port:''}${m.osmand?' · OsmAnd':''}</div>
       <div class="row" style="flex-wrap:wrap;gap:var(--s-4)">${(m.capabilities||[]).map(c=>`<span class="tag">${esc(c)}</span>`).join('')}</div>
@@ -3579,7 +3579,7 @@ async function dokBulkStart(){
     <div id="bkOut" class="small" style="margin-top:var(--s-4)"></div></div>`);
   const run=async()=>{ const q=$('#bkQ').value.trim(); const box=$('#bkModels'); if(!q){box.innerHTML='';return;}
     const L=await api('/catalog/devices?'+new URLSearchParams({q})).catch(()=>[]);
-    box.innerHTML=(L||[]).slice(0,8).map(m=>`<div class="card pad clk-card" style="padding:var(--s-6) var(--s-8)" onclick='dokBulkPick(${JSON.stringify(m).replace(/'/g,"&#39;")})'>
+    box.innerHTML=(L||[]).slice(0,8).map(m=>`<div class="card pad clk-card" style="padding:var(--s-6) var(--s-8)" onclick='dokBulkPick(${jattr(m)})'>
       <b class="small">${esc(m.manufacturer)} ${esc(m.model_name)}</b> <span class="chip">${esc(m.category)}</span>
       <div class="row" style="flex-wrap:wrap;gap:var(--s-3);margin-top:var(--s-2)">${(m.capabilities||[]).map(c=>`<span class="tag">${esc(c)}</span>`).join('')}</div></div>`).join('')||'<div class="small mut">nessun modello</div>'; };
   $('#bkQ').oninput=run;
@@ -3648,19 +3648,19 @@ async function wizardKit(model_code){
     const steps=(S.steps||[]).map((s,i)=>`<div class="row" style="gap:var(--s-8);align-items:flex-start;margin:var(--s-4) 0"><span class="chip s-attivo" style="min-width:20px;text-align:center">${i+1}</span><div class="small">${esc(s)}</div></div>`).join('');
     const prim=S.primary?`<div class="row" style="gap:var(--s-8);align-items:center;margin-top:var(--s-8);flex-wrap:wrap">
         <div><div class="small mut">${esc(S.primary.label||'')}</div><div class="mono" style="word-break:break-all">${esc(S.primary.value||'')}</div></div>
-        <button class="btn" onclick="navigator.clipboard.writeText('${esc(S.primary.value||'')}');toast('Copiato','ok')">📋 Copia</button></div>`:'';
+        <button class="btn" onclick="navigator.clipboard.writeText(${jattr(S.primary.value||'')});toast('Copiato','ok')">📋 Copia</button></div>`:'';
     // canali grezzi SOLO come ripiego avanzato, nascosti di default
     const adv=`<details style="margin-top:var(--s-4)"><summary class="small mut" style="cursor:pointer">Altre opzioni (avanzate: chiave e invio JSON HTTP)</summary>
       <div class="card pad" style="margin-top:var(--s-6)">
         <div class="small mut">Credenziale di ingest (mostrata una sola volta)</div>
         <div class="mono small" style="word-break:break-all;margin:var(--s-4) 0">${esc(r.token)}</div>
-        <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.token)}');toast('Token copiato','ok')">copia token</button>
+        <button class="btn ghost small" onclick="navigator.clipboard.writeText(${jattr(r.token)});toast('Token copiato','ok')">copia token</button>
         <div class="small mut" style="margin-top:var(--s-8)">Invio di eventi in formato JSON HTTP (gateway o tracker compatibili)</div>
         <div class="mono small" style="word-break:break-all;margin:var(--s-4) 0">${esc(r.ingress_url)}</div>
-        <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.ingress_url)}');toast('URL copiato','ok')">copia URL</button>
+        <button class="btn ghost small" onclick="navigator.clipboard.writeText(${jattr(r.ingress_url)});toast('URL copiato','ok')">copia URL</button>
         ${r.osmand_url?`<div class="small mut" style="margin-top:var(--s-8)">HTTP OsmAnd manuale (template)</div>
         <div class="mono small" style="word-break:break-all;margin:var(--s-4) 0">${esc(r.osmand_url)}</div>
-        <button class="btn ghost small" onclick="navigator.clipboard.writeText('${esc(r.osmand_url)}');toast('URL OsmAnd copiato','ok')">copia URL OsmAnd</button>`:''}
+        <button class="btn ghost small" onclick="navigator.clipboard.writeText(${jattr(r.osmand_url)});toast('URL OsmAnd copiato','ok')">copia URL OsmAnd</button>`:''}
       </div></details>`;
     drawer('✅ Dispositivo pronto · '+esc(r.manufacturer||'')+' '+esc(r.model_name||''), `<div class="col" style="gap:var(--s-10)">
       <div class="card pad"><div class="spread"><b>${esc(r.manufacturer||'')} ${esc(r.model_name||'')}</b><span class="chip">${esc(r.category_label||r.category)}</span></div>
@@ -3870,7 +3870,7 @@ async function devLinkCheck(id){ const box=$('#devLink'); if(box) box.innerHTML=
 // Stessa regola del watchdog del silenzio: soglia silence_after_s del tenant (0 = controllo spento).
 function devOnlineChip(d){
   if(d.service_state&&d.service_state!=='in_servizio') return `<span class="chip" title="non monitorato">${SERVICE_LABELS[d.service_state]||esc(d.service_state)}</span>`;
-  if(d.silence_shift_only && d.assigned_user && !d.in_shift) return '<span class="chip" title="Il silenzio del badge è sorvegliato solo durante il turno del lavoratore (turno aperto nell'app o pianificato). Ora il lavoratore non è in turno: nessun allarme di perdita di contatto.">fuori turno · silenzio non sorvegliato</span>';
+  if(d.silence_shift_only && d.assigned_user && !d.in_shift) return '<span class="chip" title="Il silenzio del badge è sorvegliato solo durante il turno del lavoratore (turno aperto nell&#39;app o pianificato). Ora il lavoratore non è in turno: nessun allarme di perdita di contatto.">fuori turno · silenzio non sorvegliato</span>';
   if(!d.last_seen_at) return '<span class="chip s-critico" title="in servizio: allarme alla soglia se non si collega">in servizio · mai collegato</span>';
   const secs=(Date.now()-new Date(d.last_seen_at).getTime())/1000;
   const lim=Number.isFinite(+d.silence_after_s)?+d.silence_after_s:600;
@@ -3891,7 +3891,7 @@ async function devCmds(id){ const el=$('#cmdHist'); if(!el)return;
       : 'nessun comando inviato'; }catch(e){ el.textContent=e.message; } }
 async function devCmdTypes(id){ const el=$('#cmdBtns'); if(!el)return;
   try{ const T=await api('/devices/'+id+'/command-types');
-    el.innerHTML=(T||[]).map(c=>`<button class="btn ghost small" onclick="devCmd('${id}','${esc(c.type)}')">${esc(c.label)}</button>`).join('');
+    el.innerHTML=(T||[]).map(c=>`<button class="btn ghost small" onclick="devCmd('${id}',${jattr(c.type)})">${esc(c.label)}</button>`).join('');
   }catch(e){ el.innerHTML='<span class="small mut">'+esc(e.message)+'</span>'; } }
 async function devTelemetry(id){ const out=$('#devTelemOut'); if(!out)return; out.innerHTML='Carico…';
   try{ const P=await api('/devices/'+id+'/positions?limit=1'); const p=(Array.isArray(P)?P:[])[0];
@@ -4012,7 +4012,7 @@ async function vConnettori(v){
     <table class="table" data-export="credenziali-ingest"><thead><tr><th>Sorgente</th><th>Credenziale</th><th>Dispositivo</th><th>Scadenza</th><th>Ultimo uso</th><th>Stato</th><th></th></tr></thead>
     <tbody>${T.map(t=>{
       const st=t.revoked?'<span class="tag" style="background:#fee2e2;color:#b91c1c">revocato</span>':(t.expired?'<span class="tag" style="background:#fef3c7;color:#92400e">scaduto</span>':'<span class="chip s-attivo">attivo</span>');
-      const copy=t.hashed?'':` <a onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(t.token)}')&&toast('Copiato','ok')">copia</a>`;
+      const copy=t.hashed?'':` <a onclick="navigator.clipboard&&navigator.clipboard.writeText(${jattr(t.token)})&&toast('Copiato','ok')">copia</a>`;
       const hh=t.hashed?' <span class="tag mut" title="salvato solo come hash; il segreto è stato mostrato alla creazione">hash</span>':'';
       return `<tr><td>${esc(t.source)}</td>
       <td class="mono small"><span>${esc(t.token)}</span>${hh}${copy}${t.label?`<div class="small mut">${esc(t.label)}</div>`:''}</td>
@@ -4020,7 +4020,7 @@ async function vConnettori(v){
       <td class="small mut">${t.expires_at?new Date(t.expires_at).toLocaleDateString('it-IT'):'mai'}</td>
       <td class="small mut">${t.last_used_at?new Date(t.last_used_at).toLocaleString('it-IT'):'mai'}</td>
       <td>${st}</td>
-      <td style="text-align:right;white-space:nowrap">${t.revoked?'':`<button class="btn ghost small" onclick="tokRevoke('${esc(t.token)}')">revoca</button> `}<button class="btn-ico btn ghost" onclick="tokDel('${esc(t.token)}')">${ICON.x}</button></td></tr>`}).join('')
+      <td style="text-align:right;white-space:nowrap">${t.revoked?'':`<button class="btn ghost small" onclick="tokRevoke(${jattr(t.token)})">revoca</button> `}<button class="btn-ico btn ghost" onclick="tokDel(${jattr(t.token)})">${ICON.x}</button></td></tr>`}).join('')
       ||`<tr><td colspan="7" class="empty">nessun token</td></tr>`}</tbody></table>
     <div class="small mut" style="margin-top:var(--s-8)">Il tenant deriva sempre dalla credenziale. <b>Lega un token a un dispositivo</b> per attribuire i dati a quel device e impedire che un payload si spacci per un altro. Il segreto dei token nuovi è salvato <b>solo come hash</b>: copialo alla creazione. Revoca = blocco immediato; scadenza = blocco automatico.</div></div></div>
   <div id="sensorRulesCard" style="margin-top:var(--s-16)"></div>`;
@@ -4030,7 +4030,7 @@ async function vConnettori(v){
     if(box){ box.innerHTML=`<div class="card pad" style="background:#ecfdf5;border:1px solid #10b981">
       <b>Token creato — copialo adesso, non sarà più mostrato:</b>
       <div class="mono" style="margin:var(--s-6) 0;word-break:break-all">${esc(tk)}</div>
-      <button class="btn small" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(tk)}')&&toast('Copiato','ok')">Copia token</button></div>`; } }
+      <button class="btn small" onclick="navigator.clipboard&&navigator.clipboard.writeText(${jattr(tk)})&&toast('Copiato','ok')">Copia token</button></div>`; } }
 }
 const RULE_OPS=[['>=','≥'],['<=','≤'],['>','>'],['<','<'],['==','='],['is_true','è vero'],['is_false','è falso']];
 const RULE_ETYPES=['sensore_critico','batteria_critica','man_down','perdita_alimentazione','telemetria'];
@@ -4064,7 +4064,7 @@ async function renderSensorRules(){
     <div id="srSuggest"></div>
     <div class="small mut" style="margin-bottom:var(--s-8)">Trasformano la telemetria in allarmi, in modo parametrico: <b>metrica</b> (chiave nel payload) + <b>operatore</b> + <b>soglia</b> → <b>evento</b>. Gli eventi critici attivano la catena allarmi nativa (incidente + escalation). Ogni regola vale per tutti i dispositivi o solo per uno, un modello, una sede o uno scenario. Si valutano <b>tutte</b> le regole: se più regole scattano insieme vale la più grave.</div>
     <table class="table" data-export="regole-sensori"><thead><tr><th>Metrica</th><th>Condizione</th><th>Evento</th><th>Vale per</th><th>Etichetta</th><th></th></tr></thead>
-    <tbody>${R.map(r=>`<tr class="clk" onclick='ruleEdit(${JSON.stringify(r).replace(/'/g,"&#39;")})'><td class="mono small">${esc(r.metric)}</td>
+    <tbody>${R.map(r=>`<tr class="clk" onclick='ruleEdit(${jattr(r)})'><td class="mono small">${esc(r.metric)}</td>
       <td class="small">${opLab(r.op)}${numeric(r.op)?' '+(r.threshold??''):''}</td>
       <td><span class="chip ${r.etype==='telemetria'?'':'s-critico'}">${esc(RULE_ET_LAB[r.etype]||r.etype)}</span></td>
       <td class="small">${esc(r.scope_label||'Tutti i dispositivi')}</td>
@@ -4169,18 +4169,22 @@ async function agentRun(btn){
     if((r.actions||[]).length){ h+=`<div class="small mut" style="margin:var(--s-6) 0">Azioni eseguite:</div>`+r.actions.map(a=>{
       const okw=a.error?`<span class="chip s-da_correggere">errore: ${esc(a.error)}</span>`:(a.wrote?'<span class="chip s-attivo">scritto su DB</span>':'<span class="chip">lettura</span>');
       return `<div class="spread" style="padding:var(--s-4) 0;border-bottom:1px solid var(--line)"><span>${esc(agLab(a.name))}</span>${okw}</div>`;}).join(''); }
-    if((r.pending||[]).length){ h+=`<div class="card pad" style="background:var(--warn-soft);margin-top:var(--s-10)"><b class="small">Conferma richiesta</b>`+r.pending.map((p,i)=>`
+    // IO-2: le proposte restano in memoria JS (mai serializzate dentro un attributo HTML)
+    AG_PENDING=r.pending||[];
+    if(AG_PENDING.length){ h+=`<div class="card pad" style="background:var(--warn-soft);margin-top:var(--s-10)"><b class="small">Conferma richiesta</b>`+AG_PENDING.map((p,i)=>`
       <div class="spread" style="padding:var(--s-6) 0;align-items:flex-start;gap:var(--s-10)">
-        <div><b>${esc(agLab(p.name))}</b><div class="small mut mono">${esc(JSON.stringify(p.args))}</div></div>
-        <div class="row" style="gap:var(--s-6)"><button class="btn ok small" onclick='agentConfirm(this,${JSON.stringify(p).replace(/'/g,"&#39;")})'>Conferma</button>
+        <div><b>${esc(agLab(p.name))}</b><div class="small mut">${esc(p.summary||'')}</div></div>
+        <div class="row" style="gap:var(--s-6)"><button class="btn ok small" onclick="agentConfirm(this,${i})">Conferma</button>
           <button class="btn ghost small" onclick="this.closest('.spread').remove()">Annulla</button></div></div>`).join('')+`</div>`; }
     if(!h) h='<div class="small mut">Nessuna azione.</div>';
     box.innerHTML=h;
   }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; }
   finally{ btn.disabled=false; }
 }
-async function agentConfirm(btn,p){ btn.disabled=true;
-  try{ await api('/ai/agent/confirm',{method:'POST',body:JSON.stringify({name:p.name,args:p.args})});
+let AG_PENDING=[];
+// IO-5: si conferma la proposta salvata dal server (per id), non nome e argomenti del browser
+async function agentConfirm(btn,i){ const p=AG_PENDING[i]; if(!p) return; btn.disabled=true;
+  try{ await api('/ai/agent/confirm',{method:'POST',body:JSON.stringify({pending_id:p.id})});
     toast('Azione eseguita','ok'); const row=btn.closest('.spread'); if(row){ row.innerHTML=`<span>${esc(agLab(p.name))}</span><span class="chip s-attivo">scritto su DB</span>`; }
   }catch(e){ btn.disabled=false; toast(e.message,'bad'); } }
 async function reportGen(btn){
@@ -5065,7 +5069,7 @@ async function ocAbsences(btn){
   try{ const r=await api('/oncall-overrides?group_id='+gid);
     const list=(r.overrides||[]).map(o=>`<div class="row small" style="justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:var(--s-6);margin-bottom:var(--s-4)">
       <span>${o.remove_email?('➖ '+esc(o.remove_email)):''}${o.add_email?(' ➕ '+esc(o.add_email)):''} · ${new Date(o.start).toLocaleDateString('it-IT')}→${new Date(o.end).toLocaleDateString('it-IT')}</span>
-      <span><button class="btn ghost small" onclick='ocAbsEdit(${JSON.stringify(o).replace(/'/g,"&#39;")})'>modifica</button>
+      <span><button class="btn ghost small" onclick='ocAbsEdit(${jattr(o)})'>modifica</button>
       <button class="btn-ico btn ghost" onclick="ocAbsDel('${o.id}')">${ICON.x}</button></span></div>`).join('')||'<div class="small mut">Nessuna assenza.</div>';
     out.innerHTML=`${r.note?`<div class="small mut">${esc(r.note)}</div>`:list}
       <div class="row small" style="gap:var(--s-6);align-items:center;margin-top:var(--s-8);flex-wrap:wrap">
@@ -5278,11 +5282,11 @@ async function vAnagrafiche(v){
   <div class="grid g2">
     <div class="card"><div class="card-h"><h2>Utenti (${users.length})</h2><button class="btn ghost small" onclick="userNew()">+ invita</button></div>
       <table class="table" data-export="utenti"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
-      <tbody>${users.map(u=>`<tr class="clk" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
+      <tbody>${users.map(u=>`<tr class="clk" onclick='userEdit(${jattr(u)})'><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
         <td></td></tr>`).join('')}</tbody></table></div>
     <div class="card"><div class="card-h"><h2>Sedi (${sites.length})</h2><span>${hasCap('settings.manage')?'<button class="btn ghost small" onclick="tenantTzEdit()">🕒 fuso orario</button> ':''}<button class="btn ghost small" onclick="siteForm()">+ aggiungi</button></span></div>
       <table class="table" data-export="sedi"><thead><tr><th>Nome</th><th>Indirizzo</th><th></th></tr></thead>
-      <tbody>${sites.map(s=>`<tr class="clk" onclick='siteForm(${JSON.stringify(s).replace(/'/g,"&#39;")})'><td>${esc(s.name)}</td><td class="small mut">${esc(s.address||'—')}${(s.lat!=null&&s.lon!=null)?' · 📍':''}${s.access_notes?' · 🔑':''}${s.timezone?' · 🕒 '+esc(s.timezone):''}</td>
+      <tbody>${sites.map(s=>`<tr class="clk" onclick='siteForm(${jattr(s)})'><td>${esc(s.name)}</td><td class="small mut">${esc(s.address||'—')}${(s.lat!=null&&s.lon!=null)?' · 📍':''}${s.access_notes?' · 🔑':''}${s.timezone?' · 🕒 '+esc(s.timezone):''}</td>
         <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();siteDel('${s.id}')">${ICON.x}</button></td></tr>`).join('')
         ||emptyRow(3, ICON.building, 'Nessuna sede', 'Le sedi sono i luoghi di lavoro: a loro colleghi dispositivi, turni e allarmi. Aggiungine una.', {fn:'siteForm()',label:'+ Aggiungi sede'})}</tbody></table></div>
   </div>
@@ -5295,7 +5299,7 @@ async function vAnagrafiche(v){
       ||'<div class="small mut">Nessuna squadra.</div>'}</div></div>`:''}
   <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Asset / mezzi (${assets.length})</h2><button class="btn ghost small" onclick="assetNew()">+ nuovo asset</button></div>
     <table class="table" data-export="asset-mezzi"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th>Sede</th><th></th></tr></thead>
-    <tbody>${assets.map(a=>`<tr class="clk" data-asset='${JSON.stringify(a).replace(/'/g,"&#39;")}'><td><b>${esc(a.name)}</b></td><td><span class="chip">${esc(a.kind)}</span></td><td class="small mut">${esc(a.identifier||'—')}</td><td class="small mut">${esc(a.site||'—')}</td>
+    <tbody>${assets.map(a=>`<tr class="clk" data-asset='${jattr(a)}'><td><b>${esc(a.name)}</b></td><td><span class="chip">${esc(a.kind)}</span></td><td class="small mut">${esc(a.identifier||'—')}</td><td class="small mut">${esc(a.site||'—')}</td>
       <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();assetDel('${a.id}')">${ICON.x}</button></td></tr>`).join('')
       ||emptyRow(5, ICON.building, 'Nessun asset', 'Mezzi e attrezzature da assegnare a squadre e interventi. Aggiungine uno per poterlo pianificare.', {fn:'assetNew()',label:'+ Nuovo asset'})}</tbody></table></div>`;
   v.querySelectorAll('tr[data-asset]').forEach(tr=>tr.onclick=()=>{ try{ assetForm(JSON.parse(tr.dataset.asset)); }catch(e){} });
@@ -5324,7 +5328,7 @@ async function vUtentiRuoli(v){
   ${err}
   ${croles?`<div class="card pad" style="margin-top:0"><div class="spread"><div><h2>Ruoli personalizzati (${croles.roles.length})</h2><div class="small mut">bundle di capability definiti dal tenant, assegnabili a utenti e/o gruppi condivisi. <b>Additivi</b>: aggiungono capability sopra il ruolo base.</div></div><button class="btn ghost small" onclick="crNew()">+ nuovo ruolo</button></div>
     <div class="grid g2" style="margin-top:var(--s-10)">${croles.roles.map(r=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10)">
-      <div class="spread"><b>${esc(r.name)}</b><span><button class="btn ghost small" onclick='crEdit(${JSON.stringify(r).replace(/'/g,"&#39;")})'>modifica</button><button class="btn-ico btn ghost" onclick="crDel('${r.id}')">${ICON.x}</button></span></div>
+      <div class="spread"><b>${esc(r.name)}</b><span><button class="btn ghost small" onclick='crEdit(${jattr(r)})'>modifica</button><button class="btn-ico btn ghost" onclick="crDel('${r.id}')">${ICON.x}</button></span></div>
       <div class="small mut" style="margin:var(--s-4) 0">${esc(r.description||'')}</div>
       <div style="margin:var(--s-4) 0">${r.capabilities.map(c=>`<span class="chip" title="${esc(capHelp(c)||'')}">${esc(capLabel(c))}</span>`).join(' ')||'<span class="small mut">nessuna capability</span>'}</div>
       <div class="small" style="margin-top:var(--s-6)"><b>Utenti:</b> ${r.users.map(u=>`<span class="tag">${esc(u.email)} <a onclick="crRmUser('${r.id}','${u.user_id}')">✕</a></span>`).join(' ')||'<span class="mut">—</span>'}</div>
@@ -5334,12 +5338,12 @@ async function vUtentiRuoli(v){
       </div>`).join('')||'<div class="small mut">Nessun ruolo personalizzato.</div>'}</div></div>`:''}
   <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Utenti (${users.length})</h2><button class="btn ghost small" onclick="userNew()">+ invita</button></div>
     <table class="table" data-export="utenti"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
-    <tbody>${users.map(u=>`<tr class="clk" onclick='userEdit(${JSON.stringify(u).replace(/'/g,"&#39;")})'><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
+    <tbody>${users.map(u=>`<tr class="clk" onclick='userEdit(${jattr(u)})'><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
       <td></td></tr>`).join('')||emptyRow(3, null, 'Nessun utente', 'Invita le persone del team e assegna i ruoli: potranno accedere secondo i permessi.', {fn:'userNew()',label:'+ Invita utente'})}</tbody></table></div>
   <div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><div><h2>Gruppi di persone (${ugroups.length})</h2><div class="small mut">insiemi di persone condivisi, riusabili da qualunque modulo (es. importabili nei gruppi di allarme)</div></div><button class="btn ghost small" onclick="ugNew()">+ nuovo gruppo</button></div>
     <div class="grid g2" style="margin-top:var(--s-10)">${ugroups.map(g=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10)">
       <div class="spread"><b>${esc(g.name)} <span class="chip" title="${esc(g.kind)}">${esc(groupKindLabel(g.kind))}</span></b>
-        <span><button class="btn ghost small" onclick='ugRename(${JSON.stringify(g).replace(/'/g,"&#39;")})'>gestisci</button>
+        <span><button class="btn ghost small" onclick='ugRename(${jattr(g)})'>gestisci</button>
         <button class="btn-ico btn ghost" onclick="ugDel('${g.id}')">${ICON.x}</button></span></div>
       <div class="small mut" style="margin:var(--s-6) 0">${g.members.map(m=>`<span class="tag">${esc(m.email)} <a onclick="ugRm('${g.id}','${m.user_id}')">✕</a></span>`).join(' ')||'nessun membro'}</div>
       <div class="row" style="gap:var(--s-6)"><select id="ugm_${g.id}" class="grow small">${users.map(u=>`<option value="${u.id}">${esc(u.email)}</option>`).join('')}</select>
@@ -5469,8 +5473,8 @@ function renderGdUsers(a){
   <tbody>${rows.map(u=>`<tr><td>${esc(u.email)}</td><td><span class="chip" title="${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
     <td>${u.anonymized_at?'<span class="chip s-bad">anonimizzato</span>':'<span class="chip s-ok">attivo</span>'}</td>
     <td style="text-align:right">
-      <button class="btn ghost small" onclick="gdprExport('${u.id}','${esc(u.email)}')">↓ esporta</button>
-      ${u.anonymized_at?'':`<button class="btn ghost small" onclick="gdprAnon('${u.id}','${esc(u.email)}')">anonimizza</button>`}
+      <button class="btn ghost small" onclick="gdprExport('${u.id}',${jattr(u.email)})">↓ esporta</button>
+      ${u.anonymized_at?'':`<button class="btn ghost small" onclick="gdprAnon('${u.id}',${jattr(u.email)})">anonimizza</button>`}
     </td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessun utente</td></tr>'}</tbody></table>`;
 }
 async function gdReload(resetOffset=true){
@@ -5766,7 +5770,7 @@ function renderTurni(v){
     const mine=p.user_id===ME.user_id||ME.email===p.email;
     const acts=[];
     if(p.state==='pianificato'&&(mine||planner)) acts.push(`<button class="btn ghost small" onclick="spAct('${p.id}','confirm')">conferma</button>`);
-    if(planner&&p.state!=='annullato') acts.push(`<button class="btn ghost small" onclick='spSubs(${JSON.stringify(p).replace(/'/g,"&#39;")})'>sostituti</button>`);
+    if(planner&&p.state!=='annullato') acts.push(`<button class="btn ghost small" onclick='spSubs(${jattr(p)})'>sostituti</button>`);
     if(planner&&p.state!=='annullato') acts.push(`<button class="btn ghost small" onclick="spAct('${p.id}','cancel')">annulla</button>`);
     if(planner) acts.push(`<button class="btn-ico btn ghost" onclick="spDel('${p.id}')">${ICON.x}</button>`);
     return `<tr><td>${esc(p.email)}${p.order_title?`<div class="small mut">🔧 ${esc(p.order_title)}</div>`:''}${p.commessa_name?`<div class="small mut">🏗️ ${esc(p.commessa_code||'')} ${esc(p.commessa_name)}</div>`:''}</td><td>${esc(p.site||'—')}</td>
@@ -5781,7 +5785,7 @@ function renderTurni(v){
   const oncallCard=`<div class="card"><div class="card-h"><div><h2>Reperibilità</h2><div class="small mut">${OC.length} finestre di reperibilità</div></div>
     ${planner?`<button class="btn ghost small" onclick="ocNew()">+ aggiungi</button>`:''}</div>
     <table class="table" data-export="reperibilita"><thead><tr><th>Utente</th><th>Dalle</th><th>Alle</th><th>Nota</th><th></th></tr></thead>
-    <tbody>${OC.map(o=>`<tr class="${planner?'clk':''}" ${planner?`onclick='ocForm(${JSON.stringify(o).replace(/'/g,"&#39;")})'`:''}><td>${esc(o.email)}</td><td class="small">${dtLocal(o.starts_at)}</td><td class="small">${dtLocal(o.ends_at)}</td>
+    <tbody>${OC.map(o=>`<tr class="${planner?'clk':''}" ${planner?`onclick='ocForm(${jattr(o)})'`:''}><td>${esc(o.email)}</td><td class="small">${dtLocal(o.starts_at)}</td><td class="small">${dtLocal(o.ends_at)}</td>
       <td class="small mut">${esc(o.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="event.stopPropagation();ocDel('${o.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
       ||emptyRow(5, ICON.shield, 'Nessuna reperibilità', 'Definisci chi è reperibile e in quale finestra: riceverà gli allarmi quando è di turno.', planner?{fn:'ocNew()',label:'+ Aggiungi reperibilità'}:null)}</tbody></table></div>`;
   const absKind=k=>`<span class="chip">${esc(k)}</span>`;
@@ -5789,7 +5793,7 @@ function renderTurni(v){
     ${planner?`<button class="btn ghost small" onclick="absNew()">+ aggiungi</button>`:''}</div>
     <div class="card-note">Un'assenza impedisce di pianificare turni sulla persona in quel periodo.</div>
     <table class="table" data-export="assenze"><thead><tr><th>Lavoratore</th><th>Tipo</th><th>Dal</th><th>Al</th><th>Nota</th><th></th></tr></thead>
-    <tbody>${(A||[]).map(a=>`<tr class="${planner?'clk':''}" ${planner?`onclick='absForm(${JSON.stringify(a).replace(/'/g,"&#39;")})'`:''}><td>${esc(a.email)}</td><td>${absKind(a.kind)}</td><td class="small">${dtLocal(a.starts_at)}</td><td class="small">${dtLocal(a.ends_at)}</td>
+    <tbody>${(A||[]).map(a=>`<tr class="${planner?'clk':''}" ${planner?`onclick='absForm(${jattr(a)})'`:''}><td>${esc(a.email)}</td><td>${absKind(a.kind)}</td><td class="small">${dtLocal(a.starts_at)}</td><td class="small">${dtLocal(a.ends_at)}</td>
       <td class="small mut">${esc(a.note||'—')}</td><td style="text-align:right">${planner?`<button class="btn-ico btn ghost" onclick="event.stopPropagation();absDel('${a.id}')">${ICON.x}</button>`:''}</td></tr>`).join('')
       ||emptyRow(6, ICON.clipboard, 'Nessuna assenza', 'Registra ferie, malattie o indisponibilità: il pianificatore non assegnerà turni in quei periodi.', planner?{fn:'absNew()',label:'+ Aggiungi assenza'}:null)}</tbody></table></div>`;
   const qualCard=hasQual?`<div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Qualifiche e competenze</h2>
@@ -5802,7 +5806,7 @@ function renderTurni(v){
     <span><a onclick="covCheck()">verifica copertura</a> · <a onclick="covFairness()">equità</a> · <button class="btn ghost small" onclick="covNew()">+ requisito</button></span></div>
     <div class="card-note">Dichiara quante persone servono per sede/fascia/giorni; la verifica trova i giorni scoperti del piano.</div>
     <table class="table" data-export="copertura-turni"><thead><tr><th>Sede</th><th>Giorni</th><th>Fascia</th><th>Min</th><th>Competenza</th><th></th></tr></thead>
-    <tbody>${(CV||[]).map(c=>`<tr class="clk" onclick='covForm(${JSON.stringify(c).replace(/'/g,"&#39;")})'><td>${esc(c.site||'ovunque')}</td><td class="small">${esc(dmTxt(c.days_mask))}</td><td class="small">${esc(c.cov_start)}–${esc(c.cov_end)}</td>
+    <tbody>${(CV||[]).map(c=>`<tr class="clk" onclick='covForm(${jattr(c)})'><td>${esc(c.site||'ovunque')}</td><td class="small">${esc(dmTxt(c.days_mask))}</td><td class="small">${esc(c.cov_start)}–${esc(c.cov_end)}</td>
       <td>${c.min_people}</td><td class="small mut">${esc(c.qual||'—')}</td><td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();covDel('${c.id}')">${ICON.x}</button></td></tr>`).join('')
       ||emptyRow(6, ICON.clipboard, 'Nessun requisito di copertura', 'Dichiara quante persone servono per sede, fascia e giorni: la verifica troverà i turni scoperti.', planner?{fn:'covNew()',label:'+ Aggiungi requisito'}:null)}</tbody></table>
     <div id="covGaps" class="card-inset-b"></div></div>`:'';
@@ -5949,7 +5953,7 @@ async function spSubs(p){
     const c=r.candidates||[];
     const rows=c.map(x=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8)">
       <div><b class="small">${esc(x.email)}</b><div class="small mut">${x.hours_30d}h/30g${x.warnings.length?' · ⚠ '+x.warnings.map(esc).join(' · '):' · nessun avviso'}</div></div>
-      <button class="btn ghost small" onclick='spApplySub(${JSON.stringify(p).replace(/'/g,"&#39;")},"${x.user_id}","${esc(x.email)}")'>assegna</button></div>`).join('')
+      <button class="btn ghost small" onclick='spApplySub(${jattr(p)},"${x.user_id}","${esc(x.email)}")'>assegna</button></div>`).join('')
       ||'<div class="small mut">Nessun sostituto idoneo (conflitti, assenze o competenza mancante).</div>';
     drawer('Sostituti per il turno',`<div class="col" style="gap:var(--s-8)">
       <div class="card pad" style="background:var(--brand-soft)"><div class="small mut">✦ ${esc(r.provider)}</div><div style="margin-top:var(--s-4)">${esc(r.summary)}</div></div>

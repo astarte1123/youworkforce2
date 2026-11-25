@@ -268,7 +268,7 @@ async function loadOrders(){
     <div class="small mut" style="margin:4px 0 10px">${esc(o.site||'—')}${o.site_address?' · '+esc(o.site_address):''} ${o.instructions?'· '+esc(o.instructions):''}</div>
     ${navUrl(o)?`<a class="small" href="${navUrl(o)}" target="_blank" rel="noopener" style="display:inline-block;margin-bottom:8px">🧭 Naviga</a>`:''}
     ${localStorage.getItem('yw_draft_'+o.id)?'<div class="small" style="color:var(--warn,#b45309);margin-bottom:6px">⏳ bozza in attesa di invio</div>':''}
-    <button class="btn block" onclick='openOrderExec(${JSON.stringify(o).replace(/'/g,"&#39;")})'>Apri intervento</button>
+    <button class="btn block" onclick='openOrderExec(${jattr(o)})'>Apri intervento</button>
   </div>`).join('');
   flushDrafts();
 }
@@ -510,7 +510,7 @@ async function agentGo(btn){
     let h=''; if(r.answer) h+=`<div class="card pad" style="margin-bottom:8px">${esc(r.answer)}</div>`;
     (r.actions||[]).forEach(a=>{ h+=`<div class="small">${a.error?'⚠ ':'✓ '}${esc(a.name)}${a.wrote?' — salvato':''}${a.error?' ('+esc(a.error)+')':''}</div>`; });
     (r.pending||[]).forEach(p=>{ h+=`<div class="card pad" style="margin-top:6px"><div class="small">Confermi: <b>${esc(p.name)}</b>?</div>
-      <button class="btn block" onclick='agentConf(this,${JSON.stringify(p).replace(/'/g,"&#39;")})'>Conferma</button></div>`; });
+      <button class="btn block" onclick='agentConf(this,${jattr(p)})'>Conferma</button></div>`; });
     box.innerHTML=h||'<div class="small mut">Nessuna azione.</div>'; loadDiary();
   }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; }
   finally{ btn.disabled=false; }

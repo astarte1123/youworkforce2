@@ -10799,40 +10799,44 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
     macro_rules! tx { () => { db::begin_tenant(&st.rt_pool, tid).await.map_err(|e| e.to_string())? } }
     match name {
         "query_incidents" => {
+            let acl = ag_safety_scope(st, s, ESCALATION_MODS).await?; // IO-3
             let state = gs("state").unwrap_or_else(|| "tutti".into());
             let lim = gi("limit").unwrap_or(20).clamp(1,100);
             let mut t = tx!();
-            let base = "SELECT i.id,i.etype,i.state,i.priority,i.outcome,i.opened_at,s.name AS site FROM app.incidents i LEFT JOIN app.sites s ON s.id=i.site_id";
+            let base = "SELECT i.id,i.etype,i.state,i.priority,i.outcome,i.opened_at,i.site_id,s.name AS site FROM app.incidents i LEFT JOIN app.sites s ON s.id=i.site_id";
             let rows = if state=="tutti" {
                 sqlx::query(&format!("{base} ORDER BY i.opened_at DESC LIMIT {lim}")).fetch_all(&mut *t).await
             } else {
                 sqlx::query(&format!("{base} WHERE i.state=$1 ORDER BY i.opened_at DESC LIMIT {lim}")).bind(&state).fetch_all(&mut *t).await
             }.map_err(|e| e.to_string())?;
             t.commit().await.ok();
-            Ok(json!(rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"etype":r.get::<String,_>("etype"),
+            Ok(json!(rows.iter().filter(|r| site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok())).map(|r| json!({"id":r.get::<Uuid,_>("id"),"etype":r.get::<String,_>("etype"),
                 "stato":r.get::<String,_>("state"),"priorita":r.get::<i32,_>("priority"),
                 "sito":r.try_get::<String,_>("site").ok(),"esito":r.try_get::<String,_>("outcome").ok(),
                 "aperto":r.get::<Dt,_>("opened_at").to_rfc3339()})).collect::<Vec<_>>()))
         }
         "query_checkins" => {
+            let acl = ag_safety_scope(st, s, &["loneworker"]).await?; // IO-3
             let mut t = tx!();
-            let rows = sqlx::query("SELECT c.state,c.due_at,u.email,s.name AS site FROM app.checkins c
+            let rows = sqlx::query("SELECT c.state,c.due_at,c.site_id,u.email,s.name AS site FROM app.checkins c
                 JOIN app.users u ON u.id=c.user_id LEFT JOIN app.sites s ON s.id=c.site_id
                 WHERE c.state IN ('attivo','scaduto') ORDER BY c.due_at").fetch_all(&mut *t).await.map_err(|e| e.to_string())?;
             t.commit().await.ok();
+            let rows: Vec<_> = rows.into_iter().filter(|r| site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok())).collect();
             let scaduti = rows.iter().filter(|r| r.get::<String,_>("state")=="scaduto").count();
             Ok(json!({"totale":rows.len(),"scaduti":scaduti,"checkin":rows.iter().map(|r| json!({
                 "lavoratore":r.get::<String,_>("email"),"stato":r.get::<String,_>("state"),
                 "sito":r.try_get::<String,_>("site").ok(),"scadenza":r.get::<Dt,_>("due_at").to_rfc3339()})).collect::<Vec<_>>()}))
         }
         "query_events" => {
+            let acl = ag_safety_scope(st, s, DEVICE_MODS).await?; // IO-3
             let hours = gi("hours").unwrap_or(24).clamp(1,168);
             let mut t = tx!();
-            let rows = sqlx::query("SELECT e.etype,e.origin_ts,d.external_id FROM app.events e
+            let rows = sqlx::query("SELECT e.etype,e.origin_ts,e.site_id,d.external_id FROM app.events e
                 LEFT JOIN app.devices d ON d.id=e.device_id WHERE e.origin_ts > now()-($1||' hours')::interval
                 ORDER BY e.origin_ts DESC LIMIT 100").bind(hours.to_string()).fetch_all(&mut *t).await.map_err(|e| e.to_string())?;
             t.commit().await.ok();
-            Ok(json!({"finestra_ore":hours,"eventi":rows.iter().map(|r| json!({"etype":r.get::<String,_>("etype"),
+            Ok(json!({"finestra_ore":hours,"eventi":rows.iter().filter(|r| site_allowed(&acl, r.try_get::<Uuid,_>("site_id").ok())).map(|r| json!({"etype":r.get::<String,_>("etype"),
                 "device":r.try_get::<String,_>("external_id").ok(),"ts":r.get::<Dt,_>("origin_ts").to_rfc3339()})).collect::<Vec<_>>()}))
         }
         "query_work_orders" => {
@@ -10943,6 +10947,9 @@ async fn ag_run(st: &AppState, s: &Session, name: &str, a: &Value) -> Result<Val
         }
         "create_sensor_rule" => {
             require_cap(s, "iot.manage").map_err(|e| e.1)?;
+            // IO-6: serve il modulo IoT; una regola che apre «uomo a terra» la crea solo una persona
+            if !module_active(st, tid, "iot").await { return Err("modulo IoT non abilitato".into()); }
+            if gs("etype").as_deref() == Some("man_down") { return Err("una regola «uomo a terra» si crea solo a mano, dalla pagina Regole sensori".into()); }
             let metric = gs("metric").unwrap_or_default(); if metric.trim().is_empty() { return Err("metrica richiesta".into()); }
             let op = gs("op").unwrap_or_default(); if !RULE_OPS.contains(&op.as_str()) { return Err("operatore non valido".into()); }
             let etype = gs("etype").unwrap_or_default(); if !RULE_ETYPES.contains(&etype.as_str()) { return Err("etype non ammesso".into()); }
@@ -11135,7 +11142,11 @@ pub async fn ai_agent(State(st): State<AppState>, h: HeaderMap, Json(b): Json<Ag
             match ag_meta(&call.name) {
                 None => turns.push(AgTurn::ToolResult{ id: call.id.clone(), content: "tool sconosciuto".into() }),
                 Some(m) if m.sensitive => {
-                    pending.push(json!({"name":call.name,"args":call.args,"reason":"azione sensibile: richiede conferma dell'operatore"}));
+                    // IO-5: la proposta vive sul server; il browser conferma solo il suo id
+                    let pid: Uuid = sqlx::query_scalar("INSERT INTO app.ai_agent_pending(tenant_id,user_id,name,args) VALUES($1,$2,$3,$4) RETURNING id")
+                        .bind(tid).bind(s.user_id).bind(&call.name).bind(&call.args).fetch_one(&st.owner_pool).await.map_err(ise)?;
+                    pending.push(json!({"id":pid,"name":call.name,"args":call.args,"summary":ag_summary(&call.name,&call.args),
+                        "reason":"azione sensibile: richiede conferma dell'operatore"}));
                     turns.push(AgTurn::ToolResult{ id: call.id.clone(), content: "In attesa di conferma dell'operatore; NON eseguito.".into() });
                     stop = true;
                 }
@@ -11153,18 +11164,51 @@ pub async fn ai_agent(State(st): State<AppState>, h: HeaderMap, Json(b): Json<Ag
 }
 
 #[derive(Deserialize)]
-pub struct AgentConfirm { pub name: String, pub args: Value }
+pub struct AgentConfirm { pub pending_id: Uuid }
 /// Conferma ed esegue UNA azione sensibile proposta dall'agente (operatore autorizza).
+/// IO-5: si esegue la proposta SALVATA dal server (nome e argomenti di allora), una volta sola,
+/// solo per l'utente a cui è stata proposta e entro 30 minuti. Il browser non può sceglierla.
 pub async fn ai_agent_confirm(State(st): State<AppState>, h: HeaderMap, Json(b): Json<AgentConfirm>) -> R {
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     let _ = ai_gate(&st, tid, "agent").await?;
-    match ag_meta(&b.name) {
+    let row = sqlx::query("UPDATE app.ai_agent_pending SET used_at=now()
+            WHERE id=$1 AND tenant_id=$2 AND user_id=$3 AND used_at IS NULL AND created_at > now() - interval '30 minutes'
+            RETURNING name, args")
+        .bind(b.pending_id).bind(tid).bind(s.user_id).fetch_optional(&st.owner_pool).await.map_err(ise)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "proposta inesistente, già usata o scaduta: chiedi di nuovo all'agente"))?;
+    let (name, args): (String, Value) = (row.get("name"), row.get("args"));
+    match ag_meta(&name) {
         Some(m) if m.sensitive => {}
         _ => return Err(err(StatusCode::BAD_REQUEST, "azione non confermabile")),
     }
-    let r = ag_run(&st, &s, &b.name, &b.args).await.map_err(|e| err(StatusCode::BAD_REQUEST, &e))?;
+    let r = ag_run(&st, &s, &name, &args).await.map_err(|e| err(StatusCode::BAD_REQUEST, &e))?;
+    audit(&st, tid, &s.email, "ai_agent_confirm", json!({"pending_id":b.pending_id,"azione":name})).await;
     Ok(Json(json!({"ok":true,"result":r})))
+}
+/// IO-19: descrizione leggibile di un'azione proposta (niente nomi tecnici o JSON in UI).
+fn ag_summary(name: &str, a: &Value) -> String {
+    let g = |k: &str| a.get(k).map(|v| v.as_str().map(|x| x.to_string()).unwrap_or_else(|| v.to_string())).unwrap_or_default();
+    match name {
+        "create_sensor_rule" => format!("Crea la regola sensori «{} {} {}» → {}", g("metric"), g("op"), g("threshold"), g("etype")),
+        "create_work_order" => format!("Crea l'intervento «{}»", g("title")),
+        "add_timesheet_line" => format!("Aggiunge {} minuti di «{}» al consuntivo", g("minutes"), g("activity")),
+        "add_expense" => format!("Aggiunge la spesa «{}» di {} €", g("description"), g("amount_eur")),
+        _ => {
+            let mut parts: Vec<String> = a.as_object().map(|o| o.iter().take(4)
+                .map(|(k, v)| format!("{k}: {}", v.as_str().map(|x| x.to_string()).unwrap_or_else(|| v.to_string()))).collect()).unwrap_or_default();
+            parts.truncate(4);
+            parts.join(" · ")
+        }
+    }
+}
+/// IO-3: lo strumento di lettura dell'agente vede solo ciò che l'utente vede dalla Centrale.
+async fn ag_safety_scope(st: &AppState, s: &Session, mods: &[&str]) -> Result<Option<std::collections::HashSet<Uuid>>, String> {
+    let tid = s.tenant_id.unwrap();
+    if !has_cap(s, "incidents.view") && !has_cap(s, "incidents.handle") { return Err("permesso richiesto: vedere gli allarmi".into()); }
+    let mut on = false; for m in mods { if module_active(st, tid, m).await { on = true; break; } }
+    if !on { return Err("nessun modulo di sicurezza attivo per questa lettura".into()); }
+    Ok(allowed_sites(st, s).await)
 }
 
 // ---- Report AI: generazione + persistenza + consultazione ----
@@ -11174,11 +11218,16 @@ pub async fn ai_report_generate(State(st): State<AppState>, h: HeaderMap, Json(b
     let s = require_tenant(&st, &h).await?;
     let tid = s.tenant_id.unwrap();
     let c = ai_gate(&st, tid, "agent").await?;
-    // grounding: snapshot operativo del tenant (RLS)
+    // grounding: snapshot operativo del tenant (RLS). IO-3: solo ciò che l'utente può vedere
+    // (permesso allarmi + modulo + sedi consentite); altrimenti il report non li contiene.
+    let inc_acl = ag_safety_scope(&st, &s, ESCALATION_MODS).await.ok();
+    let ck_ok = ag_safety_scope(&st, &s, &["loneworker"]).await.is_ok() && allowed_sites(&st, &s).await.is_none();
     let mut t = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let inc = sqlx::query("SELECT etype,state,priority,opened_at FROM app.incidents WHERE opened_at > now()-interval '30 days' ORDER BY opened_at DESC LIMIT 100")
-        .fetch_all(&mut *t).await.map_err(ise)?;
-    let ck = sqlx::query("SELECT state,count(*) AS n FROM app.checkins GROUP BY state").fetch_all(&mut *t).await.map_err(ise)?;
+    let inc = if let Some(acl) = &inc_acl {
+        sqlx::query("SELECT etype,state,priority,opened_at,site_id FROM app.incidents WHERE opened_at > now()-interval '30 days' ORDER BY opened_at DESC LIMIT 100")
+            .fetch_all(&mut *t).await.map_err(ise)?.into_iter().filter(|r| site_allowed(acl, r.try_get::<Uuid,_>("site_id").ok())).collect()
+    } else { Vec::new() };
+    let ck = if ck_ok { sqlx::query("SELECT state,count(*) AS n FROM app.checkins GROUP BY state").fetch_all(&mut *t).await.map_err(ise)? } else { Vec::new() };
     t.commit().await.ok();
     let facts = json!({
         "incidenti_30g": inc.iter().map(|r| json!({"etype":r.get::<String,_>("etype"),"stato":r.get::<String,_>("state"),
@@ -11197,8 +11246,10 @@ pub async fn ai_report_generate(State(st): State<AppState>, h: HeaderMap, Json(b
 pub async fn ai_reports_list(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?;
     let mut t = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT id,kind,title,created_by,created_at FROM app.ai_reports ORDER BY created_at DESC LIMIT 100")
-        .fetch_all(&mut *t).await.map_err(ise)?;
+    // IO-3: i report contengono dati operativi: li vede chi li ha creati, o chi ha audit.view/admin
+    let all = has_cap(&s, "audit.view");
+    let rows = sqlx::query("SELECT id,kind,title,created_by,created_at FROM app.ai_reports WHERE $1 OR created_by=$2 ORDER BY created_at DESC LIMIT 100")
+        .bind(all).bind(&s.email).fetch_all(&mut *t).await.map_err(ise)?;
     t.commit().await.ok();
     Ok(Json(json!(rows.iter().map(|r| json!({"id":r.get::<Uuid,_>("id"),"kind":r.get::<String,_>("kind"),
         "title":r.get::<String,_>("title"),"created_by":r.get::<String,_>("created_by"),
@@ -11207,8 +11258,8 @@ pub async fn ai_reports_list(State(st): State<AppState>, h: HeaderMap) -> R {
 pub async fn ai_report_get(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let s = require_tenant(&st, &h).await?;
     let mut t = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
-    let r = sqlx::query("SELECT id,kind,title,body,created_by,created_at FROM app.ai_reports WHERE id=$1")
-        .bind(id).fetch_optional(&mut *t).await.map_err(ise)?;
+    let r = sqlx::query("SELECT id,kind,title,body,created_by,created_at FROM app.ai_reports WHERE id=$1 AND ($2 OR created_by=$3)")
+        .bind(id).bind(has_cap(&s, "audit.view")).bind(&s.email).fetch_optional(&mut *t).await.map_err(ise)?;
     t.commit().await.ok();
     let r = r.ok_or_else(|| err(StatusCode::NOT_FOUND, "report non trovato"))?;
     Ok(Json(json!({"id":r.get::<Uuid,_>("id"),"kind":r.get::<String,_>("kind"),"title":r.get::<String,_>("title"),

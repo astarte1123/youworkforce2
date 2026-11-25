@@ -78,14 +78,20 @@ R2=$(aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/agent" -d '{
 echo "$R2" | grep -q 'create_sensor_rule' && ok "azione sensibile proposta in pending" || no "nessun pending" "$R2"
 RULEm=$(sql "SELECT count(*) FROM app.sensor_rules WHERE tenant_id=$TIDQ AND metric='gas'")
 [ "$RULEm" = "$RULE0" ] && ok "sensibile NON eseguita senza conferma" || no "eseguita senza conferma!" "$RULE0->$RULEm"
-# confirm (admin, ruolo abilitato alle regole)
-aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/agent/confirm" -d '{"name":"create_sensor_rule","args":{"metric":"gas","op":">=","threshold":50,"etype":"sensore_critico","label":"AI agent"}}' | grep -q '"ok":true' && ok "confirm esegue l'azione sensibile" || no "confirm fallito" "-"
+# IO-5 (25/11/2026): si conferma la proposta SALVATA dal server, per id (una volta sola)
+PID=$(echo "$R2" | python -c "import sys,json;print([p['id'] for p in json.load(sys.stdin)['pending'] if p['name']=='create_sensor_rule'][0])")
+echo "$R2" | python -c "import sys,json;p=json.load(sys.stdin)['pending'][0];print(p.get('summary',''))" | grep -q "gas" && ok "proposta con descrizione leggibile (niente JSON grezzo)" || no "summary" "-"
+aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/agent/confirm" -d "{\"pending_id\":\"$PID\"}" | grep -q '"ok":true' && ok "confirm esegue l'azione sensibile proposta" || no "confirm fallito" "-"
+C=$(aapi -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -X POST "$BASE/api/ai/agent/confirm" -d "{\"pending_id\":\"$PID\"}")
+[ "$C" = "404" ] && ok "la stessa proposta non si riesegue (404)" || no "riuso proposta" "$C"
+C=$(oapi -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -X POST "$BASE/api/ai/agent/confirm" -d "{\"pending_id\":\"$PID\"}")
+[ "$C" = "404" ] && ok "la proposta di un altro utente non si conferma" || no "proposta altrui" "$C"
 RULE1=$(sql "SELECT count(*) FROM app.sensor_rules WHERE tenant_id=$TIDQ AND metric='gas'")
 [ "$RULE1" -gt "$RULE0" ] && ok "regola sensori SCRITTA dopo conferma" || no "regola non scritta" "$RULE0->$RULE1"
 
-# 3) confirm rifiuta una non-sensibile (anti-abuso)
-R=$(aapi -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -X POST "$BASE/api/ai/agent/confirm" -d '{"name":"add_diary_entry","args":{"body":"x"}}')
-[ "$R" = "400" ] && ok "confirm rifiuta azioni non sensibili" || no "confirm accetta non-sensibile" "$R"
+# 3) IO-5: un'azione costruita dal browser (nome + argomenti) non si esegue più
+R=$(aapi -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -X POST "$BASE/api/ai/agent/confirm" -d '{"name":"create_sensor_rule","args":{"metric":"x","op":">=","threshold":1,"etype":"man_down"}}')
+[ "${R:0:1}" = "4" ] && ok "confirm rifiuta azioni non proposte dall'agente ($R)" || no "confirm accetta azione forgiata" "$R"
 
 # 4) report AI generato e SALVATO su DB
 REP0=$(sql "SELECT count(*) FROM app.ai_reports WHERE tenant_id=$TIDQ")
