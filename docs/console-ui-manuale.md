@@ -254,6 +254,42 @@ Le aree sono anche **selezionabili dall'elenco**: clic sul nome evidenzia la rig
 sulla mappa (o sulla piantina, per le indoor), con un breve lampeggio — utile quando l'area non è
 in vista.
 
+## 10-bis. Menu riordinato (FE-6..10, FE-17 — decisione PO 25/11/2026)
+
+Da 41 a **27 voci** (con tutti i moduli attivi): niente più doppioni. Le pagine che facevano la
+stessa cosa sono diventate **schede** di una sola voce (barra sotto il titolo, `#subnav`).
+
+| Gruppo | Voci |
+|---|---|
+| Operatività | Dashboard · **Centrale allarmi** [Tutti · Assegnati a me] · **Mappa** [Allarmi · Dispositivi · Cantieri] · **Piantine indoor** · Agente AI |
+| Sicurezza Lavoratore | Dispositivi e app · **Regole di sicurezza** [Trigger · Profili di protezione] · Escalation e reperibilità · Report |
+| IoT | Monitoraggio IoT · Alert IoT (restano separati dalla Centrale) · **Regole sensori** · cruscotti degli scenari |
+| Lavoro sul campo | Interventi · Clienti · Listino · Richieste · Contratti · Cantieri · Ronde · Cruscotto vigilanza · Consuntivi · Ore lavorate · **Pianificazione** [Calendario · Agenda tecnici · Turni] |
+| Configurazione | Configurazione guidata · Collegamento dispositivi · **Persone e permessi** · **Sedi e asset** · Privacy e audit · **Moduli e AI** [Moduli · AI] |
+
+- Ogni scheda mantiene **i permessi e i moduli della pagina di prima**: una voce compare se almeno una
+  sua scheda è visibile; una scheda sola non mostra la barra (es. Piantine).
+- **Centrale:** «Assegnati a me» sostituisce «I miei allarmi» (allarmi presi in carico da me o
+  notificati a me). Reperibile e responsabile aprono la Centrale già su questa scheda; operatore e
+  amministratore partono da «Tutti».
+- **Persone e permessi** = utenti, gruppi di persone (anche le squadre, CA-5), ruoli e permessi;
+  **Sedi e asset** = sedi, mezzi e attrezzature (prima entrambe le pagine mostravano la tabella utenti).
+- **Regole sensori** ha una pagina nel gruppo IoT (prima dentro «Collegamento dispositivi»).
+- **Agente AI** è in Operatività; le impostazioni AI sono una scheda di «Moduli e AI».
+- **Vecchi indirizzi reindirizzati** alla voce e scheda giusta, così i link salvati funzionano:
+
+| Prima | Ora |
+|---|---|
+| `#/miei-allarmi` | `#/centrale/assegnati` |
+| `#/mappa-dispositivi`, `#/mappa-cantieri` | `#/mappa/dispositivi`, `#/mappa/cantieri` |
+| `#/piantine-safety` | `#/piantine` |
+| `#/calendario`, `#/dispatch`, `#/turni` | `#/pianificazione/calendario`, `/agenda`, `/turni` |
+| `#/trigger`, `#/profili` | `#/regole-sicurezza/trigger`, `/profili` |
+| `#/ai` | `#/moduli/ai` |
+
+  Gli indirizzi hanno la forma `#/voce/scheda`; gli aggiornamenti in tempo reale (Centrale, Mappa
+  allarmi, Piantine) riconoscono la scheda aperta.
+
 ## 11. Etichette, errori e login (25/11/2026)
 
 - **Niente codici grezzi (FE-5, SA-14, TA-14, CA-22, IO-19).** Ogni codice mostrato passa da una

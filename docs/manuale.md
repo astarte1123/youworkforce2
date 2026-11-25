@@ -22,6 +22,11 @@ tecnici di ogni area ci sono i manuali specifici, richiamati di volta in volta.
   - **Lavoro sul campo**: interventi, ronde, consuntivi, turni. Funziona anche su tenant senza
     Sicurezza (e viceversa).
 
+> **Menu (25/11/2026):** le voci sono state riordinate (27 invece di 41, pagine simili riunite in
+> schede: Centrale, Mappa, Pianificazione, Regole di sicurezza, Moduli e AI). Alcuni nomi usati più
+> avanti in questo manuale sono quelli precedenti; la corrispondenza è in
+> [console-ui-manuale §10-bis](console-ui-manuale.md).
+
 ## 2. Accesso e profilo
 
 - Login con email + password sul dominio del tenant.

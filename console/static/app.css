@@ -351,3 +351,10 @@ tr.inc-live b{color:var(--bad)}
 @keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
 .tag{font-size:11px;font-weight:700;padding:var(--s-2) 7px;border-radius:6px;background:var(--surface2);color:var(--mut);border:1px solid var(--line)}
 .tag.sim{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+
+/* Punto 4 (FE-6..10): schede delle voci di menu che raggruppano più pagine */
+.subnav{display:flex;flex-wrap:wrap;gap:var(--s-4);margin:0 0 var(--s-12);border-bottom:1px solid var(--line)}
+.subnav a{padding:var(--s-8) var(--s-12);border-bottom:2px solid transparent;color:var(--mut);font-weight:600;font-size:13.5px;text-decoration:none;cursor:pointer}
+.subnav a:hover{color:var(--fg)}
+.subnav a.on{color:var(--brand);border-bottom-color:var(--brand)}
+.subnav a:focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:4px}

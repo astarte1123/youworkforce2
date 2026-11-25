@@ -2058,7 +2058,7 @@ pub async fn setup_status(State(st): State<AppState>, h: HeaderMap) -> R {
         format!("{n_routing} regole di instradamento"), "gruppi", "Aggiungi instradamento"); // TA-12: l'instradamento è nei gruppi
     push("rules", iot, n_rules>0, "Imposta le regole dei sensori",
         "Le soglie decidono quando un dato IoT diventa un incidente.",
-        format!("{n_rules} regole sensore"), "connettori", "Aggiungi regola"); // TA-12: le regole sono in Collegamento dispositivi (anche senza Lone Worker)
+        format!("{n_rules} regole sensore"), "regole-sensori", "Aggiungi regola"); // punto 4: le regole dei sensori hanno una pagina nel gruppo IoT
     push("devices", devices_mod, n_devices>0, "Collega i dispositivi",
         "Badge, tracker GPS o sensori IoT: la procedura guidata ti accompagna.",
         format!("{n_devices} dispositivi"), "dispositivi", "Aggiungi dispositivo");

@@ -96,49 +96,61 @@ const FIELD_MODS=['interventi','cantieri','giri','workforce','consuntivi'];
 // grp: sezione nav (op=Operatività, work=Lavoro sul campo, cfg=Configurazione)
 const NAV = [
   {k:'dashboard', t:'Dashboard', ico:'home', roles:null, grp:'op'},
+  // FE-8: una sola Centrale; «Assegnati a me» sostituisce «I miei allarmi» (reperibile e responsabile atterrano lì)
+  {k:'centrale', t:'Centrale allarmi', ico:'alert', grp:'op', hub:[['tutti','Tutti','centrale-tutti'],['assegnati','Assegnati a me','miei-allarmi']]},
+  // FE-7: una sola Mappa con livelli e una sola voce Piantine
+  {k:'mappa', t:'Mappa', ico:'map', grp:'op', hub:[['allarmi','Allarmi','mappa-allarmi'],['dispositivi','Dispositivi','mappa-dispositivi'],['cantieri','Cantieri','mappa-cantieri']]},
+  {k:'piantine', t:'Piantine indoor', ico:'floorplan', grp:'op', hub:[['indoor','Piantine','piantine-safety'],['indoor','Piantine','piantine-campo']]},
   // --- Sicurezza Lavoratore (perimetro man-down/SOS): operatività allarmi + config del perimetro ---
-  {k:'centrale',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker','gps','iot','giri'], grp:'safety'},
-  {k:'miei-allarmi',t:'I miei allarmi', ico:'alert', roles:['reperibile','responsabile'], mod:['loneworker','gps','iot','giri'], grp:'safety'},
-  {k:'mappa',     t:'Mappa allarmi', ico:'map', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'safety'},
+  {hidden:true, k:'centrale-tutti',  t:'Centrale allarmi', ico:'alert', roles:['operatore','tenant_admin','auditor'], mod:['loneworker','gps','iot','giri'], grp:'safety'},
+  {hidden:true, k:'miei-allarmi',t:'Assegnati a me', ico:'alert', roles:['reperibile','responsabile','operatore','tenant_admin'], mod:['loneworker','gps','iot','giri'], grp:'safety'},
+  {hidden:true, k:'mappa-allarmi',     t:'Mappa allarmi', ico:'map', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_outdoor', grp:'safety'},
   // Piantine (indoor): due voci separate, ciascuna legata al PROPRIO perimetro, così non si
   // duplica. In Sicurezza solo se c'è un modulo dispositivi/allarmi; in Lavoro sul campo solo se
   // c'è un modulo di campo (es. giri/vigilanza indoor: dispositivi da posizionare, geofence/aree).
-  {k:'piantine-safety', t:'Piantine Indoor', ico:'floorplan', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor', grp:'safety'},
-  {k:'piantine',  t:'Piantine Indoor', ico:'floorplan', roles:['operatore','tenant_admin','auditor'], mod:FIELD_MODS, feat:'map_indoor', grp:'work'},
+  {hidden:true, k:'piantine-safety', t:'Piantine Indoor', ico:'floorplan', roles:['operatore','tenant_admin','auditor'], mod:DEVICE_MODS, feat:'map_indoor', grp:'safety'},
+  {hidden:true, k:'piantine-campo',  t:'Piantine Indoor', ico:'floorplan', roles:['operatore','tenant_admin','auditor'], mod:FIELD_MODS, feat:'map_indoor', grp:'work'},
   // Mappa dispositivi: i device (es. Teltonika GH-5200) generano allarmi E sono asset di campo.
-  {k:'mappa-dispositivi', t:'Mappa dispositivi', ico:'map', roles:['operatore','tenant_admin','auditor'], mod:FIELD_MODS, feat:'map_outdoor', grp:'work'},
+  {hidden:true, k:'mappa-dispositivi', t:'Mappa dispositivi', ico:'map', roles:['operatore','tenant_admin','auditor'], mod:FIELD_MODS, feat:'map_outdoor', grp:'work'},
   {k:'report',    t:'Report', ico:'receipt', roles:['operatore','tenant_admin','auditor','responsabile'], mod:['loneworker','gps'], grp:'safety'},
-  {k:'dispositivi',t:'Dispositivi & App', ico:'shield', roles:['tenant_admin'], cap:'devices.admin', mod:DEVICE_MODS, grp:'safety'},
-  {k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], cap:'escalation.manage', mod:['loneworker'], grp:'safety'},
-  {k:'profili',   t:'Profili di protezione', ico:'shield', roles:['tenant_admin'], cap:'escalation.manage', mod:['loneworker'], grp:'safety'},
+  {k:'dispositivi',t:'Dispositivi e app', ico:'shield', roles:['tenant_admin'], cap:'devices.admin', mod:DEVICE_MODS, grp:'safety'},
+  {hidden:true, k:'trigger',   t:'Trigger di sicurezza', ico:'alert', roles:['tenant_admin'], cap:'escalation.manage', mod:['loneworker'], grp:'safety'},
+  {hidden:true, k:'profili',   t:'Profili di protezione', ico:'shield', roles:['tenant_admin'], cap:'escalation.manage', mod:['loneworker'], grp:'safety'},
+  {k:'regole-sicurezza', t:'Regole di sicurezza', ico:'shield', grp:'safety', hub:[['trigger','Trigger','trigger'],['profili','Profili di protezione','profili']]},
   {k:'gruppi',    t:'Escalation e reperibilità', ico:'users', roles:['tenant_admin'], cap:'escalation.manage', mod:['loneworker','gps','iot','giri'], grp:'safety'},
   // --- IoT: monitoraggio flotta + alert di processo (soglia/offline/ripristino), VISTA SEPARATA ---
   {k:'iot-monitor',t:'Monitoraggio IoT', ico:'home', roles:['operatore','tenant_admin','auditor'], cap:'iot.manage', mod:['iot'], grp:'iot'},
   {k:'iot-alerts',t:'Alert IoT', ico:'alert', roles:['operatore','tenant_admin','auditor'], cap:'iot.manage', mod:['iot'], grp:'iot'},
+  // FE-10: le regole dei sensori stanno con l'IoT (prima dentro «Collegamento dispositivi»)
+  {k:'regole-sensori', t:'Regole sensori', ico:'sliders', roles:['tenant_admin'], cap:['iot.manage','devices.admin'], mod:['iot'], grp:'iot'},
   // --- Lavoro sul campo ---
   {k:'ordini',    t:'Interventi', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'clienti',   t:'Clienti', ico:'building', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'listino',   t:'Listino', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
-  {k:'dispatch',  t:'Agenda tecnici', ico:'calendar', roles:['pianificatore','tenant_admin'], cap:'plan', mod:['interventi'], grp:'work'},
+  {hidden:true, k:'dispatch',  t:'Agenda tecnici', ico:'calendar', roles:['pianificatore','tenant_admin'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'richieste', t:'Richieste', ico:'clipboard', roles:['pianificatore','tenant_admin','operatore','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'contratti', t:'Contratti', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'cantieri',  t:'Cantieri', ico:'hardhat', roles:['pianificatore','tenant_admin','lavoratore','auditor'], cap:'plan', mod:['cantieri'], grp:'work'},
-  {k:'mappa-cantieri', t:'Mappa cantieri', ico:'map', roles:['pianificatore','tenant_admin','lavoratore','auditor'], cap:'plan', mod:['cantieri'], feat:'map_outdoor', grp:'work'},
-  {k:'calendario',t:'Calendario', ico:'calendar', roles:['pianificatore','tenant_admin','lavoratore','reperibile','responsabile','auditor'], mod:['workforce','interventi','giri','cantieri'], grp:'work'},
+  {hidden:true, k:'mappa-cantieri', t:'Mappa cantieri', ico:'map', roles:['pianificatore','tenant_admin','lavoratore','auditor'], cap:'plan', mod:['cantieri'], feat:'map_outdoor', grp:'work'},
+  {hidden:true, k:'calendario',t:'Calendario', ico:'calendar', roles:['pianificatore','tenant_admin','lavoratore','reperibile','responsabile','auditor'], mod:['workforce','interventi','giri','cantieri'], grp:'work'},
   {k:'ronde',     t:'Ronde', ico:'route', roles:['pianificatore','tenant_admin','lavoratore','auditor'], cap:'plan', mod:['giri'], grp:'work'},
   {k:'vigilanza', t:'Cruscotto vigilanza', ico:'shield', roles:['pianificatore','tenant_admin','operatore','auditor'], cap:'plan', mod:['giri'], grp:'work'},
   {k:'consuntivi',t:'Consuntivi', ico:'receipt', roles:['lavoratore','responsabile','tenant_admin','auditor'], cap:['approve','timesheets.view_all'], mod:['consuntivi'], grp:'work'},
   {k:'ore',       t:'Ore lavorate', ico:'clock', roles:['lavoratore','responsabile','pianificatore','tenant_admin','auditor'], cap:['approve','timesheets.view_all','plan'], mod:['consuntivi','workforce','cantieri','giri','interventi'], grp:'work'},
-  {k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], cap:'plan', mod:['workforce'], grp:'work'},
-  {k:'setup',     t:'Configurazione', ico:'check', roles:['tenant_admin'], cap:'settings.manage', grp:'cfg'},
-  {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'cfg'},
+  {hidden:true, k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], cap:'plan', mod:['workforce'], grp:'work'},
+  // FE-9: pianificazione in un posto solo, con viste
+  {k:'pianificazione', t:'Pianificazione', ico:'calendar', grp:'work', hub:[['calendario','Calendario','calendario'],['agenda','Agenda tecnici','dispatch'],['turni','Turni','turni']]},
+  {k:'setup',     t:'Configurazione guidata', ico:'check', roles:['tenant_admin'], cap:'settings.manage', grp:'cfg'},
+  {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'op'},
   // --- Configurazione generale (non specifica del perimetro sicurezza) ---
   {k:'connettori',t:'Collegamento dispositivi', ico:'sliders', roles:['tenant_admin'], cap:'devices.admin', mod:['gps','iot','loneworker'], grp:'cfg'},
-  {k:'utenti-ruoli',t:'Utenti e ruoli', ico:'shield', roles:['tenant_admin'], cap:'users.manage', grp:'cfg'},
-  {k:'anagrafiche',t:'Utenti e sedi', ico:'receipt', roles:['tenant_admin'], cap:'users.manage', grp:'cfg'},
+  {k:'utenti-ruoli',t:'Persone e permessi', ico:'shield', roles:['tenant_admin'], cap:'users.manage', grp:'cfg'},
+  {k:'anagrafiche',t:'Sedi e asset', ico:'receipt', roles:['tenant_admin'], cap:'users.manage', grp:'cfg'},
   {k:'privacy-audit',t:'Privacy e audit', ico:'shield', roles:['tenant_admin'], cap:['gdpr.manage','audit.view'], grp:'cfg'},
-  {k:'ai',        t:'AI · youworker.ai', ico:'sliders', roles:['tenant_admin'], cap:'settings.manage', mod:['assistant'], grp:'cfg'},
-  {k:'moduli',    t:'Moduli', ico:'sliders', roles:['tenant_admin'], cap:'settings.manage', grp:'cfg'},
+  {hidden:true, k:'ai',        t:'AI · youworker.ai', ico:'sliders', roles:['tenant_admin'], cap:'settings.manage', mod:['assistant'], grp:'cfg'},
+  {hidden:true, k:'moduli-base',    t:'Moduli', ico:'sliders', roles:['tenant_admin'], cap:'settings.manage', grp:'cfg'},
+  // FE-17: un solo accesso alle impostazioni AI, insieme ai moduli
+  {k:'moduli', t:'Moduli e AI', ico:'sliders', grp:'cfg', hub:[['moduli','Moduli','moduli-base'],['ai','AI · youworker.ai','ai']]},
 ];
 const NAV_GROUPS=[['op','Operatività'],['safety','Sicurezza Lavoratore'],['iot','IoT Dashboard'],['work','Lavoro sul campo'],['cfg','Configurazione']];
 // Cruscotti IoT attivi (ambienti/casi d'uso applicati al tenant): voci di menu dinamiche sotto
@@ -289,7 +301,13 @@ function hasCap(c){ const cs=(ME&&ME.caps)||[]; return cs.includes('admin')||cs.
 function capOk(n){ if(!n.cap) return false; return (Array.isArray(n.cap)?n.cap:[n.cap]).some(hasCap); }
 // voce visibile se il ruolo è tra quelli previsti OPPURE l'utente ha il permesso che la apre
 const roleOrCap = n => !n.roles || n.roles.includes(ME.role) || capOk(n);
-const visibleNav = ()=>allNav().filter(n=>roleOrCap(n) && modOk(n) && featOk(n) && aiFeatOk(n));
+const baseVisible = n => roleOrCap(n) && modOk(n) && featOk(n) && aiFeatOk(n);
+// schede visibili di un hub (stessa pagina sotto due voci, es. Piantine di Sicurezza e di Campo: una volta sola)
+function hubTabs(h){ const seen=new Set(); return (h.hub||[]).filter(([sub,,key])=>{ const n=NAV.find(x=>x.k===key);
+  if(!n||!baseVisible(n)||seen.has(sub)) return false; seen.add(sub); return true; }); }
+const visibleNav = ()=>allNav().filter(n=> !n.hidden && (n.hub ? hubTabs(n).length>0 : baseVisible(n)));
+// vecchio indirizzo di una pagina diventata scheda -> [hub, scheda]
+function hubOf(key){ for(const h of NAV.filter(n=>n.hub)) for(const [sub,,k] of h.hub) if(k===key) return [h.k,sub]; return null; }
 // carica stato moduli + feature flag UI del tenant (voci menu Mappa/Piantine configurabili dall'admin)
 let BRANDING={};
 async function loadCtx(){
@@ -415,7 +433,7 @@ function renderShell(){
       ${(ME.license_notice||[]).length?`<div role="status" style="background:var(--warn-soft);color:var(--fg);border-left:4px solid var(--warn);border-bottom:1px solid var(--line);padding:var(--s-8) var(--s-16);font-size:13px">
         <b>Licenze superate:</b> ${ME.license_notice.map(l=>`${esc(l.label)} ${l.used} su ${l.limit}`).join(' · ')}.
         Il servizio continua a funzionare normalmente; contatta l'assistenza per adeguare le licenze.</div>`:''}
-      <div class="content"><div id="view"></div></div>
+      <div class="content"><div id="subnav"></div><div id="view"></div></div>
     </div>
   </div>
   <button id="fab" class="hide" onclick="toggleAI()" title="Assistente"
@@ -474,14 +492,32 @@ async function deliveryBanner(k){
   d.innerHTML=`<b>${bad?'⚠ Gli allarmi non arrivano ai reperibili':'⚠ Consegna degli allarmi di prova'}</b><div class="small" style="margin-top:var(--s-4)">${esc(DELIVERY.label)} Avvisa l'amministratore di sistema.</div>`;
   v.prepend(d); }
 function route(){
-  let k=(location.hash.replace('#/','')||'dashboard');
+  let [k,sub]=(location.hash.replace('#/','')||'dashboard').split('/');
+  // vecchi link (#/miei-allarmi, #/dispatch, #/mappa-dispositivi, ...) -> hub e scheda giusti
+  const old=NAV.find(n=>n.k===k&&n.hidden); if(old){ const hs=hubOf(k); if(hs){ location.replace('#/'+hs[0]+'/'+hs[1]); return; } }
   if(!visibleNav().some(n=>n.k===k)) k=visibleNav()[0].k;
+  const hub=NAV.find(n=>n.k===k&&n.hub); const sn=$('#subnav');
+  if(hub){
+    const tabs=hubTabs(hub);
+    // Centrale: chi gestisce solo i propri allarmi (reperibile, responsabile) parte da «Assegnati a me»
+    const def=(k==='centrale'&&['reperibile','responsabile'].includes(ME&&ME.role)&&tabs.some(x=>x[0]==='assegnati'))?'assegnati':tabs[0][0];
+    const cur=tabs.find(x=>x[0]===sub)||tabs.find(x=>x[0]===def)||tabs[0];
+    if(sn) sn.innerHTML=tabs.length>1?`<nav class="subnav" aria-label="${esc(navLabel(hub))}">${tabs.map(([s2,lab])=>`<a href="#/${k}/${s2}" class="${s2===cur[0]?'on':''}" ${s2===cur[0]?'aria-current="page"':''}>${esc(lab)}</a>`).join('')}</nav>`:'';
+    setActive(k); const v=$('#view'); v.innerHTML='<div class="col"><div class="skel" style="height:90px"></div><div class="skel" style="height:260px"></div></div>';
+    renderPage(cur[2], v);
+    if(['centrale-tutti','miei-allarmi'].includes(cur[2])) deliveryBanner(location.hash.replace('#/',''));
+    return;
+  }
+  if(sn) sn.innerHTML='';
   setActive(k); const v=$('#view'); v.innerHTML='<div class="col"><div class="skel" style="height:90px"></div><div class="skel" style="height:260px"></div></div>';
+  renderPage(k, v);
+  if(['gruppi'].includes(k)) deliveryBanner(k);
+}
+function renderPage(k, v){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
-  ({dashboard:vDashboard,centrale:vCentrale,'iot-monitor':vIotMonitor,'iot-alerts':vIotAlerts,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,moduli:vModuli,
-    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,ore:vOre,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,mappa:vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
-  if(['centrale','miei-allarmi','gruppi'].includes(k)) deliveryBanner(k);
+  ({dashboard:vDashboard,'centrale-tutti':vCentrale,'iot-monitor':vIotMonitor,'iot-alerts':vIotAlerts,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,
+    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,ore:vOre,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,'regole-sensori':vRegoleSensori,'moduli-base':vModuli,'piantine-campo':vPiantine,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,'mappa-allarmi':vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- Export unificato (CSV / Excel / PDF / Markdown) ----------------
@@ -639,13 +675,14 @@ function connectSSE(){
   SSE.onmessage=e=>{ let d={};try{d=JSON.parse(e.data)}catch(_){}
     if(d.type==='incident_opened'){ toast('Nuovo allarme: '+etypeLabel(d.etype)+(d.site?' — '+d.site:''),'bad'); incidentAlert(d); }
     if(d.type==='device_position' && typeof mapLivePos==='function') mapLivePos(d.device_id,d.lat,d.lon);
-    const k=location.hash.replace('#/','')||'dashboard';
-    if(d.type==='presence' && k==='mappa') route();
+    // indirizzi «voce/scheda» (punto 4): #/centrale/assegnati, #/mappa/allarmi, ...
+    const [k,sub]=(location.hash.replace('#/','')||'dashboard').split('/');
+    const alarmMap = k==='mappa' && (!sub || sub==='allarmi');
+    if(d.type==='presence' && alarmMap) route();
     // mappa allarmi = solo non gestiti: aggiorna live quando un incidente si apre/gestisce/chiude
-    if(k==='mappa' && (d.type==='incident_opened'||d.type==='incident_ack'||d.type==='incident_closed'||d.type==='incident_updated')) route();
-    if(k==='centrale'||k==='dashboard') route();
-    // FE-1: «I miei allarmi» si aggiorna da sola su apertura, presa in carico, chiusura
-    if(k==='miei-allarmi' && /^incident_/.test(d.type||'')) route();
+    if(alarmMap && (d.type==='incident_opened'||d.type==='incident_ack'||d.type==='incident_closed'||d.type==='incident_updated')) route();
+    // Centrale (anche la scheda «Assegnati a me», FE-1) e dashboard: aggiornamento live
+    if((k==='centrale' && (sub!=='assegnati' || /^incident_/.test(d.type||''))) || k==='dashboard') route();
     // Alert IoT (vista separata): notifica nativa live + refresh della vista
     if(d.type==='iot_alert'){ const a=d.alert||{}; const sev=a.severity==='critical'?'bad':(a.severity==='info'?'':'warn');
       toast('Alert IoT: '+(a.message||a.kind||''), sev==='bad'?'bad':'warn'); if(sev==='bad') alarmBeep(); }
@@ -1002,13 +1039,13 @@ async function aiCheckinAnomaly(btn){ const box=$('#aiCkOut'); if(!box)return; b
 let MIEI_TAB=null;
 async function vMieiAllarmi(v){
   const [I,OC]=await Promise.all([api('/incidents').catch(loadFail), api('/oncall-now-native').catch(()=>({available:false}))]);
-  if(isLoadFail(I)) return pageLoadError(v, 'I miei allarmi', I);
+  if(isLoadFail(I)) return pageLoadError(v, 'Allarmi assegnati a me', I);
   const aperti=I.filter(i=>i.state!=='chiuso');
   const miei=aperti.filter(i=>i.assigned_to_me||i.notified_me);
   const tab = MIEI_TAB || (miei.length?'miei':'tutti');
   const list = tab==='miei'?miei:aperti;
   const onc = OC.available ? `<span class="chip s-attivo wrap" title="reperibili di turno">📞 di turno: ${(OC.oncall||[]).map(o=>esc(o.user)).join(', ')||'nessuno'}</span>` : '';
-  v.innerHTML=`<div class="page-h"><div><h1>I miei allarmi</h1><div class="mut">${miei.length} miei · ${aperti.length} aperti in tutto · <span id="liveWrap"></span></div></div><div>${onc}</div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>Allarmi assegnati a me</h1><div class="mut">${miei.length} miei · ${aperti.length} aperti in tutto · <span id="liveWrap"></span></div></div><div>${onc}</div></div>
   <div class="seg" style="margin-bottom:var(--s-10)">
     <button class="seg-btn ${tab==='miei'?'on':''}" onclick="MIEI_TAB='miei';route()">Miei <span class="seg-n">${miei.length}</span></button>
     <button class="seg-btn ${tab==='tutti'?'on':''}" onclick="MIEI_TAB='tutti';route()">Tutti aperti <span class="seg-n">${aperti.length}</span></button></div>
@@ -1861,7 +1898,7 @@ async function configIndoor(){
 }
 // aggiorna la vista Piantine sottostante (combo + mappa) senza reload di pagina
 async function refreshPiantine(selectId){
-  if((location.hash.replace('#/','')||'dashboard')!=='piantine') return;
+  if((location.hash.replace('#/','')||'dashboard').split('/')[0]!=='piantine') return;
   if(!$('#mapCtl')) return;
   try{ await renderIndoor(can(['tenant_admin'],'devices.admin'), selectId); }catch(e){}
 }
@@ -4149,8 +4186,7 @@ async function vConnettori(v){
       <td style="text-align:right;white-space:nowrap">${t.revoked?'':`<button class="btn ghost small" onclick="tokRevoke(${jattr(t.token)})">revoca</button> `}<button class="btn-ico btn ghost" onclick="tokDel(${jattr(t.token)})">${ICON.x}</button></td></tr>`}).join('')
       ||`<tr><td colspan="7" class="empty">nessun token</td></tr>`}</tbody></table>
     <div class="small mut" style="margin-top:var(--s-8)">Il tenant deriva sempre dalla credenziale. <b>Lega un token a un dispositivo</b> per attribuire i dati a quel device e impedire che un payload si spacci per un altro. Il segreto dei token nuovi è salvato <b>solo come hash</b>: copialo alla creazione. Revoca = blocco immediato; scadenza = blocco automatico.</div></div></div>
-  <div id="sensorRulesCard" style="margin-top:var(--s-16)"></div>`;
-  if(ACTIVE_MODS.has('iot')) renderSensorRules();
+  ${ACTIVE_MODS.has('iot')?`<div class="card pad" style="margin-top:var(--s-16)"><div class="small">⚙️ Le <b>regole dei sensori</b> (soglie che aprono un allarme o un alert) sono in <a onclick="location.hash='#/regole-sensori'">IoT → Regole sensori</a>.</div></div>`:''}`;
   // segreto mostrato UNA sola volta subito dopo la creazione (poi solo hash a riposo)
   if(window._newToken){ const box=$('#newTokBox'); const tk=window._newToken; window._newToken=null;
     if(box){ box.innerHTML=`<div class="card pad" style="background:#ecfdf5;border:1px solid #10b981">
@@ -4184,6 +4220,12 @@ function ruleLabelText(label){ if(!label) return '';
   const opL=(RULE_OPS.find(x=>x[0]===op)||[op,op])[1];
   return 'Scenario «'+name+'» · '+metric+(op?' '+opL+(thr!==''?' '+thr:''):''); }
 function scopeBody(pfx){ const k=$('#'+pfx+'ScopeKind').value; return {scope_kind:k, scope_ref:k==='tenant'?null:($('#'+pfx+'ScopeRef').value||null)}; }
+// FE-10: pagina «Regole sensori» nel gruppo IoT
+async function vRegoleSensori(v){
+  v.innerHTML=`<div class="page-h"><div><h1>Regole sensori</h1><div class="mut">quando un valore dei sensori apre un alert IoT o un allarme di sicurezza</div></div></div>
+  <div id="sensorRulesCard"></div>`;
+  renderSensorRules();
+}
 async function renderSensorRules(){
   const box=$('#sensorRulesCard'); if(!box)return;
   let R=[]; try{ R=await api('/sensor-rules'); }catch(e){}
@@ -5444,12 +5486,8 @@ async function vAnagrafiche(v){
   // CA-5: le squadre sono i gruppi di persone (gestiti in Utenti e ruoli), niente più elenco separato
   const [users,sites,assets]=await Promise.all([api('/users').catch(()=>[]),api('/sites').catch(()=>[]),api('/assets').catch(()=>[])]);
   v._users=users;
-  v.innerHTML=`<div class="page-h"><div><h1>${t('anag_title','Utenti e sedi')}</h1><div class="mut">anagrafiche del tenant · <a onclick="location.hash='#/utenti-ruoli'">gruppi e ruoli →</a></div></div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>${t('anag_title','Sedi e asset')}</h1><div class="mut">luoghi di lavoro, mezzi e attrezzature · le persone sono in <a onclick="location.hash='#/utenti-ruoli'">Persone e permessi →</a></div></div></div>
   <div class="grid g2">
-    <div class="card"><div class="card-h"><h2>Utenti (${users.length})</h2><button class="btn ghost small" onclick="userNew()">+ invita</button></div>
-      <table class="table" data-export="utenti"><thead><tr><th>Email</th><th>Ruolo</th><th></th></tr></thead>
-      <tbody>${users.map(u=>`<tr class="clk" onclick='userEdit(${jattr(u)})'><td>${esc(u.email)}</td><td><span class="chip">${esc(roleLabel(u.role))}</span></td>
-        <td></td></tr>`).join('')}</tbody></table></div>
     <div class="card"><div class="card-h"><h2>Sedi (${sites.length})</h2><span>${hasCap('settings.manage')?'<button class="btn ghost small" onclick="tenantTzEdit()">🕒 fuso orario</button> ':''}<button class="btn ghost small" onclick="siteForm()">+ aggiungi</button></span></div>
       <table class="table" data-export="sedi"><thead><tr><th>Nome</th><th>Indirizzo</th><th></th></tr></thead>
       <tbody>${sites.map(s=>`<tr class="clk" onclick='siteForm(${jattr(s)})'><td>${esc(s.name)}</td><td class="small mut">${esc(s.address||'—')}${(s.lat!=null&&s.lon!=null)?' · 📍':''}${s.access_notes?' · 🔑':''}${s.timezone?' · 🕒 '+esc(s.timezone):''}</td>
@@ -5483,10 +5521,10 @@ async function assetSave(id){ const m=$('.cfg-msg'); const name=$('#asName').val
 // Hub IAM: identità, gruppi condivisi, permessi (capability), ruoli personalizzati.
 async function vUtentiRuoli(v){
   const [users,ugroups,agroups,caps,croles]=await Promise.all([api('/users').catch(loadFail),api('/user-groups').catch(()=>[]),api('/groups').catch(()=>[]),api('/capabilities').catch(()=>null),api('/custom-roles').catch(()=>null)]);
-  if(isLoadFail(users)) return pageLoadError(v, 'Utenti e ruoli', users);
+  if(isLoadFail(users)) return pageLoadError(v, 'Persone e permessi', users);
   v._caps=caps; v._users=users;
   const err = (!caps&&!croles) ? '<div class="card pad" style="margin-top:var(--s-12);border-color:var(--bad)"><b>Permessi/Ruoli non disponibili.</b> <span class="small mut">Richiede ruolo tenant_admin e i moduli core aggiornati.</span></div>' : '';
-  v.innerHTML=`<div class="page-h"><div><h1>Utenti e ruoli</h1><div class="mut">identità, gruppi condivisi, permessi e ruoli del tenant</div></div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>Persone e permessi</h1><div class="mut">utenti, gruppi di persone (anche le squadre), ruoli e permessi del tenant</div></div></div>
   ${err}
   ${croles?`<div class="card pad" style="margin-top:0"><div class="spread"><div><h2>Ruoli personalizzati (${croles.roles.length})</h2><div class="small mut">bundle di capability definiti dal tenant, assegnabili a utenti e/o gruppi condivisi. <b>Additivi</b>: aggiungono capability sopra il ruolo base.</div></div><button class="btn ghost small" onclick="crNew()">+ nuovo ruolo</button></div>
     <div class="grid g2" style="margin-top:var(--s-10)">${croles.roles.map(r=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10)">
@@ -5995,7 +6033,7 @@ async function vTurni(v){
   const hasInterventi=ACTIVE_MODS.has('interventi');
   const hasCantieri=ACTIVE_MODS.has('cantieri');
   const [P,OC,A,Q,CV,users,sites,O,CM]=await Promise.all([
-    api('/shift-plans').catch(()=>[]), api('/oncall').catch(()=>[]), api('/absences').catch(()=>[]), api('/qualifications').catch(()=>[]),
+    api('/shift-plans').catch(()=>[]), api('/oncall').catch(()=>[]), api('/absences').catch(()=>[]), ACTIVE_MODS.has('qualifiche')?api('/qualifications').catch(()=>[]):Promise.resolve([]),
     api('/coverage').catch(()=>[]),
     planner?api('/users').catch(()=>[]):Promise.resolve([]), planner?api('/sites').catch(()=>[]):Promise.resolve([]),
     hasInterventi?api('/orders').catch(()=>[]):Promise.resolve([]),
