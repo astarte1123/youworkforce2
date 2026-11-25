@@ -34,11 +34,13 @@ pub async fn crypto_migrate(st: &AppState) -> anyhow::Result<()> {
         .bind(&prefix).fetch_all(&st.owner_pool).await?;
     for r in rows {
         let tid: Uuid = r.get("tenant_id");
-        let plain = st.secrets.decrypt(&r.get::<String,_>("api_key"));
+        let old: String = r.get("api_key");
+        let plain = st.secrets.decrypt(&old);
         if plain.starts_with("enc:") { tracing::warn!("segreto del tenant {tid} non decifrabile: lasciato com'è"); continue; }
         let Ok(enc) = st.secrets.encrypt(&plain) else { continue };
-        sqlx::query("UPDATE app.ai_connections SET api_key=$2 WHERE tenant_id=$1")
-            .bind(tid).bind(enc).execute(&st.owner_pool).await?;
+        // confronto-e-scambio: se nel frattempo il superadmin ha salvato una chiave nuova, non la si sovrascrive
+        sqlx::query("UPDATE app.ai_connections SET api_key=$2 WHERE tenant_id=$1 AND api_key=$3")
+            .bind(tid).bind(enc).bind(&old).execute(&st.owner_pool).await?;
     }
     Ok(())
 }
@@ -85,6 +87,7 @@ fn superadmin_routes() -> Router<AppState> {
         .route("/api/superadmin/secrets/recovery", post(api::super_secrets_recovery))
         .route("/api/superadmin/secrets/unlock", post(api::super_secrets_unlock))
         .route("/api/superadmin/secrets/rotate", post(api::super_secrets_rotate))
+        .route("/api/superadmin/secrets/reset", post(api::super_secrets_reset))
         .route("/api/superadmin/device-attempts", get(api::super_device_attempts))
         .route("/api/superadmin/system/settings", get(api::super_system_settings_get).post(api::super_system_settings_set))
         .route("/api/superadmin/scenarios", get(api::super_scenarios_list))

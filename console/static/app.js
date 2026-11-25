@@ -37,6 +37,9 @@ function esc(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&
 // Escape HTML COMPLETO del JSON: il browser lo decodifica e il JS riceve esattamente il JSON.
 // Prima si sostituiva solo l'apice: un dato con &quot; usciva dalla stringa ed eseguiva codice.
 function jattr(o){ return esc(JSON.stringify(o)); }
+// Ripiego per codici tecnici senza etichetta (regola PO: mai codici grezzi in UI):
+// «order_complete» → «Order complete». Le pagine usano prima le proprie mappe *_LABELS.
+function humanizeCode(k){ const t=String(k??'').replace(/[_.:-]+/g,' ').replace(/\s+/g,' ').trim(); return t?t.charAt(0).toUpperCase()+t.slice(1):''; }
 
 function toast(msg, kind=''){ let w=$('#toasts'); if(!w){w=el('<div id="toasts"></div>');document.body.append(w);}
   const t=el(`<div class="toast ${kind}">${ICON[kind==='bad'?'alert':kind==='ok'?'check':'info']||''}<div>${esc(msg)}</div></div>`);

@@ -49,6 +49,7 @@ async fn tick(st: &AppState) -> anyhow::Result<()> {
     if n % 30 == 13 { Box::pin(api::system_watchdog(st)).await; }
     // SA-5: sospensioni programmate dal superadmin giunte a scadenza: ~ogni 60s
     if n % 30 == 17 { Box::pin(api::tenant_suspension_scan(st)).await; }
+    if n % 30 == 19 { Box::pin(api::secrets_sync(st)).await; } // chiave dei segreti tra istanze
     Ok(())
 }
 

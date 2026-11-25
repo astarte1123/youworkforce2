@@ -50,6 +50,15 @@ login RS "resp@$SLUG.test" WorkPass9
 C=$(code O GET "/api/orders/$O2/lines"); [ "$C" = "403" ] && ok "righe di un ordine non visibile: 403" || no "righe" "$C"
 C=$(code RS GET "/api/orders/$O2/attachments"); [ "$C" = "403" ] && ok "allegati di un ordine fuori sede: 403" || no "allegati" "$C"
 C=$(code RS GET "/api/orders/$O1/lines"); [ "$C" = "200" ] && ok "righe di un ordine della propria sede: 200" || no "righe ok" "$C"
+# review 25/11: anche il pianificatore ristretto per sede non apre per id gli ordini di altre sedi
+call A POST "/api/users/$UP/sites" "{\"site_ids\":[\"$S1\"]}" >/dev/null
+login P "plan@$SLUG.test" WorkPass9
+[ "$(n_orders P)" = "1" ] && ok "pianificatore con sede Nord: elenco solo Nord" || no "plan sedi" "$(n_orders P)"
+C=$(code P GET "/api/orders/$O2/lines"); [ "$C" = "403" ] && ok "pianificatore con sede Nord: ordine di Sud per id 403" || no "plan per id" "$C"
+C=$(code P GET "/api/orders/$O1/lines"); [ "$C" = "200" ] && ok "pianificatore con sede Nord: ordine di Nord 200" || no "plan propria" "$C"
+call A POST "/api/users/$UP/sites" '{"site_ids":[]}' >/dev/null; login P "plan@$SLUG.test" WorkPass9
+C=$(code A POST /api/users "{\"email\":\"x\\\"+alert(1)+\\\"@$SLUG.test\",\"role\":\"lavoratore\",\"password\":\"WorkPass9\"}")
+[ "$C" = "400" ] && ok "email con virgolette rifiutata (400)" || no "email" "$C"
 
 echo "== CA-11 prezzi dei materiali =="
 IT=$(call A POST /api/price-items '{"name":"Valvola","category":"materiale","unit":"pezzo","unit_price":42.5}' | py "d['id']")

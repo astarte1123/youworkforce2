@@ -1329,7 +1329,7 @@ async function genSuggest(){
   box.textContent='✦ Calcolo proposta…'; box.style.color='var(--mut)';
   try{ const r=await api('/shift-plans/suggest',{method:'POST',body:JSON.stringify({from:a,to:z,days_mask:genMask(),cov_start:$('#gS').value,cov_end:$('#gE').value,min_people:Number($('#gN').value)||1,candidates:uids.length?uids:null})});
     const p=r.proposals||[]; window._genProps=p;
-    box.innerHTML=`<div class="card pad" style="background:var(--brand-soft);margin-top:var(--s-6)"><div class="small mut">✦ ${esc(r.provider)}</div><div>${esc(r.summary)}</div></div>`+
+    box.innerHTML=`<div class="card pad" style="background:var(--brand-soft);margin-top:var(--s-6)"><div class="small mut">✦ ${esc(aiProvLab(r.provider))}</div><div>${esc(r.summary)}</div></div>`+
       (p.length?`<div style="max-height:180px;overflow:auto;margin-top:var(--s-6)">${p.map(x=>`<div class="small">· ${x.date} — ${esc(x.email)}</div>`).join('')}</div>
         <button class="btn" style="margin-top:var(--s-8)" onclick="genApply()">Applica ${p.length} turni proposti</button>`:'<div class="small mut">Nessuna proposta valida.</div>');
   }catch(e){ box.textContent=e.message; box.style.color='var(--bad)'; }
@@ -2059,23 +2059,25 @@ const ANOM_LAB={abbandonata:'Ronda abbandonata (mai chiusa)',saltato:'Tappa salt
 const CP_KIND_LAB={qr:'QR',nfc:'NFC',beacon:'Beacon',gps:'GPS'};
 const PUNCH_ENTRY_LAB={scansione:'scansione con la fotocamera',nfc:'tag NFC avvicinato',beacon:'beacon rilevato',manuale:'codice digitato a mano',gps:'posizione GPS',auto:'automatica dal dispositivo'};
 const ROUND_ST_LAB={in_corso:'in corso',completato:'completata',incompleto:'incompleta',abbandonata:'abbandonata (chiusa automaticamente)'};
+const cpKindLab=k=>CP_KIND_LAB[k]||humanizeCode(k)||'—';
+const roundStLab=s=>ROUND_ST_LAB[s]||humanizeCode(s)||'—';
 async function vRonde(v){
   const [routes,rounds]=await Promise.all([api('/patrol-routes').catch(()=>[]),api('/patrol-rounds').catch(()=>[])]);
   const sites=await api('/sites').catch(()=>[]);
   const canCfg=can(['pianificatore','tenant_admin'],'plan');
-  const stChip=s=>`<span class="chip ${s==='completato'?'ok':(s==='incompleto'?'bad':'')}">${esc(ROUND_ST_LAB[s]||s)}</span>`;
+  const stChip=s=>`<span class="chip ${s==='completato'?'ok':(s==='incompleto'?'bad':'')}">${esc(roundStLab(s))}</span>`;
   v.innerHTML=`<div class="page-h"><div><h1>${t('ronde_title','Ronde')}</h1><div class="mut">giri di controllo · checkpoint QR/NFC/beacon/GPS · punzonature</div></div>${canCfg?'<button class="btn" onclick="ronNew()">+ nuovo giro</button>':''}</div>
   <div class="grid g2">
     <div class="card pad"><h2>Giri configurati (${routes.length})</h2>
       ${routes.map(r=>`<div style="border:1px solid var(--line);border-radius:10px;padding:var(--s-10);margin-top:var(--s-8)">
         <div class="spread"><b>${esc(r.name)} ${r.active?'':'<span class="chip bad">inattivo</span>'}</b>
           <span>${canCfg?`<button class="btn ghost small" onclick="ronCp('${r.id}',${jattr(r.name)})">checkpoint (${r.checkpoints.length})</button><button class="btn-ico btn ghost" onclick="ronDel('${r.id}')">${ICON.x}</button>`:`<span class="small mut">${r.checkpoints.length} checkpoint</span>`}</span></div>
-        <div class="small mut" style="margin-top:var(--s-4)">${r.site_name?('📍 '+esc(r.site_name)+' · '):''}${r.group_name?('👥 '+esc(r.group_name)+' · '):''}${r.window_minutes?('finestra '+r.window_minutes+' min · '):''}${r.checkpoints.map(c=>esc(c.name)+' ['+(CP_KIND_LAB[c.kind]||c.kind)+']').join(' → ')||'nessun checkpoint'}${r.manual_code_allowed===false?' · <b>solo scansione</b>':''}</div>
+        <div class="small mut" style="margin-top:var(--s-4)">${r.site_name?('📍 '+esc(r.site_name)+' · '):''}${r.group_name?('👥 '+esc(r.group_name)+' · '):''}${r.window_minutes?('finestra '+r.window_minutes+' min · '):''}${r.checkpoints.map(c=>esc(c.name)+' ['+esc(cpKindLab(c.kind))+']').join(' → ')||'nessun checkpoint'}${r.manual_code_allowed===false?' · <b>solo scansione</b>':''}</div>
       </div>`).join('')||'<div class="small mut" style="margin-top:var(--s-8)">Nessun giro. Crea un giro e aggiungi i checkpoint.</div>'}
     </div>
     <div class="card pad"><h2>Ronde eseguite (${rounds.length})</h2>
       <table class="table" data-export="ronde" style="margin-top:var(--s-8)"><thead><tr><th>Giro</th><th>Operatore</th><th>Avvio</th><th>Stato</th></tr></thead>
-      <tbody>${rounds.map(r=>`<tr class="clk" onclick="ronView('${r.id}')"><td>${esc(r.route_name)}</td><td class="small">${esc(r.email)}</td><td class="small mut">${r.started_at?new Date(r.started_at).toLocaleString():''}</td><td>${stChip(r.status)}</td></tr>`).join('')||emptyRow(4, ICON.clipboard, 'Nessuna ronda', 'Qui compaiono i giri di controllo eseguiti. Crea un giro con i suoi checkpoint per iniziare.', canCfg?{fn:'ronNew()',label:'+ Nuovo giro'}:null)}</tbody></table>
+      <tbody>${rounds.map(r=>`<tr class="clk" onclick="ronView('${r.id}')"><td>${esc(r.route_name)}</td><td class="small">${esc(r.email||'operatore')}</td><td class="small mut">${r.started_at?new Date(r.started_at).toLocaleString():''}</td><td>${stChip(r.status)}</td></tr>`).join('')||emptyRow(4, ICON.clipboard, 'Nessuna ronda', 'Qui compaiono i giri di controllo eseguiti. Crea un giro con i suoi checkpoint per iniziare.', canCfg?{fn:'ronNew()',label:'+ Nuovo giro'}:null)}</tbody></table>
     </div>
   </div>`;
   v._sites=sites;
@@ -2100,7 +2102,7 @@ async function ronDel(id){ if(!await askConfirm('Eliminare il giro? (ronde e che
 async function ronCp(rid,rname){ const all=await api('/patrol-routes').catch(()=>[]); const r=all.find(x=>x.id===rid); if(!r)return;
   window._ronRoutes=all;
   drawer('Checkpoint — '+rname, `<div class="col" style="gap:var(--s-8)">
-    ${r.checkpoints.map(c=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6)"><span>${c.position}. <b>${esc(c.name)}</b> <span class="chip">${CP_KIND_LAB[c.kind]||c.kind}</span> <span class="small mut">${c.kind==='gps'?((c.lat||'?')+','+(c.lon||'?')+' r'+c.radius_m+'m'):('codice <code>'+esc(c.code||'')+'</code>')}${c.max_min!=null?' · ⏱ max '+c.max_min+'min':''}</span></span><button class="btn-ico btn ghost" onclick="ronCpDel('${c.id}','${rid}',${jattr(rname)})">${ICON.x}</button></div>`).join('')||'<div class="small mut">nessun checkpoint</div>'}
+    ${r.checkpoints.map(c=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6)"><span>${c.position}. <b>${esc(c.name)}</b> <span class="chip">${esc(cpKindLab(c.kind))}</span> <span class="small mut">${c.kind==='gps'?((c.lat||'?')+','+(c.lon||'?')+' r'+c.radius_m+'m'):('codice <code>'+esc(c.code||'')+'</code>')}${c.max_min!=null?' · ⏱ max '+c.max_min+'min':''}</span></span><button class="btn-ico btn ghost" onclick="ronCpDel('${c.id}','${rid}',${jattr(rname)})">${ICON.x}</button></div>`).join('')||'<div class="small mut">nessun checkpoint</div>'}
     <hr><div class="small mut">Riusa un checkpoint esistente (altro giro)</div>
     <div class="row" style="gap:var(--s-6)"><select id="cpImp" class="grow small"></select><button class="btn ghost small" onclick="ronCpImport('${rid}',${jattr(rname)})">↳ importa</button></div>
     <hr><div class="small mut">Nuovo checkpoint</div>
@@ -2113,7 +2115,7 @@ async function ronCp(rid,rname){ const all=await api('/patrol-routes').catch(()=
     <button class="btn" onclick="ronCpAdd('${rid}',${jattr(rname)})">+ aggiungi checkpoint</button></div>`);
   // popola il selettore di riuso con i checkpoint di TUTTI gli altri giri
   const sel=$('#cpImp'); if(sel){ const opts=[];
-    (window._ronRoutes||[]).forEach(rt=>{ if(rt.id===rid)return; (rt.checkpoints||[]).forEach(c=>opts.push(`<option value="${c.id}">${esc(rt.name)} · ${esc(c.name)} [${CP_KIND_LAB[c.kind]||c.kind}]</option>`)); });
+    (window._ronRoutes||[]).forEach(rt=>{ if(rt.id===rid)return; (rt.checkpoints||[]).forEach(c=>opts.push(`<option value="${c.id}">${esc(rt.name)} · ${esc(c.name)} [${esc(cpKindLab(c.kind))}]</option>`)); });
     sel.innerHTML=opts.join('')||'<option value="">nessun checkpoint riusabile</option>'; }
 }
 async function ronCpImport(rid,rname){ const cid=$('#cpImp').value; if(!cid){toast('Nessun checkpoint da importare','warn');return;}
@@ -2129,11 +2131,11 @@ async function ronCpAdd(rid,rname){ const k=$('#cpK').value; const body={name:$(
 async function ronCpDel(cid,rid,rname){ try{await api('/patrol-checkpoints/'+cid,{method:'DELETE'}); toast('Rimosso','ok'); closeDrawer&&closeDrawer(); ronCp(rid,rname);}catch(e){toast(e.message,'bad');} }
 async function ronView(id){ const r=await api('/patrol-rounds/'+id).catch(()=>null); if(!r)return;
   drawer('Ronda — '+esc(r.route_name), `<div class="col" style="gap:var(--s-8)">
-    <div>Operatore: <b>${esc(r.user_email||'utente rimosso')}</b> · Stato: <span class="chip ${r.status==='completato'?'ok':(r.status==='incompleto'?'bad':'')}">${esc(ROUND_ST_LAB[r.status]||r.status)}</span> · ${r.done}/${r.total} tappe</div>
+    <div>Operatore: <b>${esc(r.user_email||'utente rimosso')}</b> · Stato: <span class="chip ${r.status==='completato'?'ok':(r.status==='incompleto'?'bad':'')}">${esc(roundStLab(r.status))}</span> · ${r.done}/${r.total} tappe</div>
     <div class="small mut">Avvio: ${r.started_at?new Date(r.started_at).toLocaleString():''}${r.ended_at?(' · Fine: '+new Date(r.ended_at).toLocaleString()):''}${r.window_minutes?(' · finestra '+r.window_minutes+' min'):''}</div>
-    ${(r.anomalies&&r.anomalies.length)?`<div class="card pad" style="background:#fdecec;border-left:3px solid var(--bad)"><b class="small">⚠ ${r.anomalies.length} anomalie</b>${r.anomalies.map(a=>`<div class="small">· <b>${esc(ANOM_LAB[a.kind]||a.kind)}</b> — ${esc(a.detail||'')}</div>`).join('')}</div>`:'<div class="small" style="color:var(--ok,green)">✓ Nessuna anomalia</div>'}
+    ${(r.anomalies&&r.anomalies.length)?`<div class="card pad" style="background:#fdecec;border-left:3px solid var(--bad)"><b class="small">⚠ ${r.anomalies.length} anomalie</b>${r.anomalies.map(a=>`<div class="small">· <b>${esc(ANOM_LAB[a.kind]||humanizeCode(a.kind))}</b> — ${esc(a.detail||'')}</div>`).join('')}</div>`:'<div class="small" style="color:var(--ok,green)">✓ Nessuna anomalia</div>'}
     <table class="table" data-export="checkpoint"><thead><tr><th>#</th><th>Checkpoint</th><th>Tipo</th><th>Tempo max</th><th>Punzonatura</th></tr></thead>
-    <tbody>${r.checkpoints.map(c=>{ const p=c.punched; return `<tr><td>${c.position}</td><td>${esc(c.name)}</td><td><span class="chip">${CP_KIND_LAB[c.kind]||c.kind}</span></td><td class="small mut">${c.max_min!=null?c.max_min+' min':'—'}</td>
+    <tbody>${r.checkpoints.map(c=>{ const p=c.punched; return `<tr><td>${c.position}</td><td>${esc(c.name)}</td><td><span class="chip">${esc(cpKindLab(c.kind))}</span></td><td class="small mut">${c.max_min!=null?c.max_min+' min':'—'}</td>
       <td>${p?(`<span class="chip ${p.ok?'ok':'bad'}">${p.ok?'riuscita':'non riuscita'}</span> <span class="small mut">${new Date(p.at).toLocaleTimeString()} · ${esc(PUNCH_ENTRY_LAB[p.entry]||'modo non registrato')}${p.distance_m!=null?' · a '+p.distance_m+' m dal punto':''}</span>`
         +((p.attempts>1||p.last_fail_reason)?`<div class="small mut">${p.attempts} tentativi${p.last_fail_reason?' · ultimo fallito: '+esc(p.last_fail_reason)+(p.last_fail_at?' ('+new Date(p.last_fail_at).toLocaleTimeString()+')':''):''}</div>`:'')):'<span class="small mut">—</span>'}</td></tr>`; }).join('')}</tbody></table>
   </div>`);
@@ -2148,12 +2150,12 @@ async function vVigilanza(v){
   const sm=(d&&d.summary)||{svolte:0,mancanti:0,attese:0,anomalie_oggi:0};
   const tile=(n,l,col)=>`<div class="card pad" style="flex:1;min-width:110px;text-align:center"><div style="font-size:26px;font-weight:700;${col?'color:'+col:''}">${n}</div><div class="small mut">${l}</div></div>`;
   const live=(d&&d.live||[]).map(r=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8);margin:var(--s-4) 0">
-    <div><b class="small">${esc(r.route_name)}</b><div class="small mut">👤 ${esc(r.email.split('@')[0])} · dalle ${new Date(r.started_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}</div></div>
+    <div><b class="small">${esc(r.route_name)}</b><div class="small mut">👤 ${esc((r.email||'operatore').split('@')[0])} · dalle ${new Date(r.started_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}</div></div>
     <span class="chip">${r.done}/${r.total}</span></div>`).join('')||'<div class="small mut">Nessuna ronda in corso.</div>';
   // slot dovuti raggruppati per giro
   const byR={}; (d&&d.slots||[]).forEach(s=>{(byR[s.route_name]=byR[s.route_name]||[]).push(s);});
   const slotsHtml=Object.keys(byR).map(rn=>`<div style="margin-bottom:var(--s-6)"><div class="small" style="font-weight:600">${esc(rn)}</div>
-    <div class="row" style="gap:var(--s-4);flex-wrap:wrap">${byR[rn].map(s=>{const col=s.status==='mancante'?'background:var(--bad);color:#fff':(s.status==='svolta'?'background:var(--ok,#16a34a);color:#fff':'');const lab={svolta:'svolta',mancante:'mancata',attesa:'in attesa'}[s.status]||s.status;
+    <div class="row" style="gap:var(--s-4);flex-wrap:wrap">${byR[rn].map(s=>{const col=s.status==='mancante'?'background:var(--bad);color:#fff':(s.status==='svolta'?'background:var(--ok,#16a34a);color:#fff':'');const lab={svolta:'svolta',mancante:'mancata',attesa:'in attesa'}[s.status]||humanizeCode(s.status);
       return s.incident_id?`<span class="chip clk" style="${col}" title="Ronda mancata: apri l'allarme" onclick="openIncident('${s.incident_id}')">${esc(s.local_time||'')} ⚠</span>`
         :`<span class="chip" style="${col}" title="${esc(lab)}">${esc(s.local_time||new Date(s.at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}))}</span>`;}).join('')}</div></div>`).join('')
     ||'<div class="small mut">Nessuna ronda pianificata per oggi. Crea un piano qui sotto.</div>';
@@ -2169,7 +2171,7 @@ async function vVigilanza(v){
     if(window.VIGMAP){ try{window.VIGMAP.remove();}catch(e){} }
     window.VIGMAP=L.map(el,{zoomControl:true}); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(window.VIGMAP);
     const pts=[]; liveGeo.forEach(r=>{ const m=L.marker([r.dev_lat,r.dev_lon]).addTo(window.VIGMAP);
-      m.bindPopup(`<b>👮 ${esc(r.email.split('@')[0])}</b><div class="small mut">${esc(r.route_name)} · ${r.done}/${r.total}</div>`); pts.push([r.dev_lat,r.dev_lon]); });
+      m.bindPopup(`<b>👮 ${esc((r.email||'operatore').split('@')[0])}</b><div class="small mut">${esc(r.route_name)} · ${r.done}/${r.total}</div>`); pts.push([r.dev_lat,r.dev_lon]); });
     if(pts.length)window.VIGMAP.fitBounds(pts,{padding:[40,40],maxZoom:16}); setTimeout(()=>window.VIGMAP&&window.VIGMAP.invalidateSize(),120);
   },60); }
   v.innerHTML+=`
@@ -2445,7 +2447,7 @@ async function openCommessa(id){
   const squadreSection=`<div><h3 style="margin:0">Squadre assegnate</h3>
     <div class="col" style="gap:var(--s-6);margin-top:var(--s-8)">${teamRows}</div>${teamAssign}</div>`;
   // C1 — presenze (timbrature)
-  const presRows=(c.presenze||[]).map(p=>`<tr><td class="small">${esc(p.email)}</td><td class="small">${dtLocal(p.clock_in)}</td><td class="small">${p.auto_closed?'<span class="chip s-da_correggere" title="Uscita mai registrata: chiusa automaticamente dopo 16 ore, senza ore conteggiate">chiusa d\'ufficio · da verificare</span>':(p.clock_out?dtLocal(p.clock_out):'<span style="color:var(--ok,green)">in cantiere</span>')}</td></tr>`).join('')
+  const presRows=(c.presenze||[]).map(p=>`<tr><td class="small">${esc(p.email)}</td><td class="small">${dtLocal(p.clock_in)}</td><td class="small">${p.auto_closed?'<span class="chip s-da_correggere" title="Uscita mai registrata: chiusa automaticamente dopo 16 ore, senza ore conteggiate">chiusa d\'ufficio · da verificare</span>':(p.clock_out?dtLocal(p.clock_out):'<span style="color:var(--ok,green)">in cantiere</span>')}${p.outside_area?` <span class="chip s-da_correggere" title="All&#39;entrata il telefono era a ${Math.round(p.distance_m)} m dalla sede della commessa">fuori area · da verificare</span>`:''}</td></tr>`).join('')
     ||`<tr><td colspan="3" class="empty">Nessuna presenza</td></tr>`;
   const clockBtn=c.my_open
     ? `<button class="btn ok small" onclick="comClock('${id}','out')">Timbra uscita</button>`
@@ -2473,10 +2475,10 @@ async function openCommessa(id){
     ||'<div class="small mut">Nessuna annotazione.</div>';
   const giornaleSection=`<div><div class="spread"><h3 style="margin:0">Giornale di cantiere</h3>${planner?`<button class="btn ghost small" onclick="diarioNew('${id}')">+ annotazione</button>`:''}</div>
     <div style="margin-top:var(--s-8)">${diarioRows}</div></div>`;
-  // C5 — fatture da SAL
+  // C5 — fatture da SAL (CA-22: stato con etichetta leggibile)
   const fattRows=(c.fatture||[]).map(f=>`<tr><td class="small"><b>${esc(f.number)}</b><div class="small mut">${esc(f.issue_date)}</div></td>
-    <td style="text-align:right">${eur(f.amount)}</td><td><span class="chip ${f.status==='pagata'?'s-attivo':''}">${esc(f.status)}</span></td>
-    <td style="text-align:right">${planner&&f.status==='emessa'?`<select onchange="fatturaStatus('${id}','${f.id}',this.value)" class="small"><option ${f.status==='emessa'?'selected':''}>emessa</option><option ${f.status==='pagata'?'selected':''}>pagata</option><option ${f.status==='annullata'?'selected':''}>annullata</option></select> <button class="btn-ico btn ghost" onclick="fatturaDel('${id}','${f.id}')">${ICON.x}</button>`:(planner&&f.status==='annullata'?`<button class="btn-ico btn ghost" title="Elimina" onclick="fatturaDel('${id}','${f.id}')">${ICON.x}</button>`:'')}</td></tr>`).join('')
+    <td style="text-align:right">${eur(f.amount)}</td><td><span class="chip ${f.status==='pagata'?'s-attivo':''}">${esc(FATT_STATI[f.status]||humanizeCode(f.status))}</span></td>
+    <td style="text-align:right">${planner&&f.status==='emessa'?`<select onchange="fatturaStatus('${id}','${f.id}',this.value)" class="small">${Object.entries(FATT_STATI).map(([k,l])=>`<option value="${k}" ${f.status===k?'selected':''}>${l}</option>`).join('')}</select> <button class="btn-ico btn ghost" onclick="fatturaDel('${id}','${f.id}')">${ICON.x}</button>`:(planner&&f.status==='annullata'?`<button class="btn-ico btn ghost" title="Elimina" onclick="fatturaDel('${id}','${f.id}')">${ICON.x}</button>`:'')}</td></tr>`).join('')
     ||`<tr><td colspan="4" class="empty">Nessuna fattura</td></tr>`;
   const fatt_tot=(c.fatture||[]).filter(f=>f.status!=='annullata').reduce((a,f)=>a+(f.amount||0),0);
   const fattureSection=c.costs_hidden?costsHidden('Fatturazione (da SAL)'):`<div><h3 style="margin:0">Fatturazione (da SAL)</h3>
@@ -2535,7 +2537,10 @@ async function comRemoveTeam(id,tid){ if(!await askConfirm('Togliere la squadra 
 async function comClock(id,dir){
   try{ if(dir==='in'){ let body={};
       if(navigator.geolocation){ try{ const pos=await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{timeout:6000})); body={lat:pos.coords.latitude,lon:pos.coords.longitude}; }catch(e){} }
-      await api('/commesse/'+id+'/presenze/in',{method:'POST',body:JSON.stringify(body)}); toast('Entrata timbrata','ok');
+      const r=await api('/commesse/'+id+'/presenze/in',{method:'POST',body:JSON.stringify(body)});
+      // CA-15: oltre il raggio la presenza vale ma va verificata
+      if(r&&r.outside_area) toast(`Entrata timbrata, ma sei a ${Math.round(r.distance_m)} m dalla sede: presenza segnata «fuori area»`,'warn');
+      else toast('Entrata timbrata','ok');
     } else { await api('/commesse/'+id+'/presenze/out',{method:'POST',body:JSON.stringify({})}); toast('Uscita timbrata','ok'); }
     openCommessa(id);
   }catch(e){toast(e.message,'bad');}
@@ -2564,6 +2569,7 @@ async function diarioSave(cid){ const m=$('.cfg-msg'); const body=$('#gdBody').v
   try{await api('/commesse/'+cid+'/diario',{method:'POST',body:JSON.stringify(b)}); toast('Annotazione salvata','ok'); closeDrawer(); openCommessa(cid);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
 async function diarioDel(cid,id){ if(!await askConfirm('Eliminare l\'annotazione?'))return;
   try{await api('/commessa-diario/'+id,{method:'DELETE'}); toast('Eliminata','ok'); openCommessa(cid);}catch(e){toast(e.message,'bad');} }
+const FATT_STATI={emessa:'Emessa',pagata:'Pagata',annullata:'Annullata'};
 function fatturaNew(cid,s){ const sugg=new Date().getFullYear()+'/'+Math.floor(Math.random()*900+100);
   drawer('Emetti fattura da SAL',`<div class="col" style="gap:var(--s-10)">
     <div class="small mut">SAL del ${esc(s.sal_date)} · ${s.pct}%</div>
@@ -2575,7 +2581,7 @@ function fatturaNew(cid,s){ const sugg=new Date().getFullYear()+'/'+Math.floor(M
 async function fatturaSave(cid,salId){ const m=$('.cfg-msg'); const num=$('#fnNum').value.trim(); if(!num){m.textContent='numero richiesto';m.style.color='var(--bad)';return;}
   const b={number:num,amount:Number($('#fnAmt').value)||0,sal_id:salId||null,issue_date:$('#fnDate').value||null,note:$('#fnNote').value||null};
   try{await api('/commesse/'+cid+'/fatture',{method:'POST',body:JSON.stringify(b)}); toast('Fattura emessa','ok'); closeDrawer(); openCommessa(cid);}catch(e){m.textContent=e.message;m.style.color='var(--bad)';} }
-async function fatturaStatus(cid,id,st){ try{await api('/commessa-fatture/'+id,{method:'POST',body:JSON.stringify({status:st})}); toast('Stato fattura aggiornato','ok'); openCommessa(cid);}catch(e){toast(e.message,'bad');} }
+async function fatturaStatus(cid,id,st){ try{await api('/commessa-fatture/'+id,{method:'POST',body:JSON.stringify({status:st})}); toast('Stato fattura: '+(FATT_STATI[st]||humanizeCode(st)),'ok'); openCommessa(cid);}catch(e){toast(e.message,'bad');} }
 async function fatturaDel(cid,id){ if(!await askConfirm('Eliminare la fattura?'))return;
   try{await api('/commessa-fatture/'+id,{method:'DELETE'}); toast('Eliminata','ok'); openCommessa(cid);}catch(e){toast(e.message,'bad');} }
 async function comAttUpload(cid){ const f=$('#cmFile'); if(!f||!f.files||!f.files[0])return toast('scegli un file','warn'); const file=f.files[0];
@@ -2596,7 +2602,7 @@ async function comPrint(id){
   const lav=(c.lavorazioni||[]).map(l=>`<tr><td>${esc2(l.name)}</td><td>${l.weight}</td><td>${l.progress_pct}%</td><td>${esc2(LAV_STATI[l.status]||l.status)}</td><td>${esc2(l.start_date||'')}${l.end_date?' → '+esc2(l.end_date):''}</td></tr>`).join('');
   const sal=(c.sal||[]).map(s=>`<tr><td>${esc2(s.sal_date)}</td><td>${s.pct}%</td><td>${s.amount!=null?'€ '+s.amount:''}</td><td>${esc2(s.note||'')}</td></tr>`).join('');
   const costi=(c.costi||[]).map(k=>`<tr><td>${esc2(k.description)}</td><td>${esc2(COSTO_CAT[k.category]||k.category)}</td><td>€ ${k.amount}</td><td>${esc2(k.cost_date)}</td></tr>`).join('');
-  const fatt=(c.fatture||[]).map(f=>`<tr><td>${esc2(f.number)}</td><td>€ ${f.amount}</td><td>${esc2(f.status)}</td><td>${esc2(f.issue_date)}</td></tr>`).join('');
+  const fatt=(c.fatture||[]).map(f=>`<tr><td>${esc2(f.number)}</td><td>€ ${f.amount}</td><td>${esc2(FATT_STATI[f.status]||humanizeCode(f.status))}</td><td>${esc2(f.issue_date)}</td></tr>`).join('');
   const html=`<!doctype html><html><head><meta charset="utf-8"><title>Commessa ${esc2(c.code)}</title>
     <style>body{font:13px/1.4 system-ui,Arial;margin:28px;color:#111}h1{font-size:20px;margin:0 0 2px}h2{font-size:14px;margin:18px 0 6px;border-bottom:1px solid #ccc;padding-bottom:3px}
     table{border-collapse:collapse;width:100%;margin-top:4px}th,td{border:1px solid #ddd;padding:4px 6px;text-align:left;font-size:12px}th{background:#f3f3f3}
@@ -3133,7 +3139,7 @@ async function ordSuggestTech(id,v){
       <button class="btn ghost small" ${c.absent?'disabled':''} onclick="ordAssignTo('${id}',${v},'${c.user_id}')">assegna</button></div>`).join('')
       ||'<div class="small mut">Nessun tecnico.</div>';
     drawer('Suggerisci tecnico',`<div class="col" style="gap:var(--s-8)">
-      <div class="card pad" style="background:var(--brand-soft)"><div class="small mut">✦ ${esc(r.provider)} · giorno ${esc(r.day)}</div><div style="margin-top:var(--s-4)">${esc(r.summary)}</div></div>
+      <div class="card pad" style="background:var(--brand-soft)"><div class="small mut">✦ ${esc(aiProvLab(r.provider))} · giorno ${esc(r.day)}</div><div style="margin-top:var(--s-4)">${esc(r.summary)}</div></div>
       ${rows}</div>`);
   }catch(e){ drawer('Suggerisci tecnico',`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`); }
 }
@@ -4083,6 +4089,14 @@ function scopeKindChange(pfx){ const k=$('#'+pfx+'ScopeKind').value, w=$('#'+pfx
 function scopeFields(pfx,kind,sref){ kind=kind||'tenant';
   return `<label class="small mut">Vale per<select id="${pfx}ScopeKind" onchange="scopeKindChange('${pfx}')">${SCOPE_KINDS.map(([k,l])=>`<option value="${k}" ${k===kind?'selected':''}>${l}</option>`).join('')}</select></label>
     <label class="small mut" id="${pfx}ScopeRefWrap" style="${kind==='tenant'?'display:none':''}">Quale<select id="${pfx}ScopeRef">${scopeRefOptions(kind,sref)}</select></label>`; }
+// SA-14: le regole create dagli scenari IoT hanno etichetta tecnica «scn:<codice>:<metrica>:<op>[:<soglia>]»
+// (serve al server per riconoscerle): in UI mostriamo un testo leggibile, mai la stringa grezza.
+function ruleLabelText(label){ if(!label) return '';
+  if(!/^scn:/.test(label)) return label;
+  const p=label.split(':'); const code=p[1]||''; const metric=p[2]||''; const op=p[3]||''; const thr=p.slice(4).join(':');
+  const sc=(RULE_SCOPE.scenarios||[]).find(x=>x.code===code); const name=sc?(sc.name||code):code.replace(/_/g,' ');
+  const opL=(RULE_OPS.find(x=>x[0]===op)||[op,op])[1];
+  return 'Scenario «'+name+'» · '+metric+(op?' '+opL+(thr!==''?' '+thr:''):''); }
 function scopeBody(pfx){ const k=$('#'+pfx+'ScopeKind').value; return {scope_kind:k, scope_ref:k==='tenant'?null:($('#'+pfx+'ScopeRef').value||null)}; }
 async function renderSensorRules(){
   const box=$('#sensorRulesCard'); if(!box)return;
@@ -4101,7 +4115,7 @@ async function renderSensorRules(){
       <td class="small">${opLab(r.op)}${numeric(r.op)?' '+(r.threshold??''):''}</td>
       <td><span class="chip ${r.etype==='telemetria'?'':'s-critico'}">${esc(RULE_ET_LAB[r.etype]||r.etype)}</span></td>
       <td class="small">${esc(r.scope_label||'Tutti i dispositivi')}</td>
-      <td class="small mut">${esc(r.label||'')}</td>
+      <td class="small mut">${esc(ruleLabelText(r.label))}</td>
       <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();ruleDel('${r.id}')">${ICON.x}</button></td></tr>`).join('')
       ||emptyRow(6, null, 'Nessuna regola sensore', 'Le regole decidono quando un dato di un sensore diventa un incidente (es. temperatura oltre soglia). Senza regole si applica solo la soglia temperatura di base.', null)}</tbody></table>
     <div class="card pad" style="margin-top:var(--s-8);background:var(--bg2)"><b class="small">Nuova regola</b>
@@ -4131,7 +4145,8 @@ function ruleEdit(r){ r=r||{}; const numeric=!['is_true','is_false'].includes(r.
       <label class="small mut grow" id="reThrWrap" style="${numeric?'':'display:none'}">Soglia<input id="reThr" type="number" step="any" value="${r.threshold??''}"></label></div>
     <label class="small mut">Evento<select id="reEtype">${RULE_ETYPES.map(e=>`<option value="${e}" ${e===r.etype?'selected':''}>${RULE_ET_LAB[e]}</option>`).join('')}</select></label>
     <div class="row" style="gap:var(--s-8);flex-wrap:wrap">${scopeFields('re',r.scope_kind,r.scope_ref)}</div>
-    <label class="small mut">Etichetta<input id="reLabel" value="${esc(r.label||'')}" placeholder="opz."></label>
+    ${/^scn:/.test(r.label||'')?`<div class="small mut">Etichetta: <b>${esc(ruleLabelText(r.label))}</b> — regola creata da uno scenario IoT (l’etichetta resta fissa per poterla riconoscere e rimuovere con lo scenario).</div><input id="reLabel" type="hidden" value="${esc(r.label)}">`
+      :`<label class="small mut">Etichetta<input id="reLabel" value="${esc(r.label||'')}" placeholder="opz."></label>`}
     <button class="btn" onclick="ruleSave('${r.id}')">Salva</button><div class="cfg-msg small"></div></div>`); }
 function reOpChange(){ const num=!['is_true','is_false'].includes($('#reOp').value); const w=$('#reThrWrap'); if(w)w.style.display=num?'inline-flex':'none'; }
 async function ruleSave(id){ const m=$('.cfg-msg'); const op=$('#reOp').value, numeric=!['is_true','is_false'].includes(op);
@@ -4175,8 +4190,32 @@ async function aiFeatSet(feature,el){
   catch(e){ el.checked=!el.checked; toast(e.message,'bad'); }
 }
 // ---------------- Agente AI (tool-calling che agisce su DB) ----------------
-const AG_ACT_LAB={query_incidents:'Letto: incidenti',query_checkins:'Letto: check-in',query_events:'Letto: eventi',query_work_orders:'Letto: ordini',get_consuntivo:'Letto: consuntivo',add_diary_entry:'Scritto: nota diario',add_incident_note:'Scritto: nota incidente',add_timesheet_line:'Scritto: riga consuntivo',add_expense:'Scritto: spesa',save_report:'Scritto: report',create_work_order:'Crea ordine (bozza)',create_sensor_rule:'Crea regola sensori'};
-function agLab(n){ return AG_ACT_LAB[n]||n; }
+// IO-19: strumenti dell'agente (catalogo ag_catalog del core) con etichetta leggibile
+const AG_ACT_LAB={query_incidents:'Letto: incidenti',query_checkins:'Letto: check-in',query_events:'Letto: eventi dei dispositivi',query_work_orders:'Letto: interventi',get_consuntivo:'Letto: consuntivo',
+  query_iot_alerts:'Letto: alert IoT',iot_device_telemetry:'Letto: valori di un sensore IoT',suggest_device_model:'Cercato: modello di dispositivo a catalogo',device_readiness:'Verificato: prontezza di un dispositivo',
+  add_diary_entry:'Scritto: nota di diario',add_incident_note:'Scritto: nota su un incidente',add_timesheet_line:'Scritto: riga di consuntivo',add_expense:'Scritto: spesa',save_report:'Scritto: report',
+  create_work_order:'Crea intervento (bozza)',create_sensor_rule:'Crea regola sensori',onboard_device:'Attiva un nuovo dispositivo (kit di attivazione)'};
+function agLab(n){ return AG_ACT_LAB[n]||humanizeCode(n)||'Azione'; }
+// Argomenti in chiaro (mai JSON grezzo né ID): «Stato: aperto · Ultime 24 ore»
+const AG_ARG_LAB={state:'Stato',limit:'Massimo',hours:'Ultime ore',timesheet_id:'Consuntivo',body:'Testo',work_order_id:'Intervento',incident_id:'Incidente',text:'Testo',
+  activity:'Attività',work_date:'Data',minutes:'Minuti',rate_eur:'Tariffa €',description:'Descrizione',amount_eur:'Importo €',title:'Titolo',kind:'Tipo',instructions:'Istruzioni',
+  priority:'Priorità',metric:'Metrica',op:'Condizione',threshold:'Soglia',etype:'Evento',label:'Etichetta',device_external_id:'Dispositivo',query:'Ricerca',category:'Categoria',
+  model_code:'Modello',external_id:'Identificativo / IMEI',worker_email:'Lavoratore',group_name:'Gruppo',make_profile:'Crea profilo di protezione'};
+function agArgs(a){ if(!a||typeof a!=='object') return '';
+  const val=(k,v)=>{ if(v===null||v===undefined||v==='') return null; if(typeof v==='boolean') return v?'sì':'no';
+    if(k==='state'&&v==='tutti') return 'tutti';
+    if(k==='op'&&typeof RULE_OPS!=='undefined'){ const o=RULE_OPS.find(x=>x[0]===v); if(o) return o[1]; }
+    if(k==='etype'&&typeof RULE_ET_LAB!=='undefined'&&RULE_ET_LAB[v]) return RULE_ET_LAB[v];
+    if(k==='category'&&typeof CAT_LABELS!=='undefined'&&CAT_LABELS[v]) return CAT_LABELS[v];
+    if(typeof v==='string'){ if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)) return 'selezionato';
+      if(k==='state') return humanizeCode(v); return v.length>80?v.slice(0,77)+'…':v; }
+    if(typeof v==='object') return null;
+    return String(v); };
+  return Object.entries(a).map(([k,v])=>{ const x=val(k,v); return x==null?null:(AG_ARG_LAB[k]||humanizeCode(k))+': '+x; }).filter(Boolean).slice(0,5).join(' · '); }
+const AI_PROV_LAB={youworker:'youworker.ai','youworker.ai':'youworker.ai',SIMULATO:'risposta simulata (senza AI)',openai:'OpenAI',deepseek:'DeepSeek',anthropic:'Anthropic (Claude)',deterministico:'senza AI (regole fisse)',none:'senza AI (regole fisse)'};
+function aiProvLab(p){ return AI_PROV_LAB[p]||humanizeCode(p)||'AI'; }
+const REP_KIND_LAB={generico:'Generico',incidenti:'Incidenti',consuntivi:'Consuntivi',sensori:'Sensori',turni:'Turni'};
+function repKindLab(k){ return REP_KIND_LAB[k]||humanizeCode(k)||'Generico'; }
 async function vAgente(v){
   v.innerHTML=`<div class="page-h"><div><h1>Agente AI</h1><div class="mut">l'AI analizza i dati e registra informazioni; le azioni sensibili le confermi tu. La catena di sicurezza resta manuale.</div></div></div>
   <div class="card pad">
@@ -4187,7 +4226,7 @@ async function vAgente(v){
   <div class="card pad" style="margin-top:var(--s-16)"><div class="card-h" style="padding:0 0 var(--s-10)"><h2>Report AI</h2></div>
     <div class="row" style="gap:var(--s-6);align-items:flex-end;flex-wrap:wrap">
       <label class="small mut grow">Richiesta report<input id="repPrompt" placeholder="es. report incidenti ultimi 30 giorni"></label>
-      <label class="small mut">Tipo<select id="repKind">${['generico','incidenti','consuntivi','sensori','turni'].map(k=>`<option>${k}</option>`).join('')}</select></label>
+      <label class="small mut">Tipo<select id="repKind">${['generico','incidenti','consuntivi','sensori','turni'].map(k=>`<option value="${k}">${REP_KIND_LAB[k]}</option>`).join('')}</select></label>
       <button class="btn" onclick="reportGen(this)">Genera e salva</button></div>
     <div id="repOut" style="margin-top:var(--s-10)"></div>
     <div id="repList" style="margin-top:var(--s-10)"></div></div>`;
@@ -4198,15 +4237,15 @@ async function agentRun(btn){
   const box=$('#agOut'); btn.disabled=true; box.innerHTML='<div class="small mut">L\'agente lavora (legge e scrive)…</div>';
   try{ const r=await api('/ai/agent',{method:'POST',body:JSON.stringify({goal})});
     let h='';
-    if(r.answer) h+=`<div class="card pad" style="background:var(--brand-soft);margin-bottom:var(--s-10)"><div class="small mut">✦ ${esc(r.provider)}</div><div style="white-space:pre-wrap;margin-top:var(--s-4)">${esc(r.answer)}</div></div>`;
+    if(r.answer) h+=`<div class="card pad" style="background:var(--brand-soft);margin-bottom:var(--s-10)"><div class="small mut">✦ ${esc(aiProvLab(r.provider))}</div><div style="white-space:pre-wrap;margin-top:var(--s-4)">${esc(r.answer)}</div></div>`;
     if((r.actions||[]).length){ h+=`<div class="small mut" style="margin:var(--s-6) 0">Azioni eseguite:</div>`+r.actions.map(a=>{
       const okw=a.error?`<span class="chip s-da_correggere">errore: ${esc(a.error)}</span>`:(a.wrote?'<span class="chip s-attivo">scritto su DB</span>':'<span class="chip">lettura</span>');
-      return `<div class="spread" style="padding:var(--s-4) 0;border-bottom:1px solid var(--line)"><span>${esc(agLab(a.name))}</span>${okw}</div>`;}).join(''); }
+      const ar=agArgs(a.args); return `<div class="spread" style="padding:var(--s-4) 0;border-bottom:1px solid var(--line)"><span>${esc(agLab(a.name))}${ar?`<div class="small mut">${esc(ar)}</div>`:''}</span>${okw}</div>`;}).join(''); }
     // IO-2: le proposte restano in memoria JS (mai serializzate dentro un attributo HTML)
     AG_PENDING=r.pending||[];
     if(AG_PENDING.length){ h+=`<div class="card pad" style="background:var(--warn-soft);margin-top:var(--s-10)"><b class="small">Conferma richiesta</b>`+AG_PENDING.map((p,i)=>`
       <div class="spread" style="padding:var(--s-6) 0;align-items:flex-start;gap:var(--s-10)">
-        <div><b>${esc(agLab(p.name))}</b><div class="small mut">${esc(p.summary||'')}</div></div>
+        <div><b>${esc(agLab(p.name))}</b><div class="small mut">${esc(p.summary||agArgs(p.args))}</div></div>
         <div class="row" style="gap:var(--s-6)"><button class="btn ok small" onclick="agentConfirm(this,${i})">Conferma</button>
           <button class="btn ghost small" onclick="this.closest('.spread').remove()">Annulla</button></div></div>`).join('')+`</div>`; }
     if(!h) h='<div class="small mut">Nessuna azione.</div>';
@@ -4224,7 +4263,7 @@ async function reportGen(btn){
   const prompt=$('#repPrompt').value.trim(); if(!prompt)return toast('Scrivi la richiesta del report','warn');
   const kind=$('#repKind').value; const box=$('#repOut'); btn.disabled=true; box.innerHTML='<div class="small mut">Genero e salvo…</div>';
   try{ const r=await api('/ai/reports/generate',{method:'POST',body:JSON.stringify({prompt,kind})});
-    box.innerHTML=`<div class="card pad" style="background:var(--brand-soft)"><b>${esc(r.title)}</b> <span class="chip">${esc(r.kind)}</span><div style="white-space:pre-wrap;margin-top:var(--s-6)">${esc(r.body)}</div></div>`;
+    box.innerHTML=`<div class="card pad" style="background:var(--brand-soft)"><b>${esc(r.title)}</b> <span class="chip">${esc(repKindLab(r.kind))}</span><div style="white-space:pre-wrap;margin-top:var(--s-6)">${esc(r.body)}</div></div>`;
     loadReports();
   }catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`; }
   finally{ btn.disabled=false; }
@@ -4232,12 +4271,12 @@ async function reportGen(btn){
 async function loadReports(){ const box=$('#repList'); if(!box)return;
   let L=[]; try{ L=await api('/ai/reports'); }catch(e){}
   box.innerHTML=`<table class="table" data-export="report-ai"><thead><tr><th>Titolo</th><th>Tipo</th><th>Autore</th><th>Data</th></tr></thead>
-    <tbody>${L.map(r=>`<tr class="clk" onclick="reportOpen('${r.id}')"><td>${esc(r.title)}</td><td>${esc(r.kind)}</td>
+    <tbody>${L.map(r=>`<tr class="clk" onclick="reportOpen('${r.id}')"><td>${esc(r.title)}</td><td>${esc(repKindLab(r.kind))}</td>
       <td class="small mut">${esc((r.created_by||'').split('@')[0])}</td><td class="small mut">${new Date(r.created_at).toLocaleString('it-IT')}</td></tr>`).join('')
       ||'<tr><td colspan="4" class="empty">nessun report salvato</td></tr>'}</tbody></table>`;
 }
 async function reportOpen(id){ try{ const r=await api('/ai/reports/'+id);
-  drawer('Report · '+esc(r.title), `<div class="row" style="margin-bottom:var(--s-10)"><span class="chip">${esc(r.kind)}</span><span class="chip">${esc((r.created_by||'').split('@')[0])}</span></div>
+  drawer('Report · '+esc(r.title), `<div class="row" style="margin-bottom:var(--s-10)"><span class="chip">${esc(repKindLab(r.kind))}</span><span class="chip">${esc((r.created_by||'').split('@')[0])}</span></div>
     <div style="white-space:pre-wrap">${esc(r.body)}</div>`);
   }catch(e){ toast(e.message,'bad'); } }
 
@@ -4487,7 +4526,7 @@ async function aerationToggle(code,devid,on){
 async function scnAiAnalysis(code,btn){
   const out=$('#scnAiOut'); if(!out)return; btn.disabled=true; out.innerHTML='<div class="small mut" style="margin-bottom:var(--s-10)">Analisi AI in corso…</div>';
   try{ const r=await api('/scenarios/'+code+'/ai-analysis',{method:'POST',body:JSON.stringify({save:true})});
-    out.innerHTML=`<div class="card pad" style="background:var(--brand-soft);margin-bottom:var(--s-12)"><div class="small mut">✦ ${esc(r.provider)} · ${esc(r.ai_focus||'')} ${r.report_id?'· salvato come report':''}</div><div style="white-space:pre-wrap;margin-top:var(--s-4)">${esc(r.analysis)}</div></div>`;
+    out.innerHTML=`<div class="card pad" style="background:var(--brand-soft);margin-bottom:var(--s-12)"><div class="small mut">✦ ${esc(aiProvLab(r.provider))} · ${esc(r.ai_focus||'')} ${r.report_id?'· salvato come report':''}</div><div style="white-space:pre-wrap;margin-top:var(--s-4)">${esc(r.analysis)}</div></div>`;
   }catch(e){ out.innerHTML=`<div class="small" style="color:var(--bad);margin-bottom:var(--s-10)">${esc(e.message)}</div>`; }
   finally{ btn.disabled=false; }
 }
@@ -4725,9 +4764,9 @@ async function vGruppi(v){
   const [G,users,ocs]=await Promise.all([api('/groups').catch(()=>({groups:[],routing:[]})),api('/users').catch(()=>[]),
     api('/oncall-settings').catch(()=>({voice_fallback_on:true,voice_fallback_min:5,status_updates_on:true}))]);
   v._users=users; v._groups=G.groups; window._OCS=ocs; window._users=users; window._groupsCache=G.groups;
-  const ETYPES=['sos','man_down','immobilita','mancato_checkin','sensore_critico',
-    'perdita_contatto','manomissione_badge','perdita_alimentazione','jamming',
-    'batteria_critica','batteria_bassa'];
+  // SL-19: elenco dal server = tutti i tipi che aprono un allarme (prima 11 scritti qui)
+  const ETYPES=(G.routable||[]).map(x=>x.etype);
+  (G.routable||[]).forEach(x=>{ if(!ETYPE_LAB[x.etype]) ETYPE_LAB[x.etype]=x.label; });
   const routeOf=e=>(G.routing.find(r=>r.etype===e)||{}).group_id||'';
   v.innerHTML=`<div class="page-h"><div><h1>${t('escal_title','Escalation e reperibilità')}</h1><div class="mut">destinatari, canali e rotazione per tipo di evento</div></div>
     <div class="row" style="gap:var(--s-8)"><button class="btn" onclick="grpNew()">+ Nuovo gruppo</button></div></div>
@@ -5332,16 +5371,17 @@ async function vAnagrafiche(v){
       ||'<div class="small mut">Nessuna squadra.</div>'}</div></div>`:''}
   <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Asset / mezzi (${assets.length})</h2><button class="btn ghost small" onclick="assetNew()">+ nuovo asset</button></div>
     <table class="table" data-export="asset-mezzi"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th>Sede</th><th></th></tr></thead>
-    <tbody>${assets.map(a=>`<tr class="clk" data-asset='${jattr(a)}'><td><b>${esc(a.name)}</b></td><td><span class="chip">${esc(a.kind)}</span></td><td class="small mut">${esc(a.identifier||'—')}</td><td class="small mut">${esc(a.site||'—')}</td>
+    <tbody>${assets.map(a=>`<tr class="clk" data-asset='${jattr(a)}'><td><b>${esc(a.name)}</b></td><td><span class="chip">${esc(ASSET_KIND_LABELS[a.kind]||humanizeCode(a.kind)||'—')}</span></td><td class="small mut">${esc(a.identifier||'—')}</td><td class="small mut">${esc(a.site||'—')}</td>
       <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();assetDel('${a.id}')">${ICON.x}</button></td></tr>`).join('')
       ||emptyRow(5, ICON.building, 'Nessun asset', 'Mezzi e attrezzature da assegnare a squadre e interventi. Aggiungine uno per poterlo pianificare.', {fn:'assetNew()',label:'+ Nuovo asset'})}</tbody></table></div>`;
   v.querySelectorAll('tr[data-asset]').forEach(tr=>tr.onclick=()=>{ try{ assetForm(JSON.parse(tr.dataset.asset)); }catch(e){} });
 }
 const ASSET_KINDS=['veicolo','attrezzatura','mezzo','strumento','altro'];
+const ASSET_KIND_LABELS={veicolo:'Veicolo',attrezzatura:'Attrezzatura',mezzo:'Mezzo d’opera',strumento:'Strumento',altro:'Altro'};
 async function assetForm(a){ a=a||{}; const sites=await api('/sites').catch(()=>[]);
   drawer(a.id?('Asset · '+esc(a.name)):'Nuovo asset / mezzo',`<div class="col" style="gap:var(--s-10)">
     <label class="small mut">Nome<input id="asName" value="${esc(a.name||'')}" placeholder="Furgone, scala, radio…"></label>
-    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Tipo<select id="asKind">${ASSET_KINDS.map(k=>`<option ${k===(a.kind||'attrezzatura')?'selected':''}>${k}</option>`).join('')}</select></label>
+    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Tipo<select id="asKind">${ASSET_KINDS.map(k=>`<option value="${k}" ${k===(a.kind||'attrezzatura')?'selected':''}>${ASSET_KIND_LABELS[k]}</option>`).join('')}</select></label>
       <label class="small mut grow">Matricola / targa<input id="asId" value="${esc(a.identifier||'')}"></label></div>
     <label class="small mut">Sede (opz.)<select id="asSite"><option value="">—</option>${sites.map(s=>`<option value="${s.id}" ${s.id===a.site_id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label>
     <label class="small mut">Note<input id="asNote" value="${esc(a.note||'')}"></label>
@@ -5432,7 +5472,7 @@ async function vPrivacyAudit(v){
     </div>
     <div class="row" style="gap:var(--s-8);margin-top:var(--s-10);flex-wrap:wrap">
       <input id="auQ" class="small" placeholder="🔎 cerca (attore/azione/dettaglio)" onkeydown="if(event.key==='Enter')auditReload()">
-      <select id="auAction" class="small" onchange="auditReload()"><option value="">tutte le azioni</option>${actions.map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join('')}</select>
+      <select id="auAction" class="small" onchange="auditReload()"><option value="">tutte le azioni</option>${actions.map(a=>[a,auditLabel(a)]).sort((x,y)=>x[1].localeCompare(y[1],'it')).map(([a,l])=>`<option value="${esc(a)}">${esc(l)}</option>`).join('')}</select>
       <input id="auActor" class="small" placeholder="attore (contiene)" onkeydown="if(event.key==='Enter')auditReload()">
       <input id="auSince" class="small" type="date" title="da" onchange="auditReload()">
       <input id="auUntil" class="small" type="date" title="a" onchange="auditReload()">
@@ -5461,13 +5501,99 @@ function renderAuPager(a){
     <span class="small mut">${from}–${to} di ${a.total}</span>
     <button class="btn ghost small" ${nextD} onclick="auditPage(1)">succ →</button>`;
 }
+// TA-14: etichette delle azioni del registro attività (codici scritti dal core in app.audit_log).
+// Codici non in elenco → humanizeCode() (mai il codice grezzo).
+const AUDIT_LABELS={
+  ai_agent_confirm:'Agente AI · azione confermata',ai_agent_create_order:'Agente AI · intervento creato',ai_agent_create_rule:'Agente AI · regola sensore creata',
+  ai_agent_diary:'Agente AI · nota di diario',ai_agent_expense:'Agente AI · spesa registrata',ai_agent_goal:'Agente AI · richiesta all’agente',
+  ai_agent_incident_note:'Agente AI · nota su incidente',ai_agent_ts_line:'Agente AI · riga consuntivo',ai_checkin_anomaly:'AI · anomalia check-in',
+  ai_consuntivo_summary:'AI · riepilogo consuntivo',ai_diary_transcribe:'AI · trascrizione diario',ai_incident_summary:'AI · riepilogo incidente',
+  ai_report_save:'AI · report salvato',ai_sensor_suggest:'AI · regole sensori suggerite',ai_verify:'AI · verifica connessione',ai_work_order_assist:'AI · assistenza intervento',
+  alarm_group_import_members:'Gruppo allarmi · membri importati',assign_device:'Dispositivo assegnato',assistant_query:'Domanda all’assistente',audit_export:'Registro attività esportato',
+  beacon_delete:'Beacon eliminato',beacon_save:'Beacon salvato',client_create:'Cliente creato',client_delete:'Cliente eliminato',close_round:'Ronda chiusa',
+  commessa_create:'Commessa creata',commessa_delete:'Commessa eliminata',commessa_fattura:'Fattura di commessa emessa',commessa_fattura_delete:'Fattura di commessa eliminata',
+  commessa_fattura_stato:'Stato fattura cambiato',commessa_sal:'Avanzamento lavori (SAL) registrato',commessa_update:'Commessa modificata',
+  contact_optout:'Recapito disattivato (opt-out)',contact_reactivate:'Recapito riattivato',create_absence:'Assenza registrata',create_asset:'Asset creato',
+  create_custom_role:'Ruolo personalizzato creato',create_device:'Dispositivo creato',create_geofence:'Area (geofence) creata',create_ingest_token:'Token di ingest creato',
+  create_patrol_route:'Percorso di ronda creato',create_qualification:'Qualifica creata',create_shift_plan:'Turno pianificato',create_site:'Sede creata',
+  create_tenant:'Tenant creato',create_user:'Utente creato',create_user_group:'Gruppo utenti creato',
+  custom_role_assign_group:'Ruolo assegnato a un gruppo',custom_role_assign_user:'Ruolo assegnato a un utente',custom_role_unassign_group:'Ruolo tolto a un gruppo',custom_role_unassign_user:'Ruolo tolto a un utente',
+  dashboard_layout_set:'Cruscotto riconfigurato',delete_asset:'Asset eliminato',delete_custom_role:'Ruolo personalizzato eliminato',delete_device:'Dispositivo eliminato',
+  delete_geofence:'Area (geofence) eliminata',delete_ingest_token:'Token di ingest eliminato',delete_site:'Sede eliminata',delete_tenant:'Tenant eliminato',delete_user:'Utente eliminato',
+  delete_user_group:'Gruppo utenti eliminato',device_command:'Comando inviato al dispositivo',device_map_set:'Posizione dispositivo sulla mappa',
+  device_onboarding_kit:'Kit di attivazione dispositivo',device_onboarding_kit_bulk:'Kit di attivazione (più dispositivi)',device_scenario_set:'Scenario del dispositivo impostato',
+  device_service:'Stato di servizio del dispositivo',device_test_sos:'Prova SOS del dispositivo',edit_order:'Intervento modificato',escalation_fallback_set:'Escalation di riserva impostata',
+  floorplan_create:'Piantina caricata',floorplan_delete:'Piantina eliminata',gdpr_anonymize:'GDPR · persona anonimizzata',gdpr_export:'GDPR · dati di una persona esportati',
+  gdpr_users_export:'GDPR · elenco persone esportato',geofence_alarms_set:'Allarmi delle aree impostati',gprs_command:'Comando GPRS inviato',gps_event_policy:'Regole eventi GPS',
+  group_labels_set:'Etichette del gruppo impostate',group_policy_set:'Regole del gruppo impostate',heartbeat_create:'Controllo di presenza (heartbeat) creato',immobility_ok:'Immobilità confermata ok',
+  impersonate_start:'Accesso assistito avviato',impersonate_stop:'Accesso assistito terminato',incident_auto_close:'Incidente chiuso automaticamente',
+  incidents_ack_all:'Tutti gli incidenti presi in carico',incidents_close_all:'Tutti gli incidenti chiusi',iot_activate:'Dispositivo IoT attivato',iot_alert_ack:'Alert IoT preso in carico',
+  iot_alert_close:'Alert IoT chiuso',iot_attributes_set:'Attributi IoT impostati',iot_command:'Comando IoT inviato',map_visibility_set:'Visibilità sulla mappa impostata',
+  oncall_contact_code:'Codice di verifica recapito inviato',oncall_contact_verify:'Recapito verificato',oncall_maintenance:'Manutenzione reperibilità',oncall_override_add:'Sostituzione di reperibilità',
+  order_arrive:'Arrivo sul posto',order_attachment_add:'Allegato aggiunto all’intervento',order_attachment_del:'Allegato rimosso dall’intervento',order_complete:'Intervento completato',
+  order_report_set:'Rapportino dell’intervento',presenza_auto_close:'Presenza chiusa automaticamente',
+  protection_profile_create:'Profilo di protezione creato',protection_profile_delete:'Profilo di protezione eliminato',protection_profile_member_add:'Persona aggiunta al profilo di protezione',
+  protection_profile_member_del:'Persona tolta dal profilo di protezione',protection_profile_update:'Profilo di protezione modificato',provision_device:'Dispositivo registrato',
+  request_convert:'Richiesta trasformata in intervento',reset_capabilities:'Permessi riportati ai valori di base',revoke_ingest_token:'Token di ingest revocato',
+  rotation_set_active:'Turnazione di reperibilità attivata',round_auto_close:'Ronda chiusa automaticamente',safety_triggers_set:'Trigger di sicurezza impostati',
+  scenario_aeration:'Scenario · aerazione',scenario_ai_analysis:'Scenario · analisi AI',scenario_apply:'Scenario attivato',scenario_catalog_create:'Scenario di catalogo creato',
+  scenario_catalog_delete:'Scenario di catalogo eliminato',scenario_catalog_update:'Scenario di catalogo modificato',scenario_demo:'Scenario · dati dimostrativi',scenario_remove:'Scenario rimosso',
+  secrets_recovery_set:'Passphrase di recupero dei segreti impostata',secrets_reset:'Chiave dei segreti azzerata',secrets_rotate:'Chiave dei segreti ruotata',secrets_unlock:'Chiave dei segreti sbloccata',
+  sensor_rule_create:'Regola sensore creata',sensor_rule_update:'Regola sensore modificata',set_ai_conn:'Connessione AI impostata',set_ai_feature:'Funzione AI attivata/disattivata',
+  set_capability:'Permesso cambiato',set_geofence_alert:'Avviso area impostato',set_geofence_devices:'Dispositivi dell’area impostati',set_geofence_events:'Eventi dell’area impostati',
+  set_module:'Modulo attivato/disattivato',set_tenant_admin:'Amministratore del tenant impostato',set_tool_config:'Configurazione strumento',set_tool_enabled:'Strumento attivato/disattivato',
+  set_user_sites:'Sedi dell’utente impostate',shift_plan_move:'Turno spostato',system_alert:'Alert di sistema',system_settings:'Impostazioni di monitoraggio',
+  temp_schedule_add:'Programma temperatura aggiunto',tenant_logo:'Logo del tenant',tenant_status:'Stato del tenant',tenant_timezone_set:'Fuso orario del tenant',
+  timesheet_from_order:'Consuntivo creato da intervento',trigger_suppressed_by_profile:'Allarme soppresso dal profilo di protezione',
+  update_absence:'Assenza modificata',update_asset:'Asset modificato',update_custom_role:'Ruolo personalizzato modificato',update_device:'Dispositivo modificato',
+  update_geofence:'Area (geofence) modificata',update_site:'Sede modificata',update_user:'Utente modificato',update_user_group:'Gruppo utenti modificato',
+  user_group_member_add:'Persona aggiunta al gruppo',user_group_member_del:'Persona tolta dal gruppo'};
+function auditLabel(a){ return AUDIT_LABELS[a]||humanizeCode(a)||'Azione'; }
+// Chiavi del dettaglio audit → italiano (le altre: humanizeCode)
+const AUDIT_KEY_LABELS={id:'Elemento',user:'Utente',user_id:'Utente',email:'Email',name:'Nome',device:'Dispositivo',device_id:'Dispositivo',group:'Gruppo',role:'Ruolo',
+  n:'Quantità',count:'Quantità',total:'Totale',kind:'Tipo',type:'Tipo',etype:'Evento',etypes:'Eventi',code:'Codice',status:'Stato',stato:'Stato',state:'Stato',order:'Intervento',order_id:'Intervento',
+  model:'Modello',model_code:'Modello',bytes:'Dimensione (byte)',timesheet_id:'Consuntivo',profile:'Profilo',op:'Operatore',metric:'Metrica',external_id:'Identificativo dispositivo',
+  correlation:'Correlazione',source:'Origine',rows:'Righe',numero:'Numero',number:'Numero',incident_id:'Incidente',incidents:'Incidenti',from:'Da',da:'Da',to:'A',a:'A',
+  fattura:'Fattura',commessa:'Commessa',caps:'Permessi',capability:'Permesso',zone:'Zona',with_demo:'Con dati dimostrativi',warnings:'Avvisi',value:'Valore',timezone:'Fuso orario',
+  timeout_s:'Attesa (s)',steps:'Passi',status_code:'Esito',sos_priority:'Priorità SOS',sos_as:'SOS come',signed:'Firmato',scope:'Ambito',scenario:'Scenario',saved:'Salvato',
+  samples:'Campioni',rules_removed:'Regole rimosse',rules_added:'Regole aggiunte',round_id:'Ronda',round:'Ronda',request_id:'Richiesta',repeat:'Ripetizioni',renamed:'Rinominati',
+  reason:'Motivo',motivo:'Motivo',provider:'Fornitore',presenza_id:'Presenza',position:'Posizione',pending_id:'Azione in attesa',pct:'Percentuale',on:'Attivo',note:'Nota',
+  module:'Modulo',mode:'Modalità',method:'Metodo',map_outdoor:'Mappa esterna',map_indoor:'Piantine indoor',labels:'Etichette',interval_s:'Intervallo (s)',importo:'Importo',
+  amount:'Importo',hours:'Ore',granted:'Concesso',feature:'Funzione',failed:'Falliti',expires_at:'Scadenza',events:'Eventi',enabled:'Attivo',done:'Completato',
+  dispositivi:'Dispositivi',devices_added:'Dispositivi aggiunti',devices_removed:'Dispositivi rimossi',delivery:'Consegna',contatti:'Contatti',command:'Comando',command_id:'Comando',
+  category:'Categoria',blueprint:'Modello',blocks:'Blocchi',beacon_uid:'Beacon',base_url:'Indirizzo',azione:'Azione',at:'Quando',asset:'Asset',anomalies:'Anomalie',
+  alert_on:'Avviso su',added:'Aggiunti',created:'Creati',sessions_closed:'Sessioni chiuse',disk:'Disco %',mem:'Memoria %',cpu:'CPU %',worker:'Worker (s)',phone:'Telefono',goal:'Richiesta',tool:'Strumento'};
+const UUID_RE=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Valore del dettaglio audit in forma leggibile: sì/no, UUID nascosti (tooltip), liste e oggetti compatti.
+function auditVal(v,depth){ depth=depth||0;
+  if(v===null||v===undefined||v==='') return '—';
+  if(typeof v==='boolean') return v?'sì':'no';
+  if(typeof v==='number') return esc(String(v));
+  if(typeof v==='string'){ if(UUID_RE.test(v)) return `<span title="${esc(v)}" style="text-decoration:underline dotted">riferimento</span>`;
+    return esc(v.length>120?v.slice(0,117)+'…':v); }
+  if(Array.isArray(v)){ if(!v.length) return 'nessuno'; if(depth>0) return v.length+' elementi';
+    const parts=v.slice(0,5).map(x=>auditVal(x,depth+1)); return parts.join(', ')+(v.length>5?' (+'+(v.length-5)+')':''); }
+  if(typeof v==='object'){ if(depth>0) return Object.keys(v).length+' campi';
+    return '('+Object.entries(v).slice(0,6).map(([k,x])=>esc(AUDIT_KEY_LABELS[k]||humanizeCode(k))+': '+auditVal(x,depth+1)).join(' · ')+')'; }
+  return esc(String(v)); }
+function auditDetail(d){
+  if(d===null||d===undefined||d==='') return '<span class="mut">—</span>';
+  if(typeof d!=='object') return auditVal(d);
+  const ent=Object.entries(d); if(!ent.length) return '<span class="mut">—</span>';
+  return ent.map(([k,v])=>{ let val;
+    if(k==='role'&&typeof v==='string') val=esc(roleLabel(v));
+    else if(k==='etype'&&typeof v==='string'&&typeof ETYPE_LAB!=='undefined'&&ETYPE_LAB[v]) val=esc(ETYPE_LAB[v]);
+    else if(k==='capability'&&typeof v==='string') val=esc(capLabel(v));
+    else if(k==='action'&&typeof v==='string') val=esc(auditLabel(v));
+    else val=auditVal(v);
+    return `<span style="white-space:nowrap"><b>${esc(AUDIT_KEY_LABELS[k]||humanizeCode(k))}</b>: ${val}</span>`; }).join(' · '); }
 function renderAudit(a){
   if(!a) return '<div class="small mut">non disponibile</div>';
   const rows=a.rows||[];
   return `<table class="table" data-export="audit-log"><thead><tr><th>Quando</th><th>Attore</th><th>Azione</th><th>Dettaglio</th></tr></thead>
   <tbody>${rows.map(r=>`<tr><td class="small">${fmtTime(r.at)}</td><td class="small">${esc(r.actor)}</td>
-    <td><span class="chip">${esc(r.action)}</span></td>
-    <td class="small mut" style="max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(JSON.stringify(r.detail||{}))}">${esc(JSON.stringify(r.detail||{}))}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessuna voce</td></tr>'}</tbody></table>`;
+    <td><span class="chip">${esc(auditLabel(r.action))}</span></td>
+    <td class="small mut" style="max-width:480px;white-space:normal">${auditDetail(r.detail)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">nessuna voce</td></tr>'}</tbody></table>`;
 }
 async function auditReload(resetOffset=true){
   if(resetOffset) AU_STATE.offset=0;
@@ -5986,10 +6112,10 @@ async function spSubs(p){
     const c=r.candidates||[];
     const rows=c.map(x=>`<div class="spread" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-8)">
       <div><b class="small">${esc(x.email)}</b><div class="small mut">${x.hours_30d}h/30g${x.warnings.length?' · ⚠ '+x.warnings.map(esc).join(' · '):' · nessun avviso'}</div></div>
-      <button class="btn ghost small" onclick='spApplySub(${jattr(p)},"${x.user_id}","${esc(x.email)}")'>assegna</button></div>`).join('')
+      <button class="btn ghost small" onclick='spApplySub(${jattr(p)},${jattr(x.user_id)},${jattr(x.email)})'>assegna</button></div>`).join('')
       ||'<div class="small mut">Nessun sostituto idoneo (conflitti, assenze o competenza mancante).</div>';
     drawer('Sostituti per il turno',`<div class="col" style="gap:var(--s-8)">
-      <div class="card pad" style="background:var(--brand-soft)"><div class="small mut">✦ ${esc(r.provider)}</div><div style="margin-top:var(--s-4)">${esc(r.summary)}</div></div>
+      <div class="card pad" style="background:var(--brand-soft)"><div class="small mut">✦ ${esc(aiProvLab(r.provider))}</div><div style="margin-top:var(--s-4)">${esc(r.summary)}</div></div>
       ${rows}</div>`);
   }catch(e){ drawer('Sostituti',`<div class="small" style="color:var(--bad)">${esc(e.message)}</div>`); }
 }
@@ -6035,7 +6161,7 @@ async function askAI(){
   try{ const r=await api('/assistant',{method:'POST',body:JSON.stringify({q})}); wait.remove();
     const src=(r.sources||[]).length?`<div class="small mut" style="margin-top:var(--s-6)">Fonti: ${r.sources.map(s=>`<span class="tag">${esc(s.type)}${s.site?' · '+esc(s.site):''}${s.title?' · '+esc(s.title):''}</span>`).join(' ')}</div>`:'';
     const per=r.period?`<span class="tag">${esc(r.period)}</span>`:'';
-    aiBubble(`${esc(r.answer)}<div class="small mut" style="margin-top:var(--s-6)">${per} <span class="tag sim">${esc(r.provider)}</span></div>${src}`,false);
+    aiBubble(`${esc(r.answer)}<div class="small mut" style="margin-top:var(--s-6)">${per} <span class="tag sim">${esc(aiProvLab(r.provider))}</span></div>${src}`,false);
   }catch(e){ wait.remove(); aiBubble('<span style="color:var(--bad)">'+esc(e.message)+'</span>',false); }
 }
 

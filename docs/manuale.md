@@ -118,6 +118,19 @@ e2e: `qa/checkin-sos-attribution-e2e.sh`.
   per quel lavoratore. Senza profilo si instradano al gruppo solo i tipi di allarme che non hanno
   ancora un gruppo. Prima l'onboarding **sovrascriveva** l'instradamento di tutta l'azienda: gli
   SOS di tutti finivano al gruppo del nuovo badge. La guida finale elenca i tipi rimasti invariati.
+- **Tipi di allarme instradabili (SL-19):** in *Gruppi di risposta* si possono instradare TUTTI i
+  tipi che aprono un allarme (l'elenco arriva dal server; prima la pagina ne mostrava 11 scritti a
+  mano e mancavano per esempio gli allarmi di area). La batteria bassa non apre un allarme e non si
+  instrada.
+- **Gruppo del lavoratore che ha il badge (SL-14):** se un allarme è attribuito a un lavoratore
+  (attribuzione all'orario dell'evento), il gruppo di risposta del suo profilo vale per quel
+  lavoratore anche quando il badge è registrato a nome di un altro.
+- **Centrale, elenco allarmi (SL-22):** gli allarmi aperti ci sono tutti; di quelli chiusi si
+  mostrano gli ultimi 300 (prima c'era un unico limite e, con molti chiusi, un aperto vecchio
+  poteva non comparire).
+- **Orari dal futuro (IO-10):** una posizione o una telemetria con orario oltre 2 minuti nel
+  futuro (orologio del dispositivo sbagliato) viene registrata all'ora del server: non resta più
+  «ultima» per giorni né falsa i controlli di silenzio.
 - **Device Onboarding Kit (DOK)**: crea in un colpo tutto ciò che serve per un dispositivo (o N
   dispositivi via CSV), per tipologia d'uso.
 - **Canali di ricezione dati**:
@@ -176,6 +189,15 @@ Modulo **giri**: giri di controllo per guardie/manutentori.
 - **Ronde dimenticate**: una sola ronda in corso per giro; una ronda mai chiusa viene chiusa dal
   sistema come «abbandonata» (con anomalia) e il giro torna avviabile. Le presenze di cantiere
   aperte da oltre 16 ore si chiudono senza ore conteggiate, da verificare.
+- **Presenze di cantiere verificate (CA-15, mig `0148`):**
+  - una sola presenza aperta per persona: per entrare in un altro cantiere si timbra prima l'uscita
+    (il messaggio dice in quale commessa la presenza è ancora aperta). Le presenze parallele già
+    presenti sono state chiuse d'ufficio, da verificare;
+  - se alla commessa sono assegnate squadre, timbra solo chi ne fa parte (chi pianifica sempre);
+  - all'entrata si confronta la posizione del telefono con la sede della commessa: oltre
+    `YW_PRESENCE_RADIUS_M` (default 500 m) la presenza vale ma è segnata **«fuori area · da
+    verificare»** (un GPS impreciso non blocca il lavoratore). Senza posizione o senza coordinate
+    della sede non è verificabile.
 - **Revisione** in console: esito per checkpoint, modo di punzonatura, tentativi. Vedi [ronde-manuale](ronde-manuale.md).
 
 ## 9. Consuntivi e turni
@@ -194,10 +216,25 @@ Modulo **giri**: giri di controllo per guardie/manutentori.
 - **Scenari/casi d'uso**: 16 ambienti attivabili dal superadmin su ogni tenant (moduli + regole
   sensori + demo). Generatore di scenari da descrizione/immagini.
 
+## 10-bis. Configurazione guidata
+
+- **Link coerenti con i moduli (TA-12):** ogni passo della checklist porta a una pagina che il
+  tenant vede: recapiti e instradamento in *Escalation e reperibilità*, regole dei sensori in
+  *Collegamento dispositivi* (anche senza Lone Worker), clienti solo con il modulo Interventi.
+  Anche «Cosa fare adesso» in home mostra turni e interventi solo se i rispettivi moduli sono attivi.
+
 ## 11. Assistente AI
 
 L'AI è **attore** nei processi (multi-provider): agente con strumenti che leggono e **scrivono** sul
 sistema (le operazioni sensibili richiedono conferma), report persistiti, diario vocale sul campo.
+**Difesa dai testi malevoli (IO-14, 25/11/2026):** i risultati dei tool arrivano al modello come
+dati delimitati (`<dati>…</dati>`) con l'istruzione di non eseguire mai ordini scritti lì dentro.
+Inoltre, dopo che l'agente ha letto dati del tenant (note, diari, messaggi dei dispositivi),
+**ogni scrittura** (anche una nota di diario) diventa una proposta da confermare: un testo letto
+non può far scrivere l'agente da solo. e2e `qa/ai-agent-e2e.sh` 19/19.
+**Strumenti IoT nativi (IO-18):** `query_iot_alerts` (alert di processo non chiusi) e
+`iot_device_telemetry` (ultimi valori di un sensore), solo con il modulo IoT. Tolti gli strumenti
+ThingsBoard rimasti nell'elenco (il connettore è ritirato).
 Modulo **assistant**.
 
 **Sicurezza dell'agente (IO-2, IO-3, IO-5, IO-6 · mig `0142`, 25/11/2026).**
@@ -349,6 +386,16 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   lo verifica su tutte le tabelle collegate (88 tabelle) e per ogni via di scrittura. La richiesta
   viene rifiutata con «riferimento non valido: il dato indicato non appartiene alla tua azienda»
   (HTTP 400). e2e `qa/cross-tenant-refs-e2e.sh` 12/12.
+- **Controllo più leggero (review 25/11, mig `0147`).** Il trigger legge solo le colonne di
+  riferimento (niente copia JSON dell'intera riga, pesante con allegati e piantine) e in modifica
+  scatta solo se cambia un riferimento o l'azienda: gli aggiornamenti di posizione dei dispositivi
+  non lo eseguono più.
+- **Sedi in caso di errore (review 25/11).** Se la lettura delle sedi di un utente fallisce,
+  l'accesso si restringe (restano visibili solo gli allarmi senza sede) invece di aprirsi a tutte.
+  Un pianificatore ristretto per sede non apre per id gli ordini di altre sedi, neanche
+  dall'assistente AI; l'elenco incidenti dell'assistente filtra per sede prima del limite.
+- **Email degli utenti (review 25/11).** Formato verificato anche alla creazione da parte
+  dell'amministratore: niente spazi, virgolette, `< >` e simili (finiscono in pagine HTML).
 - **Registro attività (TA-13).** Ci finiscono anche membri dei gruppi, ruoli personalizzati
   assegnati, sedi e asset, sempre con l'utente reale. Per le azioni del superadmin l'attore è
   `superadmin:<email>`, non più la sola parola «superadmin».
@@ -365,15 +412,24 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
 - **Scheda Sistema → «Cifratura dei segreti»** (solo superadmin): stato, chiave e server su cui
   è sigillata, passphrase impostata sì o no, numero di segreti. Da qui si imposta o cambia la
   passphrase (per cambiarla serve quella attuale), si sblocca la chiave su un nuovo server e si
-  ruota la chiave (segreti ricifrati, vecchia chiave eliminata).
+  ruota la chiave (segreti ricifrati; la vecchia chiave resta disattivata finché nessun segreto
+  la usa e almeno 5 minuti dopo la rotazione, poi la pulizia automatica la elimina).
+  - **Più istanze del core**: ogni minuto ciascuna controlla la chiave attiva nel DB; se un'altra
+    l'ha ruotata o sbloccata, la ricarica e ricifra i segreti rimasti indietro.
+  - **Chiave persa** (server cambiato e nessuna passphrase, o passphrase dimenticata): con la
+    chiave bloccata compare «Azzera la chiave…». Si scrive AZZERA: viene creata una chiave nuova e
+    le chiavi dei provider AI salvate finora vengono **cancellate** (vanno reinserite). È
+    registrato nel log (`secrets_reset`). Con la chiave attiva l'azzeramento è rifiutato (409).
+  - Con la chiave bloccata le funzioni AI risultano non configurate: il testo cifrato non viene
+    mai mandato al provider al posto della chiave.
   - Il controllo di sistema `secrets` è **rosso** se la chiave è bloccata: le funzioni AI restano
     senza chiavi, gli allarmi funzionano comunque.
   - È **giallo** finché la passphrase non è impostata.
-  - API: `GET /api/superadmin/secrets` e `POST /api/superadmin/secrets/{recovery,unlock,rotate}`.
+  - API: `GET /api/superadmin/secrets` e `POST /api/superadmin/secrets/{recovery,unlock,rotate,reset}`.
 - La vecchia `YW_SECRET_KEY` non è più richiesta. Se è ancora impostata serve solo a convertire
   i segreti nei formati `enc:v1` e `enc:v2` (e quelli in chiaro), che all'avvio vengono ricifrati
   con la chiave gestita. Dopo la conversione si può togliere.
-- e2e `qa/secret-key-e2e.sh` 14/14; unit test `crypto::tests` (3), compreso il sigillo DPAPI.
+- e2e `qa/secret-key-e2e.sh` 15/15; unit test `crypto::tests` (3), compreso il sigillo DPAPI.
   Il test imposta sul database di sviluppo la passphrase di prova `e2e-passphrase-di-recupero`.
 
 ## 13-bis. Privacy e audit (GDPR + registro attività)

@@ -137,7 +137,12 @@ async fn send<W: AsyncWrite + Unpin>(wr: &mut W, type_flags: u8, body: &[u8]) ->
     let mut pkt = vec![type_flags];
     encode_remaining_length(body.len(), &mut pkt);
     pkt.extend_from_slice(body);
-    wr.write_all(&pkt).await
+    // un client che non legge più riempie il buffer TCP: senza limite la scrittura resterebbe
+    // bloccata per sempre e terrebbe occupato uno slot di connessione
+    match timeout(Duration::from_secs(15), wr.write_all(&pkt)).await {
+        Ok(r) => r,
+        Err(_) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "scrittura MQTT scaduta")),
+    }
 }
 
 async fn handle<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(st: AppState, sock: S) -> std::io::Result<()> {
@@ -180,14 +185,18 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(st: AppState
     let idle = if keepalive > 0 { Duration::from_millis(keepalive as u64 * 1500) } else { Duration::from_secs(600) };
     let mut cmd_filters: Vec<String> = Vec::new();
     let mut tick = tokio::time::interval(Duration::from_secs(5));
+    // scadenza unica, spostata solo quando arriva un pacchetto (il timer dei comandi non la azzera)
+    let deadline = tokio::time::sleep(idle);
+    tokio::pin!(deadline);
     let res: std::io::Result<()> = async {
         loop {
             tokio::select! {
-                pkt = timeout(idle, rx.recv()) => {
+                _ = &mut deadline => { tracing::debug!("mqtt: keepalive scaduto (tenant {tid})"); return Ok(()); }
+                pkt = rx.recv() => {
+                    deadline.as_mut().reset(tokio::time::Instant::now() + idle);
                     let (ptype, flags, body) = match pkt {
-                        Err(_) => { tracing::debug!("mqtt: keepalive scaduto (tenant {tid})"); return Ok(()); }
-                        Ok(None) | Ok(Some(Err(_))) => return Ok(()),
-                        Ok(Some(Ok(p))) => p,
+                        None | Some(Err(_)) => return Ok(()),
+                        Some(Ok(p)) => p,
                     };
                     match ptype {
                         PUBLISH => {
@@ -244,9 +253,15 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(st: AppState
 async fn flush<W: AsyncWrite + Unpin>(st: &AppState, tid: uuid::Uuid, bound: Option<uuid::Uuid>, filters: &[String], wr: &mut W) -> std::io::Result<()> {
     for f in filters {
         match crate::api::mqtt_flush_commands(st, tid, bound, f).await {
-            Ok(cmds) => for cmd in cmds {
-                let payload = serde_json::to_vec(&cmd).unwrap_or_default();
-                publish_qos0(wr, f, &payload).await?;
+            Ok(cmds) => for (i, cmd) in cmds.iter().enumerate() {
+                let payload = serde_json::to_vec(cmd).unwrap_or_default();
+                if let Err(e) = publish_qos0(wr, f, &payload).await {
+                    // non scritti: tornano in coda per la prossima connessione
+                    let ids: Vec<uuid::Uuid> = cmds[i..].iter()
+                        .filter_map(|c| c.get("id").and_then(|v| v.as_str()).and_then(|s| s.parse().ok())).collect();
+                    crate::api::mqtt_commands_unsent(st, tid, &ids).await;
+                    return Err(e);
+                }
             },
             Err(e) => tracing::debug!("mqtt: flush comandi scartato su {f} ({e})"),
         }

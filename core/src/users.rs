@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::state::AppState;
-use crate::api::{conflict_or, R, require_tenant, require_cap, has_cap, require_grantable, user_caps, effective_caps, license_overage, ise, err, audit, USER_ROLES, is_e164};
+use crate::api::{conflict_or, R, require_tenant, require_cap, has_cap, require_grantable, user_caps, effective_caps, license_overage, ise, err, audit, USER_ROLES, is_e164, valid_email};
 use crate::{db, auth};
 
 /// TA-10 (25/11/2026): prima ogni utente (anche un lavoratore) leggeva email, ruolo e telefono di
@@ -73,7 +73,7 @@ pub async fn create_user(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     // TA-1: il ruolo assegnato non può avere permessi che chi crea non ha
     require_grantable(&s, &effective_caps(&st, tid, &b.role).await)?;
     if b.password.len() < 4 { return Err(err(StatusCode::BAD_REQUEST, "password troppo corta")); }
-    if b.email.trim().is_empty() { return Err(err(StatusCode::BAD_REQUEST, "email richiesta")); }
+    if !valid_email(&b.email) { return Err(err(StatusCode::BAD_REQUEST, "email non valida")); }
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query("INSERT INTO app.users(tenant_id,email,pass_hash,role) VALUES($1,$2,$3,$4) RETURNING id")
         .bind(tid).bind(b.email.trim()).bind(auth::hash_password(&b.password)).bind(&b.role)

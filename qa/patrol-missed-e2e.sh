@@ -72,7 +72,10 @@ echo "$D" | py "[s for s in d['slots'] if s['route_name']=='Notte $R'][0]['at'][
   && ok "lo stesso slot in UTC è alle $SLOT_UTC" || no "utc" "-"
 
 echo "== ronda svolta in tempo =="
-RD=$(call A POST "/api/patrol-routes/$RT2/rounds" '{}' | py "d['id']")   # avviata ora: copre lo slot $COVER_FROM
+RDJ=$(call A POST "/api/patrol-routes/$RT2/rounds" '{}')   # avviata ora: copre lo slot $COVER_FROM
+RD=$(echo "$RDJ" | py "d.get('id','')" 2>/dev/null)
+# diagnosi del fallimento intermittente in run-all: se l'avvio non riesce lo si vede subito
+[ -n "$RD" ] && ok "ronda del giro «Svolta» avviata" || no "avvio ronda" "$RDJ"
 # l'avvio è registrato con l'orologio del DB: lo allineo all'orologio di test (indipendente da avanzamenti precedenti)
 docker exec -i ywdb psql -U postgres -d youworkforce -qc "UPDATE app.patrol_rounds SET started_at='$NOW' WHERE id='$RD'"
 docker exec -i ywdb psql -U postgres -d youworkforce -qc "UPDATE app.patrol_schedules SET created_at='$NOW'::timestamptz - interval '1 minute' WHERE tenant_id='$TID'"

@@ -104,6 +104,9 @@ function app(){
   if(safetyWorker()){ let want=false; try{ want=localStorage.getItem('yw_track')==='1'; }catch(e){}
     if(want) startTracking(true); }
 }
+// CA-22: stati e tipi con etichette leggibili (mai codici grezzi)
+const PLAN_ST_LAB={pianificato:'Pianificato (da confermare)',confermato:'Confermato',annullato:'Annullato',svolto:'Svolto',completato:'Svolto'};
+const CP_KIND_LAB={qr:'QR',nfc:'NFC',beacon:'Beacon',gps:'GPS'};
 async function loadPlans(){
   const b=$('#plansBox'); if(!b)return;
   const P=await api('/shift-plans').catch(()=>[]);
@@ -112,7 +115,7 @@ async function loadPlans(){
   const dt=iso=>new Date(iso).toLocaleString('it-IT',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
   b.innerHTML=fut.map(p=>`<div class="card"><div class="card-b">
     <div class="spread"><b>${dt(p.starts_at)} → ${new Date(p.ends_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}</b>
-      <span class="chip ${p.state==='confermato'?'s-attivo':''}">${p.state}</span></div>
+      <span class="chip ${p.state==='confermato'?'s-attivo':''}">${esc(PLAN_ST_LAB[p.state]||humanizeCode(p.state))}</span></div>
     <div class="small mut" style="margin-top:4px">${esc(p.site||'—')}${p.note?' · '+esc(p.note):''}</div>
     ${p.state==='pianificato'?`<button class="btn block" style="margin-top:10px" onclick="planConfirm('${p.id}')">Conferma turno</button>`:''}
   </div></div>`).join('');
@@ -293,7 +296,7 @@ function renderRound(){ const r=PATROL_ROUND, box=$('#patrols'); if(!r)return lo
   box.innerHTML=`<div class="card pad">
     <div class="spread"><b>${esc(r.route_name)}</b><span class="tag">${r.done}/${r.total}</span></div>
     <div class="col" style="gap:8px;margin-top:10px">${r.checkpoints.map(c=>`<div class="spread" style="border:1px solid var(--line,#ddd);border-radius:8px;padding:8px">
-      <span>${c.position}. <b>${esc(c.name)}</b> <span class="tag">${({qr:'QR',nfc:'NFC',beacon:'Beacon',gps:'GPS'})[c.kind]||c.kind}</span>${c.punched?` <span style="color:${c.punched.ok?'var(--ok,#16a34a)':'var(--bad,#c0392b)'}">${c.punched.ok?'✓':'✗'}</span>`:''}</span>
+      <span>${c.position}. <b>${esc(c.name)}</b> <span class="tag">${esc(CP_KIND_LAB[c.kind]||humanizeCode(c.kind))}</span>${c.punched?` <span style="color:${c.punched.ok?'var(--ok,#16a34a)':'var(--bad,#c0392b)'}">${c.punched.ok?'✓':'✗'}</span>`:''}</span>
       ${c.punched&&c.punched.ok?'':`<button class="btn small" onclick="doPunch('${c.id}','${c.kind}')">punzona</button>`}</div>`).join('')}</div>
     <button class="btn block" style="margin-top:12px" onclick="closeRound()">Chiudi ronda</button>
     <button class="btn block ghost" style="margin-top:6px" onclick="PATROL_ROUND=null;loadPatrols()">Annulla</button></div>`;

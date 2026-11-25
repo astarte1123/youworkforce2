@@ -21,7 +21,8 @@ ME=$(curl -s -b "$JAR" -H 'x-tenant-slug: acme' "$BASE/api/me")
 echo "$ME" | grep -q 'operatore@acme' && ok "sessione valida (/me)" || no "me" "$ME"
 
 # scadenza: forzo expires_at nel passato -> la sessione non deve più valere
-TOK=$(dbq "SELECT token FROM app.sessions ORDER BY created_at DESC LIMIT 1;")
+# la sessione di QUESTO test (dal cookie), non «l'ultima creata»: altri test in parallelo ne creano
+TOK=$(awk '$6=="yw_session"{print $7}' "$JAR" | tail -1)
 dbq "UPDATE app.sessions SET expires_at = now() - interval '1 minute' WHERE token='$TOK';" >/dev/null
 EXP=$(curl -s -o /dev/null -w "%{http_code}" -b "$JAR" -H 'x-tenant-slug: acme' "$BASE/api/me")
 [ "$EXP" = "401" ] && ok "sessione scaduta rifiutata (401)" || no "expiry" "$EXP"

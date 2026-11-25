@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Agente AI (tool-calling che ESEGUE su DB). Prova con mock OpenAI-compatibile:
-# - scrittura a basso rischio eseguita subito (nota diario salvata)
+# - scrittura dopo una lettura di dati: proposta, eseguita solo dopo conferma (IO-14)
 # - azione sensibile (create_sensor_rule) NON eseguita -> pending -> confirm la esegue
 # - difesa: tool sulla catena di sicurezza rifiutato
 # - report AI generato e SALVATO su DB
@@ -70,7 +70,12 @@ R=$(aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/agent" -d '{"
 echo "$R" | grep -q '"provider":"openai"' && ok "agente risponde (provider openai)" || no "agente non risponde" "$R"
 echo "$R" | grep -q 'add_diary_entry' && ok "agente ha invocato add_diary_entry" || no "nessuna azione diario" "$R"
 D1=$(sql "SELECT count(*) FROM app.diary_entries WHERE tenant_id=$TIDQ AND source='ai'")
-[ "$D1" -gt "$D0" ] && ok "nota diario SCRITTA su DB (source=ai)" || no "diario non scritto" "D0=$D0 D1=$D1"
+# IO-14 (25/11/2026): la scrittura arriva DOPO una lettura di dati del tenant -> diventa proposta da confermare
+[ "$D1" = "$D0" ] && ok "dopo aver letto dati, la scrittura NON parte da sola (anti prompt-injection)" || no "scritta senza conferma" "D0=$D0 D1=$D1"
+DPID=$(echo "$R" | python -c "import sys,json;print([p['id'] for p in json.load(sys.stdin).get('pending',[]) if p['name']=='add_diary_entry'][0])" 2>/dev/null)
+aapi -H 'content-type: application/json' -X POST "$BASE/api/ai/agent/confirm" -d "{\"pending_id\":\"$DPID\"}" | grep -q '"ok":true' && ok "nota diario confermata" || no "confirm diario" "$DPID"
+D2=$(sql "SELECT count(*) FROM app.diary_entries WHERE tenant_id=$TIDQ AND source='ai'")
+[ "$D2" -gt "$D0" ] && ok "nota diario SCRITTA su DB dopo conferma (source=ai)" || no "diario non scritto" "D0=$D0 D2=$D2"
 
 # 2) azione sensibile -> pending (NON eseguita), poi confirm la esegue
 RULE0=$(sql "SELECT count(*) FROM app.sensor_rules WHERE tenant_id=$TIDQ AND metric='gas'")

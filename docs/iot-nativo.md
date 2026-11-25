@@ -157,11 +157,15 @@ l'ingest dei sensori e il downlink dei comandi. Disattivabile con `YW_MQTT_PORT=
   `YW_MQTT_PLAIN=off` chiude la porta in chiaro 1883.
 - **Limiti**: al massimo `YW_MQTT_MAX_CONN` connessioni contemporanee (default 500). La CONNECT
   deve arrivare entro 10 s. Il keepalive del client viene applicato (1,5 × il valore; senza
-  keepalive 10 minuti di inattività).
+  keepalive 10 minuti di inattività): la scadenza si sposta solo quando arriva un pacchetto, il
+  controllo dei comandi ogni 5 s non la azzera (correzione review 25/11). Ogni scrittura verso il
+  client ha un limite di 15 s: un client che non legge più viene chiuso e libera il posto.
 - **Conferme vere**: il PUBACK dei QoS 1 parte solo se il dato è stato accettato. Un dato scartato
   chiude la connessione: prima veniva confermato anche ciò che non entrava.
 - **Comandi**: consegnati anche mentre il client resta collegato (controllo ogni 5 s), non più
-  solo al momento della SUBSCRIBE.
+  solo al momento della SUBSCRIBE. Lettura e marcatura «inviato» sono un'unica istruzione (un
+  comando creato in quel momento non si perde) e se la scrittura al client fallisce i comandi
+  non scritti tornano «in attesa».
 
 **Comandi IoT (IO-12).** Il metodo di un comando RPC verso un sensore è un nome (lettere, cifre,
 `_ . : -`, al massimo 64 caratteri). I parametri sono al massimo 4 KB. Il testo GPRS libero verso
@@ -201,6 +205,11 @@ i badge resta riservato a `devices.admin`. Ogni comando è nel registro attivit�
     dalla telemetria nativa (`device_telemetry`). Prima mostrava solo i dati demo.
 - **Regole con la stessa metrica (IO-9):** due regole sulla stessa metrica e con lo stesso
   operatore, con soglie diverse, non si scartano più a vicenda: la soglia entra nell'etichetta.
+- **Modulo IoT richiesto (IO-17):** cruscotti, aerazione, analisi AI e collegamento di un sensore a
+  uno scenario rispondono 403 senza modulo IoT; l'elenco degli scenari del tenant è vuoto.
+- **Sede demo legata allo scenario (SA-13, mig `0149`):** la sede «<scenario> (demo)» porta il
+  codice dello scenario. Rimuovendo uno scenario si elimina solo la sua sede demo, se vuota; prima
+  sparivano tutte le sedi vuote con «(demo)» nel nome.
 - e2e `qa/scenario-catalog-e2e.sh` **18/18**.
 
 ## Tenant demo

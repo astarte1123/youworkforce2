@@ -3,7 +3,8 @@
 #  - la chiave è nel DB solo sigillata (server + passphrase di recupero), stato visibile al superadmin
 #  - passphrase di recupero: impostazione, cambio con la passphrase attuale (errata -> 403)
 #  - i segreti (chiave AI) sono cifrati con la chiave attiva (enc:v3:<n>)
-#  - rotazione: nuova chiave, segreti ricifrati, vecchia chiave eliminata
+#  - rotazione: nuova chiave, segreti ricifrati, vecchia chiave disattivata (eliminata dalla pulizia)
+#  - azzeramento (chiave persa) solo quando la chiave è bloccata
 #  - sblocco con la passphrase (errata -> 403)
 # ATTENZIONE: imposta sul DB di sviluppo la passphrase di recupero di test YW_E2E_RECOVERY
 # (default «e2e-passphrase-di-recupero»). Non usare su un DB di produzione.
@@ -43,7 +44,9 @@ C=$(sac POST /api/superadmin/secrets/rotate '{"passphrase":"sbagliata-sbagliata"
 K1=$(sa POST /api/superadmin/secrets/rotate "{\"passphrase\":\"$P\"}" | py "d['key_id']")
 [ "$K1" = "$((K0+1))" ] && ok "chiave ruotata ($K0 -> $K1)" || no "rotazione" "$K1"
 case "$(q "SELECT api_key FROM app.ai_connections WHERE tenant_id='$TID'")" in enc:v3:$K1:*) ok "segreti ricifrati con la nuova chiave";; *) no "ricifra" "-";; esac
-[ "$(q "SELECT count(*) FROM app.secret_keys WHERE key_id=$K0")" = "0" ] && ok "vecchia chiave eliminata" || no "vecchia" "-"
+# la vecchia chiave resta (disattivata) qualche minuto, per le altre istanze; poi la pulizia la elimina
+[ "$(q "SELECT count(*) FROM app.secret_keys WHERE key_id=$K0 AND NOT active")$(q "SELECT count(*) FROM app.secret_keys WHERE active")" = "11" ] && ok "vecchia chiave disattivata, una sola attiva" || no "vecchia" "-"
+C=$(sac POST /api/superadmin/secrets/reset '{"confirm":"AZZERA"}'); [ "$C" = "409" ] && ok "azzeramento rifiutato con la chiave attiva (409)" || no "reset" "$C"
 
 C=$(sac POST /api/superadmin/secrets/unlock '{"passphrase":"sbagliata-sbagliata"}'); [ "$C" = "403" ] && ok "sblocco con passphrase errata: 403" || no "unlock errato" "$C"
 C=$(sac POST /api/superadmin/secrets/unlock "{\"passphrase\":\"$P\"}"); [ "$C" = "200" ] && ok "sblocco con la passphrase: chiave risigillata per questo server" || no "unlock" "$C"

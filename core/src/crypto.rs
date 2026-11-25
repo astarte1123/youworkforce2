@@ -96,9 +96,12 @@ mod sealing {
         let p = dir().join("server-seal.key");
         if let Ok(b) = std::fs::read(&p) { if b.len() == 32 { let mut k = [0u8; 32]; k.copy_from_slice(&b); return Ok(k); } }
         std::fs::create_dir_all(dir()).map_err(|e| format!("keystore {}: {e}", dir().display()))?;
+        #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; let _ = std::fs::set_permissions(dir(), std::fs::Permissions::from_mode(0o700)); }
         let k = super::random_key();
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&p).map_err(|e| format!("keystore {}: {e}", p.display()))?;
-        #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)); }
+        let mut o = std::fs::OpenOptions::new(); o.write(true).create_new(true);
+        // file creato GIÀ con permessi 0600 (mai leggibile da altri, neanche per un istante)
+        #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; o.mode(0o600); }
+        let mut f = o.open(&p).map_err(|e| format!("keystore {}: {e}", p.display()))?;
         f.write_all(&k).map_err(|e| e.to_string())?;
         Ok(k)
     }
