@@ -42,6 +42,7 @@ Aggiornato al 25/11/2026. I nomi di pagine e menu sono quelli del menu attuale (
 6. [Lavoro sul campo](#cap6)
    - [Interventi](#cap6-interventi)
    - [Clienti, richieste e contratti](#cap6-clienti)
+   - [Tipi di attività](#cap6-attivita)
    - [Listino](#cap6-listino)
    - [Cantieri e presenze](#cap6-cantieri)
    - [Ronde e cruscotto vigilanza](#cap6-ronde)
@@ -282,7 +283,8 @@ dispositivi IoT (in linea, che non comunicano, allarmi aperti), interventi, rond
 consuntivi e altro. Un riquadro compare se hai il permesso per quello che mostra: per esempio,
 dando a un ruolo il permesso di vedere la Centrale compare anche il riquadro degli allarmi. Il riquadro **Cosa fare adesso** elenca le azioni in
 sospeso per te (allarmi da prendere in carico, interventi da gestire, turni da confermare, i tuoi
-interventi). Chi ha il permesso «Dashboard · Organizzare» può scegliere, ordinare e
+interventi). Il riquadro **Scadenze** (moduli Qualifiche o Mezzi) elenca patentini delle persone e
+scadenze dei mezzi già scaduti o in scadenza nei prossimi 60 giorni. Chi ha il permesso «Dashboard · Organizzare» può scegliere, ordinare e
 dimensionare i riquadri per tutta l'azienda con **Organizza**.
 
 ---
@@ -880,6 +882,16 @@ Menu **Lavoro sul campo → Interventi**. Ordini di lavoro per assistenza e manu
 istruzioni, **checklist** (una voce per riga), persona assegnata oppure **gruppo** (i membri del
 gruppo vedono ed eseguono l'ordine), data e ora.
 
+- **Tipo di attività e quantità** (es. «Taglio erba», 2.500 m²): se la fine è vuota la calcola YW
+  dalla durata del tipo.
+- **Mezzi e attrezzature da prenotare** (modulo Mezzi): si prenotano nell'orario dell'intervento e lo
+  seguono se lo sposti; lo stesso mezzo non si prenota due volte.
+- **Controllo vincoli**: mentre compili, YW verifica orari della sede, patentini richiesti dal tipo di
+  attività e dai mezzi, persone assenti, mezzi fermi o già prenotati, sovrapposizioni. ⛔ = vincolo
+  non rispettato: salvando YW chiede se **procedere comunque**; ⚠ = avviso (es. squadra con meno
+  persone di quelle richieste, mezzo richiesto non prenotato, revisione scaduta). Lo stesso controllo
+  vale quando assegni o riassegni l'intervento.
+
 La pagina ha tre schede: l'**agenda degli appuntamenti** (gli interventi aperti con data, dal più
 vicino; in testa il prossimo e quanti sono scaduti senza essere chiusi), gli interventi **da
 pianificare** (aperti senza data) e i **chiusi** (gli ultimi 500 completati o annullati, i più recenti
@@ -913,6 +925,22 @@ checklist, materiali, esito, report e allegati (foto, documenti, firma). Un inte
   solo** il piano resta manuale. **Genera ora** crea subito l'intervento della prossima scadenza.
   Se un piano è rimasto indietro (scadenze già passate) si crea un solo intervento e la prossima
   data passa alla prima scadenza futura.
+
+<a id="cap6-attivita"></a>
+### Tipi di attività
+
+Menu **Lavoro sul campo → Tipi di attività** (pianificatore). Per ogni lavoro che fate spesso:
+
+- **Si misura in**: a intervento, m², metri lineari, numero (es. piante), ore;
+- **durata**: base + minuti per unità (es. 40 min + 0,05 min/m²: 2.500 m² = 2 h 45 min); accanto
+  compare la **durata reale media** degli interventi completati, per correggere la stima;
+- **persone necessarie**;
+- **patentini richiesti** (modulo Qualifiche e scadenze): almeno una persona della squadra li deve
+  avere validi il giorno dell'intervento;
+- **mezzi richiesti** per tipo (es. «piattaforma» × 1).
+
+Un tipo usato da interventi o piani non si elimina: si disattiva. Anche i **piani di manutenzione**
+hanno tipo e quantità, e l'intervento generato li eredita.
 
 <a id="cap6-listino"></a>
 ### Listino
@@ -1024,7 +1052,9 @@ Menu **Lavoro sul campo → Pianificazione**, con tre schede.
   e il nome della squadra; quando gli eventi si sovrappongono compare «+N altri».
 - **Agenda tecnici**: gli interventi **da assegnare** e il carico del giorno **per squadra e per
   persona** (numero di interventi e ore previste), oppure la settimana giorno per giorno; frecce per
-  passare al giorno o alla settimana prima e dopo. Si assegnano persona o squadra e orario.
+  passare al giorno o alla settimana prima e dopo. Si assegnano persona o squadra e orario. In testa
+  quanti interventi della settimana non rispettano un vincolo; su ogni intervento ⛔ o ⚠ con il motivo
+  passando il mouse, e i mezzi prenotati (🚜).
 - **Turni** (modulo Forza lavoro e turni):
   - **Turni pianificati**: **+ Pianifica turno**, anche collegato a un intervento o a un cantiere;
     il lavoratore li vede e li conferma dall'app;
@@ -1162,8 +1192,14 @@ Menu **Configurazione → Sedi e asset**.
   mappa dall'indirizzo** compila la posizione; trascina il segnaposto per il punto esatto
   (cancello, ingresso). La ricerca dell'indirizzo la fa il tuo browser con OpenStreetMap; se non
   funziona, posiziona a mano.
+- **Orari della sede**: fasce in cui si può lavorare (giorni e ore, es. lun–ven 8:00–17:00; vuoto =
+  sempre). Un intervento fuori orario viene segnalato e bloccato salvo «procedi comunque».
 - **Fuso orario dell'azienda** (predefinito Europa/Roma): vale per le ronde pianificate.
-- **Asset / mezzi**: veicoli, attrezzature, strumenti, a cui si possono assegnare dispositivi.
+- **Mezzi e attrezzature**: veicoli, macchine, attrezzi. Il **tipo** è libero (furgone, piattaforma,
+  trattorino…): i tipi di attività chiedono i mezzi per tipo. Con il modulo **Mezzi e attrezzature**:
+  **stato** (disponibile, fermo, dismesso: fermo o dismesso non si prenota), **qualifica per l'uso**
+  (es. piattaforma → abilitazione PLE), **scadenze** (revisione, tagliando, assicurazione, verifica:
+  segna **fatta** quando è fatta) e **📅 prenotazioni** della settimana mezzo per mezzo.
 
 Sedi, persone e asset collegati ad altri dati (allarmi, ordini…) non si possono eliminare finché
 sono in uso. Un dispositivo invece si può eliminare del tutto.

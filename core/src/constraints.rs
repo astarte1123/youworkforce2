@@ -249,7 +249,7 @@ pub(crate) async fn check_order(st: &AppState, tid: Uuid, p: &OrderPlan) -> Resu
             .bind(g).fetch_all(&mut *tx).await.map_err(ise)?
     } else { vec![] }.iter().map(|r| (r.get::<Uuid,_>("id"), r.get::<String,_>("email"))).collect();
     let group_name: Option<String> = match p.group { Some(g) => sqlx::query_scalar("SELECT name FROM app.user_groups WHERE id=$1").bind(g).fetch_optional(&mut *tx).await.map_err(ise)?, None => None };
-    let who = group_name.clone().map(|g| format!("la squadra «{g}»")).unwrap_or_else(|| people.first().map(|x| x.1.clone()).unwrap_or_else(|| "l'assegnatario".into()));
+    let who = group_name.clone().map(|g| format!("«{g}»")).unwrap_or_else(|| people.first().map(|x| x.1.clone()).unwrap_or_else(|| "l'assegnatario".into()));
     let ids: Vec<Uuid> = people.iter().map(|x| x.0).collect();
 
     // --- assenze ---
@@ -285,7 +285,8 @@ pub(crate) async fn check_order(st: &AppState, tid: Uuid, p: &OrderPlan) -> Resu
                     .bind(at).fetch_all(&mut *tx).await.map_err(ise)?;
                 for q in &qs {
                     if holders(&mut tx, q.get("id"), &available, when).await? == 0 {
-                        out.push(v("qualification", true, format!("Nessuno in {who} ha «{}» valida il {}.", q.get::<String,_>("name"), dm(when, tz).split(' ').next().unwrap_or(""))));
+                        let (qn, day) = (q.get::<String,_>("name"), dm(when, tz).split(' ').next().unwrap_or("").to_string());
+                        out.push(v("qualification", true, if p.group.is_some() { format!("Nessuno in {who} ha «{qn}» valida il {day}.") } else { format!("{who} non ha «{qn}» valida il {day}.") }));
                     }
                 }
             }
@@ -317,8 +318,9 @@ pub(crate) async fn check_order(st: &AppState, tid: Uuid, p: &OrderPlan) -> Resu
             if quals_on && !available.is_empty() {
                 if let Some(q) = a.try_get::<Option<Uuid>,_>("required_qualification_id").ok().flatten() {
                     if holders(&mut tx, q, &available, when).await? == 0 {
-                        out.push(v("asset_qualification", true, format!("Il mezzo «{name}» richiede «{}»: nessuno in {who} ce l'ha valida.",
-                            a.try_get::<String,_>("qname").unwrap_or_default())));
+                        let qn = a.try_get::<String,_>("qname").unwrap_or_default();
+                        out.push(v("asset_qualification", true, if p.group.is_some() { format!("Il mezzo «{name}» richiede «{qn}»: nessuno in {who} ce l'ha valida.") }
+                            else { format!("Il mezzo «{name}» richiede «{qn}»: {who} non ce l'ha valida.") }));
                     }
                 }
             }

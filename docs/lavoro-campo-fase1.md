@@ -77,7 +77,7 @@ contano solo con il modulo Qualifiche attivo, i mezzi solo con il modulo Mezzi.
 | POST/DELETE | `/api/asset-deadlines/:id` | segna fatta (`{"done":true}`) · elimina |
 | GET | `/api/deadlines?days=60` | scadenziario: qualifiche delle persone e scadenze dei mezzi entro N giorni, anche già scadute |
 
-Le sedi accettano `access_windows`; i mezzi `status` e `required_qualification_id` (`""` = nessuna).
+Le sedi accettano `access_windows`; i mezzi `status` e `required_qualification_id` (`""` = nessuna). Console: pagina «Tipi di attività», controllo dei vincoli dal vivo nel modulo intervento, «procedi comunque» sui vincoli duri, segnali ⛔/⚠ in Agenda tecnici, orari delle sedi, mezzi con stato/scadenze/prenotazioni in «Sedi e asset», riquadro «Scadenze» in dashboard.
 La dashboard ha il riquadro `deadlines` (Scadenze) con il modulo Qualifiche o Mezzi.
 
 Un pianificatore esterno (fase 5) propone interventi con squadra, mezzi e orari usando gli stessi

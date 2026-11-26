@@ -127,6 +127,7 @@ const NAV = [
   // --- Lavoro sul campo ---
   {k:'ordini',    t:'Interventi', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'clienti',   t:'Clienti', ico:'building', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
+  {k:'attivita',  t:'Tipi di attività', ico:'sliders', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'listino',   t:'Listino', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi','consuntivi'], grp:'work'},
   {hidden:true, k:'dispatch',  t:'Agenda tecnici', ico:'calendar', roles:['pianificatore','tenant_admin'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'richieste', t:'Richieste', ico:'clipboard', roles:['pianificatore','tenant_admin','operatore','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
@@ -537,7 +538,7 @@ function renderPage(k, v){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,'centrale-tutti':vCentrale,'iot-monitor':vIotMonitor,'iot-alerts':vIotAlerts,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,
-    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,ore:vOre,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,'regole-sensori':vRegoleSensori,'moduli-base':vModuli,'piantine-campo':vPiantine,clienti:vClienti,listino:vListino,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,'mappa-allarmi':vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,ore:vOre,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,'regole-sensori':vRegoleSensori,'moduli-base':vModuli,'piantine-campo':vPiantine,clienti:vClienti,listino:vListino,attivita:vAttivita,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,'mappa-allarmi':vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- Export unificato (CSV / Excel / PDF / Markdown) ----------------
@@ -776,6 +777,12 @@ const DASH_WIDGETS={
   rounds:{ title:'Ronde', goto:'ronde', load:()=>api('/patrol-routes').catch(()=>null),
     body:R=>{ if(!R)return dMut(); const act=(R||[]).filter(x=>x.active!==false).length;
       return dKpi('route','Percorsi di ronda attivi',act)+dTbl((R||[]).slice(0,6).map(r=>`<tr><td><b>${esc(r.name)}</b><div class="small mut">${esc(r.site||'—')}</div></td><td>${r.assigned_group?('👥 '+esc(r.group_name||'')):''}</td></tr>`).join('')||emptyRow('Nessun percorso di ronda')); } },
+  // Fase 1: scadenziario (patentini delle persone e scadenze dei mezzi) entro 60 giorni
+  deadlines:{ title:'Scadenze', goto:'anagrafiche', load:()=>api('/deadlines?days=60').catch(()=>null),
+    body:D=>{ if(!D)return dMut(); const it=D.items||[]; const past=it.filter(x=>x.days_left<0).length;
+      return dKpi('clock','Scadute',past,past?'pri3':'')+`<div class="small mut" style="margin:-4px 0 var(--s-6)">${it.length-past} in scadenza nei prossimi 60 giorni</div>`
+        +dTbl(it.slice(0,6).map(x=>`<tr><td><b>${esc(x.what)}</b><div class="small mut">${x.kind==='qualifica'?'👤 ':'🚜 '}${esc(x.who)}</div></td>
+          <td class="small nowrap" style="color:${x.days_left<0?'var(--bad)':x.days_left<=30?'var(--warn,#b8860b)':'inherit'}">${x.days_left<0?'scaduta da '+(-x.days_left)+' gg':'tra '+x.days_left+' gg'}</td></tr>`).join('')||emptyRow('Nessuna scadenza vicina')); } },
   shifts:{ title:'Turni', goto:'turni', load:()=>api('/shift-plans').catch(()=>null),
     body:P=>{ if(!P)return dMut(); const fut=(P||[]).filter(p=>p.state!=='annullato');
       return dKpi('clipboard','Pianificati',fut.length)+dTbl(fut.slice(0,6).map(p=>`<tr><td><b>${new Date(p.starts_at).toLocaleString(LANG==='en'?'en-GB':'it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</b><div class="small mut">${esc(p.site||'—')}</div></td><td>${chip(p.state)}</td></tr>`).join('')||emptyRow('Nessun turno')); } },
@@ -2320,6 +2327,94 @@ async function schSave(){ const m=$('.cfg-msg'); let mask=''; for(let i=0;i<7;i+
 async function schToggle(id,on){ try{ await api('/patrol-schedules/'+id,{method:'POST',body:JSON.stringify({active:on})});
   toast(on?'Piano riattivato: le ronde dovute ripartono da adesso':'Piano sospeso: nessuna ronda dovuta né allarme di ronda mancata','ok'); route(); }catch(e){ toast(e,'bad'); } }
 async function schDel(id){ if(!await askConfirm('Eliminare il piano?'))return; try{await api('/patrol-schedules/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e,'bad');} }
+// ===== Fase 1: catalogo dei tipi di attività =====
+async function vAttivita(v){
+  const [R,quals]=await Promise.all([api('/activity-types').catch(loadFail),ACTIVE_MODS.has('qualifiche')?api('/qualifications').catch(()=>[]):Promise.resolve([])]);
+  if(isLoadFail(R)) return pageLoadError(v,'Tipi di attività',R);
+  v._at=R; v._quals=quals; const canEdit=can(['pianificatore','tenant_admin'],'plan');
+  const dur=a=>fmtMin(a.base_minutes)+(a.minutes_per_unit>0&&a.unit!=='intervento'?` + ${a.minutes_per_unit} min/${UNIT_LAB[a.unit]||a.unit}`:'');
+  v.innerHTML=`<div class="page-h"><div><h1>Tipi di attività</h1><div class="mut">cosa si fa, quanto dura, quante persone, quali patentini e mezzi servono</div></div>
+    ${canEdit?'<button class="btn" onclick="atForm()">+ Nuovo tipo</button>':''}</div>
+  <div class="small mut" style="margin:-4px 0 var(--s-12)">Su ogni intervento il tipo dà la durata stimata e i vincoli: se la squadra non ha il patentino valido o il mezzo richiesto non è prenotato, YouWorkforce lo segnala.</div>
+  <div class="card"><table class="table" data-export="tipi-attivita"><thead><tr><th>Tipo</th><th>Durata standard</th><th>Durata reale media</th><th>Persone</th><th>Patentini</th><th>Mezzi</th><th>Stato</th></tr></thead>
+  <tbody>${R.items.map(a=>`<tr class="clk" data-at="${a.id}"><td><b>${esc(a.name)}</b><div class="small mut">${esc(UNIT_LAB[a.unit]||a.unit)}</div></td><td class="small">${dur(a)}</td>
+    <td class="small">${a.real_avg_minutes?fmtMin(a.real_avg_minutes)+` <span class="mut">(${a.done_count})</span>`:'<span class="mut">—</span>'}</td><td>${a.crew_size}</td>
+    <td class="small">${a.qualifications.map(q=>`<span class="chip">${esc(q.name)}</span>`).join(' ')||'—'}</td>
+    <td class="small">${a.assets.map(x=>`<span class="chip">${esc(x.kind)} ×${x.qty}</span>`).join(' ')||'—'}</td><td>${a.active?'<span class="chip">attivo</span>':'<span class="chip">disattivato</span>'}</td></tr>`).join('')
+    ||emptyRow(7, ICON.clipboard, 'Nessun tipo di attività', 'Crea i lavori che fate più spesso (taglio erba, potatura siepi, …) con durata, persone, patentini e mezzi.', canEdit?{fn:'atForm()',label:'+ Nuovo tipo'}:null)}</tbody></table></div>`;
+  if(canEdit) v.querySelectorAll('tr[data-at]').forEach(tr=>tr.onclick=()=>atForm(R.items.find(x=>x.id===tr.dataset.at)));
+}
+function atForm(a){ a=a||{qualifications:[],assets:[]}; const v=$('#view'); const quals=v._quals||[];
+  const have=new Set((a.qualifications||[]).map(q=>q.id));
+  drawer(a.id?'Tipo di attività · '+esc(a.name):'Nuovo tipo di attività',`<div class="col" style="gap:var(--s-10)">
+    <label class="small mut">Nome<input id="atName" value="${esc(a.name||'')}" placeholder="Taglio erba e rifilature"></label>
+    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Si misura in<select id="atUnit">${Object.keys(UNIT_LAB).map(u=>`<option value="${u}" ${u===(a.unit||'intervento')?'selected':''}>${UNIT_LAB[u]}</option>`).join('')}</select></label>
+      <label class="small mut grow">Persone necessarie<input id="atCrew" type="number" min="1" max="50" value="${a.crew_size||1}"></label></div>
+    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Durata base (min)<input id="atBase" type="number" min="0" max="1440" value="${a.base_minutes??60}"></label>
+      <label class="small mut grow">+ minuti per unità<input id="atPer" type="number" min="0" step="any" value="${a.minutes_per_unit??0}"></label></div>
+    <div class="small mut">Durata stimata = base + minuti per unità × quantità dell'intervento (es. 30 min + 0,05 min/m² × 2.000 m² = 2 h 10 min).</div>
+    ${quals.length?`<div><div class="small mut">Patentini richiesti (almeno una persona della squadra li deve avere validi)</div>${quals.map(q=>`<label class="row small" style="gap:var(--s-6)"><input type="checkbox" class="atQ" value="${q.id}" ${have.has(q.id)?'checked':''}> ${esc(q.name)}</label>`).join('')}</div>`:'<div class="small mut">Attiva il modulo Qualifiche e scadenze per richiedere i patentini.</div>'}
+    <div><div class="small mut">Mezzi richiesti (per tipo di mezzo, es. «piattaforma»)</div><div id="atAs">${(a.assets||[]).map(atAssetRow).join('')}</div>
+      <button class="btn ghost small" type="button" onclick="$('#atAs').insertAdjacentHTML('beforeend',atAssetRow({kind:'',qty:1}))">+ mezzo</button></div>
+    ${a.id?`<label class="row small" style="gap:var(--s-8)"><input type="checkbox" id="atAct" ${a.active!==false?'checked':''}> Attivo (disattivato non si propone sui nuovi interventi)</label>`:''}
+    <button class="btn" onclick="atSave('${a.id||''}')">${a.id?'Salva':'Crea'}</button>${a.id?` <button class="btn ghost" onclick="atDel('${a.id}')">${ICON.x} Elimina</button>`:''}<div class="cfg-msg small"></div></div>`); }
+function atAssetRow(x){ return `<div class="row at-as" style="gap:var(--s-6);margin:var(--s-4) 0"><input class="at-k grow" value="${esc(x.kind||'')}" placeholder="tipo di mezzo"><input class="at-q" type="number" min="1" max="20" value="${x.qty||1}" style="width:80px">
+  <button class="btn-ico btn ghost" type="button" onclick="this.closest('.at-as').remove()" aria-label="Rimuovi mezzo">${ICON.x}</button></div>`; }
+async function atSave(id){ const m=$('.cfg-msg'); const name=$('#atName').value.trim(); if(!name){ m.textContent='nome richiesto'; m.style.color='var(--bad)'; return; }
+  const b={name,unit:$('#atUnit').value,crew_size:+$('#atCrew').value||1,base_minutes:+$('#atBase').value||0,minutes_per_unit:parseFloat($('#atPer').value)||0,
+    qualification_ids:[...document.querySelectorAll('.atQ:checked')].map(x=>x.value),
+    assets:[...document.querySelectorAll('.at-as')].map(r=>({kind:r.querySelector('.at-k').value.trim(),qty:+r.querySelector('.at-q').value||1})).filter(x=>x.kind)};
+  if($('#atAct')) b.active=$('#atAct').checked;
+  try{ await api(id?('/activity-types/'+id):'/activity-types',{method:'POST',body:JSON.stringify(b)}); toast('Tipo di attività salvato','ok'); closeDrawer(); route(); }
+  catch(e){ m.textContent=friendlyError(e); m.style.color='var(--bad)'; } }
+async function atDel(id){ if(!await askConfirm('Eliminare il tipo di attività?'))return;
+  try{ await api('/activity-types/'+id,{method:'DELETE'}); toast('Eliminato','ok'); closeDrawer(); route(); }catch(e){ toast(e,'bad'); } }
+// ===== Fase 1: vincoli dell'intervento (patentini, mezzi, orari della sede, assenze) =====
+// Valore per <input type=datetime-local> nell'ora LOCALE (prima toISOString = UTC: a ogni modifica
+// l'appuntamento si spostava di un'ora).
+function localDT(d){ if(!d) return ''; const x=new Date(d); if(isNaN(x)) return ''; const p=n=>String(n).padStart(2,'0');
+  return x.getFullYear()+'-'+p(x.getMonth()+1)+'-'+p(x.getDate())+'T'+p(x.getHours())+':'+p(x.getMinutes()); }
+// Chiamata che può violare un vincolo duro: il core risponde 409 «Conflitto: …»; si chiede se
+// procedere comunque e si ripete con «Forza». Gli avvisi tornano nella risposta (warnings).
+async function apiForce(path, opts){
+  try{ return await api(path, opts); }
+  catch(e){
+    if(e.status!==409 || !String(e.message||'').startsWith('Conflitto:')) throw e;
+    const msg=String(e.message).replace(/^Conflitto:\s*/,'').replace(/\s*\(usa Forza per procedere\)\s*$/,'');
+    if(!await askConfirm('Vincolo non rispettato: '+msg+'\n\nProcedere comunque?')) { const x=new Error('Operazione annullata'); x.cancelled=true; throw x; }
+    return await api(path, {...opts, headers:{...(opts.headers||{}), 'x-force':'1'}});
+  }
+}
+// Elenco di vincoli: ⛔ duri (bloccano salvo «Forza»), ⚠ avvisi.
+function vioHtml(list, compact){ list=list||[]; if(!list.length) return compact?'':'<div class="small" style="color:var(--ok,#16a34a)">✓ Nessun conflitto con patentini, mezzi, orari della sede e assenze.</div>';
+  return list.map(x=>`<div class="small" style="color:${x.hard?'var(--bad)':'var(--warn,#b8860b)'};margin:2px 0">${x.hard?'⛔':'⚠'} ${esc(x.message)}</div>`).join(''); }
+function vioBadge(list){ if(!list||!list.length) return ''; const hard=list.some(x=>x.hard);
+  return `<span title="${esc(list.map(x=>x.message).join('\n'))}" style="color:${hard?'var(--bad)':'var(--warn,#b8860b)'};font-weight:700;cursor:help">${hard?'⛔':'⚠'}</span>`; }
+const UNIT_LAB={intervento:'a intervento',m2:'m²',ml:'metri lineari',n:'numero',ore:'ore'};
+// Dati per il modulo intervento: tipi di attività e mezzi (solo con i moduli attivi).
+async function orderFormData(){
+  const [sites,users,groups,clients,at,assets]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[]),api('/teams').catch(()=>[]),api('/clients').catch(()=>[]),
+    api('/activity-types').catch(()=>({items:[]})), ACTIVE_MODS.has('mezzi')?api('/assets').catch(()=>[]):Promise.resolve([])]);
+  return {sites,workers:users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role)),groups,clients,atypes:(at.items||[]).filter(x=>x.active),assets};
+}
+// Anteprima dei vincoli e della durata stimata mentre si compila il modulo.
+let _ochkT=null;
+function orderCheckLive(orderId){ clearTimeout(_ochkT); _ochkT=setTimeout(async()=>{
+  const box=$('#o_chk'); if(!box) return;
+  const b=orderFormBody(); b.order_id=orderId||null;
+  try{ const r=await api('/orders/check',{method:'POST',body:JSON.stringify(b)});
+    const est=r.estimated_minutes?`<div class="small mut">Durata stimata: <b>${fmtMin(r.estimated_minutes)}</b>${(!$('#o_se').value&&r.scheduled_end)?` · fine prevista ${new Date(r.scheduled_end).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'})}`:''}</div>`:'';
+    box.innerHTML=est+vioHtml(r.violations);
+  }catch(e){ box.innerHTML='<div class="small mut">'+esc(friendlyError(e))+'</div>'; } },350); }
+function orderFormBody(){
+  const assets=[...document.querySelectorAll('.o_asset:checked')].map(x=>x.value);
+  const qty=$('#o_qty')&&$('#o_qty').value!==''?parseFloat($('#o_qty').value):null;
+  return {title:$('#o_title').value,site_id:$('#o_site').value||null,client_id:($('#o_client')&&$('#o_client').value)||null,
+    assigned_user:$('#o_asg').value||null,assigned_group:$('#o_grp').value||null,instructions:$('#o_instr').value||null,
+    scheduled_start:toISO($('#o_ss').value),scheduled_end:toISO($('#o_se').value),priority:+$('#o_pri').value,
+    activity_type_id:($('#o_at')&&$('#o_at').value)||null, quantity:qty,
+    asset_ids: $('#o_assets')?assets:undefined };
+}
 // Assistenza / manutenzione a visite: appuntamenti dal cliente, rapporto, firma, (listino/consuntivo).
 let ORD_CACHE=[]; let ORD_TAB='agenda'; let ORD_CLOSED=null;
 // Aperti dal server (non tutto lo storico: con 60 persone sono decine di migliaia di interventi l'anno);
@@ -3026,13 +3121,15 @@ async function vDispatch(v){
   const day=v._day;
   const base=new Date(day+'T00:00:00'); const dow=(base.getDay()+6)%7; const mon=new Date(base); mon.setDate(base.getDate()-dow);
   const sun=new Date(mon); sun.setDate(mon.getDate()+7);
-  const [O,openO]=await Promise.all([
+  const [O,openO,CHK]=await Promise.all([
     api('/orders?from='+encodeURIComponent(mon.toISOString())+'&to='+encodeURIComponent(sun.toISOString())).catch(()=>[]),
-    api('/orders?state=open').catch(()=>[])]);
+    api('/orders?state=open').catch(()=>[]),
+    api('/orders/checks?from='+encodeURIComponent(mon.toISOString())+'&to='+encodeURIComponent(sun.toISOString())).catch(()=>({}))]);
+  const nChk=Object.values(CHK||{}).filter(l=>l.some(x=>x.hard)).length;
   const sameDay=o=>o.scheduled_start && ymdLocal(o.scheduled_start)===day && o.state!=='annullato';
   const hm=o=>new Date(o.scheduled_start).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'});
   const tostr=o=>`<div class="spread clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6) var(--s-8);margin:var(--s-4) 0">
-    <div style="min-width:0"><b class="small">${esc(o.title)}</b><div class="small mut">${o.scheduled_start?hm(o)+' · ':''}${esc(o.client_name||o.site||'—')}</div></div>
+    <div style="min-width:0"><b class="small">${vioBadge(CHK[o.id])} ${esc(o.title)}</b><div class="small mut">${o.scheduled_start?hm(o)+' · ':''}${esc(o.client_name||o.site||'—')}${(o.assets&&o.assets.length)?' · 🚜 '+o.assets.map(a=>esc(a.name)).join(', '):''}</div></div>
     <div class="row" style="gap:var(--s-6);align-items:center">${chip(o.state)}<span class="clk-go">›</span></div></div>`;
   const unassigned=openO.filter(o=>!o.assignee && !o.group_name);
   const unRows=unassigned.slice(0,50).map(o=>`<div class="spread clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6) var(--s-8);margin:var(--s-4) 0">
@@ -3060,7 +3157,7 @@ async function vDispatch(v){
     return `<div class="card pad" style="min-width:170px;flex:1;${d===today?'outline:2px solid var(--brand)':''}">
       <div class="spread"><span class="small" style="font-weight:600">${dnames[i]} ${d.slice(8,10)}/${d.slice(5,7)}</span><span class="chip">${list.length}</span></div>
       ${list.map(o=>`<div class="clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:6px;padding:var(--s-4) var(--s-6);margin:var(--s-4) 0">
-        <b class="small">${hm(o)}</b>
+        <b class="small">${hm(o)} ${vioBadge(CHK[o.id])}</b>
         <div class="small" style="overflow:hidden;text-overflow:ellipsis">${esc(o.title)}</div>
         <div class="small mut">${who(o)}</div></div>`).join('')||'<div class="small mut" style="margin-top:var(--s-6)">—</div>'}
     </div>`; }).join('');
@@ -3069,6 +3166,7 @@ async function vDispatch(v){
   const step=mode==='week'?7:1;
   v.innerHTML=`<div class="page-h"><div><h1>Agenda tecnici</h1><div class="mut">dispatch degli interventi per squadra e per persona · ${todays.length} il ${day.slice(8,10)}/${day.slice(5,7)}, ${O.filter(o=>o.scheduled_start&&o.state!=='annullato').length} nella settimana</div></div>
     <span class="row" style="gap:var(--s-8);flex-wrap:wrap;align-items:center">${toggle}<button class="btn ghost small" onclick="(function(){$('#view')._day='${shift(-step)}';route();})()" aria-label="Precedente">‹</button><input type="date" style="width:auto" value="${day}" onchange="(function(e){$('#view')._day=e;route();})(this.value)"><button class="btn ghost small" onclick="(function(){$('#view')._day='${shift(step)}';route();})()" aria-label="Successivo">›</button><button class="btn ghost small" onclick="dispCSV()">⬇ CSV</button></span></div>
+  ${nChk?`<div class="card pad" style="margin-bottom:var(--s-14);border-color:var(--bad)"><b style="color:var(--bad)">⛔ ${nChk} interventi della settimana con vincoli non rispettati</b><div class="small mut">patentino mancante o scaduto, mezzo fermo o già prenotato, fuori dall'orario della sede, persona assente: passa il mouse su ⛔ per il motivo.</div></div>`:''}
   <div class="card" style="margin-bottom:var(--s-14)"><div class="card-h"><h2>Da assegnare (${unassigned.length})</h2></div><div style="padding:0 var(--s-12) var(--s-12)">${unRows}${unassigned.length>50?`<div class="small mut">… e altri ${unassigned.length-50}: vedi Interventi → Da pianificare</div>`:''}</div></div>
   ${mode==='week'
     ? `<h2 style="margin:var(--s-4) 0 var(--s-8)">Settimana ${weekDays[0].slice(8,10)}/${weekDays[0].slice(5,7)} – ${weekDays[6].slice(8,10)}/${weekDays[6].slice(5,7)}</h2>
@@ -3172,9 +3270,13 @@ async function contrSave(id){ const m=$('.cfg-msg'); const name=$('#ctName').val
   try{await api(id?('/contracts/'+id):'/contracts',{method:'POST',body:JSON.stringify(b)}); toast('Salvato','ok'); closeDrawer(); route();}catch(e){m.textContent=friendlyError(e);m.style.color='var(--bad)';} }
 async function contrDel(id){ if(!await askConfirm('Eliminare il contratto?'))return;
   try{await api('/contracts/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e,'bad');} }
-function planForm(p){ p=p||{}; const v=$('#view'); const clients=v._clients||[], sites=v._sites||[];
+async function planForm(p){ p=p||{}; const v=$('#view'); const clients=v._clients||[], sites=v._sites||[];
+  const at=((await api('/activity-types').catch(()=>({items:[]}))).items||[]).filter(x=>x.active||x.id===p.activity_type_id);
   drawer(p.id?'Piano di manutenzione':'Nuovo piano di manutenzione',`<div class="col" style="gap:var(--s-10)">
     <label class="small mut">Titolo<input id="plTitle" placeholder="Manutenzione caldaia semestrale" value="${esc(p.title||'')}"></label>
+    ${at.length?`<div class="row" style="gap:var(--s-8)"><label class="small mut grow">Tipo di attività<select id="plAt"><option value="">—</option>${at.map(a=>`<option value="${a.id}" ${a.id===p.activity_type_id?'selected':''}>${esc(a.name)}</option>`).join('')}</select></label>
+      <label class="small mut" style="width:130px">Quantità<input id="plQty" type="number" min="0" step="any" value="${p.quantity!=null?p.quantity:''}"></label></div>
+      <div class="small mut">L'intervento generato eredita tipo e quantità: durata stimata, patentini e mezzi richiesti.</div>`:''}
     <label class="small mut">Cliente<select id="plClient"><option value="">—</option>${clients.map(x=>`<option value="${x.id}" ${x.id===p.client_id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label>
     <label class="small mut">Sede<select id="plSite"><option value="">—</option>${sites.map(x=>`<option value="${x.id}" ${x.id===p.site_id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label>
     <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Ogni (giorni)<input id="plEvery" type="number" value="${p.every_days!=null?p.every_days:180}"></label><label class="small mut grow">Prossima data<input id="plNext" type="date" value="${p.next_date||new Date().toISOString().slice(0,10)}"></label></div>
@@ -3184,36 +3286,52 @@ function planForm(p){ p=p||{}; const v=$('#view'); const clients=v._clients||[],
     <button class="btn" onclick="planSave('${p.id||''}')">${p.id?'Salva':'Crea piano'}</button><div class="cfg-msg small"></div></div>`); }
 async function planSave(id){ const m=$('.cfg-msg'); const t=$('#plTitle').value.trim(); if(!t){m.textContent='titolo richiesto';m.style.color='var(--bad)';return;}
   const b={title:t,client_id:$('#plClient').value||null,site_id:$('#plSite').value||null,every_days:+$('#plEvery').value||30,next_date:$('#plNext').value||null,
-    auto_generate:$('#plAuto').checked, lead_days:Math.max(0,Math.min(90,parseInt($('#plLead').value,10)||0))};
+    auto_generate:$('#plAuto').checked, lead_days:Math.max(0,Math.min(90,parseInt($('#plLead').value,10)||0)),
+    activity_type_id:($('#plAt')&&$('#plAt').value)||null, quantity:($('#plQty')&&$('#plQty').value!=='')?parseFloat($('#plQty').value):null};
   if(id&&$('#plActive')) b.active=$('#plActive').checked;
   try{await api(id?('/maintenance-plans/'+id):'/maintenance-plans',{method:'POST',body:JSON.stringify(b)}); toast(id?'Piano aggiornato':'Piano creato','ok'); closeDrawer(); route();}catch(e){m.textContent=friendlyError(e);m.style.color='var(--bad)';} }
 async function planGen(id){ try{ const r=await api('/maintenance-plans/'+id+'/generate',{method:'POST',body:'{}'}); toast('Intervento generato · prossimo: '+r.next_date,'ok'); route();}catch(e){toast(e,'bad');} }
 async function planDel(id){ if(!await askConfirm('Eliminare il piano?'))return;
   try{await api('/maintenance-plans/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e,'bad');} }
-function orderFormFields(o,sites,workers,groups,clients){ o=o||{}; groups=groups||[]; clients=clients||[]; return `
+function orderFormFields(o,sites,workers,groups,clients,atypes,assets){ o=o||{}; groups=groups||[]; clients=clients||[]; atypes=atypes||[]; assets=assets||[];
+  const booked=new Set((o.assets||[]).map(a=>a.id));
+  const atSel=atypes.length?`<div class="row" style="gap:var(--s-8)"><div class="field grow"><label>Tipo di attività</label><select id="o_at" onchange="orderAtChanged()"><option value="">—</option>${atypes.map(a=>`<option value="${a.id}" data-unit="${a.unit}" ${a.id===o.activity_type_id?'selected':''}>${esc(a.name)}</option>`).join('')}</select></div>
+    <div class="field" style="width:140px"><label id="o_qty_l">Quantità</label><input id="o_qty" type="number" min="0" step="any" value="${o.quantity!=null?o.quantity:''}"></div></div>`:'';
+  const asSel=(ACTIVE_MODS.has('mezzi')&&assets.length)?`<div class="field"><label>Mezzi e attrezzature da prenotare</label><div id="o_assets" style="max-height:150px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:var(--s-6)">
+    ${assets.filter(a=>a.status!=='dismesso').map(a=>`<label class="row small" style="gap:var(--s-6)"><input type="checkbox" class="o_asset" value="${a.id}" ${booked.has(a.id)?'checked':''}> ${esc(a.name)} <span class="mut">${esc(a.kind||'')}${a.status==='fermo'?' · fermo':''}</span></label>`).join('')}</div>
+    <div class="small mut">Si prenotano nell'orario dell'intervento; lo stesso mezzo non si prenota due volte.</div></div>`:'';
+  return `
   <div class="field"><label>Titolo</label><input id="o_title" value="${esc(o.title||'')}" placeholder="Manutenzione quadro elettrico"></div>
+  ${atSel}
   ${clients.length?`<div class="field"><label>Cliente</label><select id="o_client"><option value="">—</option>${clients.map(c=>`<option value="${c.id}" ${c.id===o.client_id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>`:''}
   <div class="field"><label>Sede</label><select id="o_site"><option value="">—</option>${sites.map(s=>`<option value="${s.id}" ${s.id===o.site_id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>
   <div class="field"><label>Assegna a (persona)</label><select id="o_asg"><option value="">—</option>${workers.map(w=>`<option value="${w.id}" ${w.id===o.assigned_user?'selected':''}>${esc(w.email)}</option>`).join('')}</select></div>
   <div class="field"><label>Assegna a (gruppo di persone)</label><select id="o_grp"><option value="">—</option>${groups.map(g=>`<option value="${g.id}" ${g.id===o.assigned_group?'selected':''}>${esc(g.name)}</option>`).join('')}</select><div class="small mut">i membri del gruppo vedono ed eseguono l'ordine</div></div>
-  <div class="row"><div class="field grow"><label>Inizio</label><input id="o_ss" type="datetime-local" value="${o.scheduled_start?new Date(o.scheduled_start).toISOString().slice(0,16):''}"></div>
-    <div class="field grow"><label>Fine</label><input id="o_se" type="datetime-local" value="${o.scheduled_end?new Date(o.scheduled_end).toISOString().slice(0,16):''}"></div></div>
+  <div class="row"><div class="field grow"><label>Inizio</label><input id="o_ss" type="datetime-local" value="${localDT(o.scheduled_start)}"></div>
+    <div class="field grow"><label>Fine</label><input id="o_se" type="datetime-local" value="${localDT(o.scheduled_end)}"><div class="small mut">vuota = dalla durata del tipo di attività</div></div></div>
+  ${asSel}
   <div class="field"><label>Priorità</label><select id="o_pri">${[1,2,3].map(p=>`<option value="${p}" ${p===(o.priority||2)?'selected':''}>${PRI_LAB[p]}</option>`).join('')}</select></div>
-  <div class="field"><label>Istruzioni</label><textarea id="o_instr">${esc(o.instructions||'')}</textarea></div>`; }
+  <div class="field"><label>Istruzioni</label><textarea id="o_instr">${esc(o.instructions||'')}</textarea></div>
+  ${can(['pianificatore','tenant_admin'],'plan')?`<div class="card pad" style="margin:var(--s-6) 0"><b class="small">Controllo vincoli</b><div id="o_chk" class="small mut">compila sede, orario e assegnatario…</div></div>`:''}`; }
+function orderAtChanged(){ const o=$('#o_at'); const u=o&&o.selectedOptions[0]&&o.selectedOptions[0].dataset.unit; const l=$('#o_qty_l');
+  if(l) l.textContent='Quantità'+(u&&u!=='intervento'?' ('+(UNIT_LAB[u]||u)+')':''); }
+function orderFormWire(orderId){ const d=$('#drawer')||document; orderAtChanged();
+  d.querySelectorAll('#o_site,#o_asg,#o_grp,#o_ss,#o_se,#o_at,#o_qty,.o_asset').forEach(e=>e.addEventListener('change',()=>orderCheckLive(orderId)));
+  orderCheckLive(orderId); }
 async function newOrder(){
-  const [sites,users,groups,clients]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[]),api('/user-groups').catch(()=>[]),api('/clients').catch(()=>[])]);
-  const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
-  drawer('Nuovo intervento', `<div class="col">${orderFormFields(null,sites,workers,groups,clients)}
+  const F=await orderFormData();
+  drawer('Nuovo intervento', `<div class="col">${orderFormFields(null,F.sites,F.workers,F.groups,F.clients,F.atypes,F.assets)}
       <label class="small mut">Checklist (una voce per riga)<textarea id="o_cl" style="width:100%;height:60px" placeholder="Verifica impianto&#10;Sostituisci pezzo&#10;Test finale"></textarea></label>
       <button class="btn block" id="o_save">Crea intervento</button><div class="cfg-msg small"></div></div>`);
   $('#o_save').onclick=async()=>{
     const m=$('.cfg-msg');
     const checklist=($('#o_cl').value||'').split('\n').map(x=>x.trim()).filter(Boolean);
-    const b={title:$('#o_title').value,site_id:$('#o_site').value||null,client_id:($('#o_client')&&$('#o_client').value)||null,assigned_user:$('#o_asg').value||null,assigned_group:$('#o_grp').value||null,
-      instructions:$('#o_instr').value||null,scheduled_start:toISO($('#o_ss').value),scheduled_end:toISO($('#o_se').value),priority:+$('#o_pri').value,checklist};
+    const b={...orderFormBody(),checklist};
     if(!b.title){m.textContent='titolo richiesto';m.style.color='var(--bad)';return;}
-    try{ await api('/orders',{method:'POST',body:JSON.stringify(b)});
-      toast('Intervento creato','ok'); closeDrawer(); route(); }catch(e){m.textContent=friendlyError(e);m.style.color='var(--bad)';} };
+    try{ const r=await apiForce('/orders',{method:'POST',body:JSON.stringify(b)});
+      toast('Intervento creato'+((r&&r.warnings&&r.warnings.length)?' · '+r.warnings.length+' avvisi':''),'ok'); closeDrawer(); route(); }
+    catch(e){ if(e.cancelled) return; m.textContent=friendlyError(e);m.style.color='var(--bad)';} };
+  orderFormWire(null);
 }
 async function openOrder(id){
   const planner=can(['pianificatore','tenant_admin'],'plan');
@@ -3233,8 +3351,11 @@ async function openOrder(id){
     ? `<button class="btn ghost block" onclick='editOrder(${jattr(o)})'>✎ Modifica / ripianifica</button>` : '';
   drawer('Ordine · '+esc(o.title), `
     <div class="row" style="margin-bottom:var(--s-14)">${chip(o.state)}${o.client_name?`<span class="chip">👤 ${esc(o.client_name)}</span>`:''}<span class="chip">${esc(o.site||'—')}</span>${priBadge(o.priority)}<span class="chip">v${o.version}</span></div>
-    <div class="small mut">Assegnatario</div><div style="margin-bottom:var(--s-12)">${esc(o.assignee||'non assegnato')}</div>
+    <div class="small mut">Assegnatario</div><div style="margin-bottom:var(--s-12)">${o.assignee?esc(o.assignee):o.group_name?'👥 '+esc(o.group_name):'non assegnato'}</div>
     <div class="small mut">Quando</div><div style="margin-bottom:var(--s-12)">${schedLabel(o)}</div>
+    ${o.activity_type?`<div class="small mut">Attività</div><div style="margin-bottom:var(--s-12)">${esc(o.activity_type)}${o.quantity!=null?' · quantità '+esc(o.quantity):''}${o.estimated_minutes?' · stimati '+fmtMin(o.estimated_minutes):''}${o.work_minutes?' · lavorati '+fmtMin(o.work_minutes):''}</div>`:''}
+    ${(o.assets&&o.assets.length)?`<div class="small mut">Mezzi prenotati</div><div style="margin-bottom:var(--s-12)">${o.assets.map(a=>`<span class="chip">🚜 ${esc(a.name)}</span>`).join(' ')}</div>`:''}
+    ${(planner&&!['completato','annullato'].includes(o.state))?`<div class="card pad" style="margin-bottom:var(--s-12)"><b class="small">Controllo vincoli</b><div id="ordChk" class="small mut">verifico…</div></div>`:''}
     <div class="small mut">Istruzioni</div><div style="margin-bottom:var(--s-16)">${esc(o.instructions||'—')}</div>
     ${o.outcome?`<div class="small mut">Esito</div><div style="margin-bottom:var(--s-16)">${esc(o.outcome)}</div>`:''}
     ${(o.arrived_at||o.work_started_at||o.work_minutes||(o.checklist&&o.checklist.length)||(o.materials&&o.materials.length)||o.outcome_kind)?`
@@ -3263,6 +3384,9 @@ async function openOrder(id){
       <div class="row" style="gap:var(--s-6);margin-top:var(--s-4)"><button class="btn ghost small" onclick="ordSigClear()">pulisci</button><button class="btn ghost small" onclick="ordSigSave('${id}')">✍ Salva firma</button></div>`:''}`);
   if((mine||planner)&&(o.state==='in_corso'||o.state==='completato')){ ordAttLoad(id); ordSigInit(); }
   if(mine||planner){ orderLines(id); }
+  if(planner&&$('#ordChk')){ api('/orders/check',{method:'POST',body:JSON.stringify({order_id:id,site_id:o.site_id,activity_type_id:o.activity_type_id,
+      scheduled_start:o.scheduled_start,scheduled_end:o.scheduled_end,assigned_user:o.assigned_user,assigned_group:o.assigned_group})})
+    .then(r=>{ const b=$('#ordChk'); if(b) b.innerHTML=vioHtml(r.violations); }).catch(()=>{ const b=$('#ordChk'); if(b) b.textContent='—'; }); }
 }
 async function ordReportSave(id){ try{ await api('/orders/'+id+'/report',{method:'POST',body:JSON.stringify({report:$('#ordReport').value,signed_by:$('#ordSigner').value||null})}); toast('Report salvato','ok'); }catch(e){ toast(e,'bad'); } }
 async function ordAttLoad(id){ const el=$('#ordAtt'); if(!el)return;
@@ -3305,24 +3429,23 @@ async function aiOrderBrief(id,btn){ const box=$('#aiOrdOut'); if(!box)return; b
   try{ const r=await api('/orders/'+id+'/ai-assist'); box.innerHTML=`<div class="card pad" style="margin-top:var(--s-6);background:var(--brand-soft)"><div class="small mut">✦ youworker.ai — proposta d'aiuto</div><div style="white-space:pre-wrap;margin-top:var(--s-4)">${esc(r.brief)}</div></div>`; }
   catch(e){ box.innerHTML=`<div class="small" style="color:var(--bad);margin-top:var(--s-6)">${esc(friendlyError(e))}</div>`; } finally{ btn.disabled=false; } }
 async function editOrder(o){
-  const [sites,users,groups,clients]=await Promise.all([api('/sites').catch(()=>[]),api('/users').catch(()=>[]),api('/user-groups').catch(()=>[]),api('/clients').catch(()=>[])]);
-  const workers=users.filter(u=>['lavoratore','reperibile','operatore'].includes(u.role));
-  drawer('Modifica intervento', `<div class="col">${orderFormFields(o,sites,workers,groups,clients)}
+  const F=await orderFormData();
+  drawer('Modifica intervento', `<div class="col">${orderFormFields(o,F.sites,F.workers,F.groups,F.clients,F.atypes,F.assets)}
     <label class="row small" style="gap:var(--s-8)"><input type="checkbox" id="o_clear"> Rimuovi pianificazione</label>
     <button class="btn block" id="o_edit">Salva modifiche</button><div class="cfg-msg small"></div></div>`);
   $('#o_edit').onclick=async()=>{
     const m=$('.cfg-msg');
-    const grp=$('#o_grp').value||null;
-    const b={version:o.version,title:$('#o_title').value||null,site_id:$('#o_site').value||null,client_id:($('#o_client')&&$('#o_client').value)||null,assigned_user:$('#o_asg').value||null,
-      assigned_group:grp, clear_group:(!grp && !!o.assigned_group),
-      instructions:$('#o_instr').value||null,scheduled_start:toISO($('#o_ss').value),scheduled_end:toISO($('#o_se').value),
-      priority:+$('#o_pri').value,clear_schedule:$('#o_clear').checked};
-    try{ await api('/orders/'+o.id+'/edit',{method:'POST',body:JSON.stringify(b)});
-      toast('Ordine aggiornato','ok'); closeDrawer(); route(); }catch(e){m.textContent=friendlyError(e);m.style.color='var(--bad)';} };
+    const f=orderFormBody(); const grp=f.assigned_group;
+    const b={...f, version:o.version, title:f.title||null, clear_group:(!grp && !!o.assigned_group),
+      clear_activity:(!f.activity_type_id && !!o.activity_type_id), clear_schedule:$('#o_clear').checked};
+    try{ const r=await apiForce('/orders/'+o.id+'/edit',{method:'POST',body:JSON.stringify(b)});
+      toast('Intervento aggiornato'+((r&&r.warnings&&r.warnings.length)?' · '+r.warnings.length+' avvisi':''),'ok'); closeDrawer(); route(); }
+    catch(e){ if(e.cancelled) return; m.textContent=friendlyError(e);m.style.color='var(--bad)';} };
+  orderFormWire(o.id);
 }
 async function ordAssign(id,v){ const u=$('#asg').value.trim(); if(!u)return toast('scegli un tecnico','warn');
-  try{await api('/orders/'+id+'/assign',{method:'POST',body:JSON.stringify({version:v,user_id:u})}); toast('Assegnato','ok'); closeDrawer(); route();}catch(e){toast(e,'bad');} }
-async function ordAssignTo(id,v,uid){ try{await api('/orders/'+id+'/assign',{method:'POST',body:JSON.stringify({version:v,user_id:uid})}); toast('Assegnato','ok'); closeDrawer(); route();}catch(e){toast(e,'bad');} }
+  try{await apiForce('/orders/'+id+'/assign',{method:'POST',body:JSON.stringify({version:v,user_id:u})}); toast('Assegnato','ok'); closeDrawer(); route();}catch(e){ if(!e.cancelled) toast(e,'bad');} }
+async function ordAssignTo(id,v,uid){ try{await apiForce('/orders/'+id+'/assign',{method:'POST',body:JSON.stringify({version:v,user_id:uid})}); toast('Assegnato','ok'); closeDrawer(); route();}catch(e){ if(!e.cancelled) toast(e,'bad');} }
 // A3 — suggerimento tecnico (dispatch): carico/assenze, AI opzionale
 async function ordSuggestTech(id,v){
   drawer('Suggerisci tecnico',`<div class="small mut">Calcolo…</div>`);
@@ -5592,27 +5715,68 @@ async function vAnagrafiche(v){
         ||emptyRow(3, ICON.building, 'Nessuna sede', 'Le sedi sono i luoghi di lavoro: a loro colleghi dispositivi, turni e allarmi. Aggiungine una.', {fn:'siteForm()',label:'+ Aggiungi sede'})}</tbody></table></div>
   </div>
   <div class="card pad" style="margin-top:var(--s-16)"><div class="small">👥 <b>Squadre</b>: sono i <b>gruppi di persone</b> (tipo «squadra»), uguali per turni, cantieri, ordini, ronde e permessi. Si gestiscono in <a onclick="location.hash='#/utenti-ruoli'">Utenti e ruoli → Gruppi</a>.</div></div>
-  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Asset / mezzi (${assets.length})</h2><button class="btn ghost small" onclick="assetNew()">+ nuovo asset</button></div>
-    <table class="table" data-export="asset-mezzi"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th>Sede</th><th></th></tr></thead>
-    <tbody>${assets.map(a=>`<tr class="clk" data-asset='${jattr(a)}'><td><b>${esc(a.name)}</b></td><td><span class="chip">${esc(ASSET_KIND_LABELS[a.kind]||humanizeCode(a.kind)||'—')}</span></td><td class="small mut">${esc(a.identifier||'—')}</td><td class="small mut">${esc(a.site||'—')}</td>
+  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Mezzi e attrezzature (${assets.length})</h2><span>${ACTIVE_MODS.has('mezzi')?'<button class="btn ghost small" onclick="bookingsView()">📅 prenotazioni</button> ':''}<button class="btn ghost small" onclick="assetNew()">+ nuovo mezzo</button></span></div>
+    <table class="table" data-export="asset-mezzi"><thead><tr><th>Nome</th><th>Tipo</th><th>Matricola/targa</th><th>${ACTIVE_MODS.has('mezzi')?'Stato':'Sede'}</th><th></th></tr></thead>
+    <tbody>${assets.map(a=>`<tr class="clk" data-asset='${jattr(a)}'><td><b>${esc(a.name)}</b></td><td><span class="chip">${esc(ASSET_KIND_LABELS[a.kind]||humanizeCode(a.kind)||'—')}</span></td><td class="small mut">${esc(a.identifier||'—')}</td><td class="small">${ACTIVE_MODS.has('mezzi')?assetStatusHtml(a):`<span class="mut">${esc(a.site||'—')}</span>`}</td>
       <td style="text-align:right"><button class="btn-ico btn ghost" onclick="event.stopPropagation();assetDel('${a.id}')">${ICON.x}</button></td></tr>`).join('')
       ||emptyRow(5, ICON.building, 'Nessun asset', 'Mezzi e attrezzature da assegnare a squadre e interventi. Aggiungine uno per poterlo pianificare.', {fn:'assetNew()',label:'+ Nuovo asset'})}</tbody></table></div>`;
-  v.querySelectorAll('tr[data-asset]').forEach(tr=>tr.onclick=()=>{ try{ assetForm(JSON.parse(tr.dataset.asset)); }catch(e){} });
+  v.querySelectorAll('tr[data-asset]').forEach(tr=>tr.onclick=async()=>{ try{ const a=JSON.parse(tr.dataset.asset); await assetForm(a); if(a.id&&ACTIVE_MODS.has('mezzi')) dlLoad(a.id); }catch(e){} });
 }
 const ASSET_KINDS=['veicolo','attrezzatura','mezzo','strumento','altro'];
+const ASSET_STATUS_LAB={disponibile:'disponibile',fermo:'fermo',dismesso:'dismesso'};
+function assetStatusHtml(a){ const st=a.status||'disponibile'; const col=st==='disponibile'?'var(--ok,#16a34a)':st==='fermo'?'var(--bad)':'var(--mut)';
+  const nd=a.next_deadline; let dl='';
+  if(nd){ const days=Math.round((new Date(nd.due_date+'T00:00:00')-new Date(new Date().toDateString()))/864e5);
+    dl=`<div class="small" style="color:${days<0?'var(--bad)':days<=30?'var(--warn,#b8860b)':'var(--mut)'}">${esc(nd.kind)} ${days<0?'scaduta':'il'} ${new Date(nd.due_date+'T00:00:00').toLocaleDateString(UI_LOCALE())}</div>`; }
+  return `<span style="color:${col}">● ${esc(ASSET_STATUS_LAB[st]||st)}</span>${a.required_qualification?`<div class="small mut">richiede ${esc(a.required_qualification)}</div>`:''}${dl}`; }
 const ASSET_KIND_LABELS={veicolo:'Veicolo',attrezzatura:'Attrezzatura',mezzo:'Mezzo d’opera',strumento:'Strumento',altro:'Altro'};
-async function assetForm(a){ a=a||{}; const sites=await api('/sites').catch(()=>[]);
+async function assetForm(a){ a=a||{}; const mz=ACTIVE_MODS.has('mezzi');
+  const [sites,all,quals]=await Promise.all([api('/sites').catch(()=>[]),api('/assets').catch(()=>[]),ACTIVE_MODS.has('qualifiche')?api('/qualifications').catch(()=>[]):Promise.resolve([])]);
+  const kinds=[...new Set([...ASSET_KINDS,...all.map(x=>x.kind).filter(Boolean)])].sort();
   drawer(a.id?('Asset · '+esc(a.name)):'Nuovo asset / mezzo',`<div class="col" style="gap:var(--s-10)">
     <label class="small mut">Nome<input id="asName" value="${esc(a.name||'')}" placeholder="Furgone, scala, radio…"></label>
-    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Tipo<select id="asKind">${ASSET_KINDS.map(k=>`<option value="${k}" ${k===(a.kind||'attrezzatura')?'selected':''}>${ASSET_KIND_LABELS[k]}</option>`).join('')}</select></label>
+    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Tipo<input id="asKind" list="asKinds" value="${esc(a.kind||'attrezzatura')}" placeholder="furgone, piattaforma, trattorino…"><datalist id="asKinds">${kinds.map(k=>`<option value="${esc(k)}">`).join('')}</datalist>
+      <span class="small mut">I tipi di attività chiedono i mezzi per tipo (es. «piattaforma»).</span></label>
       <label class="small mut grow">Matricola / targa<input id="asId" value="${esc(a.identifier||'')}"></label></div>
     <label class="small mut">Sede (opz.)<select id="asSite"><option value="">—</option>${sites.map(s=>`<option value="${s.id}" ${s.id===a.site_id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label>
     <label class="small mut">Note<input id="asNote" value="${esc(a.note||'')}"></label>
+    ${mz?`<div class="row" style="gap:var(--s-8)"><label class="small mut grow">Stato<select id="asStatus">${['disponibile','fermo','dismesso'].map(x=>`<option value="${x}" ${x===(a.status||'disponibile')?'selected':''}>${ASSET_STATUS_LAB[x]}</option>`).join('')}</select></label>
+      ${quals.length?`<label class="small mut grow">Qualifica per l'uso<select id="asQual"><option value="">nessuna</option>${quals.map(q=>`<option value="${q.id}" ${q.id===a.required_qualification_id?'selected':''}>${esc(q.name)}</option>`).join('')}</select></label>`:''}</div>
+      <div class="small mut">Fermo o dismesso: non si prenota. Con una qualifica, la squadra che lo usa deve averla valida.</div>`:''}
+    ${(mz&&a.id)?`<div class="card pad"><b class="small">Scadenze</b><div id="asDl" class="small mut">carico…</div>
+      <div class="row" style="gap:var(--s-6);margin-top:var(--s-6);flex-wrap:wrap"><select id="dlKind" style="width:auto">${['revisione','tagliando','assicurazione','verifica','altro'].map(k=>`<option>${k}</option>`).join('')}</select>
+        <input id="dlDate" type="date" style="width:auto"><button class="btn ghost small" type="button" onclick="dlAdd('${a.id}')">+ scadenza</button></div></div>`:''}
     <button class="btn" onclick="assetSave('${a.id||''}')">${a.id?'Salva':'Crea'}</button>${a.id?` <button class="btn ghost" onclick="assetDel('${a.id}')">${ICON.x} Elimina</button>`:''}<div class="cfg-msg small"></div></div>`);
 }
 function assetNew(){ assetForm(null); }
+async function dlLoad(aid){ const el=$('#asDl'); if(!el)return;
+  try{ const D=await api('/assets/'+aid+'/deadlines');
+    el.innerHTML=D.map(d=>`<div class="spread" style="margin:2px 0"><span class="${d.done_at?'mut':''}">${d.done_at?'✓ ':''}${esc(d.kind)} · ${new Date(d.due_date+'T00:00:00').toLocaleDateString(UI_LOCALE())}</span>
+      <span>${d.done_at?'':`<button class="btn ghost small" type="button" onclick="dlDone('${d.id}','${aid}')">fatta</button>`}<button class="btn-ico btn ghost" type="button" onclick="dlDel('${d.id}','${aid}')" aria-label="Elimina scadenza">${ICON.x}</button></span></div>`).join('')||'nessuna scadenza';
+  }catch(e){ el.textContent=friendlyError(e); } }
+async function dlAdd(aid){ const d=$('#dlDate').value; if(!d) return toast('scegli la data','warn');
+  try{ await api('/assets/'+aid+'/deadlines',{method:'POST',body:JSON.stringify({kind:$('#dlKind').value,due_date:d})}); dlLoad(aid); }catch(e){ toast(e,'bad'); } }
+async function dlDone(id,aid){ try{ await api('/asset-deadlines/'+id,{method:'POST',body:JSON.stringify({done:true})}); dlLoad(aid); }catch(e){ toast(e,'bad'); } }
+async function dlDel(id,aid){ if(!await askConfirm('Eliminare la scadenza?'))return; try{ await api('/asset-deadlines/'+id,{method:'DELETE'}); dlLoad(aid); }catch(e){ toast(e,'bad'); } }
+// Prenotazioni dei mezzi: una riga per mezzo, una colonna per giorno della settimana.
+async function bookingsView(off){ off=off||0;
+  const mon=new Date(); mon.setHours(0,0,0,0); mon.setDate(mon.getDate()-((mon.getDay()+6)%7)+7*off); const sun=new Date(mon); sun.setDate(mon.getDate()+7);
+  const [A,B]=await Promise.all([api('/assets').catch(()=>[]),api('/asset-bookings?from='+encodeURIComponent(mon.toISOString())+'&to='+encodeURIComponent(sun.toISOString())).catch(()=>[])]);
+  const days=Array.from({length:7},(_,i)=>{ const d=new Date(mon); d.setDate(mon.getDate()+i); return d; });
+  const same=(a,b)=>a.toDateString()===b.toDateString();
+  const hm=t=>new Date(t).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'});
+  const rows=A.filter(a=>a.status!=='dismesso').map(a=>`<tr><td><b class="small">${esc(a.name)}</b><div class="small mut">${esc(a.kind||'')}${a.status==='fermo'?' · <span style="color:var(--bad)">fermo</span>':''}</div></td>
+    ${days.map(d=>{ const L=B.filter(b=>b.asset_id===a.id&&same(new Date(b.starts_at),d));
+      return `<td class="small" style="vertical-align:top">${L.map(b=>`<div title="${esc(b.order_title||b.note||'')}" style="border-left:3px solid var(--brand);padding-left:4px;margin:2px 0">${hm(b.starts_at)}–${hm(b.ends_at)}<div class="mut">${esc(b.group_name||((b.user||'').split('@')[0])||b.order_title||'')}</div></div>`).join('')}</td>`; }).join('')}</tr>`).join('');
+  drawer('Prenotazioni mezzi', `<div class="spread" style="margin-bottom:var(--s-8)"><button class="btn ghost small" onclick="bookingsView(${off-1})">‹ settimana prima</button>
+      <b>${days[0].toLocaleDateString(UI_LOCALE())} – ${days[6].toLocaleDateString(UI_LOCALE())}</b><button class="btn ghost small" onclick="bookingsView(${off+1})">settimana dopo ›</button></div>
+    <div class="small mut" style="margin-bottom:var(--s-8)">I mezzi si prenotano dall'intervento (campo «Mezzi e attrezzature da prenotare»); le prenotazioni seguono gli spostamenti dell'intervento.</div>
+    <div class="tbl-wrap"><table class="table"><thead><tr><th>Mezzo</th>${days.map(d=>`<th>${d.toLocaleDateString(UI_LOCALE(),{weekday:'short',day:'2-digit'})}</th>`).join('')}</tr></thead><tbody>${rows||emptyRow(8, null, 'Nessun mezzo', 'Aggiungi i mezzi in Sedi e asset.', null)}</tbody></table></div>`);
+}
 async function assetSave(id){ const m=$('.cfg-msg'); const name=$('#asName').value.trim(); if(!name){m.textContent='nome richiesto';m.style.color='var(--bad)';return;}
-  const b={name,kind:$('#asKind').value,identifier:$('#asId').value||null,site_id:$('#asSite').value||null,note:$('#asNote').value||null};
+  const b={name,kind:($('#asKind').value||'attrezzatura').trim().toLowerCase(),identifier:$('#asId').value||null,site_id:$('#asSite').value||null,note:$('#asNote').value||null};
+  if($('#asStatus')) b.status=$('#asStatus').value;
+  if($('#asQual')) b.required_qualification_id=$('#asQual').value;
   try{await api(id?('/assets/'+id):'/assets',{method:'POST',body:JSON.stringify(b)}); toast('Asset salvato','ok'); closeDrawer(); route();}catch(e){m.textContent=friendlyError(e);m.style.color='var(--bad)';} }
 
 // Hub IAM: identità, gruppi condivisi, permessi (capability), ruoli personalizzati.
@@ -6106,9 +6270,20 @@ function siteForm(s){ s=s||{};
     <label class="small mut">Fuso orario<select id="stTz"><option value="">come l'azienda</option>${tzOptions(s.timezone)}</select>
       <div class="small mut">Serve per gli orari delle ronde pianificate in questa sede. Cambialo solo se la sede è in un altro fuso.</div></label>
     <label class="small mut">Indicazioni d'accesso (visibili solo agli autorizzati)<textarea id="stAcc" style="width:100%;height:60px" placeholder="es. chiave in portineria, codice cancello…">${esc(s.access_notes||'')}</textarea></label>
+    <div><div class="small mut">Orari in cui si può lavorare nella sede (vuoto = sempre). Un intervento fuori orario viene segnalato e bloccato.</div>
+      <div id="stWin">${(s.access_windows||[]).map(winRow).join('')}</div>
+      <button class="btn ghost small" type="button" onclick="$('#stWin').insertAdjacentHTML('beforeend',winRow({days:'1111100',from:'08:00',to:'17:00'}))">+ fascia oraria</button></div>
     <button class="btn" onclick="siteSave('${s.id||''}')">Salva</button><div class="cfg-msg small"></div></div>`);
   setTimeout(siteMapInit,60);
 }
+const WIN_DAYS=['lun','mar','mer','gio','ven','sab','dom'];
+function winRow(w){ w=w||{days:'1111100',from:'08:00',to:'17:00'};
+  return `<div class="row st-win" style="gap:var(--s-6);align-items:center;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;padding:var(--s-6);margin:var(--s-4) 0">
+    ${WIN_DAYS.map((d,i)=>`<label class="small row" style="gap:2px"><input type="checkbox" ${w.days[i]==='1'?'checked':''}>${d}</label>`).join('')}
+    <input type="time" class="w-from" value="${esc(w.from)}" style="width:auto"> – <input type="time" class="w-to" value="${esc(w.to)}" style="width:auto">
+    <button class="btn-ico btn ghost" type="button" onclick="this.closest('.st-win').remove()" aria-label="Rimuovi fascia">${ICON.x}</button></div>`; }
+function winCollect(){ return [...document.querySelectorAll('.st-win')].map(r=>({days:[...r.querySelectorAll('input[type=checkbox]')].map(c=>c.checked?'1':'0').join(''),
+  from:r.querySelector('.w-from').value, to:r.querySelector('.w-to').value})); }
 function siteMapInit(){
   const el=document.getElementById('stMap'); if(!el||typeof L==='undefined')return;
   const lat=parseFloat($('#stLat').value), lon=parseFloat($('#stLon').value);
@@ -6139,7 +6314,7 @@ async function siteGeocode(){
   }catch(e){ if(m){m.textContent='geocodifica non disponibile: inserisci lat/lon o trascina il segnaposto';m.style.color='var(--bad)';} }
 }
 async function siteSave(id){ const m=$('.cfg-msg'); const name=$('#stName').value.trim(); if(!name){ m.textContent='nome richiesto'; m.style.color='var(--bad)'; return; }
-  const b={name, address:$('#stAddr').value.trim()||null, lat:$('#stLat').value!==''?Number($('#stLat').value):null, lon:$('#stLon').value!==''?Number($('#stLon').value):null, access_notes:$('#stAcc').value.trim()||null, timezone:$('#stTz').value};
+  const b={name, address:$('#stAddr').value.trim()||null, lat:$('#stLat').value!==''?Number($('#stLat').value):null, lon:$('#stLon').value!==''?Number($('#stLon').value):null, access_notes:$('#stAcc').value.trim()||null, timezone:$('#stTz').value, access_windows:winCollect()};
   try{ await api(id?('/sites/'+id):'/sites',{method:'POST',body:JSON.stringify(b)}); toast('Sede salvata','ok'); closeDrawer(); route(); }catch(e){ m.textContent=friendlyError(e); m.style.color='var(--bad)'; } }
 async function siteRen(id,cur){ const n=await askPrompt('Nuovo nome?',cur); if(!n||n===cur)return;
   try{await api('/sites/'+id,{method:'POST',body:JSON.stringify({name:n})}); toast('Rinominata','ok'); route();}catch(e){toast(e,'bad');} }
