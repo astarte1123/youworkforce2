@@ -585,7 +585,9 @@ pub async fn oncall_calendar_ics(State(st): State<AppState>, axum::extract::Quer
 #[derive(Clone)]
 pub(crate) struct CalEvent { id: String, source: &'static str, title: String, color: String,
     start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>,
-    user_id: Option<Uuid>, user: Option<String>, link: Option<String> }
+    user_id: Option<Uuid>, user: Option<String>, link: Option<String>,
+    /// squadra (gruppo di persone) a cui è assegnato l'intervento: filtro e colore per squadra
+    group_id: Option<Uuid>, group: Option<String> }
 /// Colore calendario di un utente: quello scelto, altrimenti un colore stabile da palette (per id).
 pub(crate) fn user_color(chosen: Option<String>, uid: Uuid) -> String {
     if let Some(c) = chosen { if !c.trim().is_empty() { return c; } }
@@ -596,7 +598,7 @@ pub(crate) fn user_color(chosen: Option<String>, uid: Uuid) -> String {
 pub(crate) fn cal_json(e: &CalEvent) -> Value {
     json!({"id":e.id,"source":e.source,"title":e.title,"color":e.color,
         "start":e.start.to_rfc3339(),"end":e.end.to_rfc3339(),
-        "user_id":e.user_id,"user":e.user,"link":e.link})
+        "user_id":e.user_id,"user":e.user,"link":e.link,"group_id":e.group_id,"group":e.group})
 }
 /// Raccoglie gli eventi del tenant nella finestra [from,to] dai moduli attivi. `only_uid` limita
 /// a una persona (ruoli ristretti: i propri). Usato sia dall'endpoint JSON sia dall'iCal.
@@ -627,18 +629,20 @@ pub(crate) async fn calendar_collect(st: &AppState, tid: Uuid, from: chrono::Dat
             out.push(CalEvent{ id: format!("shift-{}", r.get::<Uuid,_>("id")), source:"turno",
                 title, color: user_color(r.try_get("cal_color").ok().flatten(), uid),
                 start: r.get("starts_at"), end: r.get("ends_at"),
-                user_id: Some(uid), user: Some(em), link: ordt });
+                user_id: Some(uid), user: Some(em), link: ordt, group_id: None, group: None });
         }
     }
     // --- Interventi e cantieri: ordini con appuntamento programmato ---
     if module_active(st, tid, "interventi").await {
         let rows = sqlx::query(
-            "SELECT o.id, o.title, o.assigned_user, o.scheduled_start, o.scheduled_end, u.email
+            "SELECT o.id, o.title, o.assigned_user, o.assigned_group, o.scheduled_start, o.scheduled_end, u.email, g.name AS group_name
              FROM app.work_orders o LEFT JOIN app.users u ON u.id=o.assigned_user
-             WHERE o.tenant_id=$1 AND o.scheduled_start IS NOT NULL
+             LEFT JOIN app.user_groups g ON g.id=o.assigned_group
+             WHERE o.tenant_id=$1 AND o.scheduled_start IS NOT NULL AND o.state<>'annullato'
                AND o.scheduled_start <= $3
                AND COALESCE(o.scheduled_end, o.scheduled_start + interval '1 hour') >= $2
-               AND ($4::uuid IS NULL OR o.assigned_user=$4)")
+               AND ($4::uuid IS NULL OR o.assigned_user=$4
+                    OR o.assigned_group IN (SELECT group_id FROM app.user_group_members WHERE tenant_id=$1 AND user_id=$4))")
             .bind(tid).bind(from).bind(to).bind(only_uid)
             .fetch_all(&st.owner_pool).await.unwrap_or_default();
         for r in &rows {
@@ -646,10 +650,14 @@ pub(crate) async fn calendar_collect(st: &AppState, tid: Uuid, from: chrono::Dat
             let e0: chrono::DateTime<chrono::Utc> = r.try_get("scheduled_end").ok()
                 .unwrap_or_else(|| s0 + chrono::Duration::hours(1));
             let title: String = r.get("title");
+            let gid: Option<Uuid> = r.try_get("assigned_group").ok().flatten();
+            let gname: Option<String> = r.try_get("group_name").ok().flatten();
             out.push(CalEvent{ id: format!("order-{}", r.get::<Uuid,_>("id")), source:"intervento",
-                title: format!("Intervento · {title}"), color:"#2563eb".into(),
+                title: match &gname { Some(g) => format!("Intervento · {g} · {title}"), None => format!("Intervento · {title}") },
+                // colore stabile per squadra (le squadre si distinguono a colpo d'occhio); senza squadra blu
+                color: gid.map(|g| user_color(None, g)).unwrap_or_else(|| "#2563eb".into()),
                 start: s0, end: e0, user_id: r.try_get("assigned_user").ok(),
-                user: r.try_get::<String,_>("email").ok(), link: None });
+                user: r.try_get::<String,_>("email").ok(), link: None, group_id: gid, group: gname });
         }
     }
     // --- Ronde e punzonature: giri eseguiti (finestra reale) ---
@@ -671,7 +679,7 @@ pub(crate) async fn calendar_collect(st: &AppState, tid: Uuid, from: chrono::Dat
             out.push(CalEvent{ id: format!("round-{}", r.get::<Uuid,_>("id")), source:"ronda",
                 title: format!("Ronda · {route}"), color:"#9333ea".into(),
                 start: s0, end: e0, user_id: Some(r.get("user_id")),
-                user: r.try_get::<String,_>("email").ok(), link: None });
+                user: r.try_get::<String,_>("email").ok(), link: None, group_id: None, group: None });
         }
     }
     out.sort_by_key(|e| e.start);

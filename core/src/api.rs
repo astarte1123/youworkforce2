@@ -2841,9 +2841,25 @@ pub async fn edit_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path
     Ok(Json(json!({"ok":true})))
 }
 
-pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
+/// Filtri di `GET /api/orders` (tutti facoltativi: senza parametri l'elenco completo, come prima).
+/// `state=open` (non completati né annullati) | `closed` (completati o annullati, i più recenti per
+/// primi); `from`/`to` = inizio programmato in [from, to) (RFC 3339); `id` = un solo intervento;
+/// `limit` = al massimo N righe (1..5000). Con decine di migliaia di interventi all'anno la console
+/// non scarica più tutto lo storico per mostrare l'agenda.
+#[derive(Deserialize, Default)] pub struct OrdersQuery { #[serde(default)] pub state: Option<String>,
+    #[serde(default)] pub from: Option<String>, #[serde(default)] pub to: Option<String>,
+    #[serde(default)] pub id: Option<Uuid>, #[serde(default)] pub limit: Option<i64> }
+pub async fn list_orders(State(st): State<AppState>, h: HeaderMap, axum::extract::Query(q): axum::extract::Query<OrdersQuery>) -> R {
     let s = require_tenant(&st, &h).await?;
     require_module(&st, s.tenant_id.unwrap(), "interventi").await?;
+    let state_f = match q.state.as_deref() { None | Some("") | Some("all") => None, Some("open") => Some("open"), Some("closed") => Some("closed"),
+        Some(_) => return Err(err(StatusCode::BAD_REQUEST, "state: 'open', 'closed' o 'all'")) };
+    let ts = |v: &Option<String>, name: &str| -> Result<Option<chrono::DateTime<chrono::Utc>>, (StatusCode, String)> {
+        match v.as_deref().map(str::trim).filter(|x| !x.is_empty()) { None => Ok(None),
+            Some(x) => chrono::DateTime::parse_from_rfc3339(x).map(|d| Some(d.with_timezone(&chrono::Utc)))
+                .map_err(|_| err(StatusCode::BAD_REQUEST, &format!("{name}: data e ora RFC 3339 (es. 2026-11-30T00:00:00+01:00)"))) } };
+    let (from_f, to_f) = (ts(&q.from, "from")?, ts(&q.to, "to")?);
+    let limit_f = q.limit.map(|l| l.clamp(1, 5000));
     let mut tx = db::begin_tenant(&st.rt_pool, s.tenant_id.unwrap()).await.map_err(ise)?;
     // technician sees only own; planner/admin/auditor see all (RLS already scopes to tenant)
     let cols="o.id,o.title,o.state,o.version,o.outcome,o.instructions,o.site_id,o.assigned_user,o.assigned_group,o.scheduled_start,o.scheduled_end,o.priority,s.name AS site,u.email AS assignee,g.name AS group_name,\
@@ -2856,15 +2872,17 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap) -> R {
     let acl = allowed_sites(&st, &s).await;
     let my_groups: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM app.user_group_members WHERE tenant_id=$1 AND user_id=$2")
         .bind(s.tenant_id.unwrap()).bind(s.user_id).fetch_all(&st.owner_pool).await.unwrap_or_default();
-    let rows = if !see_all {
-        // tecnico: i propri ordini + quelli assegnati a un gruppo di persone di cui è membro
-        sqlx::query(&format!("SELECT {cols} {joins}
-            WHERE o.assigned_user=$1 OR o.assigned_group IN (SELECT group_id FROM app.user_group_members WHERE user_id=$1)
-            ORDER BY o.scheduled_start NULLS LAST, o.updated_at DESC")).bind(s.user_id).fetch_all(&mut *tx).await
-    } else {
-        sqlx::query(&format!("SELECT {cols} {joins}
-            ORDER BY o.scheduled_start NULLS LAST, o.updated_at DESC")).fetch_all(&mut *tx).await
-    }.map_err(ise)?;
+    // tecnico ($1 = sé stesso): i propri ordini + quelli assegnati a un gruppo di persone di cui è membro
+    let rows = sqlx::query(&format!("SELECT {cols} {joins}
+            WHERE ($1::uuid IS NULL OR o.assigned_user=$1 OR o.assigned_group IN (SELECT group_id FROM app.user_group_members WHERE user_id=$1))
+              AND ($2::text IS NULL OR ($2='open' AND o.state NOT IN ('completato','annullato')) OR ($2='closed' AND o.state IN ('completato','annullato')))
+              AND ($3::timestamptz IS NULL OR o.scheduled_start >= $3) AND ($4::timestamptz IS NULL OR o.scheduled_start < $4)
+              AND ($5::uuid IS NULL OR o.id=$5)
+            ORDER BY (CASE WHEN $2='closed' THEN COALESCE(o.work_started_at,o.scheduled_start,o.updated_at) END) DESC NULLS LAST,
+                     o.scheduled_start NULLS LAST, o.updated_at DESC
+            LIMIT $6"))
+        .bind(if see_all { None } else { Some(s.user_id) }).bind(state_f).bind(from_f).bind(to_f).bind(q.id).bind(limit_f)
+        .fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let mine = |r: &sqlx::postgres::PgRow| r.try_get::<Uuid,_>("assigned_user").ok() == Some(s.user_id)
         || r.try_get::<Uuid,_>("assigned_group").ok().map(|g| my_groups.contains(&g)).unwrap_or(false);

@@ -351,7 +351,7 @@ async function confirmCI(){ if(!CI)return; try{ const r=await api('/checkins/'+C
 
 // ---- orders ----
 async function loadOrders(){
-  const box=$('#orders'); let O; try{ O=await api('/orders'); }catch(e){ box.innerHTML=errorBox(e,'loadOrders()'); return; } ORDERS=O;
+  const box=$('#orders'); let O; try{ O=await api('/orders?state=open'); }catch(e){ box.innerHTML=errorBox(e,'loadOrders()'); return; } ORDERS=O;
   const mine=O.filter(o=>['assegnato','in_corso'].includes(o.state));
   if(!mine.length){ box.innerHTML='<div class="card pad mut center">Nessun ordine per oggi</div>'; return; }
   const sched=o=>o.scheduled_start?new Date(o.scheduled_start).toLocaleString(ywI18n.locale(),{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):null;

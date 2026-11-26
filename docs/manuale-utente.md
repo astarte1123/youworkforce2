@@ -880,7 +880,10 @@ Menu **Lavoro sul campo → Interventi**. Ordini di lavoro per assistenza e manu
 istruzioni, **checklist** (una voce per riga), persona assegnata oppure **gruppo** (i membri del
 gruppo vedono ed eseguono l'ordine), data e ora.
 
-La pagina mostra l'**agenda degli appuntamenti** e gli interventi **da pianificare**. Stati: Bozza,
+La pagina ha tre schede: l'**agenda degli appuntamenti** (gli interventi aperti con data, dal più
+vicino; in testa il prossimo e quanti sono scaduti senza essere chiusi), gli interventi **da
+pianificare** (aperti senza data) e i **chiusi** (gli ultimi 500 completati o annullati, i più recenti
+per primi, con il tempo lavorato; per periodi più lunghi si usano l'export o i report). Stati: Bozza,
 Assegnato, In corso, Completato, Sospeso, Annullato.
 
 **Chi vede cosa**
@@ -1015,9 +1018,13 @@ mancato ha il simbolo di avviso e apre l'allarme.
 
 Menu **Lavoro sul campo → Pianificazione**, con tre schede.
 
-- **Calendario**: turni, interventi, ronde e cantieri in un'unica vista.
-- **Agenda tecnici**: gli interventi **da assegnare** e la settimana dei tecnici con il carico di
-  ogni giorno; si assegnano persona e orario.
+- **Calendario**: turni, interventi, ronde e cantieri in un'unica vista. Con molte persone si usa
+  **Mostra** per vedere una sola squadra (i suoi interventi e i turni dei suoi membri) e le caselle
+  Turni / Interventi / Ronde per scegliere cosa vedere; gli interventi di una squadra hanno il colore
+  e il nome della squadra; quando gli eventi si sovrappongono compare «+N altri».
+- **Agenda tecnici**: gli interventi **da assegnare** e il carico del giorno **per squadra e per
+  persona** (numero di interventi e ore previste), oppure la settimana giorno per giorno; frecce per
+  passare al giorno o alla settimana prima e dopo. Si assegnano persona o squadra e orario.
 - **Turni** (modulo Forza lavoro e turni):
   - **Turni pianificati**: **+ Pianifica turno**, anche collegato a un intervento o a un cantiere;
     il lavoratore li vede e li conferma dall'app;

@@ -763,9 +763,13 @@ const DASH_WIDGETS={
   checkins:{ title:'Check-in attivi', goto:'centrale', load:()=>api('/checkins/list').catch(()=>null),
     body:C=>{ if(!C)return dMut(); const sc=C.filter(c=>c.state==='scaduto').length;
       return dKpi('shield','Attivi',C.length,sc?'pri3':'')+dTbl(C.slice(0,6).map(c=>`<tr><td><b>${esc(c.email)}</b><div class="small mut">${esc(c.site||'—')}</div></td><td>${chip(c.state)}</td></tr>`).join('')||emptyRow('Nessun check-in')); } },
-  orders:{ title:'Ordini di lavoro', goto:'ordini', load:()=>api('/orders').catch(()=>null),
+  orders:{ title:'Interventi', goto:'ordini', load:()=>api('/orders?state=open&limit=2000').catch(()=>null),
     body:O=>{ if(!O)return dMut(); const a=O.filter(x=>x.state==='in_corso'||x.state==='assegnato').length;
-      return dKpi('clipboard','Attivi',a)+dTbl(O.slice(0,6).map(ordRow).join('')||emptyRow('Nessun ordine')); } },
+      // i prossimi appuntamenti da oggi in avanti (poi quelli senza data), non lo storico
+      const t0=new Date(); t0.setHours(0,0,0,0);
+      const next=O.filter(o=>!o.scheduled_start||new Date(o.scheduled_end||o.scheduled_start)>=t0);
+      return dKpi('clipboard','Aperti',O.length)+`<div class="small mut" style="margin:-4px 0 var(--s-6)">${a} assegnati o in corso</div>`
+        +dTbl(next.slice(0,6).map(ordRow).join('')||emptyRow('Nessun intervento in programma')); } },
   timesheets:{ title:'Consuntivi', goto:'consuntivi', load:()=>api('/timesheets').catch(()=>null),
     body:T=>{ if(!T)return dMut(); const r=T.filter(x=>x.state==='in_revisione').length;
       return dKpi('receipt','In revisione',r)+dTbl(T.slice(0,6).map(t=>`<tr class="clk" data-ts="${t.id}"><td><b>${esc(t.owner||'—')}</b><div class="small mut">${esc(t.order_title||'')}</div></td><td>${chip(t.state)}</td></tr>`).join('')||emptyRow('Nessun consuntivo')); } },
@@ -862,7 +866,7 @@ function card(title,inner,gotoK){return `<div class="card"><div class="card-h"><
   <table class="table"><tbody>${inner}</tbody></table></div>`;}
 function incRow(i){return `<tr class="clk" data-inc="${i.id}"><td><b>${esc(etypeLabel(i.etype))}</b><div class="small mut">${esc(i.site||'—')}</div></td>
   <td>${chip(i.state)}</td></tr>`;}
-function ordRow(o){return `<tr class="clk-card" data-ord="${o.id}"><td><b>${esc(o.title)}</b><div class="small mut">${esc(o.site||'—')} · ${esc(o.assignee||'non assegnato')}</div></td>
+function ordRow(o){return `<tr class="clk-card" data-ord="${o.id}"><td><b>${esc(o.title)}</b><div class="small mut">${esc(o.site||'—')} · ${o.assignee?esc(o.assignee):o.group_name?'👥 '+esc(o.group_name):'<span style="color:var(--bad)">da assegnare</span>'}</div></td>
   <td>${chip(o.state)}</td></tr>`;}
 function bindRows(v){
   $$('[data-inc]',v).forEach(r=>r.onclick=()=>openIncident(r.dataset.inc));
@@ -1328,18 +1332,25 @@ window.addEventListener('orientationchange',()=>setTimeout(invalidateMaps,300));
 // La mappa dei DISPOSITIVI è una voce separata (vMappaDispositivi), condivisa con "Lavoro sul campo".
 // Calendario CORE condiviso (W1) + strumenti pianificatore (W5): drag, colore per lavoratore,
 // legenda mostra/nascondi, export CSV/PDF dei selezionati, genera turni (anche con suggerimenti AI).
-let _CAL=null, CAL_HIDDEN=new Set(), CAL_WORKERS={}, CAL_LAST=[];
+let _CAL=null, CAL_HIDDEN=new Set(), CAL_WORKERS={}, CAL_LAST=[], CAL_GROUPS=[], CAL_FILTER='', CAL_TYPES=new Set(['turno','intervento','ronda']);
 async function vCalendario(v){
   const planner=can(['pianificatore','tenant_admin'],'plan');
   const tools=planner?`<button class="btn ghost small" onclick="genTurni()">✨ Genera turni</button>`:'';
   v.innerHTML=`<div class="page-h"><div><h1>Calendario</h1><div class="mut">turni, interventi programmati e ronde — un'unica agenda${planner?' · trascina per spostare':''}</div></div>
     <div class="row" style="gap:var(--s-8)">${tools}<button class="btn ghost small" onclick="calExport('csv')">⬇ CSV</button><button class="btn ghost small" onclick="calExport('pdf')">⬇ PDF</button><button class="btn ghost small" onclick="calMyIcal()">🔗 iCal</button></div></div>
+    <div class="row" style="gap:var(--s-10);flex-wrap:wrap;align-items:center;margin-bottom:var(--s-8)">
+      <label class="small" for="calFilter">Mostra</label><select id="calFilter" style="width:auto;min-width:220px" onchange="CAL_FILTER=this.value;_CAL&&_CAL.refetchEvents()"><option value="">tutte le squadre e persone</option></select>
+      ${['turno','intervento','ronda'].map(t=>`<label class="row small" style="gap:var(--s-4);align-items:center"><input type="checkbox" ${CAL_TYPES.has(t)?'checked':''} onchange="calType('${t}',this.checked)"> ${({turno:'Turni',intervento:'Interventi',ronda:'Ronde'})[t]}</label>`).join('')}</div>
     <div id="calLegend" class="row" style="gap:var(--s-10);flex-wrap:wrap;margin-bottom:var(--s-8)"></div>
     <div class="card pad"><div id="calWrap"></div></div>`;
+  // squadre e gruppi di persone per il filtro (membri: per filtrare anche i turni delle persone)
+  api('/teams').then(G=>{ CAL_GROUPS=G||[]; const sel=$('#calFilter'); if(!sel)return;
+    sel.insertAdjacentHTML('beforeend', CAL_GROUPS.map(g=>`<option value="g:${g.id}"${CAL_FILTER==='g:'+g.id?' selected':''}>👥 ${esc(g.name)} (${(g.members||[]).length})</option>`).join('')); }).catch(()=>{});
   if(typeof FullCalendar==='undefined'){ $('#calWrap').innerHTML='<div class="mut">Libreria calendario non disponibile (serve connessione).</div>'; return; }
   setTimeout(()=>{
     _CAL=new FullCalendar.Calendar($('#calWrap'),{
       initialView:'timeGridWeek', locale:'it', height:'auto', firstDay:1, nowIndicator:true, expandRows:true, slotMinTime:'06:00:00', slotMaxTime:'22:00:00',
+      eventMaxStack:3, dayMaxEvents:4, moreLinkContent:a=>'+'+a.num+' altri',
       headerToolbar:{left:'prev,next today',center:'title',right:'dayGridMonth,timeGridWeek,timeGridDay'},
       buttonText:{today:'oggi',month:'mese',week:'settimana',day:'giorno'},
       editable:planner, eventStartEditable:planner, eventDurationEditable:planner,
@@ -1348,7 +1359,10 @@ async function vCalendario(v){
         .then(evs=>{ evs=evs||[];
           evs.forEach(e=>{ if(e.source==='turno'&&e.user_id){ CAL_WORKERS[e.user_id]={email:e.user||e.title,color:e.color}; } });
           renderCalLegend(planner);
-          const vis=evs.filter(e=> !(e.source==='turno'&&e.user_id&&CAL_HIDDEN.has(e.user_id)));
+          const g=CAL_FILTER.startsWith('g:')?CAL_GROUPS.find(x=>'g:'+x.id===CAL_FILTER):null;
+          const mem=g?new Set((g.members||[]).map(m=>m.user_id)):null;
+          const vis=evs.filter(e=> CAL_TYPES.has(e.source) && !(e.source==='turno'&&e.user_id&&CAL_HIDDEN.has(e.user_id))
+            && (!g || e.group_id===g.id || (e.user_id && mem.has(e.user_id))));
           CAL_LAST=vis;
           ok(vis.map(e=>({id:e.id,title:e.title,start:e.start,end:e.end,backgroundColor:e.color,borderColor:e.color,
             editable: planner && e.source==='turno'})));
@@ -1366,6 +1380,7 @@ function renderCalLegend(planner){
   const el=$('#calLegend'); if(!el)return;
   const ws=Object.entries(CAL_WORKERS);
   if(!ws.length){ el.innerHTML='<span class="small mut">Nessun turno nel periodo.</span>'; return; }
+  if(ws.length>15){ el.innerHTML=`<span class="small mut">${ws.length} persone con turni nel periodo: scegli una squadra in «Mostra» per vederne i turni e gli interventi.</span>`; return; }
   el.innerHTML=`<span class="small mut">Lavoratori:</span>`+ws.map(([uid,w])=>`
     <label class="row small" style="gap:var(--s-4);align-items:center;border:1px solid var(--line);border-radius:14px;padding:var(--s-2) var(--s-8)">
       <input type="checkbox" ${CAL_HIDDEN.has(uid)?'':'checked'} onchange="calToggle('${uid}',this.checked)">
@@ -1373,6 +1388,7 @@ function renderCalLegend(planner){
       <span>${esc(w.email)}</span></label>`).join('')+
     ` <a class="small" onclick="calAll(true)">tutti</a> · <a class="small" onclick="calAll(false)">nessuno</a>`;
 }
+function calType(t,on){ if(on)CAL_TYPES.add(t); else CAL_TYPES.delete(t); _CAL&&_CAL.refetchEvents(); }
 function calToggle(uid,show){ if(show)CAL_HIDDEN.delete(uid); else CAL_HIDDEN.add(uid); _CAL&&_CAL.refetchEvents(); }
 function calAll(show){ if(show){ CAL_HIDDEN.clear(); } else { Object.keys(CAL_WORKERS).forEach(u=>CAL_HIDDEN.add(u)); } _CAL&&_CAL.refetchEvents(); }
 async function calColor(uid,color){ try{ await api('/users/'+uid+'/color',{method:'POST',body:JSON.stringify({color})}); if(CAL_WORKERS[uid])CAL_WORKERS[uid].color=color; toast('Colore aggiornato','ok'); _CAL&&_CAL.refetchEvents(); }catch(e){ toast(e,'bad'); } }
@@ -2305,30 +2321,44 @@ async function schToggle(id,on){ try{ await api('/patrol-schedules/'+id,{method:
   toast(on?'Piano riattivato: le ronde dovute ripartono da adesso':'Piano sospeso: nessuna ronda dovuta né allarme di ronda mancata','ok'); route(); }catch(e){ toast(e,'bad'); } }
 async function schDel(id){ if(!await askConfirm('Eliminare il piano?'))return; try{await api('/patrol-schedules/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e,'bad');} }
 // Assistenza / manutenzione a visite: appuntamenti dal cliente, rapporto, firma, (listino/consuntivo).
-let ORD_CACHE=[]; let ORD_TAB='agenda';
-async function vOrdini(v){ const O=await api('/orders').catch(loadFail); if(isLoadFail(O)){ ORD_CACHE=[]; return pageLoadError(v,'Interventi',O); } ORD_CACHE=O; renderOrdini(v); }
-function ordTab(t){ ORD_TAB=t; renderOrdini($('#view')); }
+let ORD_CACHE=[]; let ORD_TAB='agenda'; let ORD_CLOSED=null;
+// Aperti dal server (non tutto lo storico: con 60 persone sono decine di migliaia di interventi l'anno);
+// i chiusi si caricano solo aprendo la scheda, i più recenti per primi.
+async function vOrdini(v){ const O=await api('/orders?state=open').catch(loadFail); if(isLoadFail(O)){ ORD_CACHE=[]; return pageLoadError(v,'Interventi',O); }
+  ORD_CACHE=O; ORD_CLOSED=null; if(ORD_TAB==='closed') await ordLoadClosed(); renderOrdini(v); }
+async function ordLoadClosed(){ ORD_CLOSED=await api('/orders?state=closed&limit=500').catch(()=>[]); }
+async function ordTab(t){ ORD_TAB=t; if(t==='closed'&&ORD_CLOSED===null) await ordLoadClosed(); renderOrdini($('#view')); }
 function renderOrdini(v){
   const O=ORD_CACHE, canCreate=can(['pianificatore','tenant_admin'],'plan');
   const sched=O.filter(o=>o.scheduled_start).slice().sort((a,b)=>new Date(a.scheduled_start)-new Date(b.scheduled_start));
   const unsched=O.filter(o=>!o.scheduled_start);
   const toAssign=sched.filter(o=>!o.assignee&&!o.group_name).length;
-  const nextLbl=sched[0]?new Date(sched[0].scheduled_start).toLocaleDateString(UI_LOCALE(),{weekday:'short',day:'2-digit',month:'short'}):'—';
+  const nowT=Date.now(); const upcoming=sched.find(o=>new Date(o.scheduled_start).getTime()>=nowT);
+  const overdue=sched.filter(o=>new Date(o.scheduled_end||o.scheduled_start).getTime()<nowT).length;
+  const nextLbl=upcoming?new Date(upcoming.scheduled_start).toLocaleDateString(UI_LOCALE(),{weekday:'short',day:'2-digit',month:'short'}):'—';
   const asgLabel=o=>o.assignee?esc(o.assignee):(o.group_name?('👥 '+esc(o.group_name)):'<span style="color:var(--bad)">da assegnare</span>');
-  const dayCol=o=>{ const dt=new Date(o.scheduled_start); const today=new Date().toISOString().slice(0,10)===dt.toISOString().slice(0,10);
+  const dayCol=o=>{ const dt=new Date(o.scheduled_start); const today=new Date().toDateString()===dt.toDateString();
     return today?'<b>oggi</b>':dt.toLocaleDateString(UI_LOCALE(),{weekday:'short',day:'2-digit',month:'short'}); };
   const hhmm=o=>new Date(o.scheduled_start).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'});
   const tabs=`<div class="seg" style="margin-bottom:var(--s-14)">
     <button class="seg-btn${ORD_TAB==='agenda'?' on':''}" onclick="ordTab('agenda')">Agenda appuntamenti <span class="seg-n">${sched.length}</span></button>
-    <button class="seg-btn${ORD_TAB==='todo'?' on':''}" onclick="ordTab('todo')">Da pianificare <span class="seg-n">${unsched.length}</span></button></div>`;
+    <button class="seg-btn${ORD_TAB==='todo'?' on':''}" onclick="ordTab('todo')">Da pianificare <span class="seg-n">${unsched.length}</span></button>
+    <button class="seg-btn${ORD_TAB==='closed'?' on':''}" onclick="ordTab('closed')">Chiusi${ORD_CLOSED?` <span class="seg-n">${ORD_CLOSED.length}</span>`:''}</button></div>`;
   let body;
   if(ORD_TAB==='agenda'){
     // Tabella standard (data-export) -> ricerca + CSV/PDF + paginazione automatiche, come le altre.
     const arow=o=>`<tr class="clk" data-ord="${o.id}"><td class="small nowrap">${dayCol(o)}</td><td class="small">${hhmm(o)}</td><td><b>${esc(o.title)}</b></td><td class="small">${esc(o.client_name||o.site||'—')}</td><td>${asgLabel(o)}</td><td>${priBadge(o.priority)}</td><td>${chip(o.state)}</td></tr>`;
     body=`<div class="card"><div class="card-h"><div><h2>Agenda appuntamenti</h2>
-        <div class="small mut">${sched.length} pianificati · prossimo: <b>${nextLbl}</b>${toAssign?` · <span style="color:var(--bad)">${toAssign} da assegnare</span>`:''}</div></div></div>
+        <div class="small mut">${sched.length} in programma · prossimo: <b>${nextLbl}</b>${overdue?` · <span style="color:var(--bad)">${overdue} scaduti e non chiusi</span>`:''}${toAssign?` · <span style="color:var(--bad)">${toAssign} da assegnare</span>`:''}</div></div></div>
       <table class="table" data-export="agenda-interventi"><thead><tr><th>Giorno</th><th>Ora</th><th>Titolo</th><th>Cliente/Sede</th><th>Assegnatario</th><th>Priorità</th><th>Stato</th></tr></thead>
       <tbody>${sched.map(arow).join('')||emptyRow(7, ICON.clipboard, 'Nessun appuntamento', 'Dai una data a un intervento «Da pianificare» per vederlo qui.', null)}</tbody></table></div>`;
+  } else if(ORD_TAB==='closed'){
+    const C=ORD_CLOSED||[];
+    const crow=o=>`<tr class="clk" data-ord="${o.id}"><td class="small nowrap">${o.scheduled_start?new Date(o.scheduled_start).toLocaleDateString(UI_LOCALE(),{day:'2-digit',month:'short',year:'numeric'}):'—'}</td><td><b>${esc(o.title)}</b></td><td class="small">${esc(o.client_name||o.site||'—')}</td><td>${asgLabel(o)}</td><td class="small">${o.work_minutes!=null?fmtMin(o.work_minutes):'—'}</td><td>${chip(o.state)}</td></tr>`;
+    body=`<div class="card"><div class="card-h"><div><h2>Interventi chiusi</h2>
+        <div class="small mut">gli ultimi ${C.length} completati o annullati, i più recenti per primi · per periodi più lunghi usa l'export o i report</div></div></div>
+      <table class="table" data-export="interventi-chiusi"><thead><tr><th>Giorno</th><th>Titolo</th><th>Cliente/Sede</th><th>Assegnatario</th><th>Tempo lavorato</th><th>Stato</th></tr></thead>
+      <tbody>${C.map(crow).join('')||emptyRow(6, ICON.clipboard, 'Nessun intervento chiuso', 'Qui compaiono gli interventi completati o annullati.', null)}</tbody></table></div>`;
   } else {
     const row=o=>`<tr class="clk" data-ord="${o.id}"><td><b>${esc(o.title)}</b></td><td>${esc(o.site||'—')}</td><td>${asgLabel(o)}</td><td>${priBadge(o.priority)}</td><td>${chip(o.state)}</td></tr>`;
     body=`<div class="card"><div class="card-h"><div><h2>Da pianificare</h2>
@@ -2336,7 +2366,7 @@ function renderOrdini(v){
       <table class="table" data-export="interventi-da-pianificare"><thead><tr><th>Titolo</th><th>Sede</th><th>Assegnatario</th><th>Priorità</th><th>Stato</th></tr></thead>
       <tbody>${unsched.map(row).join('')||emptyRow(5, ICON.clipboard, 'Niente da pianificare', 'Tutti gli interventi hanno un appuntamento. Creane uno nuovo o controlla l\'agenda.', canCreate?{fn:'newOrder()',label:'+ Nuovo intervento'}:null)}</tbody></table></div>`;
   }
-  v.innerHTML=`<div class="page-h"><div><h1>Interventi</h1><div class="mut">${O.length} totali · assistenza/manutenzione a visite</div></div>
+  v.innerHTML=`<div class="page-h"><div><h1>Interventi</h1><div class="mut">${O.length} aperti · assistenza/manutenzione a visite</div></div>
     <span>${canCreate?`<button class="btn" onclick="newOrder()">+ Nuovo intervento</button>`:''}</span></div>
   <div class="small mut" style="margin:-4px 0 var(--s-12)">🔧 Interventi = il tecnico va dal cliente: appuntamenti con rapporto, firma, materiali e consuntivo per visita.</div>
   ${tabs}${body}`;
@@ -2988,48 +3018,63 @@ async function orderLineSave(wo){
 async function orderLineDel(wo,id){ if(!await askConfirm('Eliminare la voce?'))return;
   try{await api('/order-lines/'+id,{method:'DELETE'}); toast('Eliminata','ok'); orderLines(wo);}catch(e){toast(e,'bad');} }
 // ===== Interventi A3: Agenda tecnici (dispatch) =====
+// Squadre (gruppi di persone) e persone con interventi nel giorno: con 60+ giardinieri organizzati in
+// squadre le corsie sono le squadre, non ogni singola persona. Si carica solo la settimana mostrata.
+const ymdLocal=d=>{ const x=new Date(d); return x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0'); };
 async function vDispatch(v){
-  if(!v._day) v._day=new Date().toISOString().slice(0,10);
-  const [O,users]=await Promise.all([api('/orders').catch(()=>[]),api('/users').catch(()=>[])]);
-  v._users=users; const workers=users.filter(u=>['lavoratore','operatore'].includes(u.role));
+  if(!v._day) v._day=ymdLocal(new Date());
   const day=v._day;
-  const sameDay=o=>o.scheduled_start && new Date(o.scheduled_start).toISOString().slice(0,10)===day;
+  const base=new Date(day+'T00:00:00'); const dow=(base.getDay()+6)%7; const mon=new Date(base); mon.setDate(base.getDate()-dow);
+  const sun=new Date(mon); sun.setDate(mon.getDate()+7);
+  const [O,openO]=await Promise.all([
+    api('/orders?from='+encodeURIComponent(mon.toISOString())+'&to='+encodeURIComponent(sun.toISOString())).catch(()=>[]),
+    api('/orders?state=open').catch(()=>[])]);
+  const sameDay=o=>o.scheduled_start && ymdLocal(o.scheduled_start)===day && o.state!=='annullato';
+  const hm=o=>new Date(o.scheduled_start).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'});
   const tostr=o=>`<div class="spread clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6) var(--s-8);margin:var(--s-4) 0">
-    <div style="min-width:0"><b class="small">${esc(o.title)}</b><div class="small mut">${esc(o.site||'—')}${o.client_name?' · '+esc(o.client_name):''} ${o.scheduled_start?'· '+new Date(o.scheduled_start).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'}):''}</div></div>
+    <div style="min-width:0"><b class="small">${esc(o.title)}</b><div class="small mut">${o.scheduled_start?hm(o)+' · ':''}${esc(o.client_name||o.site||'—')}</div></div>
     <div class="row" style="gap:var(--s-6);align-items:center">${chip(o.state)}<span class="clk-go">›</span></div></div>`;
-  const unassigned=O.filter(o=>!o.assignee && !o.group_name && o.state!=='completato' && o.state!=='annullato');
-  const unRows=unassigned.map(o=>`<div class="spread clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6) var(--s-8);margin:var(--s-4) 0">
+  const unassigned=openO.filter(o=>!o.assignee && !o.group_name);
+  const unRows=unassigned.slice(0,50).map(o=>`<div class="spread clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6) var(--s-8);margin:var(--s-4) 0">
     <div style="min-width:0"><b class="small">${esc(o.title)}</b><div class="small mut">${esc(o.site||'—')}${o.client_name?' · '+esc(o.client_name):''} · ${schedLabel(o)}</div></div>
     <button class="btn ghost small" onclick="event.stopPropagation();ordSuggestTech('${o.id}',${o.version})">✦ assegna</button></div>`).join('')
     ||'<div class="small mut">Nessun intervento da assegnare.</div>';
-  const lanes=workers.map(w=>{ const list=O.filter(o=>o.assignee===w.email && sameDay(o));
-    return `<div class="card pad" style="min-width:220px;flex:1"><div class="spread"><b class="small">${esc(w.email.split('@')[0])}</b><span class="chip">${list.length}</span></div>
-      ${list.map(tostr).join('')||'<div class="small mut" style="margin-top:var(--s-6)">—</div>'}</div>`; }).join('');
-  // F1 — vista settimana: 7 colonne (lun→dom) con gli appuntamenti del giorno
+  // corsie del giorno: una per squadra e una per persona con interventi assegnati a lei
+  const todays=O.filter(sameDay).sort((a,b)=>new Date(a.scheduled_start)-new Date(b.scheduled_start));
+  const laneMap=new Map();
+  todays.forEach(o=>{ const k=o.group_name?'g:'+o.group_name:(o.assignee?'u:'+o.assignee:'x');
+    if(!laneMap.has(k)) laneMap.set(k,{label:o.group_name?'👥 '+o.group_name:(o.assignee?o.assignee.split('@')[0]:'senza assegnatario'),list:[]});
+    laneMap.get(k).list.push(o); });
+  const lanes=[...laneMap.values()].sort((a,b)=>a.label.localeCompare(b.label)).map(l=>{
+    const mins=l.list.reduce((t,o)=>t+(o.scheduled_end?(new Date(o.scheduled_end)-new Date(o.scheduled_start))/60000:60),0);
+    return `<div class="card pad" style="min-width:240px;flex:1"><div class="spread"><b class="small">${esc(l.label)}</b><span class="chip">${l.list.length} · ${fmtMin(Math.round(mins))}</span></div>
+      ${l.list.map(tostr).join('')}</div>`; }).join('');
   const mode=v._dmode||'day';
-  const base=new Date(day+'T00:00:00'); const dow=(base.getDay()+6)%7; const mon=new Date(base); mon.setDate(base.getDate()-dow);
-  const weekDays=Array.from({length:7},(_,i)=>{ const d=new Date(mon); d.setDate(mon.getDate()+i); return d.toISOString().slice(0,10); });
-  const today=new Date().toISOString().slice(0,10);
+  const weekDays=Array.from({length:7},(_,i)=>{ const d=new Date(mon); d.setDate(mon.getDate()+i); return ymdLocal(d); });
+  const today=ymdLocal(new Date());
   const dnames=['lun','mar','mer','gio','ven','sab','dom'];
-  const schedOn=d=>O.filter(o=>o.scheduled_start && new Date(o.scheduled_start).toISOString().slice(0,10)===d && o.state!=='annullato')
+  const schedOn=d=>O.filter(o=>o.scheduled_start && ymdLocal(o.scheduled_start)===d && o.state!=='annullato')
     .sort((a,b)=>new Date(a.scheduled_start)-new Date(b.scheduled_start));
+  const who=o=>o.group_name?'👥 '+esc(o.group_name):o.assignee?esc(o.assignee.split('@')[0]):'<span style="color:var(--bad)">da assegnare</span>';
   const weekCols=weekDays.map((d,i)=>{ const list=schedOn(d);
-    return `<div class="card pad" style="min-width:150px;flex:1;${d===today?'outline:2px solid var(--brand)':''}">
-      <div class="small" style="font-weight:600">${dnames[i]} ${d.slice(8,10)}/${d.slice(5,7)}</div>
+    return `<div class="card pad" style="min-width:170px;flex:1;${d===today?'outline:2px solid var(--brand)':''}">
+      <div class="spread"><span class="small" style="font-weight:600">${dnames[i]} ${d.slice(8,10)}/${d.slice(5,7)}</span><span class="chip">${list.length}</span></div>
       ${list.map(o=>`<div class="clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:6px;padding:var(--s-4) var(--s-6);margin:var(--s-4) 0">
-        <b class="small">${new Date(o.scheduled_start).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'})}</b>
+        <b class="small">${hm(o)}</b>
         <div class="small" style="overflow:hidden;text-overflow:ellipsis">${esc(o.title)}</div>
-        <div class="small mut">${o.assignee?esc(o.assignee.split('@')[0]):'<span style="color:var(--bad)">—</span>'}</div></div>`).join('')||'<div class="small mut" style="margin-top:var(--s-6)">—</div>'}
+        <div class="small mut">${who(o)}</div></div>`).join('')||'<div class="small mut" style="margin-top:var(--s-6)">—</div>'}
     </div>`; }).join('');
   const toggle=`<span class="row" style="gap:var(--s-4)"><button class="btn ${mode==='day'?'':'ghost'} small" onclick="(function(){$('#view')._dmode='day';route();})()">Giorno</button><button class="btn ${mode==='week'?'':'ghost'} small" onclick="(function(){$('#view')._dmode='week';route();})()">Settimana</button></span>`;
-  v.innerHTML=`<div class="page-h"><div><h1>Agenda tecnici</h1><div class="mut">dispatch degli interventi · ${O.filter(o=>o.scheduled_start&&o.state!=='annullato').length} programmati</div></div>
-    <span class="row" style="gap:var(--s-8)">${toggle}<input type="date" value="${day}" onchange="(function(e){$('#view')._day=e;route();})(this.value)"><button class="btn ghost small" onclick="dispCSV()">⬇ CSV</button></span></div>
-  <div class="card" style="margin-bottom:var(--s-14)"><div class="card-h"><h2>Da assegnare (${unassigned.length})</h2></div><div style="padding:0 var(--s-12) var(--s-12)">${unRows}</div></div>
+  const shift=n=>{ const d=new Date(day+'T00:00:00'); d.setDate(d.getDate()+n); return ymdLocal(d); };
+  const step=mode==='week'?7:1;
+  v.innerHTML=`<div class="page-h"><div><h1>Agenda tecnici</h1><div class="mut">dispatch degli interventi per squadra e per persona · ${todays.length} il ${day.slice(8,10)}/${day.slice(5,7)}, ${O.filter(o=>o.scheduled_start&&o.state!=='annullato').length} nella settimana</div></div>
+    <span class="row" style="gap:var(--s-8);flex-wrap:wrap;align-items:center">${toggle}<button class="btn ghost small" onclick="(function(){$('#view')._day='${shift(-step)}';route();})()" aria-label="Precedente">‹</button><input type="date" style="width:auto" value="${day}" onchange="(function(e){$('#view')._day=e;route();})(this.value)"><button class="btn ghost small" onclick="(function(){$('#view')._day='${shift(step)}';route();})()" aria-label="Successivo">›</button><button class="btn ghost small" onclick="dispCSV()">⬇ CSV</button></span></div>
+  <div class="card" style="margin-bottom:var(--s-14)"><div class="card-h"><h2>Da assegnare (${unassigned.length})</h2></div><div style="padding:0 var(--s-12) var(--s-12)">${unRows}${unassigned.length>50?`<div class="small mut">… e altri ${unassigned.length-50}: vedi Interventi → Da pianificare</div>`:''}</div></div>
   ${mode==='week'
     ? `<h2 style="margin:var(--s-4) 0 var(--s-8)">Settimana ${weekDays[0].slice(8,10)}/${weekDays[0].slice(5,7)} – ${weekDays[6].slice(8,10)}/${weekDays[6].slice(5,7)}</h2>
        <div class="row" style="gap:var(--s-8);flex-wrap:nowrap;overflow-x:auto;align-items:flex-start">${weekCols}</div>`
-    : `<h2 style="margin:var(--s-4) 0 var(--s-8)">Carico del ${day}</h2>
-       <div class="row" style="gap:var(--s-12);flex-wrap:wrap;align-items:flex-start">${lanes||'<div class="small mut">Nessun tecnico.</div>'}</div>`}`;
+    : `<h2 style="margin:var(--s-4) 0 var(--s-8)">Carico del ${day.slice(8,10)}/${day.slice(5,7)}/${day.slice(0,4)}</h2>
+       <div class="row" style="gap:var(--s-12);flex-wrap:wrap;align-items:flex-start">${lanes||'<div class="small mut">Nessun intervento in programma in questo giorno.</div>'}</div>`}`;
   bindRows(v);
 }
 async function dispCSV(){ const O=await api('/orders').catch(()=>[]);
@@ -3172,7 +3217,7 @@ async function newOrder(){
 }
 async function openOrder(id){
   const planner=can(['pianificatore','tenant_admin'],'plan');
-  const [O,users]=await Promise.all([api('/orders'), planner?api('/users').catch(()=>[]):Promise.resolve([])]);
+  const [O,users]=await Promise.all([api('/orders?id='+encodeURIComponent(id)), planner?api('/users').catch(()=>[]):Promise.resolve([])]);
   const o=O.find(x=>x.id===id)||{};
   const workers=(users||[]).filter(u=>u.role==='lavoratore');
   const mine = o.assignee===ME.email;

@@ -598,6 +598,16 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   una sola punzonatura per punto la permanenza non si misura). Il tempo di ogni step di escalation
   nella cronologia (`fired_at`) è quello del core, come lo stato dell'escalation. e2e
   `qa/patrol-schedule-suspend-e2e.sh`.
+- **Interventi in quantità (caso reale Idealverde: 60+ giardinieri in squadre).** `GET /api/orders`
+  accetta filtri lato server: `state=open|closed`, `from`/`to` (inizio programmato, RFC 3339), `id`,
+  `limit` (1..5000); senza parametri l'elenco resta completo. La console carica gli aperti
+  (agenda, da pianificare), i chiusi solo nella loro scheda (ultimi 500), la settimana mostrata
+  nell'Agenda tecnici e il singolo intervento nella scheda; l'app del lavoratore solo gli aperti
+  (cache `yw-shell-v10`). Agenda tecnici per squadra e persona con giorno locale (prima UTC);
+  calendario con squadra (`group_id`, nome e colore per squadra), filtro squadra/persona e tipo,
+  annullati esclusi; il calendario personale e l'iCal del membro includono gli interventi della sua
+  squadra (prima no). Riquadro «Interventi» della dashboard: aperti e prossimi, con la squadra (prima
+  «non assegnato»). e2e `qa/orders-filters-e2e.sh`.
 - **Interfaccia in inglese completa.** Traduttore comune `console/static/i18n.js` (frasi esatte,
   modelli con parti variabili, forme composte; osserva il DOM e gli attributi) e dizionario
   generato `console/static/i18n-en.js` da `console/tools/i18n/en.json` (estrattore dalle pagine e
