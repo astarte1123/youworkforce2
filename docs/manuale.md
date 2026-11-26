@@ -598,6 +598,12 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   una sola punzonatura per punto la permanenza non si misura). Il tempo di ogni step di escalation
   nella cronologia (`fired_at`) è quello del core, come lo stato dell'escalation. e2e
   `qa/patrol-schedule-suspend-e2e.sh`.
+- **Fase 3 Analisi e stime (mig `0167`, modulo `analisi`).** Origine (`manuale`, `piano`, `richiesta`,
+  `integrazione`) ed **extra** di ogni intervento; durate reali per tipo, sede e squadra; **stima dallo
+  storico** (sede → squadra → tipo → standard, scalata sulla quantità) proposta nel controllo
+  dell'intervento; **precisione** misurata sul passato contro la durata standard; ricorrenze reali dei
+  piani; extra per mese, cliente e sede; piano contro realtà. Pagina **Lavoro sul campo → Analisi**.
+  Dettaglio in [analisi-stime.md](analisi-stime.md); e2e `qa/analytics-e2e.sh`.
 - **Fase 2 Integrazioni (mig `0166`).** Chiavi di integrazione per gestionale, software turni o agente
   (Youco/MCP): agiscono per conto di chi le crea con i permessi scelti, si mostrano una volta, si
   revocano; codice esterno (`external_ref`) su clienti, sedi, commesse, interventi, persone, mezzi,

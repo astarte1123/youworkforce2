@@ -230,7 +230,9 @@ pub struct OrderUp { pub title: String, #[serde(default)] pub site_ref: Option<S
     #[serde(default)] pub activity_type: Option<String>, #[serde(default)] pub team: Option<String>,
     #[serde(default)] pub assignee_email: Option<String>, #[serde(default)] pub quantity: Option<f64>,
     #[serde(default)] pub scheduled_start: Option<String>, #[serde(default)] pub scheduled_end: Option<String>,
-    #[serde(default)] pub priority: Option<i32>, #[serde(default)] pub instructions: Option<String> }
+    #[serde(default)] pub priority: Option<i32>, #[serde(default)] pub instructions: Option<String>,
+    /// lavoro extra (fuori contratto o programma), per l'analisi degli extra
+    #[serde(default)] pub extra: Option<bool> }
 /// Intervento per codice esterno. Nuovo: come «Nuovo intervento» in console; esistente: aggiornato
 /// nei campi passati, mai se già completato o annullato. Vincoli controllati (duri = 409 salvo forza).
 pub(crate) async fn upsert_order(st: &AppState, s: &Session, r: &str, b: &OrderUp, forced: bool) -> Result<(Uuid, bool, Value), (StatusCode, String)> {
@@ -275,21 +277,21 @@ pub(crate) async fn upsert_order(st: &AppState, s: &Session, r: &str, b: &OrderU
                 activity_type_id=COALESCE($5,activity_type_id), quantity=COALESCE($6::numeric,quantity), estimated_minutes=COALESCE($7,estimated_minutes),
                 scheduled_start=COALESCE($8,scheduled_start), scheduled_end=COALESCE($9,scheduled_end),
                 assigned_user=COALESCE($10,assigned_user), assigned_group=COALESCE($11,assigned_group), priority=COALESCE($12,priority),
-                instructions=COALESCE($13,instructions),
+                instructions=COALESCE($13,instructions), is_extra=COALESCE($14,is_extra),
                 state=CASE WHEN state='bozza' AND ($10 IS NOT NULL OR $11 IS NOT NULL) THEN 'assegnato' ELSE state END,
                 version=version+1, updated_at=now() WHERE id=$1")
             .bind(id).bind(b.title.trim()).bind(site).bind(client).bind(at).bind(b.quantity).bind(est).bind(ss).bind(se)
-            .bind(user).bind(group).bind(b.priority.map(|p| p.clamp(1, 3))).bind(&b.instructions)
+            .bind(user).bind(group).bind(b.priority.map(|p| p.clamp(1, 3))).bind(&b.instructions).bind(b.extra)
             .execute(&mut *tx).await.map_err(|e| conflict_or(e, "dati dell'intervento non validi"))?;
         if let (Some(a), Some(z)) = (start, se) { crate::constraints::move_order_bookings(&mut tx, id, a, z).await?; }
         (id, false)
     } else {
         let state = if user.is_some() || group.is_some() { "assegnato" } else { "bozza" };
         let id: Uuid = sqlx::query_scalar("INSERT INTO app.work_orders(tenant_id,external_ref,title,site_id,client_id,activity_type_id,quantity,estimated_minutes,
-                scheduled_start,scheduled_end,assigned_user,assigned_group,priority,instructions,state,created_by,checklist)
-             VALUES($1,$2,$3,$4,$5,$6,$7::numeric,$8,$9,$10,$11,$12,COALESCE($13,2),$14,$15,$16,'[]'::jsonb) RETURNING id")
+                scheduled_start,scheduled_end,assigned_user,assigned_group,priority,instructions,state,created_by,checklist,origin,is_extra)
+             VALUES($1,$2,$3,$4,$5,$6,$7::numeric,$8,$9,$10,$11,$12,COALESCE($13,2),$14,$15,$16,'[]'::jsonb,'integrazione',COALESCE($17,false)) RETURNING id")
             .bind(tid).bind(r).bind(b.title.trim()).bind(site).bind(client).bind(at).bind(b.quantity).bind(est).bind(ss).bind(se)
-            .bind(user).bind(group).bind(b.priority.map(|p| p.clamp(1, 3))).bind(&b.instructions).bind(state).bind(s.user_id)
+            .bind(user).bind(group).bind(b.priority.map(|p| p.clamp(1, 3))).bind(&b.instructions).bind(state).bind(s.user_id).bind(b.extra)
             .fetch_one(&mut *tx).await.map_err(|e| conflict_or(e, "dati dell'intervento non validi"))?;
         (id, true)
     };
@@ -429,7 +431,7 @@ pub async fn import_csv(State(st): State<AppState>, h: HeaderMap, Path(entity): 
             _ => upsert_order(&st, &s, &r, &OrderUp { title: get("title").unwrap_or_default(), site_ref: get("site_ref"), client_ref: get("client_ref"),
                 activity_type: get("activity_type"), team: get("team"), assignee_email: get("assignee_email"), quantity: num("quantity"),
                 scheduled_start: get("scheduled_start"), scheduled_end: get("scheduled_end"), priority: num("priority").map(|p| p as i32),
-                instructions: get("instructions") }, forced).await.map(|x| { if x.2.as_array().map(|a| !a.is_empty()).unwrap_or(false) { warnings += 1; } x.1 }),
+                instructions: get("instructions"), extra: get("extra").map(|x| ["1","si","sì","true","x"].contains(&x.to_lowercase().as_str())) }, forced).await.map(|x| { if x.2.as_array().map(|a| !a.is_empty()).unwrap_or(false) { warnings += 1; } x.1 }),
         };
         match res { Ok(true) => created += 1, Ok(false) => updated += 1,
             Err((_, m)) => errors.push(json!({"row": n + 1, "ref": r, "error": serde_json::from_str::<Value>(&m).ok().and_then(|v| v["error"].as_str().map(String::from)).unwrap_or(m)})) }

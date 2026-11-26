@@ -127,6 +127,7 @@ const NAV = [
   // --- Lavoro sul campo ---
   {k:'ordini',    t:'Interventi', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'clienti',   t:'Clienti', ico:'building', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
+  {k:'analisi',   t:'Analisi', ico:'chart', roles:['pianificatore','tenant_admin','responsabile','auditor'], cap:['plan','orders.view_all','costs.view'], mod:['analisi'], grp:'work'},
   {k:'attivita',  t:'Tipi di attività', ico:'sliders', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'listino',   t:'Listino', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi','consuntivi'], grp:'work'},
   {hidden:true, k:'dispatch',  t:'Agenda tecnici', ico:'calendar', roles:['pianificatore','tenant_admin'], cap:'plan', mod:['interventi'], grp:'work'},
@@ -539,7 +540,7 @@ function renderPage(k, v){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,'centrale-tutti':vCentrale,'iot-monitor':vIotMonitor,'iot-alerts':vIotAlerts,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,
-    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,ore:vOre,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,'regole-sensori':vRegoleSensori,'moduli-base':vModuli,'piantine-campo':vPiantine,clienti:vClienti,listino:vListino,attivita:vAttivita,integrazioni:vIntegrazioni,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,'mappa-allarmi':vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,ore:vOre,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,'regole-sensori':vRegoleSensori,'moduli-base':vModuli,'piantine-campo':vPiantine,clienti:vClienti,listino:vListino,attivita:vAttivita,analisi:vAnalisi,integrazioni:vIntegrazioni,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,'mappa-allarmi':vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- Export unificato (CSV / Excel / PDF / Markdown) ----------------
@@ -2328,6 +2329,53 @@ async function schSave(){ const m=$('.cfg-msg'); let mask=''; for(let i=0;i<7;i+
 async function schToggle(id,on){ try{ await api('/patrol-schedules/'+id,{method:'POST',body:JSON.stringify({active:on})});
   toast(on?'Piano riattivato: le ronde dovute ripartono da adesso':'Piano sospeso: nessuna ronda dovuta né allarme di ronda mancata','ok'); route(); }catch(e){ toast(e,'bad'); } }
 async function schDel(id){ if(!await askConfirm('Eliminare il piano?'))return; try{await api('/patrol-schedules/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e,'bad');} }
+// ===== Fase 3: analisi e stime =====
+const ORIGIN_LAB={manuale:'creato a mano',piano:'da piano di manutenzione',richiesta:'da richiesta',integrazione:'dal gestionale'};
+const REC_COL={'in linea':'var(--ok,#16a34a)','più frequente del contratto':'var(--warn,#b8860b)','meno frequente del contratto':'var(--bad)','in ritardo':'var(--bad)','nessun intervento svolto':'var(--mut)','un solo intervento':'var(--mut)'};
+let AN_BY='type';
+async function vAnalisi(v){
+  const [AC,D,EX,RC,PV]=await Promise.all([api('/analytics/accuracy?days=90').catch(loadFail),api('/analytics/durations?by='+AN_BY).catch(()=>({rows:[]})),
+    api('/analytics/extras?months=12').catch(()=>null),api('/analytics/recurrences').catch(()=>({plans:[],summary:{}})),api('/analytics/plan-vs-actual?weeks=8').catch(()=>({weeks:[]}))]);
+  if(isLoadFail(AC)) return pageLoadError(v,'Analisi',AC);
+  const dev=x=>x==null?'—':`<span style="color:${Math.abs(x)<=15?'var(--ok,#16a34a)':Math.abs(x)<=40?'var(--warn,#b8860b)':'var(--bad)'}">${x>0?'+':''}${x}%</span>`;
+  const byLab={type:'per tipo',site:'per sede',team:'per squadra'};
+  // grafico extra per mese: barre sottili, valore sopra, totale e richieste nel suggerimento
+  const months=(EX&&EX.by_month)||[]; const mx=Math.max(1,...months.map(m=>m.extra));
+  const W=Math.max(320,months.length*46), H=150, bw=22;
+  const bars=months.map((m,i)=>{ const h=Math.round((H-40)*m.extra/mx), x=12+i*46, y=H-22-h;
+    return `<g><title>${m.month}: ${m.extra} extra su ${m.total} interventi · ${m.requests} richieste · ${fmtMin(m.extra_minutes)} lavorati</title>
+      <rect x="${x}" y="${y}" width="${bw}" height="${Math.max(h,1)}" rx="4" fill="var(--brand)"></rect>
+      <text x="${x+bw/2}" y="${y-4}" text-anchor="middle" font-size="11" fill="var(--fg)">${m.extra}</text>
+      <text x="${x+bw/2}" y="${H-6}" text-anchor="middle" font-size="10" fill="var(--mut)">${m.month.slice(5)}/${m.month.slice(2,4)}</text></g>`; }).join('');
+  v.innerHTML=`<div class="page-h"><div><h1>Analisi</h1><div class="mut">durate reali, stime dallo storico, extra, ricorrenze e piano contro realtà · calcolate dai vostri interventi chiusi</div></div></div>
+  <div class="card pad"><h2>Quanto è precisa la stima</h2>
+    <div style="font-size:1.05rem;margin:var(--s-6) 0"><b>${esc(AC.verdict)}</b></div>
+    <div class="small mut">Ultimi ${AC.days} giorni, ${AC.count} interventi chiusi: ognuno stimato con i soli dati precedenti. Entro ±20% del tempo reale: <b>${AC.history_within_20pct}%</b> con lo storico, ${AC.standard_within_20pct}% con la durata standard.</div>
+    ${AC.by_type.length?`<table class="table" style="margin-top:var(--s-8)"><thead><tr><th>Tipo di attività</th><th>Interventi</th><th>Errore medio dallo storico</th><th>Errore medio durata standard</th></tr></thead>
+      <tbody>${AC.by_type.map(t=>`<tr><td>${esc(t.activity_type||'—')}</td><td>${t.count}</td><td><b>${fmtMin(t.history_mae_minutes)}</b></td><td>${fmtMin(t.standard_mae_minutes)}</td></tr>`).join('')}</tbody></table>`:''}</div>
+  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Durate reali ${byLab[AN_BY]}</h2>
+    <span class="row" style="gap:var(--s-4)">${Object.entries(byLab).map(([k,l])=>`<button class="btn ${AN_BY===k?'':'ghost'} small" onclick="AN_BY='${k}';route()">${l}</button>`).join('')}</span></div>
+    <table class="table" data-export="durate-reali"><thead><tr><th>Tipo di attività</th>${AN_BY!=='type'?`<th>${AN_BY==='site'?'Sede':'Squadra'}</th>`:''}<th>Interventi</th><th>Mediana</th><th>80% entro</th><th>Standard</th><th>Scostamento</th></tr></thead>
+    <tbody>${D.rows.map(r=>`<tr><td>${esc(r.activity_type)}</td>${AN_BY!=='type'?`<td class="small">${esc(r.key||'—')}</td>`:''}<td>${r.count}</td><td><b>${fmtMin(r.median_minutes)}</b></td><td>${fmtMin(r.p80_minutes)}</td><td class="small mut">${r.standard_minutes?fmtMin(r.standard_minutes):'—'}</td><td>${dev(r.deviation_pct)}</td></tr>`).join('')
+      ||emptyRow(AN_BY!=='type'?7:6, null, 'Nessun intervento chiuso con un tipo di attività', 'Le durate reali compaiono quando gli interventi con un tipo di attività vengono completati.', null)}</tbody></table></div>
+  ${EX?`<div class="card pad" style="margin-top:var(--s-16)"><h2>Lavori extra</h2>
+    <div class="small mut" style="margin-bottom:var(--s-8)">Ultimi 12 mesi: <b>${EX.extra}</b> interventi extra su ${EX.total} (${EX.extra_pct}%). Passa il mouse sulle barre per totale, richieste e ore.</div>
+    <div style="overflow-x:auto"><svg width="${W}" height="${H}" role="img" aria-label="Interventi extra per mese">${bars}</svg></div>
+    <div class="grid g2" style="margin-top:var(--s-10)">
+      <div><b class="small">Clienti con più extra</b><table class="table"><tbody>${EX.top_clients.map(c=>`<tr><td class="small">${esc(c.name)}</td><td>${c.count}</td><td class="small mut">${fmtMin(c.minutes)}</td></tr>`).join('')||emptyRow(3,null,'Nessun extra','',null)}</tbody></table></div>
+      <div><b class="small">Sedi con più extra</b><table class="table"><tbody>${EX.top_sites.map(c=>`<tr><td class="small">${esc(c.name)}</td><td>${c.count}</td></tr>`).join('')||emptyRow(2,null,'Nessun extra','',null)}</tbody></table></div></div></div>`:''}
+  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Ricorrenze dei piani di manutenzione</h2>
+    <span class="small mut">${Object.entries(RC.summary||{}).map(([k,n])=>`${n} ${esc(k)}`).join(' · ')}</span></div>
+    <table class="table" data-export="ricorrenze"><thead><tr><th>Piano</th><th>Cliente</th><th>A contratto</th><th>Nella realtà</th><th>Ultimo</th><th>Stato</th></tr></thead>
+    <tbody>${RC.plans.map(p=>`<tr><td class="small"><b>${esc(p.title)}</b></td><td class="small">${esc(p.client||'—')}</td><td>ogni ${p.every_days} gg</td>
+      <td>${p.actual_avg_days!=null?'ogni '+String(p.actual_avg_days).replace('.',',')+' gg':'—'} <span class="small mut">(${p.done_count})</span></td>
+      <td class="small">${p.days_since_last!=null?p.days_since_last+' gg fa':'—'}</td><td><span class="chip" style="color:${REC_COL[p.status]||'inherit'}">${esc(p.status)}</span></td></tr>`).join('')
+      ||emptyRow(6,null,'Nessun piano con sede e tipo di attività','Le ricorrenze si calcolano per i piani di manutenzione con una sede e un tipo di attività.',null)}</tbody></table></div>
+  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Piano contro realtà</h2><span class="small mut">ultime 8 settimane</span></div>
+    <table class="table" data-export="piano-realta"><thead><tr><th>Settimana</th><th>In programma</th><th>Chiusi</th><th>Annullati</th><th>Scaduti aperti</th><th>Ore pianificate</th><th>Ore lavorate</th><th>Avviati il giorno previsto</th></tr></thead>
+    <tbody>${PV.weeks.map(w=>`<tr><td>${esc(w.week)}</td><td>${w.scheduled}</td><td>${w.completed}</td><td>${w.cancelled}</td><td style="color:${w.open_overdue?'var(--bad)':'inherit'}">${w.open_overdue}</td>
+      <td>${fmtMin(w.planned_minutes)}</td><td><b>${fmtMin(w.worked_minutes)}</b></td><td>${w.on_day_pct}%</td></tr>`).join('')||emptyRow(8,null,'Nessun intervento nelle ultime settimane','',null)}</tbody></table></div>`;
+}
 // ===== Fase 2: integrazioni (gestionale/ERP, software turni, agente Youco) =====
 const IMPORT_ENT={clients:'Clienti',sites:'Sedi',commesse:'Commesse',orders:'Interventi'};
 const IMPORT_COLS={clients:'ref; name; vat; address; phone; email; pec; sdi; payment_terms; notes',
@@ -2467,8 +2515,11 @@ function orderCheckLive(orderId){ clearTimeout(_ochkT); _ochkT=setTimeout(async(
   const b=orderFormBody(); b.order_id=orderId||null;
   try{ const r=await api('/orders/check',{method:'POST',body:JSON.stringify(b)});
     const est=r.estimated_minutes?`<div class="small mut">Durata stimata: <b>${fmtMin(r.estimated_minutes)}</b>${(!$('#o_se').value&&r.scheduled_end)?` · fine prevista ${new Date(r.scheduled_end).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'})}`:''}</div>`:'';
-    box.innerHTML=est+vioHtml(r.violations);
+    const h=r.history_estimate; const hist=(h&&h.basis!=='standard'&&h.minutes)?`<div class="small" style="margin:2px 0">📊 Dallo storico: <b>${fmtMin(h.minutes)}</b>${h.p80_minutes?` (fino a ${fmtMin(h.p80_minutes)} nell'80% dei casi)`:''} · ${esc(h.explanation)}
+      ${$('#o_ss').value?` <a onclick="orderUseHist(${h.minutes})">usa questa durata</a>`:''}</div>`:'';
+    box.innerHTML=est+hist+vioHtml(r.violations);
   }catch(e){ box.innerHTML='<div class="small mut">'+esc(friendlyError(e))+'</div>'; } },350); }
+function orderUseHist(min){ const s=$('#o_ss').value; if(!s) return; const d=new Date(s); d.setMinutes(d.getMinutes()+min); $('#o_se').value=localDT(d); orderCheckLive(); }
 function orderFormBody(){
   const assets=[...document.querySelectorAll('.o_asset:checked')].map(x=>x.value);
   const qty=$('#o_qty')&&$('#o_qty').value!==''?parseFloat($('#o_qty').value):null;
@@ -2476,7 +2527,7 @@ function orderFormBody(){
     assigned_user:$('#o_asg').value||null,assigned_group:$('#o_grp').value||null,instructions:$('#o_instr').value||null,
     scheduled_start:toISO($('#o_ss').value),scheduled_end:toISO($('#o_se').value),priority:+$('#o_pri').value,
     activity_type_id:($('#o_at')&&$('#o_at').value)||null, quantity:qty,
-    asset_ids: $('#o_assets')?assets:undefined };
+    asset_ids: $('#o_assets')?assets:undefined, is_extra: $('#o_extra')?$('#o_extra').checked:undefined };
 }
 // Assistenza / manutenzione a visite: appuntamenti dal cliente, rapporto, firma, (listino/consuntivo).
 let ORD_CACHE=[]; let ORD_TAB='agenda'; let ORD_CLOSED=null;
@@ -3373,6 +3424,7 @@ function orderFormFields(o,sites,workers,groups,clients,atypes,assets){ o=o||{};
   <div class="row"><div class="field grow"><label>Inizio</label><input id="o_ss" type="datetime-local" value="${localDT(o.scheduled_start)}"></div>
     <div class="field grow"><label>Fine</label><input id="o_se" type="datetime-local" value="${localDT(o.scheduled_end)}"><div class="small mut">vuota = dalla durata del tipo di attività</div></div></div>
   ${asSel}
+  <label class="row small" style="gap:var(--s-6);margin:var(--s-4) 0"><input type="checkbox" id="o_extra" ${o.is_extra?'checked':''}> Lavoro extra (fuori contratto o programma: urgenze, richieste)</label>
   <div class="field"><label>Priorità</label><select id="o_pri">${[1,2,3].map(p=>`<option value="${p}" ${p===(o.priority||2)?'selected':''}>${PRI_LAB[p]}</option>`).join('')}</select></div>
   <div class="field"><label>Istruzioni</label><textarea id="o_instr">${esc(o.instructions||'')}</textarea></div>
   ${can(['pianificatore','tenant_admin'],'plan')?`<div class="card pad" style="margin:var(--s-6) 0"><b class="small">Controllo vincoli</b><div id="o_chk" class="small mut">compila sede, orario e assegnatario…</div></div>`:''}`; }
@@ -3413,7 +3465,7 @@ async function openOrder(id){
   const editBtn = (planner && o.state!=='completato' && o.state!=='annullato')
     ? `<button class="btn ghost block" onclick='editOrder(${jattr(o)})'>✎ Modifica / ripianifica</button>` : '';
   drawer('Ordine · '+esc(o.title), `
-    <div class="row" style="margin-bottom:var(--s-14)">${chip(o.state)}${o.client_name?`<span class="chip">👤 ${esc(o.client_name)}</span>`:''}<span class="chip">${esc(o.site||'—')}</span>${priBadge(o.priority)}<span class="chip">v${o.version}</span></div>
+    <div class="row" style="margin-bottom:var(--s-14)">${chip(o.state)}${o.is_extra?'<span class="chip" style="color:var(--warn,#b8860b)">extra</span>':''}${o.origin&&o.origin!=='manuale'?`<span class="chip">${esc(ORIGIN_LAB[o.origin]||o.origin)}</span>`:''}${o.client_name?`<span class="chip">👤 ${esc(o.client_name)}</span>`:''}<span class="chip">${esc(o.site||'—')}</span>${priBadge(o.priority)}<span class="chip">v${o.version}</span></div>
     <div class="small mut">Assegnatario</div><div style="margin-bottom:var(--s-12)">${o.assignee?esc(o.assignee):o.group_name?'👥 '+esc(o.group_name):'non assegnato'}</div>
     <div class="small mut">Quando</div><div style="margin-bottom:var(--s-12)">${schedLabel(o)}</div>
     ${o.activity_type?`<div class="small mut">Attività</div><div style="margin-bottom:var(--s-12)">${esc(o.activity_type)}${o.quantity!=null?' · quantità '+esc(o.quantity):''}${o.estimated_minutes?' · stimati '+fmtMin(o.estimated_minutes):''}${o.work_minutes?' · lavorati '+fmtMin(o.work_minutes):''}</div>`:''}

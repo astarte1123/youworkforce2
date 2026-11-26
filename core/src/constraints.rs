@@ -407,8 +407,10 @@ pub async fn order_check(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     let p = OrderPlan { order_id: b.order_id, site_id: b.site_id, activity_type_id: b.activity_type_id, start, end,
         user: b.assigned_user, group: b.assigned_group, asset_ids: b.asset_ids.clone() };
     let vs = check_order(&st, tid, &p).await?;
+    let hist = match b.activity_type_id { Some(at) if module_active(&st, tid, "analisi").await =>
+        Some(crate::analytics::history_estimate(&st, tid, at, b.site_id, b.assigned_group, b.quantity).await?), _ => None };
     Ok(Json(json!({"violations": vjson(&vs), "hard": crate::scheduling::has_hard(&vs), "estimated_minutes": est,
-        "scheduled_end": end.map(|e| e.to_rfc3339())})))
+        "scheduled_end": end.map(|e| e.to_rfc3339()), "history_estimate": hist})))
 }
 /// Durata stimata dal tipo di attività e dalla quantità (None senza tipo).
 pub(crate) async fn activity_estimate(st: &AppState, tid: Uuid, at: Option<Uuid>, qty: Option<f64>) -> Result<Option<i32>, (StatusCode, String)> {

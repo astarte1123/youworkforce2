@@ -437,8 +437,8 @@ pub(crate) async fn plan_generate_one(tx: &mut sqlx::PgConnection, tid: Uuid, pl
         .map(|b| crate::constraints::estimate_minutes(b, p.try_get::<Option<f64>,_>("mpu").ok().flatten().unwrap_or(0.0), qty));
     let end = est.map(|m| start + chrono::Duration::minutes(m as i64));
     let oid: Uuid = sqlx::query_scalar(
-        "INSERT INTO app.work_orders(tenant_id,site_id,title,state,created_by,scheduled_start,scheduled_end,priority,client_id,contract_id,activity_type_id,quantity,estimated_minutes)
-         VALUES($1,$2,$3,'bozza',$4,$5,$6,2,$7,$8,$9,$10::numeric,$11) RETURNING id")
+        "INSERT INTO app.work_orders(tenant_id,site_id,title,state,created_by,scheduled_start,scheduled_end,priority,client_id,contract_id,activity_type_id,quantity,estimated_minutes,origin)
+         VALUES($1,$2,$3,'bozza',$4,$5,$6,2,$7,$8,$9,$10::numeric,$11,'piano') RETURNING id")
         .bind(tid).bind(p.try_get::<Uuid,_>("site_id").ok()).bind(format!("{} (manutenzione)", p.get::<String,_>("title"))).bind(actor)
         .bind(start).bind(end).bind(p.try_get::<Uuid,_>("client_id").ok()).bind(p.try_get::<Uuid,_>("contract_id").ok())
         .bind(p.try_get::<Uuid,_>("activity_type_id").ok()).bind(qty).bind(est)
@@ -574,7 +574,7 @@ pub async fn convert_request(State(st): State<AppState>, h: HeaderMap, Path(id):
             _ => err(StatusCode::CONFLICT,"richiesta già convertita"),
         }); } };
     let oid: Uuid = sqlx::query_scalar(
-        "INSERT INTO app.work_orders(tenant_id,title,instructions,state,created_by,priority,client_id) VALUES($1,$2,$3,'bozza',$4,$5,$6) RETURNING id")
+        "INSERT INTO app.work_orders(tenant_id,title,instructions,state,created_by,priority,client_id,origin,is_extra) VALUES($1,$2,$3,'bozza',$4,$5,$6,'richiesta',true) RETURNING id")
         .bind(tid).bind(r.get::<String,_>("title")).bind(r.try_get::<String,_>("description").ok()).bind(s.user_id).bind(r.get::<i32,_>("priority")).bind(r.try_get::<Uuid,_>("client_id").ok())
         .fetch_one(&mut *tx).await.map_err(ise)?;
     sqlx::query("UPDATE app.service_requests SET order_id=$2 WHERE id=$1").bind(id).bind(oid).execute(&mut *tx).await.map_err(ise)?;

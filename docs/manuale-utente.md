@@ -43,6 +43,7 @@ Aggiornato al 25/11/2026. I nomi di pagine e menu sono quelli del menu attuale (
    - [Interventi](#cap6-interventi)
    - [Clienti, richieste e contratti](#cap6-clienti)
    - [Tipi di attività](#cap6-attivita)
+   - [Analisi](#cap6-analisi)
    - [Listino](#cap6-listino)
    - [Cantieri e presenze](#cap6-cantieri)
    - [Ronde e cruscotto vigilanza](#cap6-ronde)
@@ -941,6 +942,26 @@ Menu **Lavoro sul campo → Tipi di attività** (pianificatore). Per ogni lavoro
 
 Un tipo usato da interventi o piani non si elimina: si disattiva. Anche i **piani di manutenzione**
 hanno tipo e quantità, e l'intervento generato li eredita.
+
+<a id="cap6-analisi"></a>
+### Analisi
+
+Menu **Lavoro sul campo → Analisi** (modulo «Analisi e stime»; pianificatore, responsabile).
+
+- **Quanto è precisa la stima**: sugli interventi chiusi degli ultimi 90 giorni, quanto sbaglia in
+  media la stima dallo storico e quanto la durata standard del tipo di attività, per tipo.
+- **Durate reali** per tipo, per sede o per squadra: mediana, 80% entro, durata standard e scostamento
+  (verde entro il 15%, giallo entro il 40%, rosso oltre).
+- **Lavori extra**: quanti per mese negli ultimi 12 mesi (passa il mouse sulle barre per il totale,
+  le richieste arrivate e le ore), i clienti e le sedi che ne generano di più.
+- **Ricorrenze dei piani di manutenzione**: ogni quanti giorni si interviene davvero rispetto al
+  contratto (in linea, più o meno frequente, in ritardo).
+- **Piano contro realtà**: per settimana, interventi in programma, chiusi, annullati, scaduti ancora
+  aperti, ore pianificate e lavorate.
+
+Nel modulo **intervento** compare «📊 Dallo storico»: la durata degli interventi simili (nella stessa
+sede, della stessa squadra o del tipo) con **usa questa durata**. La casella **Lavoro extra** segna i
+lavori fuori contratto o programma; gli interventi nati da una richiesta lo sono già.
 
 <a id="cap6-listino"></a>
 ### Listino

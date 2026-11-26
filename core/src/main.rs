@@ -14,6 +14,7 @@ mod mqtt; // broker MQTT nativo (IoT): ingest telemetria + downlink comandi su T
 mod dashboard; // servizio core: dashboard unica configurabile (widget + layout per-tenant)
 mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
 mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
+mod analytics; // Fase 3: durate reali, stima dallo storico, precisione, ricorrenze, extra, piano contro realtà
 mod integrations; // Fase 2: chiavi di integrazione (ERP, software turni, Youco/MCP), codici esterni, import CSV, elenco modifiche
 mod constraints; // Fase 1 Lavoro sul campo: tipi di attività, mezzi e prenotazioni, scadenziario, vincoli dell'intervento
 mod catalogs; // cataloghi di prodotto nel DB gestiti dal superadmin: tipi di evento (SL-15), pacchetti (SA-10)
@@ -564,6 +565,13 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/integration/orders/:ref", axum::routing::put(api::put_order))
         .route("/api/integration/changes", get(api::changes))
         .route("/api/integration/import/:entity", post(api::import_csv))
+        // Fase 3 analisi e stime
+        .route("/api/analytics/estimate", get(api::analytics_estimate))
+        .route("/api/analytics/durations", get(api::analytics_durations))
+        .route("/api/analytics/accuracy", get(api::analytics_accuracy))
+        .route("/api/analytics/extras", get(api::analytics_extras))
+        .route("/api/analytics/recurrences", get(api::analytics_recurrences))
+        .route("/api/analytics/plan-vs-actual", get(api::analytics_plan_vs_actual))
         .route("/api/orders/:id/edit", post(api::edit_order))
         .route("/api/orders/:id/assign", post(api::order_assign))
         .route("/api/orders/:id/assign-group", post(api::order_assign_group))

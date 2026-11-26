@@ -7,6 +7,7 @@ use uuid::Uuid;
 use futures::stream::Stream;
 use crate::state::{AppState, Session, TenantEvent};
 use crate::{auth, db};
+pub(crate) use crate::analytics::*; // Fase 3: analisi e stime
 pub(crate) use crate::integrations::*; // Fase 2: chiavi di integrazione, codici esterni, import, modifiche
 pub(crate) use crate::constraints::*; // Fase 1 Lavoro sul campo: tipi di attività, mezzi, scadenziario, vincoli dell'intervento
 pub(crate) use crate::catalogs::*; // SL-15/SA-10: cataloghi tipi di evento e pacchetti
@@ -2777,7 +2778,9 @@ pub struct NewOrder { pub title: String, pub site_id: Option<Uuid>, pub instruct
     #[serde(default)] pub checklist: Option<Vec<String>>,
     /// Fase 1: tipo di attività, quantità (unità del tipo), mezzi da prenotare nell'orario dell'intervento
     #[serde(default)] pub activity_type_id: Option<Uuid>, #[serde(default)] pub quantity: Option<f64>,
-    #[serde(default)] pub asset_ids: Option<Vec<Uuid>> }
+    #[serde(default)] pub asset_ids: Option<Vec<Uuid>>,
+    /// Fase 3: lavoro extra (fuori contratto o programma)
+    #[serde(default)] pub is_extra: Option<bool> }
 
 /// Tappa 3: l'utente è membro del gruppo di persone condiviso? (owner_pool: check additivo di ACL).
 pub(crate) async fn user_in_group(st: &AppState, user_id: Uuid, group_id: Uuid) -> bool {
@@ -2814,10 +2817,10 @@ pub async fn create_order(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query(
         "INSERT INTO app.work_orders(tenant_id,site_id,title,instructions,assigned_user,assigned_group,state,created_by,scheduled_start,scheduled_end,priority,checklist,client_id,
-                                     activity_type_id,quantity,estimated_minutes)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::numeric,$16) RETURNING id")
+                                     activity_type_id,quantity,estimated_minutes,is_extra,origin)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::numeric,$16,COALESCE($17,false),'manuale') RETURNING id")
         .bind(tid).bind(b.site_id).bind(&b.title).bind(&b.instructions).bind(b.assigned_user).bind(b.assigned_group).bind(state).bind(s.user_id)
-        .bind(ss).bind(se).bind(pri).bind(&checklist).bind(b.client_id).bind(b.activity_type_id).bind(b.quantity).bind(est)
+        .bind(ss).bind(se).bind(pri).bind(&checklist).bind(b.client_id).bind(b.activity_type_id).bind(b.quantity).bind(est).bind(b.is_extra)
         .fetch_one(&mut *tx).await.map_err(|e| conflict_or(e, "dati dell'intervento non validi"))?;
     let id: Uuid = row.get("id");
     if !assets.is_empty() { book_order_assets(&mut tx, tid, id, &assets, ss.unwrap(), se.unwrap(), Some(s.user_id)).await?; }
@@ -2833,7 +2836,8 @@ pub struct EditOrder { pub version: i32, pub title: Option<String>, pub site_id:
     pub clear_schedule: Option<bool>,
     /// Fase 1: tipo di attività (""/clear_activity = togli), quantità, mezzi (sostituisce le prenotazioni)
     #[serde(default)] pub activity_type_id: Option<Uuid>, #[serde(default)] pub clear_activity: Option<bool>,
-    #[serde(default)] pub quantity: Option<f64>, #[serde(default)] pub asset_ids: Option<Vec<Uuid>> }
+    #[serde(default)] pub quantity: Option<f64>, #[serde(default)] pub asset_ids: Option<Vec<Uuid>>,
+    #[serde(default)] pub is_extra: Option<bool> }
 /// Modifica dell'ordine (pianificatore) con concorrenza ottimistica. Non cambia lo stato
 /// (eccetto bozza->assegnato se si assegna). Finestra, priorita', sede, istruzioni modificabili.
 pub async fn edit_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<EditOrder>) -> R {
@@ -2891,13 +2895,13 @@ pub async fn edit_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path
            client_id=COALESCE($13,client_id),
            activity_type_id=CASE WHEN $14 THEN NULL ELSE COALESCE($15,activity_type_id) END,
            quantity=COALESCE($16::numeric,quantity),
-           estimated_minutes=$17,
+           estimated_minutes=$17, is_extra=COALESCE($18,is_extra),
            state=CASE WHEN state='bozza' AND ($6 IS NOT NULL OR $12 IS NOT NULL) THEN 'assegnato' ELSE state END,
            version=version+1, updated_at=now()
          WHERE id=$1 AND version=$2")
         .bind(id).bind(b.version).bind(&b.title).bind(&b.instructions).bind(b.site_id).bind(b.assigned_user)
         .bind(clear).bind(ss).bind(se).bind(pri).bind(clear_g).bind(b.assigned_group).bind(b.client_id)
-        .bind(clear_a).bind(b.activity_type_id).bind(b.quantity).bind(est)
+        .bind(clear_a).bind(b.activity_type_id).bind(b.quantity).bind(est).bind(b.is_extra)
         .execute(&mut *tx).await.map_err(|e| conflict_or(e, "dati dell'intervento non validi"))?.rows_affected();
     if n==0 { let _ = tx.rollback().await; return Err(err(StatusCode::CONFLICT, "versione superata o ordine inesistente")); }
     // mezzi: sostituiti se indicati, altrimenti seguono il nuovo orario (senza orario si liberano)
@@ -2936,7 +2940,7 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap, axum::extract
     let cols="o.id,o.title,o.state,o.version,o.outcome,o.instructions,o.site_id,o.assigned_user,o.assigned_group,o.scheduled_start,o.scheduled_end,o.priority,s.name AS site,u.email AS assignee,g.name AS group_name,\
         o.arrived_at,o.work_started_at,o.work_minutes,o.materials,o.checklist,o.outcome_kind,o.report,o.signed_by,o.signed_at,\
         s.address AS site_address,s.lat AS site_lat,s.lon AS site_lon,s.access_notes AS site_access,o.client_id,cl.name AS client_name,\
-        o.activity_type_id,at.name AS activity_type,o.quantity::float8 AS quantity,o.estimated_minutes,\
+        o.activity_type_id,at.name AS activity_type,o.quantity::float8 AS quantity,o.estimated_minutes,o.origin,o.is_extra,\
         (SELECT json_agg(json_build_object('id',a.id,'name',a.name,'kind',a.kind) ORDER BY a.name) FROM app.asset_bookings ab JOIN app.assets a ON a.id=ab.asset_id WHERE ab.work_order_id=o.id) AS assets";
     let joins="FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user LEFT JOIN app.user_groups g ON g.id=o.assigned_group LEFT JOIN app.clients cl ON cl.id=o.client_id LEFT JOIN app.activity_types at ON at.id=o.activity_type_id";
     // CA-10: tutti gli ordini solo a chi pianifica o ha `orders.view_all` (prima: chiunque non si
@@ -2967,6 +2971,7 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap, axum::extract
         "assignee": r.try_get::<String,_>("assignee").ok(), "outcome": r.try_get::<String,_>("outcome").ok(),
         "activity_type_id": r.try_get::<Uuid,_>("activity_type_id").ok(), "activity_type": r.try_get::<String,_>("activity_type").ok(),
         "quantity": r.try_get::<f64,_>("quantity").ok(), "estimated_minutes": r.try_get::<i32,_>("estimated_minutes").ok(),
+        "origin": r.try_get::<String,_>("origin").ok(), "is_extra": r.try_get::<bool,_>("is_extra").unwrap_or(false),
         "assets": r.try_get::<Value,_>("assets").ok().filter(|x| !x.is_null()).unwrap_or(json!([])),
         "scheduled_start": r.try_get::<chrono::DateTime<chrono::Utc>,_>("scheduled_start").ok(),
         "scheduled_end": r.try_get::<chrono::DateTime<chrono::Utc>,_>("scheduled_end").ok(),
