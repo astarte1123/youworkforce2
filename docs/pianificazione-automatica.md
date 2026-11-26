@@ -120,6 +120,52 @@ I 19 non pianificati: patentino PLE o trattore non valido in nessuna squadra, or
 stretti, furgoni esauriti. Il piano a mano li aveva messi comunque, violando i vincoli. La verifica va
 ripetuta sullo storico vero.
 
+## Pilota (fase 6)
+
+Migrazione `0171`, codice `core/src/pilot.rs`, test `qa/pilot-e2e.sh`. La pianificazione automatica
+si prova su alcune squadre (di solito due) per qualche settimana. Si confronta con le settimane prima
+sulle misure del piano, poi si decide. In Pianificazione → Automatica, riquadro **Pilota**: avvia,
+modifica, inserisci le ore di ogni settimana, decidi.
+
+| Misura | Come si calcola | Obiettivo predefinito |
+|---|---|---|
+| Piani proposti accettati senza modifiche | Interventi del pilota che vengono da una proposta applicata e sono rimasti come proposti (stessa squadra, inizio entro 30 minuti) | 70% |
+| Spostamenti per intervento | Minuti stimati per intervento con lo stesso modello della pianificazione (dal deposito, in ordine di orario, rientro), pilota contro settimane prima | −10% |
+| Straordinario a settimana | Fine dell'ultimo intervento più rientro oltre la fine giornata | — |
+| Extra gestiti entro lo SLA | Richieste extra delle squadre del pilota con arrivo sul posto entro lo SLA del contratto del cliente; senza contratto, lo SLA del pilota (48 ore) | 90% |
+| Ore di pianificazione risparmiate | Ore dichiarate dal pianificatore ogni settimana contro quelle prima del pilota | 4 h |
+
+Ogni settimana è «prima» o «pilota» e «svolta», «in corso» o «da svolgere». Le misure durante il
+pilota contano solo le settimane iniziate. Mentre il pilota è attivo, le nuove proposte si limitano
+alle sue squadre (casella **Solo le squadre del pilota**): con «ripianifica» si considerano solo gli
+interventi di quelle squadre e quelli senza squadra.
+
+Un solo pilota attivo per azienda. La decisione finale si registra con il suo motivo:
+
+- **Estendi a tutte le squadre**: le proposte tornano su tutte le squadre;
+- **Concludi**: il pilota finisce senza estendere.
+
+API:
+
+- `GET /api/planning/pilot` · `POST` · `PUT /api/planning/pilot/{id}`: `{name, group_ids, starts_on,
+  weeks, baseline_weeks, default_sla_hours, baseline_planning_hours, targets}`;
+- `POST /api/planning/pilot/{id}/weeks` `{week_start, planning_hours, note}`;
+- `POST /api/planning/pilot/{id}/close` `{decision: "estendi" | "concludi", note}`.
+
+Permessi: *Pianificare* per scrivere; *Pianificare* o *Interventi · Vedere tutti* per leggere.
+
+**Idealverde.** Pilota «Nord + Potature»: dal 30/11 per 4 settimane, confronto con le 4 prima. Prima
+del pilota le due squadre facevano in media 49 minuti di spostamento per intervento e 164 minuti di
+straordinario a settimana (dati fittizi). La bozza della prima settimana, solo per le due squadre:
+
+- 18 interventi pianificati su 19;
+- 0 vincoli violati;
+- 330 km contro 357;
+- straordinario 29 contro 396 minuti.
+
+Il non pianificato è una potatura in quota: nessuno ha la PLE valida. Le ore di pianificazione prima
+del pilota vanno chieste a Idealverde, non si stimano.
+
 ## API
 
 | Metodo | Percorso | Cosa fa | Permesso |
@@ -133,6 +179,7 @@ ripetuta sullo storico vero.
 | POST | `/api/planning/runs/external` | proposta di un motore esterno | Pianificare |
 | POST | `/api/planning/backtest` | prova sullo storico (sola lettura) | Pianificare o Interventi · Vedere tutti |
 | POST | `/api/orders/{id}/plan-lock` | fissa o sblocca l'intervento `{locked}` | Pianificare |
+| GET/POST/PUT | `/api/planning/pilot` | pilota con misure settimana per settimana (sopra) | Pianificare |
 
 Il periodo è di massimo 31 giorni. L'elenco degli interventi restituisce `plan_locked`.
 

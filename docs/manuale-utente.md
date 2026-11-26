@@ -1123,6 +1123,21 @@ Menu **Lavoro sul campo → Pianificazione**, con quattro schede.
     o viola un vincolo non si applica, e il motivo compare accanto. **Scarta** lascia l'agenda com'è.
   - **Impostazioni**: deposito (anche per squadra), orari e giorni di lavoro, straordinario ammesso,
     velocità media, fattore di percorso, minuti di sistemazione, meteo.
+  - **Pilota**: per provare la pianificazione automatica su alcune squadre prima di usarla per tutte.
+    - **Avvia un pilota**: scegli le squadre, la settimana d'inizio, quante settimane, quante
+      settimane prima usare per il confronto, lo SLA degli extra senza contratto, le ore di
+      pianificazione a settimana prima del pilota e gli obiettivi.
+    - **Le misure**, prima e durante il pilota, con l'esito rispetto all'obiettivo:
+      - piani proposti accettati senza modifiche;
+      - minuti di spostamento per intervento;
+      - straordinario;
+      - richieste extra gestite entro lo SLA;
+      - ore di pianificazione risparmiate.
+    - **Settimana per settimana**: il dettaglio di ogni settimana. A fine settimana inserisci le ore
+      dedicate alla pianificazione delle squadre del pilota.
+    - Mentre il pilota è attivo, **Solo le squadre del pilota** limita le nuove proposte a quelle
+      squadre e ai loro interventi.
+    - Alla fine: **Estendi a tutte le squadre** oppure **Concludi il pilota**, con il motivo.
 - **Turni** (modulo Forza lavoro e turni):
   - **Turni pianificati**: **+ Pianifica turno**, anche collegato a un intervento o a un cantiere;
     il lavoratore li vede e li conferma dall'app;

@@ -15,6 +15,7 @@ mod dashboard; // servizio core: dashboard unica configurabile (widget + layout 
 mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
 mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
 mod metno; // Fase 4b: previsioni da MET Norway (fonte scelta per tenant, unica connessione esterna oltre all'AI)
+mod pilot; // Fase 6: pilota della pianificazione automatica (squadre, settimane, misure, decisione)
 mod planning; // Fase 5: pianificazione automatica (contratto dati, motore di base nativo, validazione, bozza da applicare)
 mod weather; // Fase 4: meteo operativo (zone, previsioni scritte da Youco via chiave, avvisi sugli interventi)
 mod analytics; // Fase 3: durate reali, stima dallo storico, precisione, ricorrenze, extra, piano contro realtà
@@ -575,6 +576,10 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/planning/runs", get(api::planning_runs).post(api::planning_run))
         .route("/api/planning/runs/external", post(api::planning_external))
         .route("/api/planning/backtest", post(api::planning_backtest))
+        .route("/api/planning/pilot", get(api::pilot_get).post(api::pilot_create))
+        .route("/api/planning/pilot/:id", axum::routing::put(api::pilot_update))
+        .route("/api/planning/pilot/:id/weeks", post(api::pilot_week))
+        .route("/api/planning/pilot/:id/close", post(api::pilot_close))
         .route("/api/planning/runs/:id", get(api::planning_run_get).delete(api::planning_run_discard))
         .route("/api/planning/runs/:id/apply", post(api::planning_apply))
         .route("/api/orders/:id/plan-lock", post(api::order_plan_lock))

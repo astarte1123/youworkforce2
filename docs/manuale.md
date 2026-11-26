@@ -598,6 +598,16 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   una sola punzonatura per punto la permanenza non si misura). Il tempo di ogni step di escalation
   nella cronologia (`fired_at`) è quello del core, come lo stato dell'escalation. e2e
   `qa/patrol-schedule-suspend-e2e.sh`.
+- **Fase 6 Pilota della pianificazione automatica (mig `0171`).**
+  - Squadre, inizio, settimane e confronto con le settimane prima.
+  - Misure del piano: accettati senza modifiche, spostamenti per intervento, straordinario, extra entro
+    lo SLA del contratto, ore di pianificazione dichiarate.
+  - Obiettivi con esito; un solo pilota attivo; proposte limitate alle squadre del pilota.
+  - Decisione finale «estendi» o «concludi» con il motivo.
+  - Riquadro Pilota in Pianificazione → Automatica. Dettaglio in
+    [pianificazione-automatica.md](pianificazione-automatica.md); e2e `qa/pilot-e2e.sh`.
+  - Corretto nel motore: con le squadre scelte e «ripianifica» prendeva anche gli interventi delle
+    altre squadre.
 - **Fase 5 Pianificazione automatica (mig `0170`, modulo `pianificazione`).**
   - **Motore di base nativo** `yw-base-1`: inserimento al costo minimo per squadra × giorno ×
     posizione, poi miglioramento togli-e-reinserisci. Rispetta patentini, persone presenti, mezzi

@@ -2382,7 +2382,8 @@ async function vAnalisi(v){
 async function ordLock(id,locked){ try{ await api('/orders/'+id+'/plan-lock',{method:'POST',body:JSON.stringify({locked})}); toast(locked?'Intervento fissato':'Intervento sbloccato','ok'); closeDrawer(); route(); }catch(e){ toast(e,'bad'); } }
 function apNextMonday(){ const d=new Date(); d.setHours(0,0,0,0); const k=(8-d.getDay())%7||7; d.setDate(d.getDate()+k); return ymdLocal(d); }
 async function vAutoplan(v){
-  const [RUNS,SET]=await Promise.all([api('/planning/runs').catch(loadFail),api('/planning/settings').catch(()=>null)]);
+  const [RUNS,SET,PIL]=await Promise.all([api('/planning/runs').catch(loadFail),api('/planning/settings').catch(()=>null),api('/planning/pilot').catch(()=>({pilot:null}))]);
+  v._pilot=PIL.pilot; v._apSet=SET;
   if(isLoadFail(RUNS)) return pageLoadError(v,'Pianificazione automatica',RUNS);
   const canEdit=can(['pianificatore','tenant_admin'],'plan');
   if(!v._apFrom) v._apFrom=apNextMonday();
@@ -2400,8 +2401,10 @@ async function vAutoplan(v){
       <label class="small mut">Settimana dal<input type="date" id="apFrom" value="${v._apFrom}" style="width:auto" onchange="$('#view')._apFrom=this.value"></label>
       <label class="small mut">Giorni<select id="apDays" style="width:auto">${[5,7,14].map(n=>`<option value="${n}">${n}</option>`).join('')}</select></label>
       <label class="row small" style="gap:var(--s-6)"><input type="checkbox" id="apReplan"> Ripianifica anche gli interventi già assegnati (non fissati né avviati)</label>
+      ${PIL.pilot&&PIL.pilot.status==='attivo'?`<label class="row small" style="gap:var(--s-6)"><input type="checkbox" id="apPilot" checked> Solo le squadre del pilota (${PIL.pilot.teams.map(esc).join(', ')})</label>`:''}
       <button class="btn" onclick="apRun(this)">Proponi</button></div>
     <div class="small mut" style="margin-top:var(--s-8)">Senza «ripianifica» il motore sistema solo gli interventi senza data o senza squadra, attorno a quelli già pianificati. Rispetta patentini, persone presenti, mezzi liberi, orari delle sedi e della giornata; evita il meteo sfavorevole; riduce gli spostamenti. Niente cambia finché non applichi.</div></div>`:''}
+  ${pilotHtml(PIL.pilot,canEdit)}
   ${R?apRunHtml(R,canEdit):''}
   <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Proposte recenti</h2></div>
     <table class="table"><thead><tr><th>Creata</th><th>Periodo</th><th>Motore</th><th>Pianificati</th><th>Spostamenti</th><th>Stato</th></tr></thead>
@@ -2448,7 +2451,8 @@ function apRunHtml(R,canEdit){
 async function apRun(btn){ const from=$('#apFrom').value; if(!from) return toast('scegli la data di inizio','warn');
   const a=new Date(from+'T00:00:00'); const z=new Date(a); z.setDate(a.getDate()+(+$('#apDays').value||5));
   btn.disabled=true; btn.textContent='Calcolo…';
-  try{ const r=await api('/planning/runs',{method:'POST',body:JSON.stringify({from:a.toISOString(),to:z.toISOString(),replan:$('#apReplan').checked})});
+  const pil=$('#view')._pilot; const only=$('#apPilot')&&$('#apPilot').checked;
+  try{ const r=await api('/planning/runs',{method:'POST',body:JSON.stringify({from:a.toISOString(),to:z.toISOString(),replan:$('#apReplan').checked,group_ids:only&&pil?pil.group_ids:undefined})});
     $('#view')._apRun=r.id; toast(`Proposta pronta: ${r.summary.planned} interventi pianificati su ${r.summary.orders}`,'ok'); route(); }
   catch(e){ toast(e,'bad'); btn.disabled=false; btn.textContent='Proponi'; } }
 async function apApply(id,force,btn){ const ids=[...document.querySelectorAll('.apSel:checked')].map(x=>x.value);
@@ -2480,6 +2484,66 @@ async function apSettingsSave(){ const m=$('.cfg-msg');
     team_depots:[...document.querySelectorAll('.psTeam')].map(x=>({group_id:x.dataset.g,depot_site_id:x.value||null}))};
   try{ await api('/planning/settings',{method:'PUT',body:JSON.stringify(b)}); toast('Impostazioni salvate','ok'); closeDrawer(); route(); }
   catch(e){ m.textContent=friendlyError(e); m.style.color='var(--bad)'; } }
+// ===== Fase 6: pilota della pianificazione automatica =====
+function pilotHtml(P,canEdit){
+  if(!P||P.status!=='attivo'){
+    const last=P?`<div class="small mut" style="margin-top:var(--s-6)">Ultimo pilota «${esc(P.name)}»: ${P.status==='esteso'?'esteso a tutte le squadre':'concluso'}${P.closed_at?' il '+new Date(P.closed_at).toLocaleDateString(UI_LOCALE()):''}${P.decision_note?' · '+esc(P.decision_note):''}.</div>`:'';
+    return canEdit?`<div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><h2>Pilota</h2><button class="btn ghost" onclick="pilotForm()">Avvia un pilota</button></div>
+      <div class="small mut">Prova la pianificazione automatica su alcune squadre per qualche settimana e confrontala con le settimane prima: piani accettati senza modifiche, spostamenti, straordinario, extra entro lo SLA, ore di pianificazione. Poi decidi se estenderla a tutte.</div>${last}</div>`:'';
+  }
+  const dd=x=>new Date(x+'T12:00:00').toLocaleDateString(UI_LOCALE(),{day:'2-digit',month:'2-digit'});
+  const num=(x,u)=>x==null?'—':String(x).replace('.',',')+(u?' '+u:'');
+  const okc=o=>o===true?'<span class="chip" style="color:var(--ok,#16a34a)">✓ raggiunto</span>':o===false?'<span class="chip" style="color:var(--warn,#b8860b)">non ancora</span>':'<span class="small mut">—</span>';
+  const ms=P.measures.map(m=>{
+    const val=m.code==='travel'?`${num(m.pilot,'min')} <span class="small mut">(prima ${num(m.baseline,'min')})</span>${m.change!=null?` · <b>${m.change>=0?'−':'+'}${num(Math.abs(m.change))}%</b>`:''}`
+      :m.code==='hours'?`${num(m.pilot,'h')} <span class="small mut">(prima ${num(m.baseline,'h')})</span>${m.change!=null?` · <b>${num(m.change,'h')} risparmiate</b>`:''}`
+      :m.code==='overtime'?`${num(m.pilot,'min')} <span class="small mut">(prima ${num(m.baseline,'min')})</span>`
+      :`${num(m.pilot,'%')}${m.baseline!=null?` <span class="small mut">(prima ${num(m.baseline,'%')})</span>`:''}`;
+    const tg=m.target==null?'—':m.code==='travel'?'−'+num(m.target)+'%':m.code==='hours'?num(m.target,'h'):num(m.target,'%');
+    return `<tr><td class="small"><b>${esc(m.label)}</b><div class="mut">${esc(m.detail)}</div></td><td class="small">${val}</td><td class="small">${tg}</td><td>${okc(m.ok)}</td></tr>`; }).join('');
+  const wk=P.weeks_detail.map(w=>`<tr style="${w.phase==='prima'?'opacity:.75':''}"><td class="small">${w.phase==='prima'?'prima':'pilota'} · ${dd(w.week_start)}<div class="mut">${esc(w.state)}</div></td>
+    <td class="small">${w.orders}</td><td class="small">${w.phase==='pilota'?`${w.from_plan} · ${num(w.accepted_pct,'%')}`:'—'}</td><td class="small">${num(w.travel_hours,'h')} <span class="mut">(${num(w.travel_min_per_order,'min')}/int.)</span></td>
+    <td class="small">${w.overtime_minutes} min</td><td class="small">${w.sla_ok+w.sla_late?`${w.sla_ok}/${w.sla_ok+w.sla_late} · ${num(w.sla_pct,'%')}`:'—'}${w.sla_open?` <span class="mut">(+${w.sla_open} in corso)</span>`:''}</td>
+    <td class="small">${w.phase==='pilota'?(canEdit&&w.state!=='da svolgere'?`<input type="number" min="0" max="168" step="0.5" style="width:80px" value="${w.planning_hours??''}" placeholder="ore" onchange="pilotHours('${P.id}','${w.week_start}',this.value)">`:num(w.planning_hours,'h')):'—'}</td></tr>`).join('');
+  return `<div class="card pad" style="margin-top:var(--s-16);border-color:var(--brand)">
+    <div class="spread"><h2>Pilota «${esc(P.name)}»</h2><span class="chip">${P.current_week?`settimana ${P.current_week} di ${P.weeks}`:'inizia il '+dd(P.starts_on)}</span></div>
+    <div class="small mut" style="margin:var(--s-4) 0 var(--s-10)">Squadre: <b>${P.teams.map(esc).join(', ')}</b> · dal ${dd(P.starts_on)} per ${P.weeks} settimane · confronto con le ${P.baseline_weeks} settimane prima · SLA senza contratto ${P.default_sla_hours} ore</div>
+    <table class="table"><thead><tr><th>Misura</th><th>Durante il pilota</th><th>Obiettivo</th><th>Esito</th></tr></thead><tbody>${ms}</tbody></table>
+    <details style="margin-top:var(--s-10)"><summary class="small"><b>Settimana per settimana</b></summary>
+      <table class="table" style="margin-top:var(--s-6)"><thead><tr><th>Settimana</th><th>Interventi</th><th>Da proposta · senza modifiche</th><th>Spostamenti</th><th>Straordinario</th><th>Extra entro SLA</th><th>Ore di pianificazione</th></tr></thead><tbody>${wk}</tbody></table>
+      <div class="small mut" style="margin-top:var(--s-4)">Le ore di pianificazione le inserisce il pianificatore a fine settimana: quante ne ha dedicate a preparare e correggere il piano delle squadre del pilota.</div></details>
+    ${canEdit?`<div class="row" style="gap:var(--s-8);margin-top:var(--s-12);flex-wrap:wrap"><button class="btn ghost" onclick='pilotForm(${jattr(P)})'>Modifica</button>
+      <button class="btn" onclick="pilotClose('${P.id}','estendi')">Estendi a tutte le squadre</button><button class="btn ghost" onclick="pilotClose('${P.id}','concludi')">Concludi il pilota</button></div>`:''}</div>`;
+}
+async function pilotForm(P){ const S=$('#view')._apSet||await api('/planning/settings'); P=P||{};
+  const sel=new Set(P.group_ids||[]); const T=P.targets||{accepted_pct:70,travel_reduction_pct:10,sla_pct:90,hours_saved:4};
+  drawer(P.id?'Pilota · '+esc(P.name):'Avvia un pilota',`<div class="col" style="gap:var(--s-10)">
+    <label class="small mut">Nome<input id="piName" value="${esc(P.name||'')}" placeholder="Pilota pianificazione automatica"></label>
+    <div><div class="small mut">Squadre del pilota (di solito due)</div>${(S.teams||[]).map(t=>`<label class="row small" style="gap:var(--s-6)"><input type="checkbox" class="piT" value="${t.id}" ${sel.has(t.id)?'checked':''}> ${esc(t.name)}</label>`).join('')}</div>
+    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Inizia la settimana del<input id="piStart" type="date" value="${P.starts_on||apNextMonday()}"></label>
+      <label class="small mut grow">Settimane<input id="piW" type="number" min="1" max="26" value="${P.weeks||4}"></label>
+      <label class="small mut grow">Settimane di confronto prima<input id="piB" type="number" min="1" max="26" value="${P.baseline_weeks||4}"></label></div>
+    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">SLA degli extra senza contratto (ore)<input id="piSla" type="number" min="1" max="720" value="${P.default_sla_hours||48}"></label>
+      <label class="small mut grow">Ore di pianificazione a settimana prima del pilota<input id="piBh" type="number" min="0" max="168" step="0.5" value="${P.baseline_planning_hours??''}"></label></div>
+    <div><div class="small mut">Obiettivi</div><div class="row" style="gap:var(--s-8);flex-wrap:wrap">
+      <label class="small mut grow">Accettati senza modifiche (%)<input id="piT1" type="number" min="0" max="100" value="${T.accepted_pct}"></label>
+      <label class="small mut grow">Spostamenti in meno (%)<input id="piT2" type="number" min="0" max="100" value="${T.travel_reduction_pct}"></label>
+      <label class="small mut grow">Extra entro SLA (%)<input id="piT3" type="number" min="0" max="100" value="${T.sla_pct}"></label>
+      <label class="small mut grow">Ore risparmiate a settimana<input id="piT4" type="number" min="0" max="80" step="0.5" value="${T.hours_saved}"></label></div></div>
+    <button class="btn" onclick="pilotSave('${P.id||''}')">${P.id?'Salva':'Avvia'}</button><div class="cfg-msg small"></div></div>`); }
+async function pilotSave(id){ const m=$('.cfg-msg'); const g=[...document.querySelectorAll('.piT:checked')].map(x=>x.value);
+  const n=x=>{ const v=$(x).value.trim(); return v===''?null:+v; };
+  const b={name:$('#piName').value.trim()||'Pilota pianificazione automatica',group_ids:g,starts_on:$('#piStart').value,weeks:n('#piW'),baseline_weeks:n('#piB'),default_sla_hours:n('#piSla'),
+    baseline_planning_hours:n('#piBh'),targets:{accepted_pct:n('#piT1')??70,travel_reduction_pct:n('#piT2')??10,sla_pct:n('#piT3')??90,hours_saved:n('#piT4')??4}};
+  if(!g.length){ m.textContent='scegli almeno una squadra'; m.style.color='var(--bad)'; return; }
+  try{ await api(id?'/planning/pilot/'+id:'/planning/pilot',{method:id?'PUT':'POST',body:JSON.stringify(b)}); toast(id?'Pilota aggiornato':'Pilota avviato','ok'); closeDrawer(); route(); }
+  catch(e){ m.textContent=friendlyError(e); m.style.color='var(--bad)'; } }
+async function pilotHours(id,wk,val){ if(val==='') return;
+  try{ await api('/planning/pilot/'+id+'/weeks',{method:'POST',body:JSON.stringify({week_start:wk,planning_hours:+val})}); toast('Ore salvate','ok'); route(); }catch(e){ toast(e,'bad'); } }
+async function pilotClose(id,decision){
+  const note=await askPrompt(decision==='estendi'?'Estendere la pianificazione automatica a tutte le squadre? Scrivi il motivo della decisione (facoltativo).':'Concludere il pilota senza estenderlo? Scrivi il motivo (facoltativo).','');
+  if(note===null) return;
+  try{ await api('/planning/pilot/'+id+'/close',{method:'POST',body:JSON.stringify({decision,note})}); toast(decision==='estendi'?'Pianificazione automatica estesa a tutte le squadre':'Pilota concluso','ok'); route(); }catch(e){ toast(e,'bad'); } }
 // ===== Fase 4: meteo operativo (previsioni scritte da Youco o da un sistema autorizzato) =====
 const WX_ICO={sereno:'☀️',poco_nuvoloso:'🌤️',nuvoloso:'☁️',coperto:'☁️',pioggia:'🌧️',pioggia_debole:'🌦️',temporale:'⛈️',neve:'❄️',nebbia:'🌫️',vento:'💨'};
 const WX_LAB={sereno:'sereno',poco_nuvoloso:'poco nuvoloso',nuvoloso:'nuvoloso',coperto:'coperto',pioggia:'pioggia',pioggia_debole:'pioggia debole',temporale:'temporale',neve:'neve',nebbia:'nebbia',vento:'vento forte'};

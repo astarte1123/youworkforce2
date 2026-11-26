@@ -100,6 +100,9 @@ R2=$(call P POST /api/planning/runs "{\"from\":\"$FROM\",\"to\":\"$TO\",\"replan
 echo "$R2" | py "('$O2' not in [i['order_id'] for i in d['items']], d['summary']['fixed']>=1)" | grep -q "(True, True)" && ok "ripianifica: l'intervento fissato resta dov'è" || no "fissato" "$(echo "$R2" | py "d['summary']")"
 R2ID=$(echo "$R2" | py "d['id']")
 call P DELETE /api/planning/runs/$R2ID | py "d['ok']" | grep -q True && ok "bozza scartata" || no "scarta" "-"
+R3=$(call P POST /api/planning/runs "{\"from\":\"$FROM\",\"to\":\"$TO\",\"replan\":true,\"group_ids\":[\"$G2\"]}")
+echo "$R3" | py "('$O1' not in [i['order_id'] for i in d['items']], all(i['group_id'] in (None,'$G2') for i in d['items']))" | grep -q "(True, True)"   && ok "solo una squadra: gli interventi delle altre squadre non si toccano" || no "filtro squadre" "$(echo "$R3" | py "d['summary']")"
+call P DELETE /api/planning/runs/$(echo "$R3" | py "d['id']") >/dev/null
 
 echo "== proposta di un motore esterno =="
 D3="2027-03-03"

@@ -151,6 +151,10 @@ pub(crate) async fn load_problem_ex(st: &AppState, tid: Uuid, from: DateTime<Utc
         // fisso: bloccato, avviato, già passato, oppure (senza «ripianifica») già pianificato e assegnato
         let fixed = !history && in_period && (locked || started || start.map(|x| x < now).unwrap_or(false) || (!replan && (group.is_some() || user.is_some())));
         if !in_period && start.is_some() && (group.is_some() || user.is_some()) { continue; } // fuori periodo e già sistemato
+        // squadre scelte (es. il pilota): solo i loro interventi e quelli senza squadra né persona
+        if let Some(f) = teams_filter.filter(|f| !f.is_empty()) {
+            match group { Some(g) if !f.contains(&g) => continue, None if user.is_some() => continue, _ => {} }
+        }
         if fixed && group.is_none() { continue; } // interventi di una sola persona: occupano la persona, non una squadra
         let qty: Option<f64> = r.try_get("qty").ok().flatten();
         let dur = r.try_get::<Option<i32>,_>("estimated_minutes").ok().flatten().map(|m| m as i64)
