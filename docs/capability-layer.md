@@ -241,6 +241,8 @@ moduli è attivo e la persona ha uno dei suoi permessi. Così vale anche per i r
 | Turni | workforce | `plan`, `config.view`, `work.own`, `incidents.handle` |
 | Il tuo ruolo | — | — |
 
+`work.own` riguarda solo il proprio lavoro: chi gestisce gli utenti può assegnarlo (ruolo lavoratore) anche senza averlo (`api::SELF_CAPS`, eccezione alla regola «concedi solo ciò che hai»).
+
 Con i permessi predefiniti i ruoli vedono gli stessi widget di prima, con tre aggiunte: il
 responsabile vede check-in e ordini delle sue sedi, operatore e responsabile i turni, chi gestisce i
 dispositivi (operatore, auditor, amministratore) il widget IoT. e2e `qa/dashboard-caps-e2e.sh`.

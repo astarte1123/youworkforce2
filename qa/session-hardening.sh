@@ -11,10 +11,12 @@ no(){ echo "FAIL  $1  ($2)"; FAIL=$((FAIL+1)); }
 dbq(){ docker exec ywdb psql -U postgres -d youworkforce -tAc "$1"; }
 JAR=$(mktemp)
 
-B0=$(dbq "SELECT count(*) FROM app.sessions;")
+# sessioni di QUESTO utente create da adesso (il totale scende quando il core cancella le scadute)
+T0=$(dbq "SELECT now()")
+B0=$(dbq "SELECT count(*) FROM app.sessions WHERE email='operatore@acme.loneworker.eu' AND created_at >= '$T0';")
 curl -s -o /dev/null -c "$JAR" -X POST "$BASE/api/login" -H 'content-type: application/json' -H 'x-tenant-slug: acme' \
   -d '{"email":"operatore@acme.loneworker.eu","password":"demo"}'
-B1=$(dbq "SELECT count(*) FROM app.sessions;")
+B1=$(dbq "SELECT count(*) FROM app.sessions WHERE email='operatore@acme.loneworker.eu' AND created_at >= '$T0';")
 [ "$B1" -gt "$B0" ] && ok "login crea una riga di sessione nel DB" || no "session persisted" "$B0->$B1"
 
 ME=$(curl -s -b "$JAR" -H 'x-tenant-slug: acme' "$BASE/api/me")

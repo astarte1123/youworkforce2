@@ -745,8 +745,11 @@ pub(crate) fn require_any_cap(s: &Session, caps: &[&str]) -> Result<(), (StatusC
 /// TA-1: NON SI CONCEDE CIÒ CHE NON SI POSSIEDE. Chi gestisce utenti/permessi può assegnare (a un
 /// ruolo, a un ruolo personalizzato, a un utente) solo permessi che ha già. `admin` li copre tutti:
 /// solo un amministratore crea altri amministratori o tocca chi ha più permessi di lui.
+/// Permessi che riguardano solo il PROPRIO lavoro: non danno poteri su altri, quindi chi gestisce
+/// gli utenti può assegnarli anche se non li ha (es. un delegato senza `work.own` crea lavoratori).
+pub(crate) const SELF_CAPS: &[&str] = &["work.own"];
 pub(crate) fn require_grantable(actor: &Session, caps: &[String]) -> Result<(), (StatusCode, String)> {
-    let missing: Vec<&str> = caps.iter().map(|c| c.as_str()).filter(|c| !has_cap(actor, c)).collect();
+    let missing: Vec<&str> = caps.iter().map(|c| c.as_str()).filter(|c| !SELF_CAPS.contains(c) && !has_cap(actor, c)).collect();
     if missing.is_empty() { return Ok(()); }
     let labels: Vec<String> = missing.iter().map(|c| cap_label(c)).collect();
     Err(err(StatusCode::FORBIDDEN, &format!("non puoi concedere permessi che non hai: {}", labels.join(", "))))
