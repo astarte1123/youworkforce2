@@ -15,6 +15,7 @@ mod dashboard; // servizio core: dashboard unica configurabile (widget + layout 
 mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
 mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
 mod metno; // Fase 4b: previsioni da MET Norway (fonte scelta per tenant, unica connessione esterna oltre all'AI)
+mod myday; // app dell'operaio: «la mia giornata» (interventi in ordine, squadra, mezzi, meteo, giro)
 mod autentika; // login con Autentika (IdP OIDC di YouCo), affiancato al login con password
 mod pilot; // Fase 6: pilota della pianificazione automatica (squadre, settimane, misure, decisione)
 mod planning; // Fase 5: pianificazione automatica (contratto dati, motore di base nativo, validazione, bozza da applicare)
@@ -324,6 +325,7 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/me/password", post(users::change_own_password))
         .route("/api/login", post(api::tenant_login))
         .route("/api/auth/providers", get(api::auth_providers))
+        .route("/api/my/day", get(api::my_day))
         .route("/api/auth/oidc/start", get(api::oidc_start))
         .route("/api/auth/oidc/callback", get(api::oidc_callback))
         .route("/api/auth/backchannel-logout", post(api::backchannel_logout))

@@ -745,7 +745,7 @@ L'app mostra solo le funzioni dei moduli attivi.
 |---|---|
 | SOS, condivisione posizione, check-in | modulo Lone Worker |
 | Turno e turni pianificati | modulo Forza lavoro e turni |
-| Oggi · ordini assegnati | modulo Interventi |
+| La mia giornata, tutti gli interventi aperti | modulo Interventi |
 | Ronde | modulo Ronde e punzonature |
 | Note di lavoro (diario) | modulo Forza lavoro e turni o Interventi |
 | Assistente AI sul campo, dettatura AI | se l'amministratore ha attivato quelle funzioni AI |
@@ -781,8 +781,37 @@ Se sei fermo da troppo tempo (quando l'immobilità è attiva) compare a tutto sc
 con suono e vibrazione. Tocca **Sto bene** per far ripartire il conteggio. Se non rispondi parte
 l'allarme.
 
+### La mia giornata
+In alto, con il modulo Interventi. Mostra gli interventi **tuoi e della tua squadra** nell'ordine in
+cui vanno fatti. Due schede:
+- **Oggi**;
+- **Prossima giornata**: il primo giorno successivo con interventi, per esempio lunedì se oggi è
+  venerdì.
+
+Nel riquadro iniziale:
+- quanti interventi, ore di lavoro e tempo e chilometri di spostamento, compreso il rientro al
+  deposito;
+- il **meteo della giornata** per zona (con il modulo Meteo);
+- la **squadra**: chi è assente quel giorno è barrato;
+- i **mezzi da ritirare** al deposito (con il modulo Mezzi);
+- **Apri il percorso della giornata in Maps**: tutto il tragitto, deposito → tappe → deposito.
+
+Per ogni intervento:
+- numero, orario, tipo di lavoro con la quantità (m², metri, pezzi) e la durata;
+- sede con indirizzo, cliente e note di accesso;
+- il **meteo previsto a quell'ora in quella sede**, con gli avvisi se supera i limiti del lavoro
+  (es. «previsti 3 mm di pioggia: il taglio erba si fa con al massimo 2 mm»);
+- i mezzi prenotati e le istruzioni;
+- tra un intervento e l'altro, il tempo di spostamento stimato;
+- un avviso ⏱ se un intervento inizia prima che finisca il precedente, o se con lo spostamento non
+  ci arrivi in tempo: avvisa il pianificatore.
+
+**Naviga** porta alla sede. **Apri intervento** (solo oggi) apre l'esecuzione descritta sotto.
+Senza rete resta visibile l'ultima giornata scaricata, con l'avviso «senza rete: ultima copia».
+**Tutti gli interventi aperti**, chiuso in fondo, elenca gli altri interventi assegnati.
+
 ### Interventi del giorno
-Nella sezione **Oggi · ordini assegnati**:
+Da **La mia giornata** o da **Tutti gli interventi aperti**:
 1. **Apri intervento**. In evidenza le **indicazioni di accesso** (es. «chiave in portineria»).
 2. **Naviga verso il luogo** apre il navigatore del telefono verso le coordinate della sede (o
    l'indirizzo).

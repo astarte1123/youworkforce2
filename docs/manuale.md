@@ -598,6 +598,13 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   una sola punzonatura per punto la permanenza non si misura). Il tempo di ogni step di escalation
   nella cronologia (`fired_at`) è quello del core, come lo stato dell'escalation. e2e
   `qa/patrol-schedule-suspend-e2e.sh`.
+- **App dell'operaio — M1 «La mia giornata»** (`GET /api/my/day`, `core/src/myday.rs`).
+  - Interventi propri e della squadra in ordine, con spostamenti dal deposito e rientro.
+  - Squadra con gli assenti, mezzi da ritirare, meteo per sede e fascia con gli avvisi, riepilogo
+    per zona.
+  - Percorso della giornata in Maps, «Prossima giornata», copia senza rete, avviso dei tempi stretti.
+  - Generica per ogni tenant: le sezioni seguono i moduli attivi. Piano M1–M4 in
+    [app-operaio.md](app-operaio.md); e2e `qa/myday-e2e.sh`.
 - **Login con Autentika (mig `0172`), accanto al login con password.**
   - Per tenant, dal superadmin: issuer, client e segreto cifrato, indirizzo di ritorno, ruoli.
   - Flusso Authorization Code + PKCE S256 con YW come BFF; verifica ES256 dell'id_token.

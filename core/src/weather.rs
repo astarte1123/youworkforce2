@@ -87,6 +87,35 @@ pub(crate) async fn weather_warnings(st: &AppState, tid: Uuid, at: Option<Uuid>,
     Ok(out)
 }
 
+/// Meteo previsto in una sede nella fascia [a,z): zona, pioggia (in proporzione), probabilità, vento
+/// massimo (con raffiche), temperature, condizione prevalente. None = nessuna zona o previsione.
+pub(crate) async fn site_slot_weather(st: &AppState, tid: Uuid, site: Uuid, a: DateTime<Utc>, z: DateTime<Utc>) -> Result<Option<serde_json::Value>, (StatusCode, String)> {
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let Some((zid, zname)) = zone_of_site(&mut tx, site).await? else { return Ok(None) };
+    let r = sqlx::query("SELECT count(*)::int AS n,
+            sum(rain_mm * extract(epoch FROM LEAST(valid_to,$3) - GREATEST(valid_from,$2)) / extract(epoch FROM valid_to - valid_from))::float8 AS rain,
+            max(rain_prob) AS prob, max(GREATEST(COALESCE(wind_kmh,0),COALESCE(gust_kmh,0)))::float8 AS wind,
+            min(temp_c)::float8 AS tmin, max(temp_c)::float8 AS tmax, mode() WITHIN GROUP (ORDER BY condition) AS cond
+         FROM app.weather_slots WHERE zone_id=$1 AND kind='previsione' AND valid_from < $3 AND valid_to > $2").bind(zid).bind(a).bind(z).fetch_one(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    if r.get::<i32,_>("n") == 0 { return Ok(None); }
+    Ok(Some(json!({"zone": zname, "rain_mm": num(&r, "rain").map(|x| (x * 10.0).round() / 10.0), "rain_prob": r.try_get::<Option<i32>,_>("prob").ok().flatten(),
+        "wind_kmh": num(&r, "wind"), "temp_min": num(&r, "tmin"), "temp_max": num(&r, "tmax"), "condition": r.try_get::<Option<String>,_>("cond").ok().flatten()})))
+}
+/// Riepilogo di una giornata per le zone indicate (per nome).
+pub(crate) async fn zones_day_summary(st: &AppState, tid: Uuid, names: Vec<String>, a: DateTime<Utc>, z: DateTime<Utc>) -> Result<Vec<serde_json::Value>, (StatusCode, String)> {
+    if names.is_empty() { return Ok(vec![]); }
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT zz.name, sum(w.rain_mm)::float8 AS rain, max(w.rain_prob) AS prob, max(GREATEST(COALESCE(w.wind_kmh,0),COALESCE(w.gust_kmh,0)))::float8 AS wind,
+            min(w.temp_c)::float8 AS tmin, max(w.temp_c)::float8 AS tmax, mode() WITHIN GROUP (ORDER BY w.condition) AS cond, max(w.source) AS source
+         FROM app.weather_zones zz JOIN app.weather_slots w ON w.zone_id=zz.id AND w.kind='previsione' AND w.valid_from >= $2 AND w.valid_from < $3
+         WHERE zz.name = ANY($1) GROUP BY zz.name ORDER BY zz.name").bind(&names).bind(a).bind(z).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    Ok(rows.iter().map(|r| json!({"zone": r.get::<String,_>("name"), "rain_mm": num(r, "rain").map(|x| (x * 10.0).round() / 10.0), "rain_prob": r.try_get::<Option<i32>,_>("prob").ok().flatten(),
+        "wind_kmh": num(r, "wind"), "temp_min": num(r, "tmin"), "temp_max": num(r, "tmax"), "condition": r.try_get::<Option<String>,_>("cond").ok().flatten(),
+        "source": r.try_get::<Option<String>,_>("source").ok().flatten()})).collect())
+}
+
 // =============================================================================================
 // Valutazione in memoria (pianificazione automatica: migliaia di tentativi senza una query ciascuno)
 // =============================================================================================

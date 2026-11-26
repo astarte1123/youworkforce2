@@ -8,6 +8,7 @@ use futures::stream::Stream;
 use crate::state::{AppState, Session, TenantEvent};
 use crate::{auth, db};
 pub(crate) use crate::weather::*;
+pub(crate) use crate::myday::my_day;
 pub(crate) use crate::autentika::{auth_providers, oidc_start, oidc_callback, backchannel_logout, super_get_autentika, super_set_autentika, super_verify_autentika};
 pub(crate) use crate::planning::{planning_run, planning_runs, planning_run_get, planning_run_discard, planning_apply, planning_external, planning_problem, planning_settings, put_planning_settings, order_plan_lock, planning_backtest};
 pub(crate) use crate::pilot::{pilot_get, pilot_create, pilot_update, pilot_week, pilot_close};

@@ -151,7 +151,10 @@ function app(){
     ${MODS.has('workforce')?`<section><h3 class="sec-h">Turno</h3><div class="card"><div class="card-b" id="shiftBox" aria-live="polite"></div></div></section>`:''}
     ${MODS.has('workforce')?`<section><h3 class="sec-h">Turni pianificati</h3><div id="plansBox" class="col"></div></section>`:''}
 
-    ${MODS.has('interventi')?`<section><h3 class="sec-h">Oggi · ordini assegnati</h3><div id="orders" class="col"></div></section>`:''}
+    ${MODS.has('interventi')?`<section aria-label="La mia giornata"><div class="spread"><h3 class="sec-h">La mia giornata</h3>
+      <div class="row gap-6" role="tablist"><button class="btn ghost mini" id="dayT0" role="tab" onclick="loadDay(0)">Oggi</button><button class="btn ghost mini" id="dayT1" role="tab" onclick="loadDay(1)">Prossima giornata</button></div></div>
+      <div id="myday" class="col" aria-live="polite"></div></section>
+    <section><details><summary class="sec-h" style="cursor:pointer">Tutti gli interventi aperti</summary><div id="orders" class="col mt-8"></div></details></section>`:''}
 
     <section id="patrolsSec" style="display:none"><h3 class="sec-h">Ronde</h3><div id="patrols" class="col"></div></section>
 
@@ -165,7 +168,7 @@ function app(){
     <div id="diaryList" class="col gap-8 mt-10" aria-live="polite"></div></section>`:''}
   </main>`;
   if(safetyWorker()){ renderCheckin(); renderTracking(); restoreCI(); immPoll(); hbTick(); }
-  if(MODS.has('interventi')) loadOrders();
+  if(MODS.has('interventi')){ loadDay(0); loadOrders(); }
   if(MODS.has('workforce')){ renderShift(); loadPlans(); } // turno nell'app solo con Gestione turni (PO 25/11)
   if(fieldDiary()){ loadDiary(); flushNotes(); }
   loadPatrols();
@@ -350,6 +353,62 @@ async function confirmCI(){ if(!CI)return; try{ const r=await api('/checkins/'+C
   CI=null; clearInterval(CITimer); renderCheckin(); }catch(e){ toast(e,'bad'); } }
 
 // ---- orders ----
+// ===== La mia giornata (M1): interventi in ordine di visita, squadra, mezzi, meteo, giro =====
+const WX_ICO={sereno:'☀️',poco_nuvoloso:'🌤️',nuvoloso:'☁️',coperto:'☁️',pioggia:'🌧️',pioggia_debole:'🌦️',temporale:'⛈️',neve:'❄️',nebbia:'🌫️',vento:'💨'};
+const WX_LAB={sereno:'sereno',poco_nuvoloso:'poco nuvoloso',nuvoloso:'nuvoloso',coperto:'coperto',pioggia:'pioggia',pioggia_debole:'pioggia debole',temporale:'temporale',neve:'neve',nebbia:'nebbia',vento:'vento forte'};
+const UNIT_W={m2:'m²',ml:'m',n:'pz',ore:'h'};
+const wn=x=>x==null?'—':String(Math.round(x*10)/10).replace('.',',');
+const hm=t=>new Date(t).toLocaleTimeString(ywI18n.locale(),{hour:'2-digit',minute:'2-digit'});
+const dmin=m=>m>=60?Math.floor(m/60)+' h'+(m%60?' '+(m%60)+' min':''):m+' min';
+let DAY=null, DAY_OFF=0;
+function dayDate(off){ const d=new Date(); d.setDate(d.getDate()+off); const p=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); }
+async function loadDay(off){ DAY_OFF=off; const box=$('#myday'); if(!box) return;
+  ['dayT0','dayT1'].forEach((id,i)=>{ const b=$('#'+id); if(b){ b.classList.toggle('ghost',i!==off); b.setAttribute('aria-selected',i===off?'true':'false'); } });
+  box.innerHTML='<div class="card pad mut center">carico…</div>';
+  const key='yw_day_'+(off?'next':dayDate(0));
+  let D; try{ D=await api(off?'/my/day?next=1':'/my/day?date='+dayDate(0)); }catch(e){
+    // senza rete: l'ultima giornata scaricata resta leggibile
+    try{ D=JSON.parse(localStorage.getItem(key)||'null'); }catch(_){ D=null; }
+    if(!D){ box.innerHTML=errorBox(e,'loadDay('+off+')'); return; } D._offline=true; }
+  if(!D._offline) try{ localStorage.setItem(key,JSON.stringify(D)); }catch(e){}
+  DAY=D; renderDay(); }
+function wxLine(w){ if(!w) return ''; return `${WX_ICO[w.condition]||'·'} ${esc(WX_LAB[w.condition]||'')} · ${wn(w.rain_mm)} mm${w.rain_prob!=null?' ('+w.rain_prob+'%)':''} · ${wn(w.temp_min)}–${wn(w.temp_max)} °C · vento ${w.wind_kmh!=null?Math.round(w.wind_kmh)+' km/h':'—'}`; }
+function renderDay(){ const D=DAY, box=$('#myday'); if(!D||!box) return;
+  const T=D.totals||{};
+  const head=`<div class="card pad">
+    <div class="spread"><b>${new Date(D.date+'T12:00:00').toLocaleDateString(ywI18n.locale(),{weekday:'long',day:'numeric',month:'long'})}</b>${D._offline?'<span class="tag warn">senza rete: ultima copia</span>':''}</div>
+    <div class="small mt-4">${T.orders?`<b>${T.orders}</b> interventi · ${dmin(T.work_minutes||0)} di lavoro · 🚐 ${dmin(T.travel_minutes||0)} (${wn(T.travel_km)} km)`:'Nessun intervento in programma'}</div>
+    ${(D.weather||[]).map(w=>`<div class="small mt-4">${esc(w.zone)}: ${wxLine(w)}</div>`).join('')}
+    ${D.teams&&D.teams.length?D.teams.map(t=>`<div class="small mt-6"><b>👥 ${esc(t.name)}</b>: ${t.members.map(m=>`<span style="${m.absent?'text-decoration:line-through;opacity:.6':''}">${esc(m.email.split('@')[0])}${m.me?' (tu)':''}</span>`).join(', ')}${t.members.some(m=>m.absent)?' <span class="mut">· barrati = assenti</span>':''}</div>`).join(''):''}
+    ${(D.vehicles||[]).length?`<div class="small mt-6"><b>🚜 Mezzi da ritirare${D.depot?' a '+esc(D.depot.name):''}</b>: ${D.vehicles.map(v=>esc(v.name)+(v.identifier?' ('+esc(v.identifier)+')':'')).join(', ')}</div>`:''}
+    ${D.route_url?`<a class="btn block mt-10" href="${esc(D.route_url)}" target="_blank" rel="noopener">🧭 Apri il percorso della giornata in Maps</a>`:''}</div>`;
+  let prevEnd=null;
+  const cards=(D.orders||[]).map(o=>{
+    const warn=(o.weather_warnings||[]);
+    // tempi stretti: inizia prima che finisca il precedente, o lo spostamento non ci sta
+    let tight='';
+    if(prevEnd){ const st=new Date(o.start).getTime(), arr=prevEnd+(o.travel_minutes||0)*60000;
+      if(st<prevEnd) tight=`⏱ Inizia alle ${hm(o.start)} ma il precedente finisce alle ${hm(prevEnd)}: avvisa il pianificatore.`;
+      else if(arr>st) tight=`⏱ Con lo spostamento arrivi verso le ${hm(arr)}, dopo l'inizio previsto.`; }
+    prevEnd=new Date(o.end).getTime();
+    return `${o.travel_minutes?`<div class="small mut center">🚐 ${dmin(o.travel_minutes)} · ${wn(o.travel_km)} km</div>`:''}
+    <div class="card pad" style="${o.state==='completato'?'opacity:.7':''}">
+      <div class="spread"><b><span class="tag">${o.seq}</span> ${hm(o.start)}–${hm(o.end)}</b>${chip(o.state)}</div>
+      <div class="mt-4"><b>${esc(o.title)}</b>${o.priority>=3?' · <b class="t-bad">priorità alta</b>':''}</div>
+      ${o.activity?`<div class="small">${esc(o.activity)}${o.quantity!=null?' · '+wn(o.quantity)+' '+esc(UNIT_W[o.unit]||''):''} · ${dmin(o.minutes)}</div>`:''}
+      <div class="small mut mt-4">📍 ${esc(o.site||'—')}${o.site_address?' · '+esc(o.site_address):''}${o.client?' · '+esc(o.client):''}</div>
+      ${o.access_notes?`<div class="small mt-4">🔑 ${esc(o.access_notes)}</div>`:''}
+      ${o.weather?`<div class="small mt-4">${wxLine(o.weather)}</div>`:''}
+      ${tight?`<div class="small t-warn mt-2">${esc(tight)}</div>`:''}
+      ${warn.map(w=>`<div class="small t-warn mt-2">⚠ ${esc(w.message)}</div>`).join('')}
+      ${(o.assets||[]).length?`<div class="small mt-4">🚜 ${o.assets.map(a=>esc(a.name)).join(', ')}</div>`:''}
+      ${o.instructions?`<div class="small mt-4">📝 ${esc(o.instructions)}</div>`:''}
+      ${o.team&&!o.mine?`<div class="small mut mt-4">👥 ${esc(o.team)}</div>`:''}
+      <div class="row gap-8 mt-10">${navUrl(o)?`<a class="btn ghost grow" href="${navUrl(o)}" target="_blank" rel="noopener">🧭 Naviga</a>`:''}
+        ${DAY_OFF===0&&o.state!=='completato'?`<button class="btn grow" onclick="openDayOrder('${o.id}')">Apri intervento</button>`:''}</div></div>`; }).join('');
+  box.innerHTML=head+(cards||'');
+}
+async function openDayOrder(id){ try{ const L=await api('/orders?id='+id); if(L&&L[0]) openOrderExec(L[0]); else toast('Intervento non trovato','bad'); }catch(e){ toast(e,'bad'); } }
 async function loadOrders(){
   const box=$('#orders'); let O; try{ O=await api('/orders?state=open'); }catch(e){ box.innerHTML=errorBox(e,'loadOrders()'); return; } ORDERS=O;
   const mine=O.filter(o=>['assegnato','in_corso'].includes(o.state));
