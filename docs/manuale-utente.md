@@ -745,7 +745,7 @@ L'app mostra solo le funzioni dei moduli attivi.
 |---|---|
 | SOS, condivisione posizione, check-in | modulo Lone Worker |
 | Turno e turni pianificati | modulo Forza lavoro e turni |
-| La mia giornata, tutti gli interventi aperti | modulo Interventi |
+| Oggi (Adesso, La giornata), Mappa, Interventi | modulo Interventi |
 | Ronde | modulo Ronde e punzonature |
 | Note di lavoro (diario) | modulo Forza lavoro e turni o Interventi |
 | Assistente AI sul campo, dettatura AI | se l'amministratore ha attivato quelle funzioni AI |
@@ -781,37 +781,59 @@ Se sei fermo da troppo tempo (quando l'immobilità è attiva) compare a tutto sc
 con suono e vibrazione. Tocca **Sto bene** per far ripartire il conteggio. Se non rispondi parte
 l'allarme.
 
-### La mia giornata
-In alto, con il modulo Interventi. Mostra gli interventi **tuoi e della tua squadra** nell'ordine in
-cui vanno fatti. Due schede:
-- **Oggi**;
-- **Prossima giornata**: il primo giorno successivo con interventi, per esempio lunedì se oggi è
-  venerdì.
+### Com'è fatta l'app
+L'app si compone da sola secondo i moduli attivi dell'azienda.
 
-Nel riquadro iniziale:
-- quanti interventi, ore di lavoro e tempo e chilometri di spostamento, compreso il rientro al
-  deposito;
-- il **meteo della giornata** per zona (con il modulo Meteo);
-- la **squadra**: chi è assente quel giorno è barrato;
-- i **mezzi da ritirare** al deposito (con il modulo Mezzi);
-- **Apri il percorso della giornata in Maps**: tutto il tragitto, deposito → tappe → deposito.
+**Barra in basso** (le voci che servono, al massimo cinque):
 
-Per ogni intervento:
-- numero, orario, tipo di lavoro con la quantità (m², metri, pezzi) e la durata;
-- sede con indirizzo, cliente e note di accesso;
-- il **meteo previsto a quell'ora in quella sede**, con gli avvisi se supera i limiti del lavoro
-  (es. «previsti 3 mm di pioggia: il taglio erba si fa con al massimo 2 mm»);
-- i mezzi prenotati e le istruzioni;
-- tra un intervento e l'altro, il tempo di spostamento stimato;
-- un avviso ⏱ se un intervento inizia prima che finisca il precedente, o se con lo spostamento non
-  ci arrivi in tempo: avvisa il pianificatore.
+| Voce | Modulo |
+|---|---|
+| **Oggi** | sempre |
+| **Mappa** e **Interventi** | Interventi |
+| **Ronde** | Ronde e vigilanza |
+| **Note** | Forza lavoro e turni o Interventi |
 
-**Naviga** porta alla sede. **Apri intervento** (solo oggi) apre l'esecuzione descritta sotto.
-Senza rete resta visibile l'ultima giornata scaricata, con l'avviso «senza rete: ultima copia».
-**Tutti gli interventi aperti**, chiuso in fondo, elenca gli altri interventi assegnati.
+**In alto:** iniziali, data e saluto, la tua squadra e il menu (lingua, tema chiaro/scuro, esci). Con
+il modulo Sicurezza, nelle schede diverse da «Oggi» compare anche il pulsante **SOS** piccolo;
+in «Oggi» c'è quello grande.
+
+### Oggi
+Dall'alto in basso, solo i blocchi dei moduli attivi:
+- **SOS** grande (Sicurezza);
+- **Meteo** (modulo Meteo): temperatura, condizioni, pioggia, vento e la striscia oraria per la zona
+  della squadra. È sempre il meteo di oggi;
+- **Turno** (Forza lavoro e turni): inizia e termina;
+- **Adesso** (Interventi): il prossimo intervento in grande, con
+  - orario, lavoro e luogo;
+  - quantità, mezzi, accesso e meteo a quell'ora, con gli avvisi;
+  - **Naviga**, poi il pulsante del passo successivo: **Sono arrivato** → **Inizia il lavoro** →
+    **Completa**. **Apri la scheda dell'intervento** apre tutti i dettagli;
+- **La giornata**:
+  - la sequenza delle tappe in ordine, con il tempo di viaggio tra una e l'altra;
+  - in rosso la tappa attuale, in verde le fatte, in arancione i tempi stretti («si sovrappone al
+    precedente»);
+  - i mezzi da ritirare e **Apri il percorso della giornata in Maps**;
+- **Check-in** e **Condivisione posizione** (Sicurezza), **Turni pianificati** (Forza lavoro e
+  turni).
+
+Se oggi non hai interventi, l'app mostra da sola la **prossima giornata** con lavoro (es. lunedì) e
+lo dice in un riquadro. Senza rete resta l'ultima copia scaricata.
+
+### Mappa
+La mappa (OpenStreetMap) mostra:
+- il **deposito** (D);
+- le **tappe numerate**, in rosso quella attuale;
+- il percorso tratteggiato;
+- la tua posizione, se dai il permesso.
+
+Tocca una tappa: in basso compaiono indirizzo e orario con **Apri la scheda** e **Naviga**.
+
+### Interventi
+Le schede **Oggi** / **Prossima giornata** scelgono la giornata mostrata in «Oggi» e nella mappa.
+Sotto, **Tutti gli interventi aperti** assegnati a te.
 
 ### Interventi del giorno
-Da **La mia giornata** o da **Tutti gli interventi aperti**:
+Da «Oggi», dalla mappa o da **Tutti gli interventi aperti**:
 1. **Apri intervento**. In evidenza le **indicazioni di accesso** (es. «chiave in portineria»).
 2. **Naviga verso il luogo** apre il navigatore del telefono verso le coordinate della sede (o
    l'indirizzo).

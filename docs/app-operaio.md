@@ -9,7 +9,7 @@ impianti, pulizie): le sezioni compaiono secondo i moduli attivi.
 
 | Fase | Contenuto | Stato |
 |---|---|---|
-| M1 | «La mia giornata»: interventi propri e della squadra in ordine, spostamenti, squadra e assenti, mezzi da ritirare, meteo per sede e fascia con gli avvisi, percorso della giornata in Maps, prossima giornata, copia senza rete | **fatta (26/11/2026)** |
+| M1 | «La mia giornata» e nuova interfaccia a schede (Oggi, Mappa, Interventi, Ronde, Note secondo i moduli): interventi propri e della squadra in ordine, spostamenti, squadra e assenti, mezzi da ritirare, meteo per sede e fascia con gli avvisi, percorso della giornata in Maps, prossima giornata, copia senza rete | **fatta (26/11/2026)** |
 | M2 | Scheda intervento completa; «Segnala problema / lavoro extra» con foto (diventa una richiesta per il pianificatore); foto prima e dopo | da fare |
 | M3 | Cambi di programma: avviso in app (badge «cambiato») e poi notifiche push dal nostro server | da fare |
 | M4 | Caposquadra (avvia, chiude e segna le presenze per la squadra) e uso offline completo con coda delle azioni | da fare |
@@ -20,6 +20,34 @@ Restano da decidere con il PO:
 - che telefoni si usano: aziendali, uno per squadra, oppure personali;
 - quali lingue oltre a italiano e inglese;
 - un'app da store, solo se servono funzioni che il browser non dà.
+
+## Nuova interfaccia (26/11/2026, dal mockup approvato)
+
+Mockup: https://claude.ai/artifact/NwURQquv2fVC4f6KwpUmZy (giardiniere: Oggi, Mappa, Scheda;
+guardia: Ronde e Sicurezza).
+
+L'app si compone dai moduli attivi.
+
+- **Barra in basso:** Oggi sempre; Mappa e Interventi con Interventi; Ronde con `giri`; Note con
+  `workforce` o `interventi`. Senza almeno due voci non c'è barra.
+- **Oggi:**
+  - SOS (`loneworker`);
+  - meteo «qui» (`meteo`): zona del deposito della squadra, altrimenti di quello generale o della
+    prima sede; riepilogo e striscia oraria, sempre di oggi;
+  - turno (`workforce`);
+  - «Adesso» con il passo successivo (arrivato → inizia → completa);
+  - sequenza della giornata;
+  - check-in e posizione (`loneworker`); turni pianificati.
+- **Giornata vuota:** se oggi non ci sono interventi si apre da sola la prossima giornata; se è vuota
+  anche quella, resta oggi.
+- **Mappa:** Leaflet e OpenStreetMap, come la console. Deposito, tappe numerate, percorso, posizione
+  del telefono, scheda della tappa.
+- **Icone:** disegnate, niente emoji per il meteo. Tema chiaro e scuro dai token di `app.css`.
+- **Cosa non cambia:** tutte le funzioni di prima (SOS, check-in, posizione, «Stai bene?», turni,
+  esecuzione, ronde, note, bozze senza rete) restano e scrivono negli stessi contenitori.
+- Cache dell'app `yw-shell-v12`.
+
+`GET /api/my/day` restituisce anche `here` (zona, riepilogo, fasce orarie).
 
 ## M1 — La mia giornata
 

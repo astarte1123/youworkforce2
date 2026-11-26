@@ -598,6 +598,12 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   una sola punzonatura per punto la permanenza non si misura). Il tempo di ogni step di escalation
   nella cronologia (`fired_at`) è quello del core, come lo stato dell'escalation. e2e
   `qa/patrol-schedule-suspend-e2e.sh`.
+- **App dell'operaio — nuova interfaccia (dal mockup approvato).**
+  - Barra in basso secondo i moduli (Oggi · Mappa · Interventi · Ronde · Note).
+  - «Oggi» con meteo sempre visibile e striscia oraria, «Adesso» con il passo successivo, sequenza
+    della giornata; mappa Leaflet con le tappe.
+  - SOS sempre raggiungibile, icone disegnate, prossima giornata automatica.
+  - Dettaglio in [app-operaio.md](app-operaio.md).
 - **App dell'operaio — M1 «La mia giornata»** (`GET /api/my/day`, `core/src/myday.rs`).
   - Interventi propri e della squadra in ordine, con spostamenti dal deposito e rientro.
   - Squadra con gli assenti, mezzi da ritirare, meteo per sede e fascia con gli avvisi, riepilogo

@@ -6,6 +6,8 @@
 <link rel="apple-touch-icon" href="/youworkforce.webp">
 <link rel="manifest" href="/worker/manifest.webmanifest">
 <link rel="stylesheet" href="/app.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" referrerpolicy="no-referrer">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" referrerpolicy="no-referrer"></script>
 <style>
   /* App usata SOLO da telefono (verificata a 360px). FE-13: spaziature/colori dai token di app.css; restano
      in px solo misure senza token (raggi, pulsante SOS, miniature). Il rosso SOS è volutamente fisso
@@ -37,7 +39,7 @@
   .act .ic{width:42px;height:42px;border-radius:12px;background:var(--brand-soft);display:flex;align-items:center;justify-content:center;flex:none}
   .tag.warn{background:var(--warn-soft);color:var(--warn)}
   .chip.warn{background:var(--warn-soft);color:var(--warn)}
-  .modal{position:fixed;inset:0;z-index:50;background:rgba(2,6,23,.55);display:flex;align-items:flex-end;justify-content:center}
+  .modal{position:fixed;inset:0;z-index:1200;background:rgba(2,6,23,.55);display:flex;align-items:flex-end;justify-content:center}
   .sheet{width:100%;max-width:460px;background:var(--surface);border-radius:18px 18px 0 0;padding:var(--s-16) var(--s-16) calc(26px + env(safe-area-inset-bottom));
     border-top:1px solid var(--line);max-height:88vh;overflow:auto}
   .sheet:focus{outline:none}
@@ -78,6 +80,48 @@
   .gap-4{gap:var(--s-4)} .gap-6{gap:var(--s-6)} .gap-8{gap:var(--s-8)} .gap-10{gap:var(--s-10)} .gap-16{gap:var(--s-16)}
   .jc-center{justify-content:center} .jc-end{justify-content:flex-end} .blk{display:block} .flex-0{flex:0} .minw-0{min-width:0}
   .w-60{width:60px} .w-90{width:90px} .fs-12{font-size:12px}
+  /* ===== app v2 (mockup 26/11): barra in basso, Oggi, Mappa ===== */
+  body.app2{background:var(--bg);padding-bottom:calc(76px + env(safe-area-inset-bottom))}
+  .ahead{position:sticky;top:0;z-index:1100;background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:var(--s-10);
+    padding:var(--s-12) var(--s-14);padding-top:max(var(--s-12),env(safe-area-inset-top))}
+  .avatar{width:40px;height:40px;border-radius:50%;background:var(--brand-soft);color:var(--brand-ink);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;flex:none}
+  .ahead .who{flex:1;min-width:0} .ahead .who .d{font-size:12.5px;color:var(--mut)} .ahead .who .n{font-size:17px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pill{font-size:12px;font-weight:600;padding:5px 10px;border-radius:999px;background:var(--surface2);color:var(--fg);white-space:nowrap}
+  .icobtn{width:40px;height:40px;border-radius:12px;border:1px solid var(--line);background:var(--surface);display:flex;align-items:center;justify-content:center;color:var(--fg);flex:none}
+  .icobtn svg{width:20px;height:20px}
+  .sos-mini{background:var(--sos);border-color:var(--sos);color:#fff;font-weight:800;font-size:12px;width:auto;padding:0 10px}
+  .pane{display:none} .pane.on{display:block}
+  .pwrap{max-width:520px;margin:0 auto;padding:var(--s-14) var(--s-14) var(--s-20);display:flex;flex-direction:column;gap:var(--s-12)}
+  .tcard{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:var(--s-16)}
+  .kicker{font-size:12px;font-weight:700;letter-spacing:.06em;color:var(--brand-ink);text-transform:uppercase}
+  .wx{background:linear-gradient(160deg,#1d3a5f,#2f5d8a);color:#fff;border-radius:18px;padding:var(--s-14) var(--s-16)}
+  .wx .t{font-size:30px;font-weight:800;line-height:1} .wx .t small{font-size:15px;font-weight:500;opacity:.85}
+  .wx .c{font-size:13px;opacity:.92;margin-top:4px} .wx .z{font-size:11px;opacity:.85;text-align:right}
+  .wx .hrs{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin-top:var(--s-12);font-size:11px;text-align:center}
+  .wx .hrs b{display:block;font-size:12.5px} .wx .hrs span{opacity:.8}
+  .wx .ico{font-size:34px;line-height:1}
+  .now .tm{font-size:21px;font-weight:800;margin-top:6px} .now .tt{font-size:16px;font-weight:600;margin-top:2px} .now .st{font-size:14px;color:var(--mut);margin-top:2px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:var(--s-10)} .chips span{font-size:12px;background:var(--surface2);padding:5px 9px;border-radius:8px}
+  .two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s-10);margin-top:var(--s-14)}
+  .bigbtn{height:52px;border-radius:14px;font:inherit;font-weight:700;font-size:15px;display:flex;align-items:center;justify-content:center;gap:8px;text-decoration:none;cursor:pointer}
+  .bigbtn.pri{background:var(--brand);color:#fff;border:none} .bigbtn.sec{background:var(--surface);color:var(--fg);border:1.5px solid var(--line)}
+  .bigbtn.ok{background:#1f7a3a;color:#fff;border:none} .bigbtn svg{width:20px;height:20px}
+  .seq{padding:var(--s-6) var(--s-16)} .seq .row1{display:flex;align-items:center;gap:var(--s-12);padding:var(--s-10) 0;cursor:pointer;background:none;border:none;width:100%;text-align:left;font:inherit;color:inherit}
+  .seq .num{width:28px;height:28px;border-radius:50%;background:var(--surface2);color:var(--fg);font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none}
+  .seq .num.cur{background:var(--brand);color:#fff} .seq .num.done{background:#1f7a3a;color:#fff}
+  .seq .ti{font-size:14.5px;font-weight:600} .seq .su{font-size:12.5px;color:var(--mut)} .seq .su.w{color:var(--warn);font-weight:600}
+  .seq .tr{font-size:11.5px;color:var(--mut);padding:2px 0 2px 40px} .seq .sep{border-top:1px solid var(--line)}
+  .banner{background:var(--warn-soft);color:var(--fg);border-radius:14px;padding:var(--s-10) var(--s-14);font-size:14px}
+  .tabbar{position:fixed;left:0;right:0;bottom:0;z-index:1100;background:var(--surface);border-top:1px solid var(--line);display:grid;
+    padding:6px 6px calc(10px + env(safe-area-inset-bottom))}
+  .tabbar button{background:none;border:none;font:inherit;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;font-weight:600;color:var(--mut);padding:6px 0;min-height:52px;cursor:pointer}
+  .tabbar button.on{color:var(--brand-ink);font-weight:700} .tabbar svg{width:24px;height:24px}
+  #mapBox{height:calc(100vh - 300px - env(safe-area-inset-bottom));min-height:300px;background:var(--surface2)}
+  .msheet{background:var(--surface);border-radius:20px 20px 0 0;margin-top:-18px;position:relative;z-index:500;padding:var(--s-14) var(--s-16) var(--s-12);box-shadow:0 -4px 16px rgba(16,24,40,.12)}
+  .msheet .grab{width:40px;height:4px;border-radius:4px;background:var(--line);margin:0 auto var(--s-10)}
+  .mpin{width:30px;height:30px;border-radius:50%;background:#fff;border:2.5px solid #14161a;color:#14161a;font:700 14px Inter,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.25)}
+  .mpin.cur{background:#e2001a;border-color:#fff;color:#fff} .mpin.dep{border-radius:8px;background:#14161a;color:#fff;border-color:#fff}
+  .sheet{max-height:94vh}
   /* FE-16: focus sempre visibile da tastiera / lettore di schermo */
   .btn:focus-visible,.act:focus-visible,a:focus-visible,input[type=checkbox]:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
   .sosbtn:focus-visible{outline:3px solid var(--fg);outline-offset:3px}
@@ -133,40 +177,74 @@ function login(){
     if(em&&!em.value) em.value='mario@acme.loneworker.eu'; if(pw&&!pw.value) pw.value='demo'; });
 }
 
+const TICO={
+  oggi:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5V21h-6v-6H9v6H3z"/></svg>',
+  mappa:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>',
+  interventi:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="13" y2="16"/></svg>',
+  ronde:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+  note:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>',
+  nav:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>',
+  loc:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>'};
+// schede della barra in basso: secondo i moduli attivi del tenant
+function appTabs(){ return [
+  {k:'oggi',l:'Oggi',on:true},
+  {k:'mappa',l:'Mappa',on:MODS.has('interventi')},
+  {k:'interventi',l:'Interventi',on:MODS.has('interventi')},
+  {k:'ronde',l:'Ronde',on:MODS.has('giri')},
+  {k:'note',l:'Note',on:fieldDiary()}].filter(t=>t.on); }
+let TAB='oggi';
+function showTab(k){ TAB=k; document.querySelectorAll('.pane').forEach(p=>p.classList.toggle('on',p.id==='pane_'+k));
+  document.querySelectorAll('.tabbar button').forEach(b=>{ const on=b.dataset.k===k; b.classList.toggle('on',on); b.setAttribute('aria-current',on?'page':'false'); });
+  try{ window.scrollTo(0,0); }catch(e){}
+  // in «Oggi» c'è il pulsante SOS grande; nelle altre schede quello piccolo in alto
+  const sm=$('#sosMini'); if(sm) sm.style.display=k==='oggi'?'none':'';
+  if(k==='mappa') renderMap(); }
 function app(){
+  document.body.classList.add('app2');
+  const nm=(ME.email.split('@')[0]||'').split(/[._-]/).filter(Boolean);
+  const ini=((nm[0]||'?')[0]+((nm[1]||'')[0]||'')).toUpperCase();
+  const first=nm[0]?nm[0][0].toUpperCase()+nm[0].slice(1):'';
+  const h=new Date().getHours(); const hello=h<13?'Buongiorno':h<18?'Buon pomeriggio':'Buonasera';
+  const tabs=appTabs();
   $('#root').innerHTML=`
-  <header class="whead"><div class="logo logo-sm">${ICON.logomark}</div>
-    <strong class="grow">Ciao, ${esc(ME.email.split('@')[0])}</strong>
-    ${ywI18n.select()}
-    <button class="btn-ico btn ghost" onclick="toggleTheme()" title="Tema" aria-label="Cambia tema chiaro/scuro">${ICON.moon}</button>
-    <button class="btn-ico btn ghost" onclick="out()" title="Esci" aria-label="Esci">${ICON.logout}</button></header>
-  <main class="wrap col gap-16">
+  <header class="ahead"><div class="avatar" aria-hidden="true">${esc(ini)}</div>
+    <div class="who"><div class="d">${new Date().toLocaleDateString(ywI18n.locale(),{weekday:'long',day:'numeric',month:'long'})}</div><div class="n">${hello}, ${esc(first)}</div></div>
+    <span class="pill" id="teamPill" style="display:none"></span>
+    ${safetyWorker()?`<button type="button" class="icobtn sos-mini" id="sosMini" style="display:none" onclick="sos()" aria-label="SOS: invia una richiesta di soccorso">SOS</button>`:''}
+    <button class="icobtn" onclick="openMenu()" aria-label="Menu: lingua, tema, esci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg></button></header>
+
+  <section class="pane on" id="pane_oggi"><div class="pwrap">
     ${safetyWorker()?`<button type="button" class="sosbtn" onclick="sos()" aria-label="SOS: invia una richiesta di soccorso alla centrale" aria-describedby="sosNote">${ICON.sos} SOS</button>
-    <div class="small mut center sos-note" id="sosNote">Il canale SOS è indipendente da dettatura e documenti.</div>
-
-    <section class="card" aria-label="Condivisione posizione"><div class="card-b" id="trackBox"></div></section>
-
-    <section class="card" aria-label="Check-in sicurezza"><div class="card-b" id="ciBox"></div></section>`:''}
-
-    ${MODS.has('workforce')?`<section><h3 class="sec-h">Turno</h3><div class="card"><div class="card-b" id="shiftBox" aria-live="polite"></div></div></section>`:''}
+    <div class="small mut center sos-note" id="sosNote">Il canale SOS è indipendente da dettatura e documenti.</div>`:''}
+    <div id="wxCard"></div>
+    ${MODS.has('workforce')?`<section class="tcard" aria-label="Turno"><div id="shiftBox" aria-live="polite"></div></section>`:''}
+    ${MODS.has('interventi')?`<div id="dayBanner"></div><div id="nowCard"></div><div id="myday" aria-live="polite"></div>`:''}
+    ${safetyWorker()?`<section class="tcard" aria-label="Check-in sicurezza"><div id="ciBox"></div></section>
+    <section class="tcard" aria-label="Condivisione posizione"><div id="trackBox"></div></section>`:''}
     ${MODS.has('workforce')?`<section><h3 class="sec-h">Turni pianificati</h3><div id="plansBox" class="col"></div></section>`:''}
+  </div></section>
 
-    ${MODS.has('interventi')?`<section aria-label="La mia giornata"><div class="spread"><h3 class="sec-h">La mia giornata</h3>
-      <div class="row gap-6" role="tablist"><button class="btn ghost mini" id="dayT0" role="tab" onclick="loadDay(0)">Oggi</button><button class="btn ghost mini" id="dayT1" role="tab" onclick="loadDay(1)">Prossima giornata</button></div></div>
-      <div id="myday" class="col" aria-live="polite"></div></section>
-    <section><details><summary class="sec-h" style="cursor:pointer">Tutti gli interventi aperti</summary><div id="orders" class="col mt-8"></div></details></section>`:''}
+  ${MODS.has('interventi')?`<section class="pane" id="pane_mappa"><div id="mapBox" role="region" aria-label="Mappa del percorso"></div><div class="msheet" id="mapSheet"></div></section>
+  <section class="pane" id="pane_interventi"><div class="pwrap">
+    <div class="spread"><h3 class="sec-h">Giornate</h3><div class="row gap-6" role="tablist"><button class="btn ghost mini" id="dayT0" role="tab" onclick="loadDay(0)">Oggi</button><button class="btn ghost mini" id="dayT1" role="tab" onclick="loadDay(1)">Prossima giornata</button></div></div>
+    <div class="small mut">La giornata scelta compare in «Oggi» e nella mappa.</div>
+    <h3 class="sec-h mt-8">Tutti gli interventi aperti</h3><div id="orders" class="col"></div>
+  </div></section>`:''}
 
-    <section id="patrolsSec" style="display:none"><h3 class="sec-h">Ronde</h3><div id="patrols" class="col"></div></section>
+  <section class="pane" id="pane_ronde"><div class="pwrap"><section id="patrolsSec" style="display:none"><h3 class="sec-h">Ronde</h3><div id="patrols" class="col"></div></section></div></section>
 
-    ${fieldDiary()?`<section><h3 class="sec-h">Azioni</h3><div class="col gap-10">
+  ${fieldDiary()?`<section class="pane" id="pane_note"><div class="pwrap">
+    <div class="col gap-10">
       <button type="button" class="act" onclick="openNote()"><span class="ic" aria-hidden="true">${ICON.mic}</span>
         <span class="grow">Detta una nota di lavoro</span><span class="tag" id="noteBadge"></span></button>
       ${AIAGENT?`<button type="button" class="act" onclick="openAgent()"><span class="ic" aria-hidden="true">✦</span>
         <span class="grow">Assistente AI sul campo</span><span class="tag">agente</span></button>`:''}
     </div>
-    <div class="small mut center mt-8">Input manuale sempre disponibile. La dettatura usa il riconoscimento vocale del browser; se assente o negato, scrivi a mano.</div>
-    <div id="diaryList" class="col gap-8 mt-10" aria-live="polite"></div></section>`:''}
-  </main>`;
+    <div class="small mut center">Input manuale sempre disponibile. La dettatura usa il riconoscimento vocale del browser; se assente o negato, scrivi a mano.</div>
+    <div id="diaryList" class="col gap-8" aria-live="polite"></div>
+  </div></section>`:''}
+
+  ${tabs.length>1?`<nav class="tabbar" aria-label="Sezioni" style="grid-template-columns:repeat(${tabs.length},minmax(0,1fr))">${tabs.map(t=>`<button type="button" data-k="${t.k}" class="${t.k==='oggi'?'on':''}" onclick="showTab('${t.k}')">${TICO[t.k]}${esc(t.l)}</button>`).join('')}</nav>`:''}`;
   if(safetyWorker()){ renderCheckin(); renderTracking(); restoreCI(); immPoll(); hbTick(); }
   if(MODS.has('interventi')){ loadDay(0); loadOrders(); }
   if(MODS.has('workforce')){ renderShift(); loadPlans(); } // turno nell'app solo con Gestione turni (PO 25/11)
@@ -176,6 +254,13 @@ function app(){
   if(safetyWorker()){ let want=false; try{ want=localStorage.getItem('yw_track')==='1'; }catch(e){}
     if(want) startTracking(true); }
 }
+// menu: lingua, tema, esci
+function openMenu(){ const m=document.createElement('div'); m.className='modal'; m.onclick=e=>{ if(e.target===m) m.remove(); };
+  m.innerHTML=`<div class="sheet"><div class="spread mb-10"><b>${esc(ME.email)}</b></div>
+    <div class="col gap-10"><div class="row gap-8"><span class="grow">Lingua</span>${ywI18n.select()}</div>
+    <button class="btn ghost block" onclick="toggleTheme()">Tema chiaro / scuro</button>
+    <button class="btn ghost block" onclick="out()">Esci</button></div></div>`;
+  document.body.append(m); wDialog(m,'Menu',()=>m.remove()); }
 // CA-22: stati e tipi con etichette leggibili (mai codici grezzi)
 const PLAN_ST_LAB={pianificato:'Pianificato (da confermare)',confermato:'Confermato',annullato:'Annullato',svolto:'Svolto',completato:'Svolto'};
 const CP_KIND_LAB={qr:'QR',nfc:'NFC',beacon:'Beacon',gps:'GPS'};
@@ -362,57 +447,127 @@ const hm=t=>new Date(t).toLocaleTimeString(ywI18n.locale(),{hour:'2-digit',minut
 const dmin=m=>m>=60?Math.floor(m/60)+' h'+(m%60?' '+(m%60)+' min':''):m+' min';
 let DAY=null, DAY_OFF=0;
 function dayDate(off){ const d=new Date(); d.setDate(d.getDate()+off); const p=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); }
-async function loadDay(off){ DAY_OFF=off; const box=$('#myday'); if(!box) return;
+async function loadDay(off,quiet){ DAY_OFF=off; if(!quiet&&off===1) DAY_AUTO=false; const box=$('#myday'); if(!box) return;
   ['dayT0','dayT1'].forEach((id,i)=>{ const b=$('#'+id); if(b){ b.classList.toggle('ghost',i!==off); b.setAttribute('aria-selected',i===off?'true':'false'); } });
-  box.innerHTML='<div class="card pad mut center">carico…</div>';
+  if(!quiet&&!DAY) box.innerHTML='<div class="tcard mut center">carico…</div>';
   const key='yw_day_'+(off?'next':dayDate(0));
   let D; try{ D=await api(off?'/my/day?next=1':'/my/day?date='+dayDate(0)); }catch(e){
     // senza rete: l'ultima giornata scaricata resta leggibile
     try{ D=JSON.parse(localStorage.getItem(key)||'null'); }catch(_){ D=null; }
     if(!D){ box.innerHTML=errorBox(e,'loadDay('+off+')'); return; } D._offline=true; }
   if(!D._offline) try{ localStorage.setItem(key,JSON.stringify(D)); }catch(e){}
+  // oggi senza interventi: si mostra da sola la prossima giornata
+  if(off===0) WX_TODAY=D;
+  if(off===0&&!quiet&&!D._offline&&!(D.orders||[]).length&&!DAY_AUTO){ DAY_AUTO=true; return loadDay(1,true); }
+  // nemmeno la prossima giornata ha interventi: si resta su oggi
+  if(off===1&&DAY_AUTO&&!(D.orders||[]).length&&WX_TODAY){ DAY_AUTO=false; DAY_OFF=0; D=WX_TODAY; }
   DAY=D; renderDay(); }
 function wxLine(w){ if(!w) return ''; return `${WX_ICO[w.condition]||'·'} ${esc(WX_LAB[w.condition]||'')} · ${wn(w.rain_mm)} mm${w.rain_prob!=null?' ('+w.rain_prob+'%)':''} · ${wn(w.temp_min)}–${wn(w.temp_max)} °C · vento ${w.wind_kmh!=null?Math.round(w.wind_kmh)+' km/h':'—'}`; }
-function renderDay(){ const D=DAY, box=$('#myday'); if(!D||!box) return;
-  const T=D.totals||{};
-  const head=`<div class="card pad">
-    <div class="spread"><b>${new Date(D.date+'T12:00:00').toLocaleDateString(ywI18n.locale(),{weekday:'long',day:'numeric',month:'long'})}</b>${D._offline?'<span class="tag warn">senza rete: ultima copia</span>':''}</div>
-    <div class="small mt-4">${T.orders?`<b>${T.orders}</b> interventi · ${dmin(T.work_minutes||0)} di lavoro · 🚐 ${dmin(T.travel_minutes||0)} (${wn(T.travel_km)} km)`:'Nessun intervento in programma'}</div>
-    ${(D.weather||[]).map(w=>`<div class="small mt-4">${esc(w.zone)}: ${wxLine(w)}</div>`).join('')}
-    ${D.teams&&D.teams.length?D.teams.map(t=>`<div class="small mt-6"><b>👥 ${esc(t.name)}</b>: ${t.members.map(m=>`<span style="${m.absent?'text-decoration:line-through;opacity:.6':''}">${esc(m.email.split('@')[0])}${m.me?' (tu)':''}</span>`).join(', ')}${t.members.some(m=>m.absent)?' <span class="mut">· barrati = assenti</span>':''}</div>`).join(''):''}
-    ${(D.vehicles||[]).length?`<div class="small mt-6"><b>🚜 Mezzi da ritirare${D.depot?' a '+esc(D.depot.name):''}</b>: ${D.vehicles.map(v=>esc(v.name)+(v.identifier?' ('+esc(v.identifier)+')':'')).join(', ')}</div>`:''}
-    ${D.route_url?`<a class="btn block mt-10" href="${esc(D.route_url)}" target="_blank" rel="noopener">🧭 Apri il percorso della giornata in Maps</a>`:''}</div>`;
-  let prevEnd=null;
-  const cards=(D.orders||[]).map(o=>{
-    const warn=(o.weather_warnings||[]);
-    // tempi stretti: inizia prima che finisca il precedente, o lo spostamento non ci sta
-    let tight='';
+let DAY_AUTO=false, WX_TODAY=null;
+// icone meteo disegnate (niente emoji): sole, sole e nubi, nubi, pioggia, temporale, neve, nebbia
+function wxIcon(c,sz){ sz=sz||22; const a=`width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"`;
+  const cloud='<path d="M17.5 19H8a5 5 0 1 1 1.6-9.7A6 6 0 0 1 21 12.5 3.5 3.5 0 0 1 17.5 19z"/>';
+  const sun='<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>';
+  if(c==='sereno') return `<svg ${a}>${sun}</svg>`;
+  if(c==='poco_nuvoloso') return `<svg ${a}><path d="M8 3v1.5M3.5 7.5H5M4.6 4.6l1 1M11.4 4.6l-1 1"/><path d="M5.5 10a3 3 0 0 1 5.4-1.6"/><path d="M17.5 20H9a4 4 0 1 1 1.2-7.8A5 5 0 0 1 20 14.5 3 3 0 0 1 17.5 20z"/></svg>`;
+  if(c==='pioggia'||c==='pioggia_debole') return `<svg ${a}><path d="M17.5 15H8a5 5 0 1 1 1.6-9.7A6 6 0 0 1 21 8.5 3.5 3.5 0 0 1 17.5 15z"/><path d="M8 18l-1 3M12 18l-1 3M16 18l-1 3"/></svg>`;
+  if(c==='temporale') return `<svg ${a}><path d="M17.5 15H8a5 5 0 1 1 1.6-9.7A6 6 0 0 1 21 8.5 3.5 3.5 0 0 1 17.5 15z"/><path d="M12 15l-2 4h3l-2 4"/></svg>`;
+  if(c==='neve') return `<svg ${a}><path d="M17.5 15H8a5 5 0 1 1 1.6-9.7A6 6 0 0 1 21 8.5 3.5 3.5 0 0 1 17.5 15z"/><path d="M8 19h.01M12 21h.01M16 19h.01"/></svg>`;
+  if(c==='nebbia') return `<svg ${a}><path d="M4 9h16M3 13h18M5 17h14"/></svg>`;
+  return `<svg ${a}>${cloud}</svg>`; }
+function renderWx(D){ const box=$('#wxCard'); if(!box) return; if(DAY_AUTO&&WX_TODAY&&WX_TODAY.here) D=WX_TODAY; const w=D&&D.here; if(!w){ box.innerHTML=''; return; }
+  const sm=w.summary||{}; const hrs=(w.hours||[]);
+  // fino a 6 orari tra le 7 e le 19, ora locale
+  const pick=[]; for(const x of hrs){ const hh=new Date(x.from).getHours(); if(hh>=6&&hh<=19&&!pick.some(p=>Math.abs(new Date(p.from).getHours()-hh)<2)) pick.push(x); if(pick.length>=6) break; }
+  box.innerHTML=`<section class="wx" aria-label="Meteo">
+    <div class="row" style="gap:14px;align-items:center"><div class="ico" aria-hidden="true">${wxIcon(sm.condition,44)}</div>
+      <div class="grow"><div class="t">${sm.temp_max!=null?Math.round(sm.temp_max)+'°':'—'}<small> / ${sm.temp_min!=null?Math.round(sm.temp_min)+'°':'—'}</small></div>
+        <div class="c">${esc(WX_LAB[sm.condition]||'')} · pioggia ${wn(sm.rain_mm)} mm · vento ${sm.wind_kmh!=null?Math.round(sm.wind_kmh)+' km/h':'—'}</div></div>
+      <div class="z">${esc(w.zone)}${D.is_today?'':'<br>'+new Date(D.date+'T12:00:00').toLocaleDateString(ywI18n.locale(),{weekday:'short',day:'numeric'})}</div></div>
+    ${pick.length?`<div class="hrs">${pick.map(x=>`<div><span>${new Date(x.from).getHours()}</span><b>${x.temp!=null?Math.round(x.temp)+'°':'—'}</b><span>${(x.rain_mm||0)>=0.5?wn(x.rain_mm)+' mm':wxIcon(x.condition,16)}</span></div>`).join('')}</div>`:''}
+  </section>`; }
+function curOrder(D){ const L=(D.orders||[]); return L.find(o=>o.state==='in_corso')||L.find(o=>o.state!=='completato')||null; }
+function stateLabel(o){ return o.state==='completato'?'fatto':o.state==='in_corso'?'in corso':o.arrived_at?'sul posto':'da fare'; }
+function renderNow(D){ const box=$('#nowCard'); if(!box) return; const L=D.orders||[]; const o=curOrder(D);
+  if(!L.length){ box.innerHTML=`<section class="tcard"><div class="kicker">Nessun intervento</div><div class="mt-6">Non hai interventi in programma${D.is_today?' oggi':''}.</div></section>`; return; }
+  if(!o){ box.innerHTML=`<section class="tcard"><div class="kicker" style="color:#1f7a3a">Giornata completata</div><div class="mt-6">Tutti i ${L.length} interventi sono fatti. Buon rientro.</div></section>`; return; }
+  const idx=L.indexOf(o)+1; const today=D.is_today;
+  let act='';
+  if(today){
+    if(o.state==='in_corso') act=`<button type="button" class="bigbtn ok" onclick="openDayOrder('${o.id}')">Completa</button>`;
+    else if(o.arrived_at) act=`<button type="button" class="bigbtn pri" onclick="dayStart('${o.id}',${o.version})">Inizia il lavoro</button>`;
+    else act=`<button type="button" class="bigbtn pri" onclick="dayArrive('${o.id}')">Sono arrivato</button>`;
+  } else act=`<button type="button" class="bigbtn sec" onclick="showTab('mappa')">${TICO.mappa}Mappa</button>`;
+  const w=o.weather;
+  box.innerHTML=`<section class="tcard now" aria-label="Adesso">
+    <div class="spread"><span class="kicker">${today?'Adesso':'Primo intervento'} · ${idx} di ${L.length}</span>${o.travel_minutes?`<span class="small mut">${idx===1?'dal deposito ':''}${dmin(o.travel_minutes)}</span>`:''}</div>
+    <div class="tm">${hm(o.start)} – ${hm(o.end)}</div>
+    <div class="tt">${esc(o.activity||o.title)}</div>
+    <div class="st">${esc(o.site||'')}${o.site_address?' · '+esc(o.site_address):''}</div>
+    <div class="chips">${o.quantity!=null?`<span>${wn(o.quantity)} ${esc(UNIT_W[o.unit]||'')}</span>`:''}${(o.assets||[]).map(a=>`<span>${esc(a.name)}</span>`).join('')}${o.access_notes?`<span>${esc(o.access_notes)}</span>`:''}${w?`<span style="display:inline-flex;align-items:center;gap:4px">${wxIcon(w.condition,16)} ${wn(w.temp_min)}–${wn(w.temp_max)}° · ${wn(w.rain_mm)} mm</span>`:''}</div>
+    ${(o.weather_warnings||[]).map(x=>`<div class="small t-warn mt-6">⚠ ${esc(x.message)}</div>`).join('')}
+    <div class="two">${navUrl(o)?`<a class="bigbtn sec" href="${navUrl(o)}" target="_blank" rel="noopener">${TICO.nav}Naviga</a>`:`<button type="button" class="bigbtn sec" onclick="openDayOrder('${o.id}')">Scheda</button>`}${act}</div>
+    ${today&&o.state!=='in_corso'?`<button type="button" class="btn ghost block mt-8" onclick="openDayOrder('${o.id}')">Apri la scheda dell'intervento</button>`:''}
+  </section>`; }
+function renderSeq(D){ const box=$('#myday'); if(!box) return; const L=D.orders||[]; if(!L.length){ box.innerHTML=''; return; }
+  const cur=curOrder(D); const T=D.totals||{}; let prevEnd=null;
+  const rows=L.map((o,i)=>{ let tight='';
     if(prevEnd){ const st=new Date(o.start).getTime(), arr=prevEnd+(o.travel_minutes||0)*60000;
-      if(st<prevEnd) tight=`⏱ Inizia alle ${hm(o.start)} ma il precedente finisce alle ${hm(prevEnd)}: avvisa il pianificatore.`;
-      else if(arr>st) tight=`⏱ Con lo spostamento arrivi verso le ${hm(arr)}, dopo l'inizio previsto.`; }
+      if(st<prevEnd) tight='si sovrappone al precedente'; else if(arr>st) tight='con il viaggio arrivi dopo l’inizio'; }
     prevEnd=new Date(o.end).getTime();
-    return `${o.travel_minutes?`<div class="small mut center">🚐 ${dmin(o.travel_minutes)} · ${wn(o.travel_km)} km</div>`:''}
-    <div class="card pad" style="${o.state==='completato'?'opacity:.7':''}">
-      <div class="spread"><b><span class="tag">${o.seq}</span> ${hm(o.start)}–${hm(o.end)}</b>${chip(o.state)}</div>
-      <div class="mt-4"><b>${esc(o.title)}</b>${o.priority>=3?' · <b class="t-bad">priorità alta</b>':''}</div>
-      ${o.activity?`<div class="small">${esc(o.activity)}${o.quantity!=null?' · '+wn(o.quantity)+' '+esc(UNIT_W[o.unit]||''):''} · ${dmin(o.minutes)}</div>`:''}
-      <div class="small mut mt-4">📍 ${esc(o.site||'—')}${o.site_address?' · '+esc(o.site_address):''}${o.client?' · '+esc(o.client):''}</div>
-      ${o.access_notes?`<div class="small mt-4">🔑 ${esc(o.access_notes)}</div>`:''}
-      ${o.weather?`<div class="small mt-4">${wxLine(o.weather)}</div>`:''}
-      ${tight?`<div class="small t-warn mt-2">${esc(tight)}</div>`:''}
-      ${warn.map(w=>`<div class="small t-warn mt-2">⚠ ${esc(w.message)}</div>`).join('')}
-      ${(o.assets||[]).length?`<div class="small mt-4">🚜 ${o.assets.map(a=>esc(a.name)).join(', ')}</div>`:''}
-      ${o.instructions?`<div class="small mt-4">📝 ${esc(o.instructions)}</div>`:''}
-      ${o.team&&!o.mine?`<div class="small mut mt-4">👥 ${esc(o.team)}</div>`:''}
-      <div class="row gap-8 mt-10">${navUrl(o)?`<a class="btn ghost grow" href="${navUrl(o)}" target="_blank" rel="noopener">🧭 Naviga</a>`:''}
-        ${DAY_OFF===0&&o.state!=='completato'?`<button class="btn grow" onclick="openDayOrder('${o.id}')">Apri intervento</button>`:''}</div></div>`; }).join('');
-  box.innerHTML=head+(cards||'');
-}
+    const cls=o.state==='completato'?'done':(cur&&o.id===cur.id?'cur':'');
+    return `${i>0&&o.travel_minutes?`<div class="tr">${dmin(o.travel_minutes)} · ${wn(o.travel_km)} km</div>`:''}
+      <button type="button" class="row1${i>0?' sep':''}" onclick="${D.is_today?`openDayOrder('${o.id}')`:`showTab('mappa');mapFocus(${i})`}">
+        <span class="num ${cls}">${o.seq}</span>
+        <span class="grow minw-0"><span class="ti blk">${esc(o.activity||o.title)} · ${esc(o.site||'')}</span>
+        <span class="su blk${tight?' w':''}">${hm(o.start)} – ${hm(o.end)} · ${tight||stateLabel(o)}</span></span></button>`; }).join('');
+  box.innerHTML=`<section class="tcard seq" aria-label="La giornata">
+    <div class="spread" style="padding-top:8px"><b>${T.orders} interventi · ${dmin(T.work_minutes||0)}</b><span class="small mut">viaggio ${dmin(T.travel_minutes||0)} · ${wn(T.travel_km)} km</span></div>
+    ${(D.vehicles||[]).length?`<div class="small mt-4">Mezzi da ritirare${D.depot?' ('+esc(D.depot.name)+')':''}: <b>${D.vehicles.map(v=>esc(v.name)).join(', ')}</b></div>`:''}
+    <div class="mt-6">${rows}</div>
+    ${D.route_url?`<a class="btn ghost block my-10" href="${esc(D.route_url)}" target="_blank" rel="noopener">Apri il percorso della giornata in Maps</a>`:''}
+  </section>`; }
+function renderTeam(D){ const p=$('#teamPill'); if(!p) return; const t=(D.teams||[])[0]; if(!t){ p.style.display='none'; return; }
+  p.textContent=t.name; p.style.display=''; p.title=t.members.map(m=>m.email.split('@')[0]+(m.absent?' (assente)':'')).join(', '); }
+function renderDay(){ const D=DAY; if(!D) return;
+  const ban=$('#dayBanner'); if(ban) ban.innerHTML=D._offline?'<div class="banner">Senza rete: ultima copia scaricata.</div>':
+    (DAY_AUTO?`<div class="banner">Oggi non hai interventi. Ecco la prossima giornata: <b>${new Date(D.date+'T12:00:00').toLocaleDateString(ywI18n.locale(),{weekday:'long',day:'numeric',month:'long'})}</b>.</div>`:
+    (!D.is_today?`<div class="banner">Stai guardando <b>${new Date(D.date+'T12:00:00').toLocaleDateString(ywI18n.locale(),{weekday:'long',day:'numeric',month:'long'})}</b>. <button class="btn ghost mini" onclick="DAY_AUTO=false;loadDay(0,true)">Torna a oggi</button></div>`:''));
+  renderWx(D); renderNow(D); renderSeq(D); renderTeam(D);
+  if(TAB==='mappa') renderMap(); }
+async function dayArrive(id){ try{ await api('/orders/'+id+'/arrive',{method:'POST',body:'{}'}); toast('Arrivo registrato','ok'); loadDay(DAY_OFF,true); loadOrders(); }catch(e){ toast(e,'bad'); } }
+async function dayStart(id,v){ try{ await api('/orders/'+id+'/start',{method:'POST',body:JSON.stringify({version:v})}); toast('Lavoro avviato','ok'); loadDay(DAY_OFF,true); loadOrders(); }catch(e){ toast(e,'bad'); } }
+// ---- mappa del percorso (Leaflet + OpenStreetMap, come la console) ----
+let WMAP=null, WLAYER=null, WSEL=0, WME=null;
+function renderMap(){ const box=$('#mapBox'); if(!box||!window.L) { if(box) box.innerHTML='<div class="pwrap"><div class="tcard">Mappa non disponibile senza rete.</div></div>'; return; }
+  const D=DAY||{orders:[]}; const L=(D.orders||[]).filter(o=>o.site_lat!=null&&o.site_lon!=null);
+  if(!WMAP){ WMAP=window.L.map(box,{zoomControl:false,attributionControl:true}); window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(WMAP);
+    window.L.control.zoom({position:'topright'}).addTo(WMAP);
+    try{ navigator.geolocation&&navigator.geolocation.getCurrentPosition(p=>{ WME=[p.coords.latitude,p.coords.longitude]; renderMap(); },()=>{}, {maximumAge:60000,timeout:8000}); }catch(e){} }
+  if(WLAYER) WLAYER.remove(); WLAYER=window.L.layerGroup().addTo(WMAP);
+  const pts=[]; const cur=curOrder(D);
+  if(D.depot){ const d=[D.depot.lat,D.depot.lon]; pts.push(d); window.L.marker(d,{icon:window.L.divIcon({className:'',html:'<div class="mpin dep" title="Deposito">D</div>',iconSize:[30,30],iconAnchor:[15,15]})}).addTo(WLAYER); }
+  L.forEach((o,i)=>{ const ll=[o.site_lat,o.site_lon]; pts.push(ll);
+    const c=(cur&&o.id===cur.id)?' cur':'';
+    window.L.marker(ll,{icon:window.L.divIcon({className:'',html:`<div class="mpin${c}">${o.seq}</div>`,iconSize:[30,30],iconAnchor:[15,15]})}).on('click',()=>mapFocus(i)).addTo(WLAYER); });
+  if(D.depot&&L.length) pts.push([D.depot.lat,D.depot.lon]);
+  if(pts.length>1) window.L.polyline(pts,{color:'#e2001a',weight:4,dashArray:'8 7',opacity:.9}).addTo(WLAYER);
+  if(WME) window.L.circleMarker(WME,{radius:8,color:'#fff',weight:3,fillColor:'#2f6fd6',fillOpacity:1}).addTo(WLAYER);
+  setTimeout(()=>{ WMAP.invalidateSize(); if(pts.length) WMAP.fitBounds(window.L.latLngBounds(pts).pad(.2)); else WMAP.setView([45.46,9.19],11); },50);
+  const ci=cur?L.indexOf(cur):0; mapFocus(Math.max(0,Math.min(WSEL||ci,L.length-1)),true); }
+function mapFocus(i,quiet){ const D=DAY||{orders:[]}; const L=(D.orders||[]).filter(o=>o.site_lat!=null&&o.site_lon!=null); const sh=$('#mapSheet'); if(!sh) return;
+  if(!L.length){ sh.innerHTML=`<div class="grab"></div><div class="small mut">Nessuna tappa con posizione per questa giornata.</div>`; return; }
+  WSEL=i; const o=L[i]; if(!o) return;
+  if(WMAP&&!quiet) WMAP.panTo([o.site_lat,o.site_lon]);
+  sh.innerHTML=`<div class="grab"></div><div class="row" style="gap:12px;align-items:center"><div class="mpin cur" style="flex:none">${o.seq}</div>
+    <div class="grow minw-0"><b>${esc(o.site||o.title)}</b><div class="small mut">${o.site_address?esc(o.site_address)+' · ':''}${hm(o.start)}</div></div></div>
+    <div class="two" style="margin-top:12px">${D.is_today?`<button type="button" class="bigbtn sec" onclick="openDayOrder('${o.id}')">Apri la scheda</button>`:`<span></span>`}
+      ${navUrl(o)?`<a class="bigbtn pri" href="${navUrl(o)}" target="_blank" rel="noopener">${TICO.nav}Naviga</a>`:''}</div>`; }
 async function openDayOrder(id){ try{ const L=await api('/orders?id='+id); if(L&&L[0]) openOrderExec(L[0]); else toast('Intervento non trovato','bad'); }catch(e){ toast(e,'bad'); } }
 async function loadOrders(){
   const box=$('#orders'); let O; try{ O=await api('/orders?state=open'); }catch(e){ box.innerHTML=errorBox(e,'loadOrders()'); return; } ORDERS=O;
   const mine=O.filter(o=>['assegnato','in_corso'].includes(o.state));
-  if(!mine.length){ box.innerHTML='<div class="card pad mut center">Nessun ordine per oggi</div>'; return; }
+  if(!mine.length){ box.innerHTML='<div class="card pad mut center">Nessun intervento aperto</div>'; return; }
   const sched=o=>o.scheduled_start?new Date(o.scheduled_start).toLocaleString(ywI18n.locale(),{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):null;
   box.innerHTML=mine.map(o=>`<div class="card pad">
     <div class="spread"><b>${esc(o.title)}</b>${chip(o.state)}</div>
@@ -423,6 +578,7 @@ async function loadOrders(){
     <button class="btn block" onclick='openOrderExec(${jattr(o)})'>Apri intervento</button>
   </div>`).join('');
   flushDrafts();
+  if(DAY) loadDay(DAY_AUTO?1:DAY_OFF,true);
 }
 async function oAct(id,act,v){ try{ await api('/orders/'+id+'/'+act,{method:'POST',body:JSON.stringify({version:v})}); toast('Avviato','ok'); loadOrders(); }catch(e){toast(e,'bad');} }
 // ---- ronde (percorsi di ronda) ----

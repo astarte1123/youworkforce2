@@ -102,6 +102,20 @@ pub(crate) async fn site_slot_weather(st: &AppState, tid: Uuid, site: Uuid, a: D
     Ok(Some(json!({"zone": zname, "rain_mm": num(&r, "rain").map(|x| (x * 10.0).round() / 10.0), "rain_prob": r.try_get::<Option<i32>,_>("prob").ok().flatten(),
         "wind_kmh": num(&r, "wind"), "temp_min": num(&r, "tmin"), "temp_max": num(&r, "tmax"), "condition": r.try_get::<Option<String>,_>("cond").ok().flatten()})))
 }
+/// Meteo «qui» per la giornata: zona della sede indicata, riepilogo e fasce (ora di inizio, temperatura,
+/// pioggia, condizione) per la striscia oraria dell'app. None = nessuna zona o nessuna previsione.
+pub(crate) async fn zone_day_hours(st: &AppState, tid: Uuid, site: Uuid, a: DateTime<Utc>, z: DateTime<Utc>) -> Result<Option<serde_json::Value>, (StatusCode, String)> {
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let Some((zid, zname)) = zone_of_site(&mut tx, site).await? else { return Ok(None) };
+    let rows = sqlx::query("SELECT valid_from, valid_to, rain_mm::float8 AS rain, rain_prob, GREATEST(COALESCE(wind_kmh,0),COALESCE(gust_kmh,0))::float8 AS wind, temp_c::float8 AS temp, condition
+         FROM app.weather_slots WHERE zone_id=$1 AND kind='previsione' AND valid_to > $2 AND valid_from < $3 ORDER BY valid_from").bind(zid).bind(a).bind(z).fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    if rows.is_empty() { return Ok(None); }
+    let sum = zones_day_summary(st, tid, vec![zname.clone()], a, z).await?.into_iter().next().unwrap_or(json!({}));
+    Ok(Some(json!({"zone": zname, "summary": sum, "hours": rows.iter().map(|r| json!({"from": r.get::<DateTime<Utc>,_>("valid_from"), "to": r.get::<DateTime<Utc>,_>("valid_to"),
+        "temp": num(r, "temp"), "rain_mm": num(r, "rain"), "rain_prob": r.try_get::<Option<i32>,_>("rain_prob").ok().flatten(), "wind_kmh": num(r, "wind"),
+        "condition": r.try_get::<Option<String>,_>("condition").ok().flatten()})).collect::<Vec<_>>()})))
+}
 /// Riepilogo di una giornata per le zone indicate (per nome).
 pub(crate) async fn zones_day_summary(st: &AppState, tid: Uuid, names: Vec<String>, a: DateTime<Utc>, z: DateTime<Utc>) -> Result<Vec<serde_json::Value>, (StatusCode, String)> {
     if names.is_empty() { return Ok(vec![]); }

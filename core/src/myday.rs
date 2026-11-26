@@ -48,7 +48,7 @@ pub async fn my_day(State(st): State<AppState>, h: HeaderMap, Query(q): Query<Da
 
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // squadre e gruppi dell'utente
-    let groups = sqlx::query("SELECT g.id, g.name, g.kind, ds.lat AS dlat, ds.lon AS dlon, ds.name AS dname
+    let groups = sqlx::query("SELECT g.id, g.name, g.kind, g.depot_site_id, ds.lat AS dlat, ds.lon AS dlon, ds.name AS dname
          FROM app.user_group_members m JOIN app.user_groups g ON g.id=m.group_id LEFT JOIN app.sites ds ON ds.id=g.depot_site_id
          WHERE m.user_id=$1 ORDER BY g.name").bind(s.user_id).fetch_all(&mut *tx).await.map_err(ise)?;
     let gids: Vec<Uuid> = groups.iter().map(|g| g.get("id")).collect();
@@ -121,6 +121,12 @@ pub async fn my_day(State(st): State<AppState>, h: HeaderMap, Query(q): Query<Da
     for it in &items { for x in it["assets"].as_array().cloned().unwrap_or_default() { if let Some(id) = x["id"].as_str().and_then(|s| s.parse().ok()) { vehicles.entry(id).or_insert(x); } } }
     // riepilogo meteo per zona della giornata
     let day_weather = if meteo_on { crate::weather::zones_day_summary(&st, tid, zones.keys().cloned().collect(), a, z).await? } else { vec![] };
+    // meteo «qui»: zona del deposito della squadra, altrimenti del deposito generale, altrimenti della prima sede
+    let here = if meteo_on {
+        let site = groups.iter().filter(|g| g.get::<String,_>("kind") == "squadra").find_map(|g| g.try_get::<Option<Uuid>,_>("depot_site_id").ok().flatten())
+            .or(settings.depot).or_else(|| orders.iter().find_map(|o| o.try_get::<Option<Uuid>,_>("site_id").ok().flatten()));
+        match site { Some(si) => crate::weather::zone_day_hours(&st, tid, si, a, z).await?, None => None }
+    } else { None };
     // giro per la navigazione: deposito → tappe → deposito
     let stops: Vec<String> = items.iter().filter_map(|i| match (i["site_lat"].as_f64(), i["site_lon"].as_f64()) { (Some(x), Some(y)) => Some(format!("{x},{y}")), _ => None }).collect();
     let route_url = if stops.is_empty() { None } else {
@@ -135,7 +141,7 @@ pub async fn my_day(State(st): State<AppState>, h: HeaderMap, Query(q): Query<Da
             .map(|m| json!({"email": m.get::<String,_>("email"), "me": m.get::<Uuid,_>("id") == s.user_id, "absent": m.get::<bool,_>("absent")})).collect::<Vec<_>>()}) }).collect();
     Ok(Json(json!({"date": day, "today": today, "is_today": day == today, "timezone": tz.name(),
         "depot": depot.map(|d| json!({"name": d.0, "lat": d.1, "lon": d.2})), "teams": teams, "orders": items,
-        "vehicles": vehicles.into_values().collect::<Vec<_>>(), "weather": day_weather, "route_url": route_url,
+        "vehicles": vehicles.into_values().collect::<Vec<_>>(), "weather": day_weather, "here": here, "route_url": route_url,
         "totals": {"orders": orders.len(), "work_minutes": tot_work, "travel_minutes": tot_travel, "travel_km": (tot_km * 10.0).round() / 10.0},
         "modules": {"mezzi": mezzi_on, "meteo": meteo_on}})))
 }

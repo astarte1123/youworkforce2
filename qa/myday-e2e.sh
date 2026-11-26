@@ -60,6 +60,7 @@ echo "$D" | py "[(m['email'].split('@')[0], m['absent']) for m in d['teams'][0][
 echo "$D" | py "(d['orders'][0]['weather']['condition'], d['orders'][0]['weather']['rain_mm'])" | grep -q "('pioggia', 3.0)" && ok "meteo della sede nella fascia dell'intervento (pioggia in proporzione)" || no "meteo" "$(echo "$D" | py "d['orders'][0]['weather']")"
 echo "$D" | py "[w['code'] for w in d['orders'][0]['weather_warnings']]" | grep -q "weather_rain" && ok "avviso: pioggia oltre il limite del taglio erba" || no "avviso" "-"
 echo "$D" | py "d['weather'][0]['zone']" | grep -q "Milano Nord" && ok "riepilogo meteo della giornata per zona" || no "riepilogo" "-"
+echo "$D" | py "(d['here']['zone'], len(d['here']['hours'])>=2, d['here']['summary']['rain_mm'])" | grep -q "('Milano Nord', True, 6.0)" && ok "meteo «qui» (zona del deposito) con la striscia oraria" || no "here" "$(echo "$D" | py "d['here']")"
 echo "$D" | py "(d['orders'][0]['access_notes'], d['orders'][0]['site_address'])" | grep -q "Cancello lato parcheggio" && ok "note di accesso e indirizzo della sede" || no "sede" "-"
 echo "$D" | py "d['route_url']" | grep -q "origin=45.503,9.129&destination=45.503,9.129&waypoints=45.53,9.2%7C45.58,9.27" && ok "giro in Maps: deposito → tappe → deposito" || no "giro" "$(echo "$D" | py "d['route_url']")"
 call L GET "/api/my/day?date=$TM" | py "([o['title'] for o in d['orders']], d['is_today'])" | grep -q "(\['Taglio domani'\], False)" && ok "domani" || no "domani" "-"
