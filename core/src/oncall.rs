@@ -352,7 +352,7 @@ pub async fn oncall_override_del(State(st): State<AppState>, h: HeaderMap, Json(
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let n = sqlx::query("DELETE FROM app.esc_overrides WHERE id=$1 AND tenant_id=$2").bind(b.id).bind(tid).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
-    if n==0 { return Err(err(StatusCode::NOT_FOUND, "override inesistente")); }
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "sostituzione inesistente")); }
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)] pub struct OverrideUpdate { pub id: Uuid, pub start: String, pub end: String, pub add_user_id: Option<Uuid>, pub remove_user_id: Option<Uuid> }
@@ -372,7 +372,7 @@ pub async fn oncall_override_update(State(st): State<AppState>, h: HeaderMap, Js
     let n = sqlx::query("UPDATE app.esc_overrides SET start_at=$3,end_at=$4,add_user=$5,remove_user=$6 WHERE id=$1 AND tenant_id=$2")
         .bind(b.id).bind(tid).bind(start).bind(end).bind(b.add_user_id).bind(b.remove_user_id).execute(&mut *tx).await.map_err(ise)?.rows_affected();
     tx.commit().await.map_err(ise)?;
-    if n==0 { return Err(err(StatusCode::NOT_FOUND, "override inesistente")); }
+    if n==0 { return Err(err(StatusCode::NOT_FOUND, "sostituzione inesistente")); }
     Ok(Json(json!({"ok":true})))
 }
 
@@ -528,7 +528,7 @@ pub async fn group_calendar_ics(State(st): State<AppState>, axum::extract::Query
         ics.push_str(&format!("DTSTAMP:{}\r\n", fmt(now)));
         ics.push_str(&format!("DTSTART:{}\r\n", fmt(*s0)));
         ics.push_str(&format!("DTEND:{}\r\n", fmt(*e0)));
-        ics.push_str(&format!("SUMMARY:On-call: {}\r\n", em.join(", ").replace(',', "\\,")));
+        ics.push_str(&format!("SUMMARY:Reperibilità: {}\r\n", em.join(", ").replace(',', "\\,")));
         ics.push_str("END:VEVENT\r\n");
     }
     ics.push_str("END:VCALENDAR\r\n");
@@ -1948,7 +1948,7 @@ pub async fn slack_announce_scan(st: &AppState) {
         let oncall = esc_native_oncall_contacts(st, tid, gid, None, now, false).await;
         let who = if oncall.is_empty() { "nessuno".to_string() }
             else { oncall.iter().map(|(_,_,em)| em.clone()).collect::<Vec<_>>().join(", ") };
-        let text = format!("On-call «{name}»: {who}");
+        let text = format!("Reperibili «{name}»: {who}");
         let _ = crate::delivery::deliver_slack_live(&st.http, &token, &ch, &text).await;
         let _ = sqlx::query("UPDATE app.alarm_groups SET slack_last_announce=$2 WHERE id=$1").bind(gid).bind(now).execute(&st.owner_pool).await;
     }

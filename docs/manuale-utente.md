@@ -168,8 +168,9 @@ di sicurezza») portano da soli alla voce e alla scheda nuove.
 - Le tabelle vuote spiegano cosa serve e propongono il pulsante giusto.
 - Se una pagina non si carica compare «Impossibile caricare i dati» con **Riprova**. Gli errori
   sono spiegati in italiano (connessione assente, sessione scaduta, permesso mancante…).
-- Con la lingua inglese il menu e le date sono tradotti; il resto delle pagine resta in italiano,
-  con la traduzione automatica delle frasi più comuni.
+- Con la lingua inglese (selettore IT/EN in alto, anche nella pagina di accesso, nel piano di
+  controllo e nell'app del lavoratore) tutta l'interfaccia è in inglese: menu, pagine, messaggi,
+  date e importi. I dati restano come sono stati scritti (nomi di sedi, persone, note).
 - La console si usa anche da tastiera: «Vai al contenuto», Tab per spostarsi, Invio o Spazio per
   attivare, Esc per chiudere pannelli e finestre.
 - Dopo un aggiornamento del sistema, se qualcosa sembra strano, ricarica la pagina con

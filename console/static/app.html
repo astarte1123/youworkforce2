@@ -31,6 +31,7 @@
 <div id="scrim" class="scrim"></div>
 <aside id="drawer" class="drawer"></aside>
 <script src="/app.js"></script>
+<script src="/i18n-en.js"></script><script src="/i18n.js"></script>
 <script>
 let ME=null, SSE=null, CACHE={}, ACTIVE_MODS=new Set(), UI_FEAT={map_outdoor:true,map_indoor:false}, AI_FEAT={};
 // can(ruoli, permesso?): pulsanti/azioni. Con il permesso, vale anche per chi lo ha per delega (TA-6).
@@ -252,7 +253,7 @@ const I18N_PH = {
   "+ aggiungi":"+ add","+ nuovo asset":"+ new asset","+ membro":"+ member","+ utente":"+ user","+ gruppo":"+ group","+ aggiungi checkpoint":"+ add checkpoint",
   "mostra":"show","invia":"send","importa":"import","↳ importa":"↳ import","azzera":"reset","↺ ripristina default":"↺ reset to default",
   "ripristina default":"reset to default","+ membro":"+ member","+ nuovo ordine":"+ new order","+ nuovo":"+ new","Nuovo ordine":"New order",
-  "→ importa in gruppo di escalation":"→ import into alarm group","checkpoint":"checkpoints","Annulla":"Cancel","Chiudi":"Close","Conferma":"Confirm","Avvia ronda":"Start patrol",
+  "→ importa in gruppo di escalation":"→ import into escalation group","checkpoint":"checkpoints","Annulla":"Cancel","Chiudi":"Close","Conferma":"Confirm","Avvia ronda":"Start patrol",
   "Riusa un checkpoint esistente (altro percorso)":"Reuse an existing checkpoint (other route)","Nuovo checkpoint":"New checkpoint",
   // colonne / etichette comuni
   "Email":"Email","Ruolo":"Role","Nome":"Name","Indirizzo":"Address","Tipo":"Type","Stato":"Status","Sede":"Site","Assegnato a":"Assignee",
@@ -265,12 +266,11 @@ const I18N_PH = {
   "percorsi di ronda · checkpoint QR/NFC/beacon/GPS · punzonature":"patrol routes · QR/NFC/beacon/GPS checkpoints · punches",
   "Esci":"Sign out","Menu":"Menu","Tema":"Theme","Lingua":"Language",
 };
-function _trOne(s){ if(s==null) return s; const k=s.trim(); if(!k) return s;
-  if(I18N_PH[k]!=null) return s.replace(k, I18N_PH[k]);
-  const m=k.match(/^(.+?)\s*\((\d+)\)$/); // "Etichetta (12)" -> traduci la parte testuale
-  if(m && I18N_PH[m[1]]!=null) return s.replace(m[1], I18N_PH[m[1]]);
-  return s; }
-function applyI18n(root){ if(LANG!=='en'||!root) return;
+// Il traduttore vero è /i18n.js (comune a console, superadmin, app del lavoratore e invito) con il
+// dizionario generato /i18n-en.js; queste voci storiche si aggiungono solo dove manca una traduzione.
+try{ window.ywI18n && ywI18n.extend(I18N_PH); }catch(e){}
+function _trOne(s){ return window.ywI18n ? ywI18n.tr(s) : s; }
+function applyI18n(root){ if(window.ywI18n){ ywI18n.apply(root); return; } if(LANG!=='en'||!root) return;
   try{
     const w=document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode(n){
       const p=n.parentNode; if(!p) return NodeFilter.FILTER_REJECT;
@@ -285,6 +285,7 @@ function applyI18n(root){ if(LANG!=='en'||!root) return;
 }
 let _i18nStarted=false;
 function startI18n(){ if(_i18nStarted||LANG!=='en') return; _i18nStarted=true;
+  if(window.ywI18n){ ywI18n.start(); return; }
   applyI18n(document.body);
   const obs=new MutationObserver(muts=>{ for(const m of muts){ m.addedNodes.forEach(nd=>{
     if(nd.nodeType===1) applyI18n(nd);
@@ -450,8 +451,8 @@ function renderShell(){
         ${ME.suspension_notice.note?`<div style="margin-top:var(--s-4)">Motivo: ${esc(ME.suspension_notice.note)}</div>`:''}
         <div class="small" style="margin-top:var(--s-4)">Per evitarla contatta l'assistenza.</div></div>`:''}
       ${(ME.license_notice||[]).length?`<div role="status" style="background:var(--warn-soft);color:var(--fg);border-left:4px solid var(--warn);border-bottom:1px solid var(--line);padding:var(--s-8) var(--s-16);font-size:13px">
-        <b>Licenze superate:</b> ${ME.license_notice.map(l=>`${esc(l.label)} ${l.used} su ${l.limit}`).join(' · ')}.
-        Il servizio continua a funzionare normalmente; contatta l'assistenza per adeguare le licenze.</div>`:''}
+        <b>Licenze superate:</b> ${ME.license_notice.map(l=>`<span>${esc(l.label)}</span> ${l.used}/${l.limit}`).join(' · ')}.
+        <span>Il servizio continua a funzionare normalmente; contatta l'assistenza per adeguare le licenze.</span></div>`:''}
       <main class="content" id="main"><div id="subnav"></div><div id="view"></div></main>
     </div>
   </div>

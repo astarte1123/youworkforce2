@@ -1782,8 +1782,10 @@ pub async fn create_patrol_schedule(State(st): State<AppState>, h: HeaderMap, Js
     let ev = b.every_minutes.unwrap_or(60).max(5);
     let (ft,tt)=(parse_time(&b.from_time,"22:00"), parse_time(&b.to_time,"06:00"));
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let id: Uuid = sqlx::query_scalar("INSERT INTO app.patrol_schedules(tenant_id,route_id,days_mask,from_time,to_time,every_minutes) VALUES($1,$2,$3,$4,$5,$6) RETURNING id")
-        .bind(tid).bind(b.route_id).bind(&dm).bind(ft).bind(tt).bind(ev).fetch_one(&mut *tx).await.map_err(ise)?;
+    // creazione e decorrenza con l'orologio del core, lo stesso del controllo delle ronde mancate
+    let now = st.clock.now();
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.patrol_schedules(tenant_id,route_id,days_mask,from_time,to_time,every_minutes,created_at,active_since) VALUES($1,$2,$3,$4,$5,$6,$7,$7) RETURNING id")
+        .bind(tid).bind(b.route_id).bind(&dm).bind(ft).bind(tt).bind(ev).bind(now).fetch_one(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":id})))
 }
@@ -1816,7 +1818,8 @@ pub(crate) fn parse_tz(name: &str) -> Option<chrono_tz::Tz> { name.trim().parse:
 
 /// Orari previsti di una pianificazione per il giorno LOCALE `day`, nel fuso `tz` (CA-16).
 /// `days_mask` vale per il giorno di inizio; una fascia che finisce prima di iniziare (22:00→06:00)
-/// prosegue nel giorno dopo. Orari inesistenti (passaggio all'ora legale) sono saltati.
+/// prosegue nel giorno dopo; «dalle» = «alle» è una sola ronda a quell'ora. Orari inesistenti
+/// (passaggio all'ora legale) sono saltati.
 pub(crate) fn patrol_slots_for_day(dm: &str, ft: chrono::NaiveTime, tt: chrono::NaiveTime, every: i32,
     tz: chrono_tz::Tz, day: chrono::NaiveDate) -> Vec<chrono::DateTime<chrono::Utc>> {
     use chrono::{Datelike, Duration, TimeZone as _};
@@ -1825,7 +1828,7 @@ pub(crate) fn patrol_slots_for_day(dm: &str, ft: chrono::NaiveTime, tt: chrono::
     let step = Duration::minutes(every.max(5) as i64);
     let start = day.and_time(ft);
     let mut end = day.and_time(tt);
-    if end <= start { end = end + Duration::days(1); }
+    if end < start { end = end + Duration::days(1); }
     let mut out = Vec::new();
     let mut t = start;
     while t <= end {

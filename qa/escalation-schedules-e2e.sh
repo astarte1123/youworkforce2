@@ -42,9 +42,10 @@ GOT2=$(sql "SELECT count(*) FROM app.esc_delivery_log el JOIN app.tenants t ON t
 
 # --- G-A: finestra che ESCLUDE oggi -> M2 non in on-call ---
 # «oggi» secondo l'orologio del CORE (TEST_CLOCK: altre suite lo spostano in avanti) nel fuso del
-# gruppo (Europe/Rome), non secondo now() del DB: altrimenti fallisce quando i due giorni differiscono.
+# gruppo (UTC, impostato sopra), non secondo now() del DB né in un altro fuso: altrimenti fallisce
+# quando i due giorni differiscono (es. tra le 23 e le 24 UTC, già domani a Roma).
 CORE_NOW=$(curl -s -X POST "$BASE/api/_test/advance" -H 'content-type: application/json' -d '{"seconds":0}' | python -c "import sys,json;print(json.load(sys.stdin).get('now',''))")
-TODAY=$(python -c "import datetime,zoneinfo,sys;s=sys.argv[1] or datetime.datetime.now(datetime.timezone.utc).isoformat();d=datetime.datetime.fromisoformat(s.replace('Z','+00:00'));print(d.astimezone(zoneinfo.ZoneInfo('Europe/Rome')).isoweekday())" "$CORE_NOW")   # 1=lun..7=dom
+TODAY=$(python -c "import datetime,zoneinfo,sys;s=sys.argv[1] or datetime.datetime.now(datetime.timezone.utc).isoformat();d=datetime.datetime.fromisoformat(s.replace('Z','+00:00'));print(d.astimezone(zoneinfo.ZoneInfo('UTC')).isoweekday())" "$CORE_NOW")   # 1=lun..7=dom
 # cov_days con solo oggi a 0
 MASK=$(python -c "d=$TODAY-1;print(''.join('0' if i==d else '1' for i in range(7)))")
 api -H 'content-type: application/json' -X POST "$BASE/api/assignments/$AID" -X DELETE >/dev/null 2>&1 || true

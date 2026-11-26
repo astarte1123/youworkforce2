@@ -1,8 +1,8 @@
 // Minimal service worker: shell cache only. /api/* is ALWAYS network, never cached
 // (contract: offline diary != active protection; SOS/incidents must be live).
-const SHELL = ['/worker/', '/worker/index.html', '/app.css', '/app.js', '/worker/manifest.webmanifest'];
-self.addEventListener('install', e => { self.skipWaiting(); e.waitUntil(caches.open('yw-shell-v8').then(c => c.addAll(SHELL))); });
-self.addEventListener('activate', e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k=>k!=='yw-shell-v8').map(k=>caches.delete(k))))));
+const SHELL = ['/worker/', '/worker/index.html', '/app.css', '/app.js', '/i18n.js', '/i18n-en.js', '/worker/manifest.webmanifest'];
+self.addEventListener('install', e => { self.skipWaiting(); e.waitUntil(caches.open('yw-shell-v9').then(c => c.addAll(SHELL))); });
+self.addEventListener('activate', e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k=>k!=='yw-shell-v9').map(k=>caches.delete(k))))));
 self.addEventListener('fetch', e => {
   const u = new URL(e.request.url);
   if (u.pathname.startsWith('/api/')) return;              // live only

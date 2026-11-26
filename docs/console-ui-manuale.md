@@ -162,20 +162,23 @@ scuro** (si aggiorna anche se il sistema cambia tema da solo).
 
 ## 7. Lingua (i18n IT/EN)
 
-La console ha un selettore **IT/EN** in alto a destra (topbar) e nel login; la scelta è salvata e
-ricaricata. Due meccanismi, complementari:
+Console, superadmin, app del lavoratore e pagina di invito hanno un selettore **IT/EN** (in testata
+e nella pagina di accesso); la scelta è salvata (`localStorage.yw_lang`), senza scelta vale la lingua
+del browser. Con EN **tutta l'interfaccia** è in inglese (26/11/2026):
 
-1. **`t('chiave','testo IT')`** per le schermate chiave (login, menu, Centrale, Dispositivi, Mappe,
-   Piantine, titoli pagina): con EN usa la traduzione, altrimenti l'italiano (fallback sicuro).
-2. **Traduttore runtime** (`applyI18n` + `MutationObserver` + dizionario `I18N_PH`): quando la
-   lingua è EN, traduce automaticamente il **testo statico dell'intera UI** a ogni render (titoli,
-   intestazioni di card, bottoni/link, colonne, etichette, `placeholder`, `title`), comprese le viste
-   non ancora migrate a `t()` e i pannelli/drawer aperti dopo. I **dati dinamici** (valori, numeri)
-   non combaciano col dizionario e restano invariati; gestisce anche le intestazioni con contatore
-   (es. *Teams (3)*).
+1. **`t('chiave','testo IT')`** per le voci del menu e i titoli della console (come prima).
+2. **Traduttore comune** `console/static/i18n.js` con il dizionario generato
+   `console/static/i18n-en.js` (~5.200 frasi e ~290 modelli): traduce ogni testo mostrato, anche
+   quello che compare dopo (pannelli, toast, conferme), i `placeholder`/`title`/`aria-label` e i
+   messaggi che arrivano dal core (errori, configurazione guidata, moduli, tipi di evento
+   predefiniti). Riconosce le frasi esatte, i modelli con parti variabili (`Passo {0} di {1}`) e le
+   forme composte («12 allarmi», «Sezione · Voce», «Etichetta: valore»). Date, ore e importi
+   seguono la lingua (`ywI18n.locale()`: it-IT / en-GB).
 
-Per tradurre una nuova frase: aggiungere una riga `"Testo IT":"English"` in `I18N_PH` (in
-`app.html`). Nessuna modifica ai template necessaria.
+I **dati** (nomi di sedi, persone, percorsi; note scritte dagli utenti; nomi dei tipi di evento
+cambiati dal superadmin) restano come sono. Per aggiungere o cambiare testi:
+[console/tools/i18n/README.md](../console/tools/i18n/README.md) (estrazione automatica, `en.json`
+come fonte, rigenerazione con `build.py`). `qa/console-syntax.sh` controlla anche il dizionario.
 
 ## 8. Report
 

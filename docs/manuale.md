@@ -284,8 +284,9 @@ Modulo **assistant**.
 
 - **Combo con ricerca** ovunque, ricerche full-text (Dispositivi, Centrale), mappe separate,
   tema chiaro/scuro.
-- **Lingua IT/EN**: selettore in alto a destra; le schermate chiave sono tradotte, le altre
-  ricadono sull'italiano.
+- **Lingua IT/EN**: selettore in alto a destra (anche superadmin, app del lavoratore, invito);
+  con EN tutta l'interfaccia è tradotta (traduttore comune `i18n.js` + dizionario generato
+  `i18n-en.js`, vedi `console/tools/i18n/README.md`); i dati restano come sono.
 - **Responsive**: su telefono la barra laterale diventa un menu a scomparsa; tabelle scorrevoli;
   griglie che si impilano.
 - Dettagli e novità: [console-ui-manuale](console-ui-manuale.md).
@@ -597,6 +598,17 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   una sola punzonatura per punto la permanenza non si misura). Il tempo di ogni step di escalation
   nella cronologia (`fired_at`) è quello del core, come lo stato dell'escalation. e2e
   `qa/patrol-schedule-suspend-e2e.sh`.
+- **Interfaccia in inglese completa.** Traduttore comune `console/static/i18n.js` (frasi esatte,
+  modelli con parti variabili, forme composte; osserva il DOM e gli attributi) e dizionario
+  generato `console/static/i18n-en.js` da `console/tools/i18n/en.json` (estrattore dalle pagine e
+  dai messaggi del core). Selettore IT/EN anche in superadmin, app del lavoratore e invito; date,
+  ore e importi nella lingua scelta; cache dell'app `yw-shell-v9`. I messaggi del core che usavano
+  ancora «gruppo allarme», «gruppo on-call», «override» (e «On-call» in iCal/Slack) seguono il
+  glossario.
+- **Piano di ronda con «dalle» = «alle».** Era letto come fascia di 24 ore e apriva ronde
+  mancate per tutto il giorno: ora è una sola ronda a quell'ora. Il piano nasce con l'orologio
+  del core (creazione e decorrenza), come il controllo delle ronde mancate. Era la causa del
+  fallimento intermittente di `qa/patrol-missed-e2e.sh` nella regressione completa.
 - **Glossario unico (AR-7).** [glossario](glossario.md): gruppo di persone / gruppo di escalation;
   turno pianificato / in servizio / di reperibilità; percorso di ronda e ronda (mai «giro»);
   reperibile (non «on-call»), sostituzione (non «override»). Solo testi di console, messaggi del

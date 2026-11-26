@@ -42,7 +42,7 @@ pub const REGISTRY: &[Manifest] = &[
         description:"Sedi, asset/mezzi, squadre: anagrafiche operative condivise." },
     Manifest{ code:"core.iam", name:"Permessi e ruoli", kind:"core", requires:&[], provides:&["capabilities","custom_roles"],
         capabilities:&["users.manage","settings.manage"], widgets:&[],
-        description:"Capability layer, ruoli custom, override per-tenant. Autorizzazioni trasversali." },
+        description:"Permessi, ruoli personalizzati e personalizzazioni per azienda. Autorizzazioni trasversali." },
     Manifest{ code:"core.privacy", name:"Privacy e audit", kind:"core", requires:&[], provides:&["gdpr","audit"],
         capabilities:&["gdpr.manage","audit.view"], widgets:&[],
         description:"GDPR (export/anonimizzazione), ritenzione, registro attività del tenant." },

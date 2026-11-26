@@ -187,6 +187,9 @@ punto; più la parte ordini (CA-1/CA-7, vedi `campo-gruppi.md`).
   - Sede: campo `timezone` (vuoto = come l'azienda) nel modulo della sede.
   - Nuovo percorso: selettore **Sede** (serve per il fuso e per la sede dell'allarme).
   - `days_mask` vale per il giorno di inizio: una fascia 22:00→06:00 prosegue nel giorno dopo.
+    «Dalle» = «alle» (es. 08:30–08:30) è **una sola ronda** a quell'ora, non una fascia di 24 ore.
+  - La creazione del piano usa l'orologio del core, lo stesso del controllo delle ronde mancate:
+    gli orari precedenti alla creazione non diventano mai ronde mancate.
   - Passaggio all'ora legale: un orario inesistente viene saltato.
 - **Quando una ronda copre un orario.** Un orario è coperto se sul percorso è stata avviata una
   ronda tra metà intervallo prima dell'orario e la scadenza (orario + intervallo).

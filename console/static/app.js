@@ -118,9 +118,9 @@ function toast(msg, kind=''){ let w=$('#toasts'); if(!w){w=el('<div id="toasts" 
   const t=el(`<div class="toast ${kind}">${ICON[kind==='bad'?'alert':kind==='ok'?'check':'info']||''}<div>${esc(msg)}</div></div>`);
   w.append(t); setTimeout(()=>{t.style.opacity='0';t.style.transition='.3s';setTimeout(()=>t.remove(),300)}, 4200); }
 
-const fmtEUR = c => (c==null?'—':new Intl.NumberFormat('it-IT',{style:'currency',currency:'EUR'}).format(c/100));
+const fmtEUR = c => (c==null?'—':new Intl.NumberFormat((window.ywI18n?ywI18n.locale():'it-IT'),{style:'currency',currency:'EUR'}).format(c/100));
 const fmtMin = m => { const h=Math.floor(m/60), mm=m%60; return (h?h+'h ':'')+(mm||!h?mm+'m':''); };
-const fmtTime = s => new Date(s).toLocaleString('it-IT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+const fmtTime = s => new Date(s).toLocaleString((window.ywI18n?ywI18n.locale():'it-IT'),{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
 // FE-5: etichette degli stati mostrati con chip() (incidenti, interventi, consuntivi, turni,
 // check-in, moduli, comandi). Valori reali dal core (migrations/0003, order_transition, ecc.).
 const STATE_LABELS={

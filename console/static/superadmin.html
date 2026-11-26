@@ -112,6 +112,7 @@
   .trow-h:focus-visible{outline-offset:-2px}
 </style>
 <script src="/app.js"></script>
+<script src="/i18n-en.js"></script><script src="/i18n.js"></script>
 <script>
 let TENANTS=[];
 (async function(){ try{ const me=await api('/me'); if(me.is_super) return shell(); if(me.role==='superadmin_setup') return mfaGate(); }catch(e){} login(); })();
@@ -120,7 +121,7 @@ function login(){
   $('#root').innerHTML=`<main class="sa-auth glow">
     <div class="card sa-auth-card"><div class="card-b">
       <div class="row gap-10 mb-14"><div class="logo">${ICON.logomark}</div>
-        <div><h1>Piano di controllo</h1><div class="small mut">tenants.loneworker.eu</div></div></div>
+        <div class="grow"><h1>Piano di controllo</h1><div class="small mut">tenants.loneworker.eu</div></div>${ywI18n.select()}</div>
       <div class="col">
         <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="username" placeholder="nome@azienda.it"></div>
         <div class="field"><label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password"></div>
@@ -173,6 +174,7 @@ async function shell(){
   $('#root').innerHTML=`
   <header class="topbar"><div class="logo logo-sm">${ICON.logomark}</div><strong>Piano di controllo</strong>
     <span class="chip">superadmin</span><div class="grow"></div>
+    ${ywI18n.select()}
     <button id="themeBtn" class="btn-ico btn ghost" title="Tema" aria-label="Cambia tema chiaro/scuro" onclick="toggleTheme()">${themeIconHtml()}</button>
     <button class="btn-ico btn ghost" title="Esci" aria-label="Esci" onclick="out()">${ICON.logout}</button></header>
   <main class="content">
@@ -492,7 +494,7 @@ async function loadSystem(){
 // ===== SA-12: gestione account superadmin =====
 async function loadAdmins(){ const box=$('#saBox'); if(!box) return;
   let d; try{ d=await api('/superadmin/admins'); }catch(e){ box.innerHTML=`<div class="small t-bad" role="alert">${esc(friendlyError(e))}</div>`; return; }
-  const fmt=t=>t?new Date(t).toLocaleString('it-IT'):'mai';
+  const fmt=t=>t?new Date(t).toLocaleString(ywI18n.locale()):'mai';
   box.innerHTML=`<div class="tbl-wrap"><table class="table"><thead><tr><th>Email</th><th>Verifica in due passaggi</th><th>Ultimo accesso</th><th>Stato</th><th><span class="sr-only">Azioni</span></th></tr></thead><tbody>${(d.admins||[]).map(a=>{const me=a.id===d.me;return `<tr>
     <td>${esc(a.email)}${me?' <span class="chip">tu</span>':''}</td>
     <td>${a.mfa?'<span class="dot ok"></span>attiva':(d.mfa_required?'<span class="dot warn"></span>da attivare al prossimo accesso':'<span class="dot warn"></span>non attiva')}</td>
@@ -532,7 +534,7 @@ async function chanClear(key){ if(!await askConfirm('Togliere questo valore? Res
 // ===== Chiave dei segreti (decisione PO 25/11/2026) =====
 async function loadSecrets(){ const box=$('#secBox'); if(!box) return;
   let d; try{ d=await api('/superadmin/secrets'); }catch(e){ box.innerHTML=`<div class="small t-bad" role="alert">${esc(friendlyError(e))}</div>`; return; }
-  const fmt=t=>t?new Date(t).toLocaleString('it-IT'):'—';
+  const fmt=t=>t?new Date(t).toLocaleString(ywI18n.locale()):'—';
   const locked=d.state!=='attiva';
   box.innerHTML=`<div class="srow"><span class="k">Stato</span><span class="v">${locked?'<span class="dot bad"></span>bloccata: questo server non apre la chiave':'<span class="dot ok"></span>attiva'}</span></div>
     <div class="srow"><span class="k">Chiave</span><span class="v">n. ${esc(String(d.key_id??'—'))} · creata ${esc(fmt(d.created_at))}${d.server?' · sigillata su '+esc(d.server):''}</span></div>
@@ -578,7 +580,7 @@ async function secRotate(rec){
 async function loadAttempts(){ const box=$('#sysAttempts'); if(!box) return;
   let rows=[]; try{ rows=await api('/superadmin/device-attempts'); }catch(e){ box.innerHTML=`<div class="small t-bad" role="alert">${esc(friendlyError(e))}</div>`; return; }
   if(!rows.length){ box.innerHTML='<div class="small mut">Nessun tentativo rifiutato.</div>'; return; }
-  const fmt=t=>new Date(t).toLocaleString('it-IT');
+  const fmt=t=>new Date(t).toLocaleString(ywI18n.locale());
   box.innerHTML=`<div class="tbl-wrap"><table class="table"><thead><tr><th>IMEI</th><th>Motivo</th><th>Aziende in cui è censito</th><th>Tentativi</th><th>Ultimo</th><th>Da</th></tr></thead><tbody>${
     rows.map(r=>`<tr><td class="mono">${esc(r.identity)}</td><td>${esc(r.reason_label)}</td><td>${esc(r.tenants||'—')}</td><td>${r.attempts}</td>
       <td class="small">${esc(fmt(r.last_at))}<div class="mut">primo ${esc(fmt(r.first_at))}</div></td><td class="small mono">${esc(r.peer||'—')}</td></tr>`).join('')}</tbody></table></div>`; }
@@ -649,7 +651,7 @@ const SYS_ALERT_LABELS={db:'Database',db_conns:'Connessioni al database',disk:'S
 function sysAlertLabel(k){ return SYS_ALERT_LABELS[k] || humanizeCode(k) || 'Controllo di sistema'; }
 function renderSysAlerts(al){
   const row=a=>`<div class="alert-item"><span class="dot ${a.severity}" aria-hidden="true"></span>
-      <div class="grow"><b>${esc(sysAlertLabel(a.kind))}</b> — ${esc(a.detail)}<div class="small mut">${new Date(a.created_at).toLocaleString('it-IT')}${a.resolved_at?' · risolto':''}${a.notified?' · notificato':''}</div></div>
+      <div class="grow"><b>${esc(sysAlertLabel(a.kind))}</b> — ${esc(a.detail)}<div class="small mut">${new Date(a.created_at).toLocaleString(ywI18n.locale())}${a.resolved_at?' · risolto':''}${a.notified?' · notificato':''}</div></div>
       ${a.resolved_at?'<span class="chip s-attivo">risolto</span>':'<span class="chip chip-bad">aperto</span>'}</div>`;
   const full=$('#sysAlerts'); if(full) full.innerHTML=(al&&al.length)?al.map(row).join(''):'<div class="small mut">Nessun alert registrato.</div>';
   const mini=$('#sysAlertsMini'); if(mini) mini.innerHTML=(al&&al.length)?al.slice(0,3).map(row).join(''):'<div class="small mut">Nessun alert recente. Tutto nominale.</div>';
@@ -806,7 +808,7 @@ function statusChip(t){
   if(t.status==='sospeso') return '<span class="chip chip-bad" title="allarmi, dispositivi e accessi fermi">sospeso</span>';
   if(t.suspend_at) return `<span class="chip chip-warn" title="${esc(t.suspend_note||'')}">sospensione il ${esc(fmtDT(t.suspend_at))}</span>`;
   return ''; }
-function fmtDT(v){ try{ return new Date(v).toLocaleString('it-IT',{dateStyle:'short',timeStyle:'short'}); }catch(e){ return String(v); } }
+function fmtDT(v){ try{ return new Date(v).toLocaleString(ywI18n.locale(),{dateStyle:'short',timeStyle:'short'}); }catch(e){ return String(v); } }
 // SA-5: sospensione subito o programmata (con avviso all'amministratore del tenant). Ritorna {at,note} o null.
 function askSuspend(name){ return new Promise(res=>{
   const m=document.createElement('div'); m.className='sa-ov';

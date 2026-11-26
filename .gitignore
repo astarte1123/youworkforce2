@@ -4,3 +4,4 @@ target/
 *.log
 console.exe
 core.exe
+console/tools/i18n/strings.json

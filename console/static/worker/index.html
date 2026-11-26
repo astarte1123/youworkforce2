@@ -85,6 +85,7 @@
 </style></head><body>
 <div id="root"></div>
 <script src="/app.js"></script>
+<script src="/i18n-en.js"></script><script src="/i18n.js"></script>
 <script>
 let ME=null, CI=null, CITimer=null, ORDERS=[], AIVOICE=false, AIAGENT=false, MODS=new Set();
 async function loadMods(){ try{ const M=await api('/modules'); MODS=new Set((M||[]).filter(m=>m.state==='attivo').map(m=>m.code)); }catch(e){ MODS=new Set(); } }
@@ -108,7 +109,7 @@ function wDialog(m,label,onEsc){
 function login(){
   $('#root').innerHTML=`<main class="wrap w-login">
     <div class="row gap-10 jc-center mb-18"><div class="logo">${ICON.logomark}</div>
-      <h1 class="w-title">App lavoratore</h1></div>
+      <h1 class="w-title">App lavoratore</h1>${ywI18n.select()}</div>
     <div class="card"><div class="card-b col">
       <div class="field"><label for="slug">Tenant${store.slugFromHost?' <span class="small mut">(dal dominio)</span>':''}</label><input id="slug" value="${esc(store.slug)}" autocapitalize="none" spellcheck="false" aria-describedby="slugHint">
         ${store.slugFromHost?`<div class="small mut" id="slugHint">L'azienda è indicata dall'indirizzo. Per un'altra azienda scrivi il suo nome e premi Accedi.</div>`:''}</div>
@@ -136,6 +137,7 @@ function app(){
   $('#root').innerHTML=`
   <header class="whead"><div class="logo logo-sm">${ICON.logomark}</div>
     <strong class="grow">Ciao, ${esc(ME.email.split('@')[0])}</strong>
+    ${ywI18n.select()}
     <button class="btn-ico btn ghost" onclick="toggleTheme()" title="Tema" aria-label="Cambia tema chiaro/scuro">${ICON.moon}</button>
     <button class="btn-ico btn ghost" onclick="out()" title="Esci" aria-label="Esci">${ICON.logout}</button></header>
   <main class="wrap col gap-16">
@@ -179,9 +181,9 @@ async function loadPlans(){
   let P; try{ P=await api('/shift-plans'); }catch(e){ b.innerHTML=errorBox(e,'loadPlans()'); return; }
   const fut=P.filter(p=>p.state!=='annullato').slice(0,6);
   if(!fut.length){ b.innerHTML='<div class="card"><div class="card-b small mut">Nessun turno pianificato</div></div>'; return; }
-  const dt=iso=>new Date(iso).toLocaleString('it-IT',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+  const dt=iso=>new Date(iso).toLocaleString(ywI18n.locale(),{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
   b.innerHTML=fut.map(p=>`<div class="card"><div class="card-b">
-    <div class="spread"><b>${dt(p.starts_at)} → ${new Date(p.ends_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}</b>
+    <div class="spread"><b>${dt(p.starts_at)} → ${new Date(p.ends_at).toLocaleTimeString(ywI18n.locale(),{hour:'2-digit',minute:'2-digit'})}</b>
       <span class="chip ${p.state==='confermato'?'s-attivo':''}">${esc(PLAN_ST_LAB[p.state]||humanizeCode(p.state))}</span></div>
     <div class="small mut mt-4">${esc(p.site||'—')}${p.note?' · '+esc(p.note):''}</div>
     ${p.state==='pianificato'?`<button class="btn block mt-10" onclick="planConfirm('${p.id}')">Conferma turno</button>`:''}
@@ -352,7 +354,7 @@ async function loadOrders(){
   const box=$('#orders'); let O; try{ O=await api('/orders'); }catch(e){ box.innerHTML=errorBox(e,'loadOrders()'); return; } ORDERS=O;
   const mine=O.filter(o=>['assegnato','in_corso'].includes(o.state));
   if(!mine.length){ box.innerHTML='<div class="card pad mut center">Nessun ordine per oggi</div>'; return; }
-  const sched=o=>o.scheduled_start?new Date(o.scheduled_start).toLocaleString('it-IT',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):null;
+  const sched=o=>o.scheduled_start?new Date(o.scheduled_start).toLocaleString(ywI18n.locale(),{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):null;
   box.innerHTML=mine.map(o=>`<div class="card pad">
     <div class="spread"><b>${esc(o.title)}</b>${chip(o.state)}</div>
     ${sched(o)?`<div class="small mt-4"><span aria-hidden="true">🕑</span> ${sched(o)}${o.priority>=3?' · <b class="t-bad">priorità alta</b>':''}</div>`:''}
@@ -553,7 +555,7 @@ async function oComplete(id,v){ const o=await askPrompt('Esito intervento?','com
 async function renderShift(){
   const b=$('#shiftBox'); if(!b)return; let s=null; try{ s=await api('/shifts/current'); }catch(e){}
   if(s&&s.active){
-    const t=new Date(s.started_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
+    const t=new Date(s.started_at).toLocaleTimeString(ywI18n.locale(),{hour:'2-digit',minute:'2-digit'});
     const el=s.elapsed_minutes||0, h=Math.floor(el/60), m=el%60;
     const warn=s.over_max?`<div class="small t-bad mt-6" role="alert">⚠ Oltre il massimo di ${s.max_hours}h — considera la chiusura</div>`:'';
     b.innerHTML=`<div class="spread"><b>Turno in corso</b><span class="chip ${s.over_max?'':'s-attivo'}">${s.over_max?'oltre soglia':'confermato dal server'}</span></div>
@@ -623,7 +625,7 @@ function toggleDictation(){
   const st=$('#micState');
   if(!SR){ st.textContent='Riconoscimento vocale non disponibile — scrivi a mano'; return; }
   if(REC){ stopDictation(); return; }
-  REC=new SR(); REC.lang='it-IT'; REC.interimResults=true; REC.continuous=true;
+  REC=new SR(); REC.lang=ywI18n.locale(); REC.interimResults=true; REC.continuous=true;
   const ta=$('#noteBody'); const base=ta.value;
   REC.onresult=(e)=>{ let txt=''; for(let i=0;i<e.results.length;i++) txt+=e.results[i][0].transcript; ta.value=(base?base+' ':'')+txt; dictationUsed=true; };
   REC.onerror=(e)=>{ st.textContent='Microfono: '+e.error+' — scrivi a mano'; stopDictation(); };

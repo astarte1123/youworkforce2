@@ -621,7 +621,7 @@ pub async fn alarm_group_import_members(State(st): State<AppState>, h: HeaderMap
     let tid = s.tenant_id.unwrap();
     require_any_module(&st, tid, ESCALATION_MODS).await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1").bind(gid).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"gruppo allarme inesistente")); }
+    if sqlx::query_scalar::<_,Uuid>("SELECT id FROM app.alarm_groups WHERE id=$1").bind(gid).fetch_optional(&mut *tx).await.map_err(ise)?.is_none() { return Err(err(StatusCode::NOT_FOUND,"gruppo di escalation inesistente")); }
     // posizione iniziale = dopo gli attuali membri
     let base: i32 = sqlx::query_scalar("SELECT COALESCE(MAX(position),0)::int FROM app.alarm_group_members WHERE group_id=$1").bind(gid).fetch_one(&mut *tx).await.map_err(ise)?;
     let n = sqlx::query(
@@ -2121,8 +2121,8 @@ pub async fn setup_status(State(st): State<AppState>, h: HeaderMap) -> R {
         "Le persone del team accedono secondo il ruolo (operatore, pianificatore, lavoratore…).",
         format!("{n_users} utenti"), "utenti-ruoli", "Invita utenti");
     push("groups", safety, n_groups>0 && has_default_group>0, "Configura la reperibilità",
-        "Senza un gruppo on-call predefinito, gli allarmi non raggiungono nessuno.",
-        if n_groups==0 {"nessun gruppo".into()} else if has_default_group==0 {"gruppo senza default on-call".into()} else {format!("{n_groups} gruppi")},
+        "Senza un gruppo di escalation predefinito, gli allarmi non raggiungono nessuno.",
+        if n_groups==0 {"nessun gruppo".into()} else if has_default_group==0 {"nessun gruppo di escalation predefinito".into()} else {format!("{n_groups} gruppi")},
         "gruppi", "Crea un gruppo");
     push("contacts", safety, n_verified>0, "Verifica i recapiti",
         "SMS e chiamate di escalation partono solo verso telefoni verificati.",
