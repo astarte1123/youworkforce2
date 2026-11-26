@@ -25,6 +25,7 @@ jobs:
       YW_ESC_SINK_URL: http://127.0.0.1:18099/
       YW_ESC_SINK_LOG: /tmp/yw_sink_shared.log
       YW_ESC_FROM: "+390000000000"
+      YW_METNO_URL: http://127.0.0.1:18098   # finto api.met.no avviato da qa/metno-e2e.sh
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

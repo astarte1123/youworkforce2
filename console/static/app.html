@@ -2382,8 +2382,10 @@ const WX_ICO={sereno:'☀️',poco_nuvoloso:'🌤️',nuvoloso:'☁️',coperto:
 const WX_LAB={sereno:'sereno',poco_nuvoloso:'poco nuvoloso',nuvoloso:'nuvoloso',coperto:'coperto',pioggia:'pioggia',pioggia_debole:'pioggia debole',temporale:'temporale',neve:'neve',nebbia:'nebbia',vento:'vento forte'};
 const wxNum=x=>x==null?'—':String(Math.round(x*10)/10).replace('.',',');
 async function vMeteo(v){
-  const [F,AR]=await Promise.all([api('/weather/forecast?days=7').catch(loadFail),api('/weather/at-risk?days=7').catch(()=>({items:[]}))]);
+  const [F,AR,WS]=await Promise.all([api('/weather/forecast?days=7').catch(loadFail),api('/weather/at-risk?days=7').catch(()=>({items:[]})),api('/weather/settings').catch(()=>null)]);
   if(isLoadFail(F)) return pageLoadError(v,'Meteo',F);
+  const metno=WS&&WS.provider==='metno'; const canSet=can(['tenant_admin'],'settings.manage');
+  const zst=Object.fromEntries(((WS&&WS.zones)||[]).map(z=>[z.id,z]));
   v._wx=F; const canEdit=can(['pianificatore','tenant_admin'],'plan');
   const today=new Date(); const days=Array.from({length:7},(_,i)=>{ const d=new Date(today); d.setDate(today.getDate()+i); return ymdLocal(d); });
   const dn=['dom','lun','mar','mer','gio','ven','sab'];
@@ -2395,7 +2397,8 @@ async function vMeteo(v){
       <div class="small mut">${wxNum(d.temp_min)}/${wxNum(d.temp_max)} °C · ${d.wind_kmh!=null?Math.round(d.wind_kmh)+' km/h':'—'}</div></td>`; };
   const last=F.zones.map(z=>z.issued_at).filter(Boolean).sort().pop();
   const src=[...new Set(F.zones.map(z=>z.source).filter(Boolean))].join(', ');
-  v.innerHTML=`<div class="page-h"><div><h1>Meteo</h1><div class="mut">previsioni per zona e interventi a rischio · le previsioni le scrive ${src?esc(src):'il sistema meteo collegato'} con una chiave di integrazione</div></div>
+  const metnoCredit=F.zones.some(z=>z.source==='MET Norway');
+  v.innerHTML=`<div class="page-h"><div><h1>Meteo</h1><div class="mut">${metno?'previsioni per zona e interventi a rischio · previsioni di MET Norway, aggiornate ogni 3 ore circa':`previsioni per zona e interventi a rischio · le previsioni le scrive ${src?esc(src):'il sistema meteo collegato'} con una chiave di integrazione`}</div></div>
     ${canEdit?'<button class="btn" onclick="wxZoneForm()">+ Zona meteo</button>':''}</div>
   <div class="small mut" style="margin:-4px 0 var(--s-12)">Ultimo aggiornamento: <b>${dt(last)}</b>. Gli avvisi meteo non bloccano: compaiono sull'intervento quando la previsione supera i limiti del suo tipo di attività (pioggia, vento, temperatura, ore asciutte dopo).</div>
   <div class="card"><div class="card-h"><h2>Interventi a rischio meteo (${AR.items.length})</h2><span class="small mut">prossimi 7 giorni</span></div>
@@ -2406,14 +2409,27 @@ async function vMeteo(v){
       ||emptyRow(6,null,'Nessun intervento a rischio','Nei prossimi 7 giorni la previsione rispetta i limiti meteo dei tipi di attività.',null)}</tbody></table></div>
   <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Previsioni per zona</h2></div><div style="overflow-x:auto">
     <table class="table"><thead><tr><th>Zona</th>${days.map(d=>{ const x=new Date(d+'T12:00:00'); return `<th style="text-align:center">${dn[x.getDay()]} ${d.slice(8,10)}/${d.slice(5,7)}</th>`; }).join('')}</tr></thead>
-    <tbody>${F.zones.map(z=>`<tr class="clk" data-wz="${z.id}"><td><b>${esc(z.name)}</b><div class="small mut">${z.sites.length} sedi${z.issued_at?' · '+dt(z.issued_at):''}</div></td>
+    <tbody>${F.zones.map(z=>`<tr class="clk" data-wz="${z.id}"><td><b>${esc(z.name)}</b><div class="small mut">${z.sites.length} sedi${z.issued_at?' · '+dt(z.issued_at):''}</div>${metno&&zst[z.id]&&zst[z.id].error?`<div class="small" style="color:var(--bad)">⚠ ${esc(zst[z.id].error)}</div>`:''}</td>
       ${days.map(d=>cell(z.days.find(x=>x.date===d))).join('')}</tr>`).join('')
-      ||emptyRow(8,ICON.sun,'Nessuna zona meteo','Crea le zone (es. Milano Nord, Monza) con la posizione: ogni sede usa la zona più vicina. Le previsioni arrivano dal sistema meteo collegato.',canEdit?{fn:'wxZoneForm()',label:'+ Zona meteo'}:null)}</tbody></table></div></div>
-  <div class="card pad" style="margin-top:var(--s-16)"><h2>Come arrivano le previsioni</h2>
-    <div class="small" style="line-height:1.6;margin-top:var(--s-6)">YouWorkforce non chiama servizi meteo: è il sistema autorizzato (es. l'agente Youco) a scrivere le previsioni con una chiave di integrazione (<b>Configurazione → Integrazioni</b>, permesso <i>Pianificare</i>):
-      <span class="mono">PUT /api/integration/weather/zones/{codice}</span> per le zone e <span class="mono">POST /api/integration/weather/slots</span> per le fasce orarie. Una nuova previsione sostituisce la precedente fascia per fascia.</div></div>`;
+      ||emptyRow(8,ICON.sun,'Nessuna zona meteo','Crea le zone (es. Milano Nord, Monza) con la posizione: ogni sede usa la zona più vicina. Le previsioni arrivano dalla fonte scelta qui sotto.',canEdit?{fn:'wxZoneForm()',label:'+ Zona meteo'}:null)}</tbody></table></div>
+    ${metnoCredit?`<div class="small mut" style="padding:var(--s-8) var(--s-12)">Dati meteo: <a href="https://www.met.no/en" target="_blank" rel="noopener">MET Norway</a> (Istituto meteorologico norvegese), licenza <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>.</div>`:''}</div>
+  ${WS?`<div class="card pad" style="margin-top:var(--s-16)"><div class="spread"><h2>Fonte delle previsioni</h2>${metno&&canEdit?'<button class="btn ghost small" onclick="wxRefresh(this)">Aggiorna ora</button>':''}</div>
+    <div class="col" style="gap:var(--s-6);margin-top:var(--s-8)">${WS.providers.map(p=>`<label class="row small" style="gap:var(--s-8);align-items:flex-start"><input type="radio" name="wxProv" value="${p.code}" ${WS.provider===p.code?'checked':''} ${canSet?'':'disabled'} onchange="wxSetProvider(this.value)">
+      <span><b>${esc(p.label)}</b><br><span class="mut">${esc(p.description)}</span></span></label>`).join('')}</div>
+    ${metno?`<div class="small mut" style="margin-top:var(--s-8)">${WS.zones.map(z=>`${esc(z.name)}: ${z.fetched_at?'aggiornata '+dt(z.fetched_at):'non ancora scaricata'}${z.next_at?' · prossimo aggiornamento '+dt(z.next_at):''}`).join('<br>')||'Crea almeno una zona: le previsioni si scaricano da sole.'}</div>`
+      :`<div class="small" style="line-height:1.6;margin-top:var(--s-8)">Il sistema autorizzato (es. l'agente Youco) scrive le previsioni con una chiave di integrazione (<b>Configurazione → Integrazioni</b>, permesso <i>Pianificare</i>):
+      <span class="mono">PUT /api/integration/weather/zones/{codice}</span> per le zone e <span class="mono">POST /api/integration/weather/slots</span> per le fasce orarie. Una nuova previsione sostituisce la precedente fascia per fascia.</div>`}</div>`:''}`;
   v.querySelectorAll('tr[data-wz]').forEach(tr=>tr.onclick=()=>wxZoneForm(F.zones.find(z=>z.id===tr.dataset.wz)));
 }
+async function wxSetProvider(p){
+  const msg=p==='metno'?'Usare MET Norway? YouWorkforce scaricherà da solo le previsioni per ogni zona (servizio esterno gratuito, unica connessione esterna per il meteo).':'Usare il sistema collegato? Le previsioni dovranno arrivare con la chiave di integrazione.';
+  if(!await askConfirm(msg)) return route();
+  try{ await api('/weather/settings',{method:'PUT',body:JSON.stringify({provider:p})}); toast('Fonte delle previsioni salvata','ok');
+    if(p==='metno'){ await api('/weather/refresh',{method:'POST'}).catch(()=>null); } route(); }catch(e){ toast(e,'bad'); route(); } }
+async function wxRefresh(btn){ btn.disabled=true;
+  try{ const r=await api('/weather/refresh',{method:'POST'});
+    toast(r.updated+r.not_modified+r.failed?`Zone aggiornate: ${r.updated} · invariate: ${r.not_modified}${r.failed?' · con errori: '+r.failed:''}`:'Previsioni già aggiornate: MET Norway si interroga al massimo ogni 3 ore per zona', r.failed?'warn':'ok'); route(); }
+  catch(e){ toast(e,'bad'); btn.disabled=false; } }
 async function wxZoneForm(z){ z=z||{sites:[]}; const canEdit=can(['pianificatore','tenant_admin'],'plan');
   const sites=await api('/sites').catch(()=>[]); const fixed=new Set((z.sites||[]).filter(s=>s.fixed).map(s=>s.id));
   drawer(z.id?'Zona meteo · '+esc(z.name):'Nuova zona meteo',`<div class="col" style="gap:var(--s-10)">

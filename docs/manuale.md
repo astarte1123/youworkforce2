@@ -598,6 +598,12 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   una sola punzonatura per punto la permanenza non si misura). Il tempo di ogni step di escalation
   nella cronologia (`fired_at`) è quello del core, come lo stato dell'escalation. e2e
   `qa/patrol-schedule-suspend-e2e.sh`.
+- **Fase 4b Meteo da MET Norway (mig `0169`).** Fonte delle previsioni scelta per tenant: sistema
+  collegato (chiave di integrazione) o **MET Norway** (api.met.no, gratuito, CC BY 4.0), scaricato da
+  YW per zona ogni ~3 ore con cache, 304 e User-Agent come da termini di servizio (`YW_METNO_CONTACT`);
+  ciclo separato dal worker; stato per zona, «Aggiorna ora» e citazione della fonte nella pagina Meteo.
+  Unica connessione esterna oltre all'AI (decisione PO). Dettaglio in
+  [meteo-operativo.md](meteo-operativo.md); e2e `qa/metno-e2e.sh` con finto MET `qa/metno_mock.py`.
 - **Fase 4 Meteo operativo (mig `0168`, modulo `meteo`).** Le previsioni le scrive Youco (o un altro
   sistema autorizzato) con una chiave di integrazione: zone con posizione (ogni sede usa la zona
   fissata o la più vicina) e fasce orarie di pioggia, probabilità, vento, raffiche e temperatura; YW

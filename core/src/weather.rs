@@ -179,7 +179,8 @@ pub async fn post_weather_slots(State(st): State<AppState>, h: HeaderMap, Json(b
 #[derive(Deserialize)]
 pub struct WQ { #[serde(default)] pub zone_id: Option<Uuid>, #[serde(default)] pub days: Option<i64> }
 /// GET /api/weather/forecast?days=7 — per zona e per giorno: pioggia totale, probabilità, vento,
-/// temperatura minima e massima, condizione prevalente; quali sedi usano la zona.
+/// temperatura minima e massima, condizione prevalente; quali sedi usano la zona. Un giorno con meno di
+/// 6 ore di previsione (la coda dell'ultima emissione) non si mostra: sarebbe fuorviante.
 pub async fn weather_forecast(State(st): State<AppState>, h: HeaderMap, Query(q): Query<WQ>) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "meteo").await?;
@@ -195,7 +196,8 @@ pub async fn weather_forecast(State(st): State<AppState>, h: HeaderMap, Query(q)
     let daily = sqlx::query("SELECT zone_id, to_char(valid_from AT TIME ZONE $3,'YYYY-MM-DD') AS d, sum(rain_mm)::float8 AS rain, max(rain_prob) AS prob,
             max(GREATEST(COALESCE(wind_kmh,0),COALESCE(gust_kmh,0)))::float8 AS wind, min(temp_c)::float8 AS tmin, max(temp_c)::float8 AS tmax,
             mode() WITHIN GROUP (ORDER BY condition) AS cond
-         FROM app.weather_slots WHERE kind='previsione' AND valid_from >= $1 AND valid_from < $2 GROUP BY zone_id, 2 ORDER BY 2")
+         FROM app.weather_slots WHERE kind='previsione' AND valid_from >= $1 AND valid_from < $2 GROUP BY zone_id, 2
+         HAVING sum(extract(epoch FROM valid_to - valid_from)) >= 6*3600 ORDER BY 2")
         .bind(now - chrono::Duration::hours(12)).bind(now + chrono::Duration::days(days)).bind(&tzs).fetch_all(&mut *tx).await.map_err(ise)?;
     let sites = sqlx::query("SELECT s.id, s.name, s.weather_zone_id IS NOT NULL AS fixed, COALESCE(s.weather_zone_id,
             (SELECT z2.id FROM app.weather_zones z2 WHERE s.lat IS NOT NULL AND s.lon IS NOT NULL

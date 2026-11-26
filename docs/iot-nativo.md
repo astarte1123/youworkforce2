@@ -2,7 +2,7 @@
 
 Il modulo **`iot`** ("Dispositivi e IoT industriale") è la piattaforma IoT **nativa** di YW:
 offre tutte le funzioni IoT industriali **senza alcun server
-esterno** (coerente con la direzione self-contained; unica integrazione esterna resta l'AI).
+esterno** (coerente con la direzione self-contained; integrazioni esterne solo AI e, per il meteo, MET Norway).
 
 ## Cosa copre (nativo)
 

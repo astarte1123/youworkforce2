@@ -4,10 +4,32 @@ Fase 4 del piano «Idealverde su YouWorkforce». Modulo **Meteo operativo** (`me
 Interventi), migrazione `0168`, codice `core/src/weather.rs`, test `qa/weather-e2e.sh`, pagina
 **Lavoro sul campo → Meteo**.
 
-**Chi porta le previsioni.** YouWorkforce non chiama servizi meteo (regola «nessuna connessione
-verso l'esterno»). Le previsioni le legge Youco (o un altro sistema autorizzato) e le **scrive** in
-YW con una chiave di integrazione con il permesso *Pianificare*, come il gestionale scrive clienti e
-interventi (vedi [integrazioni.md](integrazioni.md)).
+**Chi porta le previsioni.** Due fonti, scelte per tenant (migrazione `0169`, `core/src/metno.rs`,
+test `qa/metno-e2e.sh`):
+
+- **Sistema collegato** (predefinita): Youco o un altro sistema autorizzato **scrive** le previsioni
+  con una chiave di integrazione con il permesso *Pianificare*, come il gestionale scrive clienti e
+  interventi (vedi [integrazioni.md](integrazioni.md)).
+- **MET Norway** (api.met.no, Istituto meteorologico norvegese): YouWorkforce le **scarica** da solo.
+  Gratuito anche per uso commerciale, dati con licenza CC BY 4.0. È l'unica connessione verso
+  l'esterno oltre all'AI (decisione PO 26/11/2026), limitata al meteo e attiva solo per i tenant che la
+  scelgono.
+
+## MET Norway
+
+- Servizio Locationforecast 2.0 «complete», una richiesta per zona (coordinate a 4 decimali).
+- Fasce orarie per le prime ~2,5 giornate, poi da 6 ore, senza sovrapposizioni; vento e raffiche da
+  m/s a km/h; condizione dal simbolo MET (es. `lightrain` → pioggia debole).
+- Ogni scaricamento sostituisce le fasce future della zona (anche quelle di un'altra granularità).
+- Termini di servizio rispettati: User-Agent con il nome dell'applicazione e il contatto
+  dell'operatore (`YW_METNO_CONTACT`, da impostare in produzione); una zona si riscarica solo dopo la
+  scadenza indicata da MET e **mai prima di 3 ore**; richiesta condizionale `If-Modified-Since` (304 =
+  niente di nuovo); errori → nuovo tentativo dopo 30 minuti (3 ore se MET rifiuta con 403/429), con
+  il motivo mostrato sulla zona.
+- Un ciclo del core separato dal worker (una rete lenta non ferma allarmi e timer) controlla ogni 5
+  minuti le zone scadute dei tenant con questa fonte e il modulo attivo.
+- La console cita la fonte sotto le previsioni («Dati meteo: MET Norway, licenza CC BY 4.0»).
+- `YW_METNO_URL` cambia l'indirizzo del servizio (i test usano il finto servizio `qa/metno_mock.py`).
 
 ## Zone meteo
 
@@ -59,6 +81,9 @@ la conferma «Forza»). L'Agenda tecnici mostra quanti interventi della settiman
 | GET | `/api/weather/at-risk?days=7` | interventi a rischio con gli avvisi e il giorno proposto | Pianificare o Interventi · Vedere tutti |
 | POST | `/api/weather/zones/{id}/sites` | fissa le sedi sulla zona `{site_ids}` (sostituisce l'elenco) | Pianificare o Impostazioni |
 | DELETE | `/api/weather/zones/{id}` | elimina zona e previsioni | Impostazioni |
+| GET | `/api/weather/settings` | fonte scelta, fonti disponibili, stato di scaricamento per zona | Pianificare, Impostazioni o Interventi · Vedere tutti |
+| PUT | `/api/weather/settings` | sceglie la fonte `{provider: "integrazione" \| "metno"}` | Impostazioni |
+| POST | `/api/weather/refresh` | scarica ora da MET Norway le zone nuove o scadute (la cache di 3 ore resta) | Pianificare o Impostazioni |
 
 I tipi di attività accettano `weather: {rain_max_mm, wind_max_kmh, temp_min_c, temp_max_c,
 dry_hours_after}` (se presente sostituisce tutti i limiti; `null` = nessun limite) e lo restituiscono

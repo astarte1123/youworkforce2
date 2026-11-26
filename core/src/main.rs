@@ -14,6 +14,7 @@ mod mqtt; // broker MQTT nativo (IoT): ingest telemetria + downlink comandi su T
 mod dashboard; // servizio core: dashboard unica configurabile (widget + layout per-tenant)
 mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
 mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
+mod metno; // Fase 4b: previsioni da MET Norway (fonte scelta per tenant, unica connessione esterna oltre all'AI)
 mod weather; // Fase 4: meteo operativo (zone, previsioni scritte da Youco via chiave, avvisi sugli interventi)
 mod analytics; // Fase 3: durate reali, stima dallo storico, precisione, ricorrenze, extra, piano contro realtà
 mod integrations; // Fase 2: chiavi di integrazione (ERP, software turni, Youco/MCP), codici esterni, import CSV, elenco modifiche
@@ -268,6 +269,7 @@ async fn run() -> anyhow::Result<()> {
         }
     }); }
     tokio::spawn(worker::system_watchdog_loop(st.clone()));
+    tokio::spawn(metno::weather_loop(st.clone())); // meteo MET Norway: ciclo separato (rete lenta non ferma il worker)
     tokio::spawn(teltonika::serve(st.clone())); // edge nativo Teltonika (TCP Codec8/8E)
     tokio::spawn(mqtt::serve(st.clone())); // broker MQTT nativo IoT (TCP 1883)
 
@@ -572,6 +574,8 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/weather/zones/:id", axum::routing::delete(api::delete_weather_zone))
         .route("/api/weather/zones/:id/sites", post(api::set_zone_sites))
         .route("/api/weather/forecast", get(api::weather_forecast))
+        .route("/api/weather/settings", get(api::weather_settings).put(api::put_weather_settings))
+        .route("/api/weather/refresh", post(api::weather_refresh))
         .route("/api/weather/at-risk", get(api::weather_at_risk))
         // Fase 3 analisi e stime
         .route("/api/analytics/estimate", get(api::analytics_estimate))

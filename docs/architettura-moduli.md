@@ -54,7 +54,9 @@ dati residui eliminati con mig `0125`). Ogni funzione è nativa:
 dati dai dispositivi (sono i device a spingere verso YW, mai YW a chiamare fuori). Il tenant deriva
 dalla chiave di collegamento, mai dal contenuto.
 
-L'unica integrazione esterna, **opzionale**, è il **provider AI** scelto dal cliente (modulo `assistant`).
+Le integrazioni esterne, tutte **opzionali**, sono il **provider AI** scelto dal cliente (modulo `assistant`)
+e, per il modulo `meteo`, le previsioni di **MET Norway** (fonte scelta per tenant, decisione PO 26/11/2026;
+vedi [meteo-operativo.md](meteo-operativo.md)).
 
 ## Chi attiva cosa (separazione dei poteri)
 

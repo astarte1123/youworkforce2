@@ -970,8 +970,8 @@ lavori fuori contratto o programma; gli interventi nati da una richiesta lo sono
 ### Meteo
 
 Menu **Lavoro sul campo → Meteo** (modulo «Meteo operativo»; pianificatore, responsabile). Le
-previsioni non le cerca YouWorkforce: le scrive il sistema meteo collegato (es. l'agente Youco) con
-una chiave di integrazione. In alto l'ora dell'ultimo aggiornamento e la fonte.
+previsioni arrivano dalla fonte scelta: il sistema collegato (es. l'agente Youco, con una chiave di
+integrazione) o MET Norway, scaricato da YouWorkforce. In alto l'ora dell'ultimo aggiornamento.
 
 - **Interventi a rischio meteo**: i prossimi 7 giorni, con il motivo (es. «previsti 15,5 mm di
   pioggia; Potatura alberi alto fusto si fa con al massimo 4 mm») e il **primo giorno buono** alla
@@ -981,7 +981,13 @@ una chiave di integrazione. In alto l'ora dell'ultimo aggiornamento e la fonte.
 - **Previsioni per zona**: per ogni zona e giorno pioggia, probabilità, temperature e vento; il giorno
   di pioggia è evidenziato. Cliccando una zona: nome, posizione e sedi. Ogni sede usa la zona più
   vicina; spunta le sedi da **fissare** su una zona diversa.
-- **+ Zona meteo**: crea una zona con codice, nome e posizione (di solito le crea il sistema meteo).
+- **+ Zona meteo**: crea una zona con codice, nome e posizione.
+- **Fonte delle previsioni** (in fondo; la sceglie l'amministratore): **Sistema collegato** (le
+  previsioni le scrive per esempio l'agente Youco con una chiave di integrazione) oppure **MET Norway**
+  (Istituto meteorologico norvegese, gratuito): YouWorkforce scarica da solo le previsioni di ogni
+  zona circa ogni 3 ore e mostra per zona l'ultimo aggiornamento, il prossimo ed eventuali errori.
+  **Aggiorna ora** scarica le zone nuove o scadute (una zona aggiornata da meno di 3 ore non si
+  riscarica: lo chiedono i termini del servizio). Sotto le previsioni compare la citazione della fonte.
 
 Gli avvisi meteo (⚠) compaiono anche nel modulo dell'intervento e in **Agenda tecnici**, che mostra
 quanti interventi della settimana ne hanno. Non bloccano mai: la previsione è incerta, decide il
@@ -1481,6 +1487,8 @@ Avvio rapido: `docker compose up -d --build` (console su `:8081`, core su `:8080
 | `YW_COOKIE_SECURE=1` | obbligatoria in HTTPS (staging e produzione) |
 | `YW_TRUSTED_PROXIES` | proxy fidati da cui leggere l'indirizzo reale del client |
 | `YW_RETENTION_DAYS` | giorni di conservazione dei dati (0 = disattivata, predefinito) |
+| `YW_METNO_CONTACT` | contatto dell'operatore (e-mail o sito) aggiunto allo User-Agent verso MET Norway, richiesto dai suoi termini di servizio quando un tenant usa quella fonte meteo |
+| `YW_METNO_URL` | indirizzo del servizio MET Norway (predefinito `https://api.met.no`; nei test un finto servizio locale) |
 | `YW_PRESENCE_RADIUS_M` | raggio per le presenze «fuori area» (predefinito 500) |
 | `YW_ESC_TWILIO_*`, `YW_ESC_FROM`, `YW_ESC_SLACK_TOKEN`, `YW_ESC_SMTP_RELAY_URL`, `YW_ESC_SINK_URL` | solo valori iniziali dei canali di consegna: il superadmin li sovrascrive da *Sistema* |
 | `YW_ESC_PUBLIC_BASE` | indirizzo pubblico per i link assoluti (heartbeat monitor) |
