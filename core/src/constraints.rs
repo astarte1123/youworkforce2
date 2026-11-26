@@ -43,7 +43,13 @@ pub struct ActivityTypeReq {
     pub name: String, #[serde(default)] pub unit: Option<String>, #[serde(default)] pub base_minutes: Option<i32>,
     #[serde(default)] pub minutes_per_unit: Option<f64>, #[serde(default)] pub crew_size: Option<i32>,
     #[serde(default)] pub active: Option<bool>, #[serde(default)] pub note: Option<String>,
-    #[serde(default)] pub qualification_ids: Option<Vec<Uuid>>, #[serde(default)] pub assets: Option<Vec<ActivityAssetReq>> }
+    #[serde(default)] pub qualification_ids: Option<Vec<Uuid>>, #[serde(default)] pub assets: Option<Vec<ActivityAssetReq>>,
+    #[serde(default)] pub weather: Option<WeatherLimits> }
+/// Limiti meteo del tipo di attività (fase 4): campo vuoto = nessun limite. Se `weather` è presente
+/// sostituisce tutti i limiti.
+#[derive(Deserialize, Default)]
+pub struct WeatherLimits { #[serde(default)] pub rain_max_mm: Option<f64>, #[serde(default)] pub wind_max_kmh: Option<i32>,
+    #[serde(default)] pub temp_min_c: Option<i32>, #[serde(default)] pub temp_max_c: Option<i32>, #[serde(default)] pub dry_hours_after: Option<i32> }
 
 fn validate_activity(b: &ActivityTypeReq) -> Result<(), (StatusCode, String)> {
     let n = b.name.trim();
@@ -58,6 +64,14 @@ fn validate_activity(b: &ActivityTypeReq) -> Result<(), (StatusCode, String)> {
         if k.is_empty() || k.chars().count() > 60 { return Err(err(StatusCode::BAD_REQUEST, "tipo di mezzo richiesto non valido")); }
         if let Some(q) = a.qty { if !(1..=20).contains(&q) { return Err(err(StatusCode::BAD_REQUEST, "quantità di mezzi tra 1 e 20")); } }
     }
+    if let Some(w) = &b.weather {
+        if w.rain_max_mm.map(|x| !(0.0..=500.0).contains(&x)).unwrap_or(false) { return Err(err(StatusCode::BAD_REQUEST, "pioggia massima tra 0 e 500 mm")); }
+        if w.wind_max_kmh.map(|x| !(0..=200).contains(&x)).unwrap_or(false) { return Err(err(StatusCode::BAD_REQUEST, "vento massimo tra 0 e 200 km/h")); }
+        if w.temp_min_c.map(|x| !(-30..=50).contains(&x)).unwrap_or(false) || w.temp_max_c.map(|x| !(-30..=50).contains(&x)).unwrap_or(false) {
+            return Err(err(StatusCode::BAD_REQUEST, "temperature tra -30 e 50 °C")); }
+        if let (Some(a), Some(z)) = (w.temp_min_c, w.temp_max_c) { if a > z { return Err(err(StatusCode::BAD_REQUEST, "temperatura minima oltre la massima")); } }
+        if w.dry_hours_after.map(|x| !(0..=72).contains(&x)).unwrap_or(false) { return Err(err(StatusCode::BAD_REQUEST, "ore asciutte dopo tra 0 e 72")); }
+    }
     Ok(())
 }
 
@@ -65,7 +79,8 @@ pub async fn list_activity_types(State(st): State<AppState>, h: HeaderMap) -> R 
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "interventi").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT id,name,unit,base_minutes,minutes_per_unit::float8 AS mpu,crew_size,active,note FROM app.activity_types ORDER BY active DESC, name")
+    let rows = sqlx::query("SELECT id,name,unit,base_minutes,minutes_per_unit::float8 AS mpu,crew_size,active,note,
+            rain_max_mm::float8 AS rain_max_mm,wind_max_kmh,temp_min_c,temp_max_c,dry_hours_after FROM app.activity_types ORDER BY active DESC, name")
         .fetch_all(&mut *tx).await.map_err(ise)?;
     let quals = sqlx::query("SELECT aq.activity_type_id,q.id,q.name FROM app.activity_type_qualifications aq JOIN app.qualifications q ON q.id=aq.qualification_id ORDER BY q.name")
         .fetch_all(&mut *tx).await.map_err(ise)?;
@@ -87,12 +102,20 @@ pub async fn list_activity_types(State(st): State<AppState>, h: HeaderMap) -> R 
             "base_minutes": r.get::<i32,_>("base_minutes"), "minutes_per_unit": r.get::<f64,_>("mpu"),
             "crew_size": r.get::<i32,_>("crew_size"), "active": r.get::<bool,_>("active"),
             "note": r.try_get::<String,_>("note").ok(), "qualifications": q, "assets": a,
-            "done_count": n, "real_avg_minutes": if n > 0 { Some(avg) } else { None }})
+            "done_count": n, "real_avg_minutes": if n > 0 { Some(avg) } else { None },
+            "weather": {"rain_max_mm": r.try_get::<Option<f64>,_>("rain_max_mm").ok().flatten(), "wind_max_kmh": r.try_get::<Option<i32>,_>("wind_max_kmh").ok().flatten(),
+                "temp_min_c": r.try_get::<Option<i32>,_>("temp_min_c").ok().flatten(), "temp_max_c": r.try_get::<Option<i32>,_>("temp_max_c").ok().flatten(),
+                "dry_hours_after": r.try_get::<Option<i32>,_>("dry_hours_after").ok().flatten()}})
     }).collect();
     Ok(Json(json!({"units": UNITS.iter().map(|(c, l)| json!({"code": c, "label": l})).collect::<Vec<_>>(), "items": out})))
 }
 
 async fn save_activity_links(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, tid: Uuid, id: Uuid, b: &ActivityTypeReq) -> Result<(), (StatusCode, String)> {
+    if let Some(w) = &b.weather {
+        sqlx::query("UPDATE app.activity_types SET rain_max_mm=$2::numeric, wind_max_kmh=$3, temp_min_c=$4, temp_max_c=$5, dry_hours_after=$6 WHERE id=$1")
+            .bind(id).bind(w.rain_max_mm).bind(w.wind_max_kmh).bind(w.temp_min_c).bind(w.temp_max_c).bind(w.dry_hours_after)
+            .execute(&mut **tx).await.map_err(|e| crate::api::conflict_or(e, "limiti meteo non validi"))?;
+    }
     if let Some(qs) = &b.qualification_ids {
         sqlx::query("DELETE FROM app.activity_type_qualifications WHERE activity_type_id=$1").bind(id).execute(&mut **tx).await.map_err(ise)?;
         for q in qs {
@@ -350,6 +373,8 @@ pub(crate) async fn check_order(st: &AppState, tid: Uuid, p: &OrderPlan) -> Resu
         if let Some((t, s0)) = other { out.push(v("overlap", false, format!("Si sovrappone a «{t}» delle {} per {who}.", dm(s0, tz).split(' ').nth(1).unwrap_or("")))); }
     }
     tx.commit().await.map_err(ise)?;
+    // --- meteo (avvisi, fase 4: modulo meteo) ---
+    out.extend(crate::weather::weather_warnings(st, tid, p.activity_type_id, p.site_id, p.start, p.end).await?);
     Ok(out)
 }
 

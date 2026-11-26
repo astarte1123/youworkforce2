@@ -44,6 +44,7 @@ Aggiornato al 25/11/2026. I nomi di pagine e menu sono quelli del menu attuale (
    - [Clienti, richieste e contratti](#cap6-clienti)
    - [Tipi di attività](#cap6-attivita)
    - [Analisi](#cap6-analisi)
+   - [Meteo](#cap6-meteo)
    - [Listino](#cap6-listino)
    - [Cantieri e presenze](#cap6-cantieri)
    - [Ronde e cruscotto vigilanza](#cap6-ronde)
@@ -938,7 +939,9 @@ Menu **Lavoro sul campo → Tipi di attività** (pianificatore). Per ogni lavoro
 - **persone necessarie**;
 - **patentini richiesti** (modulo Qualifiche e scadenze): almeno una persona della squadra li deve
   avere validi il giorno dell'intervento;
-- **mezzi richiesti** per tipo (es. «piattaforma» × 1).
+- **mezzi richiesti** per tipo (es. «piattaforma» × 1);
+- **limiti meteo** (modulo Meteo operativo): pioggia massima, vento massimo, temperatura minima e
+  massima, ore asciutte dopo (es. trattamento fitosanitario: 6). Vuoto = nessun limite.
 
 Un tipo usato da interventi o piani non si elimina: si disattiva. Anche i **piani di manutenzione**
 hanno tipo e quantità, e l'intervento generato li eredita.
@@ -962,6 +965,27 @@ Menu **Lavoro sul campo → Analisi** (modulo «Analisi e stime»; pianificatore
 Nel modulo **intervento** compare «📊 Dallo storico»: la durata degli interventi simili (nella stessa
 sede, della stessa squadra o del tipo) con **usa questa durata**. La casella **Lavoro extra** segna i
 lavori fuori contratto o programma; gli interventi nati da una richiesta lo sono già.
+
+<a id="cap6-meteo"></a>
+### Meteo
+
+Menu **Lavoro sul campo → Meteo** (modulo «Meteo operativo»; pianificatore, responsabile). Le
+previsioni non le cerca YouWorkforce: le scrive il sistema meteo collegato (es. l'agente Youco) con
+una chiave di integrazione. In alto l'ora dell'ultimo aggiornamento e la fonte.
+
+- **Interventi a rischio meteo**: i prossimi 7 giorni, con il motivo (es. «previsti 15,5 mm di
+  pioggia; Potatura alberi alto fusto si fa con al massimo 4 mm») e il **primo giorno buono** alla
+  stessa ora (giorni lavorativi, solo dentro la previsione). **Sposta** porta l'intervento e le
+  prenotazioni dei mezzi a quel giorno; se il nuovo orario viola un vincolo (patentino, mezzo, orario
+  della sede) YouWorkforce lo dice e chiede se procedere.
+- **Previsioni per zona**: per ogni zona e giorno pioggia, probabilità, temperature e vento; il giorno
+  di pioggia è evidenziato. Cliccando una zona: nome, posizione e sedi. Ogni sede usa la zona più
+  vicina; spunta le sedi da **fissare** su una zona diversa.
+- **+ Zona meteo**: crea una zona con codice, nome e posizione (di solito le crea il sistema meteo).
+
+Gli avvisi meteo (⚠) compaiono anche nel modulo dell'intervento e in **Agenda tecnici**, che mostra
+quanti interventi della settimana ne hanno. Non bloccano mai: la previsione è incerta, decide il
+pianificatore.
 
 <a id="cap6-listino"></a>
 ### Listino

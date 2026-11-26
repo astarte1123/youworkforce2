@@ -128,6 +128,7 @@ const NAV = [
   {k:'ordini',    t:'Interventi', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'clienti',   t:'Clienti', ico:'building', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'analisi',   t:'Analisi', ico:'chart', roles:['pianificatore','tenant_admin','responsabile','auditor'], cap:['plan','orders.view_all','costs.view'], mod:['analisi'], grp:'work'},
+  {k:'meteo',     t:'Meteo', ico:'sun', roles:['pianificatore','tenant_admin','responsabile','auditor'], cap:['plan','orders.view_all'], mod:['meteo'], grp:'work'},
   {k:'attivita',  t:'Tipi di attività', ico:'sliders', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'listino',   t:'Listino', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi','consuntivi'], grp:'work'},
   {hidden:true, k:'dispatch',  t:'Agenda tecnici', ico:'calendar', roles:['pianificatore','tenant_admin'], cap:'plan', mod:['interventi'], grp:'work'},
@@ -540,7 +541,7 @@ function renderPage(k, v){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,'centrale-tutti':vCentrale,'iot-monitor':vIotMonitor,'iot-alerts':vIotAlerts,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,
-    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,ore:vOre,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,'regole-sensori':vRegoleSensori,'moduli-base':vModuli,'piantine-campo':vPiantine,clienti:vClienti,listino:vListino,attivita:vAttivita,analisi:vAnalisi,integrazioni:vIntegrazioni,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,'mappa-allarmi':vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,ore:vOre,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,'regole-sensori':vRegoleSensori,'moduli-base':vModuli,'piantine-campo':vPiantine,clienti:vClienti,listino:vListino,attivita:vAttivita,analisi:vAnalisi,meteo:vMeteo,integrazioni:vIntegrazioni,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,'mappa-allarmi':vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- Export unificato (CSV / Excel / PDF / Markdown) ----------------
@@ -2376,6 +2377,68 @@ async function vAnalisi(v){
     <tbody>${PV.weeks.map(w=>`<tr><td>${esc(w.week)}</td><td>${w.scheduled}</td><td>${w.completed}</td><td>${w.cancelled}</td><td style="color:${w.open_overdue?'var(--bad)':'inherit'}">${w.open_overdue}</td>
       <td>${fmtMin(w.planned_minutes)}</td><td><b>${fmtMin(w.worked_minutes)}</b></td><td>${w.on_day_pct}%</td></tr>`).join('')||emptyRow(8,null,'Nessun intervento nelle ultime settimane','',null)}</tbody></table></div>`;
 }
+// ===== Fase 4: meteo operativo (previsioni scritte da Youco o da un sistema autorizzato) =====
+const WX_ICO={sereno:'☀️',poco_nuvoloso:'🌤️',nuvoloso:'☁️',coperto:'☁️',pioggia:'🌧️',pioggia_debole:'🌦️',temporale:'⛈️',neve:'❄️',nebbia:'🌫️',vento:'💨'};
+const WX_LAB={sereno:'sereno',poco_nuvoloso:'poco nuvoloso',nuvoloso:'nuvoloso',coperto:'coperto',pioggia:'pioggia',pioggia_debole:'pioggia debole',temporale:'temporale',neve:'neve',nebbia:'nebbia',vento:'vento forte'};
+const wxNum=x=>x==null?'—':String(Math.round(x*10)/10).replace('.',',');
+async function vMeteo(v){
+  const [F,AR]=await Promise.all([api('/weather/forecast?days=7').catch(loadFail),api('/weather/at-risk?days=7').catch(()=>({items:[]}))]);
+  if(isLoadFail(F)) return pageLoadError(v,'Meteo',F);
+  v._wx=F; const canEdit=can(['pianificatore','tenant_admin'],'plan');
+  const today=new Date(); const days=Array.from({length:7},(_,i)=>{ const d=new Date(today); d.setDate(today.getDate()+i); return ymdLocal(d); });
+  const dn=['dom','lun','mar','mer','gio','ven','sab'];
+  const dt=t=>t?new Date(t).toLocaleString(UI_LOCALE(),{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
+  const cell=d=>{ if(!d) return '<td class="small mut" style="text-align:center">—</td>';
+    const wet=(d.rain_mm||0)>=2; return `<td style="text-align:center;${wet?'background:var(--brand-soft)':''}" title="${esc(WX_LAB[d.condition]||d.condition||'')}">
+      <div style="font-size:1.2rem">${WX_ICO[d.condition]||'·'}</div>
+      <div class="small"><b>${wxNum(d.rain_mm)} mm</b>${d.rain_prob!=null?` · ${d.rain_prob}%`:''}</div>
+      <div class="small mut">${wxNum(d.temp_min)}/${wxNum(d.temp_max)} °C · ${d.wind_kmh!=null?Math.round(d.wind_kmh)+' km/h':'—'}</div></td>`; };
+  const last=F.zones.map(z=>z.issued_at).filter(Boolean).sort().pop();
+  const src=[...new Set(F.zones.map(z=>z.source).filter(Boolean))].join(', ');
+  v.innerHTML=`<div class="page-h"><div><h1>Meteo</h1><div class="mut">previsioni per zona e interventi a rischio · le previsioni le scrive ${src?esc(src):'il sistema meteo collegato'} con una chiave di integrazione</div></div>
+    ${canEdit?'<button class="btn" onclick="wxZoneForm()">+ Zona meteo</button>':''}</div>
+  <div class="small mut" style="margin:-4px 0 var(--s-12)">Ultimo aggiornamento: <b>${dt(last)}</b>. Gli avvisi meteo non bloccano: compaiono sull'intervento quando la previsione supera i limiti del suo tipo di attività (pioggia, vento, temperatura, ore asciutte dopo).</div>
+  <div class="card"><div class="card-h"><h2>Interventi a rischio meteo (${AR.items.length})</h2><span class="small mut">prossimi 7 giorni</span></div>
+    <table class="table" data-export="meteo-a-rischio"><thead><tr><th>Quando</th><th>Intervento</th><th>Squadra</th><th>Perché</th><th>Primo giorno buono</th><th></th></tr></thead>
+    <tbody>${AR.items.map(o=>`<tr><td class="small">${dt(o.scheduled_start)}</td><td class="small"><b>${esc(o.title)}</b></td><td class="small">${esc(o.team||(o.assignee||'').split('@')[0]||'—')}</td>
+      <td>${vioHtml(o.warnings,true)}</td><td class="small">${o.suggested_start?dt(o.suggested_start):'<span class="mut">nessuno nei 7 giorni dopo</span>'}</td>
+      <td style="text-align:right">${canEdit&&o.suggested_start?`<button class="btn ghost small" onclick="wxMove('${o.id}',${o.version},'${o.suggested_start}','${o.suggested_end}')">Sposta</button>`:''}</td></tr>`).join('')
+      ||emptyRow(6,null,'Nessun intervento a rischio','Nei prossimi 7 giorni la previsione rispetta i limiti meteo dei tipi di attività.',null)}</tbody></table></div>
+  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Previsioni per zona</h2></div><div style="overflow-x:auto">
+    <table class="table"><thead><tr><th>Zona</th>${days.map(d=>{ const x=new Date(d+'T12:00:00'); return `<th style="text-align:center">${dn[x.getDay()]} ${d.slice(8,10)}/${d.slice(5,7)}</th>`; }).join('')}</tr></thead>
+    <tbody>${F.zones.map(z=>`<tr class="clk" data-wz="${z.id}"><td><b>${esc(z.name)}</b><div class="small mut">${z.sites.length} sedi${z.issued_at?' · '+dt(z.issued_at):''}</div></td>
+      ${days.map(d=>cell(z.days.find(x=>x.date===d))).join('')}</tr>`).join('')
+      ||emptyRow(8,ICON.sun,'Nessuna zona meteo','Crea le zone (es. Milano Nord, Monza) con la posizione: ogni sede usa la zona più vicina. Le previsioni arrivano dal sistema meteo collegato.',canEdit?{fn:'wxZoneForm()',label:'+ Zona meteo'}:null)}</tbody></table></div></div>
+  <div class="card pad" style="margin-top:var(--s-16)"><h2>Come arrivano le previsioni</h2>
+    <div class="small" style="line-height:1.6;margin-top:var(--s-6)">YouWorkforce non chiama servizi meteo: è il sistema autorizzato (es. l'agente Youco) a scrivere le previsioni con una chiave di integrazione (<b>Configurazione → Integrazioni</b>, permesso <i>Pianificare</i>):
+      <span class="mono">PUT /api/integration/weather/zones/{codice}</span> per le zone e <span class="mono">POST /api/integration/weather/slots</span> per le fasce orarie. Una nuova previsione sostituisce la precedente fascia per fascia.</div></div>`;
+  v.querySelectorAll('tr[data-wz]').forEach(tr=>tr.onclick=()=>wxZoneForm(F.zones.find(z=>z.id===tr.dataset.wz)));
+}
+async function wxZoneForm(z){ z=z||{sites:[]}; const canEdit=can(['pianificatore','tenant_admin'],'plan');
+  const sites=await api('/sites').catch(()=>[]); const fixed=new Set((z.sites||[]).filter(s=>s.fixed).map(s=>s.id));
+  drawer(z.id?'Zona meteo · '+esc(z.name):'Nuova zona meteo',`<div class="col" style="gap:var(--s-10)">
+    <label class="small mut">Codice (lo usa il sistema meteo)<input id="wzCode" value="${esc(z.code||'')}" ${z.id?'disabled':''} placeholder="MI-NORD"></label>
+    <label class="small mut">Nome<input id="wzName" value="${esc(z.name||'')}" placeholder="Milano Nord"></label>
+    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Latitudine<input id="wzLat" type="number" step="any" value="${z.lat??''}"></label>
+      <label class="small mut grow">Longitudine<input id="wzLon" type="number" step="any" value="${z.lon??''}"></label></div>
+    ${z.id?`<div><div class="small mut">Sedi che usano questa zona (${z.sites.length}): quelle spuntate sono fissate qui, le altre ci arrivano perché è la zona più vicina.</div>
+      <div style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:var(--s-6)">${sites.map(s=>{ const here=(z.sites||[]).some(x=>x.id===s.id);
+        return `<label class="row small" style="gap:var(--s-6)"><input type="checkbox" class="wzS" value="${s.id}" ${fixed.has(s.id)?'checked':''} ${canEdit?'':'disabled'}> ${esc(s.name)}${here&&!fixed.has(s.id)?' <span class="mut">(la più vicina)</span>':''}</label>`; }).join('')}</div></div>`:''}
+    ${canEdit?`<button class="btn" onclick="wxZoneSave('${z.id||''}')">${z.id?'Salva':'Crea'}</button>${z.id?` <button class="btn ghost" onclick="wxZoneDel('${z.id}')">${ICON.x} Elimina</button>`:''}`:''}<div class="cfg-msg small"></div></div>`); }
+async function wxZoneSave(id){ const m=$('.cfg-msg'); const code=$('#wzCode').value.trim(), name=$('#wzName').value.trim(), lat=parseFloat($('#wzLat').value), lon=parseFloat($('#wzLon').value);
+  if(!code||!name||isNaN(lat)||isNaN(lon)){ m.textContent='codice, nome e posizione richiesti'; m.style.color='var(--bad)'; return; }
+  try{ const r=await api('/integration/weather/zones/'+encodeURIComponent(code),{method:'PUT',body:JSON.stringify({name,lat,lon})});
+    if(id) await api('/weather/zones/'+id+'/sites',{method:'POST',body:JSON.stringify({site_ids:[...document.querySelectorAll('.wzS:checked')].map(x=>x.value)})});
+    toast('Zona meteo salvata','ok'); closeDrawer(); route(); }
+  catch(e){ m.textContent=friendlyError(e); m.style.color='var(--bad)'; } }
+async function wxZoneDel(id){ if(!await askConfirm('Eliminare la zona meteo e le sue previsioni? Le sedi useranno la zona più vicina.'))return;
+  try{ await api('/weather/zones/'+id,{method:'DELETE'}); toast('Zona eliminata','ok'); closeDrawer(); route(); }catch(e){ toast(e,'bad'); } }
+async function wxMove(id,version,start,end){
+  const when=new Date(start).toLocaleString(UI_LOCALE(),{weekday:'long',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+  if(!await askConfirm('Spostare l\'intervento a '+when+'? Le prenotazioni dei mezzi si spostano con lui.'))return;
+  try{ const r=await apiForce('/orders/'+id+'/edit',{method:'POST',body:JSON.stringify({version,scheduled_start:start,scheduled_end:end})});
+    toast('Intervento spostato'+((r&&r.warnings&&r.warnings.length)?' · '+r.warnings.length+' avvisi':''),'ok'); route(); }
+  catch(e){ if(!e.cancelled) toast(e,'bad'); } }
 // ===== Fase 2: integrazioni (gestionale/ERP, software turni, agente Youco) =====
 const IMPORT_ENT={clients:'Clienti',sites:'Sedi',commesse:'Commesse',orders:'Interventi'};
 const IMPORT_COLS={clients:'ref; name; vat; address; phone; email; pec; sdi; payment_terms; notes',
@@ -2447,11 +2510,11 @@ async function vAttivita(v){
   v.innerHTML=`<div class="page-h"><div><h1>Tipi di attività</h1><div class="mut">cosa si fa, quanto dura, quante persone, quali patentini e mezzi servono</div></div>
     ${canEdit?'<button class="btn" onclick="atForm()">+ Nuovo tipo</button>':''}</div>
   <div class="small mut" style="margin:-4px 0 var(--s-12)">Su ogni intervento il tipo dà la durata stimata e i vincoli: se la squadra non ha il patentino valido o il mezzo richiesto non è prenotato, YouWorkforce lo segnala.</div>
-  <div class="card"><table class="table" data-export="tipi-attivita"><thead><tr><th>Tipo</th><th>Durata standard</th><th>Durata reale media</th><th>Persone</th><th>Patentini</th><th>Mezzi</th><th>Stato</th></tr></thead>
+  <div class="card"><table class="table" data-export="tipi-attivita"><thead><tr><th>Tipo</th><th>Durata standard</th><th>Durata reale media</th><th>Persone</th><th>Patentini</th><th>Mezzi</th>${ACTIVE_MODS.has('meteo')?'<th>Meteo</th>':''}<th>Stato</th></tr></thead>
   <tbody>${R.items.map(a=>`<tr class="clk" data-at="${a.id}"><td><b>${esc(a.name)}</b><div class="small mut">${esc(UNIT_LAB[a.unit]||a.unit)}</div></td><td class="small">${dur(a)}</td>
     <td class="small">${a.real_avg_minutes?fmtMin(a.real_avg_minutes)+` <span class="mut">(${a.done_count})</span>`:'<span class="mut">—</span>'}</td><td>${a.crew_size}</td>
     <td class="small">${a.qualifications.map(q=>`<span class="chip">${esc(q.name)}</span>`).join(' ')||'—'}</td>
-    <td class="small">${a.assets.map(x=>`<span class="chip">${esc(x.kind)} ×${x.qty}</span>`).join(' ')||'—'}</td><td>${a.active?'<span class="chip">attivo</span>':'<span class="chip">disattivato</span>'}</td></tr>`).join('')
+    <td class="small">${a.assets.map(x=>`<span class="chip">${esc(x.kind)} ×${x.qty}</span>`).join(' ')||'—'}</td>${ACTIVE_MODS.has('meteo')?`<td class="small">${atWxLabel(a.weather)}</td>`:''}<td>${a.active?'<span class="chip">attivo</span>':'<span class="chip">disattivato</span>'}</td></tr>`).join('')
     ||emptyRow(7, ICON.clipboard, 'Nessun tipo di attività', 'Crea i lavori che fate più spesso (taglio erba, potatura siepi, …) con durata, persone, patentini e mezzi.', canEdit?{fn:'atForm()',label:'+ Nuovo tipo'}:null)}</tbody></table></div>`;
   if(canEdit) v.querySelectorAll('tr[data-at]').forEach(tr=>tr.onclick=()=>atForm(R.items.find(x=>x.id===tr.dataset.at)));
 }
@@ -2467,8 +2530,18 @@ function atForm(a){ a=a||{qualifications:[],assets:[]}; const v=$('#view'); cons
     ${quals.length?`<div><div class="small mut">Patentini richiesti (almeno una persona della squadra li deve avere validi)</div>${quals.map(q=>`<label class="row small" style="gap:var(--s-6)"><input type="checkbox" class="atQ" value="${q.id}" ${have.has(q.id)?'checked':''}> ${esc(q.name)}</label>`).join('')}</div>`:'<div class="small mut">Attiva il modulo Qualifiche e scadenze per richiedere i patentini.</div>'}
     <div><div class="small mut">Mezzi richiesti (per tipo di mezzo, es. «piattaforma»)</div><div id="atAs">${(a.assets||[]).map(atAssetRow).join('')}</div>
       <button class="btn ghost small" type="button" onclick="$('#atAs').insertAdjacentHTML('beforeend',atAssetRow({kind:'',qty:1}))">+ mezzo</button></div>
+    ${ACTIVE_MODS.has('meteo')?`<div><div class="small mut">Limiti meteo (vuoto = nessun limite): oltre questi valori la previsione genera un avviso sull'intervento</div>
+      <div class="row" style="gap:var(--s-8);flex-wrap:wrap"><label class="small mut grow">Pioggia max (mm)<input id="atRain" type="number" min="0" step="0.5" value="${(a.weather||{}).rain_max_mm??''}"></label>
+        <label class="small mut grow">Vento max (km/h)<input id="atWind" type="number" min="0" max="200" value="${(a.weather||{}).wind_max_kmh??''}"></label></div>
+      <div class="row" style="gap:var(--s-8);flex-wrap:wrap"><label class="small mut grow">Temperatura min (°C)<input id="atTmin" type="number" min="-30" max="50" value="${(a.weather||{}).temp_min_c??''}"></label>
+        <label class="small mut grow">Temperatura max (°C)<input id="atTmax" type="number" min="-30" max="50" value="${(a.weather||{}).temp_max_c??''}"></label>
+        <label class="small mut grow">Ore asciutte dopo<input id="atDry" type="number" min="0" max="72" value="${(a.weather||{}).dry_hours_after??''}" title="es. diserbo o concimazione: niente pioggia nelle ore successive"></label></div></div>`:''}
     ${a.id?`<label class="row small" style="gap:var(--s-8)"><input type="checkbox" id="atAct" ${a.active!==false?'checked':''}> Attivo (disattivato non si propone sui nuovi interventi)</label>`:''}
     <button class="btn" onclick="atSave('${a.id||''}')">${a.id?'Salva':'Crea'}</button>${a.id?` <button class="btn ghost" onclick="atDel('${a.id}')">${ICON.x} Elimina</button>`:''}<div class="cfg-msg small"></div></div>`); }
+function atWxLabel(w){ w=w||{}; const p=[];
+  if(w.rain_max_mm!=null) p.push('pioggia ≤ '+wxNum(w.rain_max_mm)+' mm'); if(w.wind_max_kmh!=null) p.push('vento ≤ '+w.wind_max_kmh+' km/h');
+  if(w.temp_min_c!=null) p.push('≥ '+w.temp_min_c+' °C'); if(w.temp_max_c!=null) p.push('≤ '+w.temp_max_c+' °C'); if(w.dry_hours_after) p.push(w.dry_hours_after+' h asciutte dopo');
+  return p.length?p.map(x=>`<span class="chip">${esc(x)}</span>`).join(' '):'<span class="mut">—</span>'; }
 function atAssetRow(x){ return `<div class="row at-as" style="gap:var(--s-6);margin:var(--s-4) 0"><input class="at-k grow" value="${esc(x.kind||'')}" placeholder="tipo di mezzo"><input class="at-q" type="number" min="1" max="20" value="${x.qty||1}" style="width:80px">
   <button class="btn-ico btn ghost" type="button" onclick="this.closest('.at-as').remove()" aria-label="Rimuovi mezzo">${ICON.x}</button></div>`; }
 async function atSave(id){ const m=$('.cfg-msg'); const name=$('#atName').value.trim(); if(!name){ m.textContent='nome richiesto'; m.style.color='var(--bad)'; return; }
@@ -2476,6 +2549,8 @@ async function atSave(id){ const m=$('.cfg-msg'); const name=$('#atName').value.
     qualification_ids:[...document.querySelectorAll('.atQ:checked')].map(x=>x.value),
     assets:[...document.querySelectorAll('.at-as')].map(r=>({kind:r.querySelector('.at-k').value.trim(),qty:+r.querySelector('.at-q').value||1})).filter(x=>x.kind)};
   if($('#atAct')) b.active=$('#atAct').checked;
+  if($('#atRain')){ const n=(id,f)=>{ const x=$(id).value.trim(); return x===''?null:f(x); };
+    b.weather={rain_max_mm:n('#atRain',parseFloat),wind_max_kmh:n('#atWind',x=>parseInt(x,10)),temp_min_c:n('#atTmin',x=>parseInt(x,10)),temp_max_c:n('#atTmax',x=>parseInt(x,10)),dry_hours_after:n('#atDry',x=>parseInt(x,10))}; }
   try{ await api(id?('/activity-types/'+id):'/activity-types',{method:'POST',body:JSON.stringify(b)}); toast('Tipo di attività salvato','ok'); closeDrawer(); route(); }
   catch(e){ m.textContent=friendlyError(e); m.style.color='var(--bad)'; } }
 async function atDel(id){ if(!await askConfirm('Eliminare il tipo di attività?'))return;
@@ -3240,6 +3315,7 @@ async function vDispatch(v){
     api('/orders?state=open').catch(()=>[]),
     api('/orders/checks?from='+encodeURIComponent(mon.toISOString())+'&to='+encodeURIComponent(sun.toISOString())).catch(()=>({}))]);
   const nChk=Object.values(CHK||{}).filter(l=>l.some(x=>x.hard)).length;
+  const nWx=Object.values(CHK||{}).filter(l=>l.some(x=>String(x.code||'').startsWith('weather_'))).length;
   const sameDay=o=>o.scheduled_start && ymdLocal(o.scheduled_start)===day && o.state!=='annullato';
   const hm=o=>new Date(o.scheduled_start).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'});
   const tostr=o=>`<div class="spread clk-card" data-ord="${o.id}" style="border:1px solid var(--line);border-radius:8px;padding:var(--s-6) var(--s-8);margin:var(--s-4) 0">
@@ -3281,6 +3357,7 @@ async function vDispatch(v){
   v.innerHTML=`<div class="page-h"><div><h1>Agenda tecnici</h1><div class="mut">dispatch degli interventi per squadra e per persona · ${todays.length} il ${day.slice(8,10)}/${day.slice(5,7)}, ${O.filter(o=>o.scheduled_start&&o.state!=='annullato').length} nella settimana</div></div>
     <span class="row" style="gap:var(--s-8);flex-wrap:wrap;align-items:center">${toggle}<button class="btn ghost small" onclick="(function(){$('#view')._day='${shift(-step)}';route();})()" aria-label="Precedente">‹</button><input type="date" style="width:auto" value="${day}" onchange="(function(e){$('#view')._day=e;route();})(this.value)"><button class="btn ghost small" onclick="(function(){$('#view')._day='${shift(step)}';route();})()" aria-label="Successivo">›</button><button class="btn ghost small" onclick="dispCSV()">⬇ CSV</button></span></div>
   ${nChk?`<div class="card pad" style="margin-bottom:var(--s-14);border-color:var(--bad)"><b style="color:var(--bad)">⛔ ${nChk} interventi della settimana con vincoli non rispettati</b><div class="small mut">patentino mancante o scaduto, mezzo fermo o già prenotato, fuori dall'orario della sede, persona assente: passa il mouse su ⛔ per il motivo.</div></div>`:''}
+  ${nWx?`<div class="card pad clk" style="margin-bottom:var(--s-14);border-color:var(--warn,#b8860b)" onclick="location.hash='#/meteo'"><b style="color:var(--warn,#b8860b)">🌧️ ${nWx} interventi della settimana con avviso meteo</b><div class="small mut">la previsione supera i limiti del tipo di attività: apri Meteo per il primo giorno buono e lo spostamento.</div></div>`:''}
   <div class="card" style="margin-bottom:var(--s-14)"><div class="card-h"><h2>Da assegnare (${unassigned.length})</h2></div><div style="padding:0 var(--s-12) var(--s-12)">${unRows}${unassigned.length>50?`<div class="small mut">… e altri ${unassigned.length-50}: vedi Interventi → Da pianificare</div>`:''}</div></div>
   ${mode==='week'
     ? `<h2 style="margin:var(--s-4) 0 var(--s-8)">Settimana ${weekDays[0].slice(8,10)}/${weekDays[0].slice(5,7)} – ${weekDays[6].slice(8,10)}/${weekDays[6].slice(5,7)}</h2>

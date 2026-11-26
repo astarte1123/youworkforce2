@@ -14,6 +14,7 @@ mod mqtt; // broker MQTT nativo (IoT): ingest telemetria + downlink comandi su T
 mod dashboard; // servizio core: dashboard unica configurabile (widget + layout per-tenant)
 mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
 mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
+mod weather; // Fase 4: meteo operativo (zone, previsioni scritte da Youco via chiave, avvisi sugli interventi)
 mod analytics; // Fase 3: durate reali, stima dallo storico, precisione, ricorrenze, extra, piano contro realtà
 mod integrations; // Fase 2: chiavi di integrazione (ERP, software turni, Youco/MCP), codici esterni, import CSV, elenco modifiche
 mod constraints; // Fase 1 Lavoro sul campo: tipi di attività, mezzi e prenotazioni, scadenziario, vincoli dell'intervento
@@ -565,6 +566,13 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/integration/orders/:ref", axum::routing::put(api::put_order))
         .route("/api/integration/changes", get(api::changes))
         .route("/api/integration/import/:entity", post(api::import_csv))
+        // Fase 4 meteo operativo
+        .route("/api/integration/weather/zones/:code", axum::routing::put(api::put_weather_zone))
+        .route("/api/integration/weather/slots", post(api::post_weather_slots))
+        .route("/api/weather/zones/:id", axum::routing::delete(api::delete_weather_zone))
+        .route("/api/weather/zones/:id/sites", post(api::set_zone_sites))
+        .route("/api/weather/forecast", get(api::weather_forecast))
+        .route("/api/weather/at-risk", get(api::weather_at_risk))
         // Fase 3 analisi e stime
         .route("/api/analytics/estimate", get(api::analytics_estimate))
         .route("/api/analytics/durations", get(api::analytics_durations))

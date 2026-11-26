@@ -598,6 +598,13 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   una sola punzonatura per punto la permanenza non si misura). Il tempo di ogni step di escalation
   nella cronologia (`fired_at`) è quello del core, come lo stato dell'escalation. e2e
   `qa/patrol-schedule-suspend-e2e.sh`.
+- **Fase 4 Meteo operativo (mig `0168`, modulo `meteo`).** Le previsioni le scrive Youco (o un altro
+  sistema autorizzato) con una chiave di integrazione: zone con posizione (ogni sede usa la zona
+  fissata o la più vicina) e fasce orarie di pioggia, probabilità, vento, raffiche e temperatura; YW
+  non chiama servizi meteo. Limiti meteo sul tipo di attività (pioggia, vento, temperature, ore
+  asciutte dopo) → **avvisi** (mai blocchi) nel controllo dell'intervento; interventi a rischio con il
+  primo giorno buono dentro la previsione e «Sposta». Pagina **Lavoro sul campo → Meteo**; avviso in
+  Agenda tecnici. Dettaglio in [meteo-operativo.md](meteo-operativo.md); e2e `qa/weather-e2e.sh`.
 - **Fase 3 Analisi e stime (mig `0167`, modulo `analisi`).** Origine (`manuale`, `piano`, `richiesta`,
   `integrazione`) ed **extra** di ogni intervento; durate reali per tipo, sede e squadra; **stima dallo
   storico** (sede → squadra → tipo → standard, scalata sulla quantità) proposta nel controllo

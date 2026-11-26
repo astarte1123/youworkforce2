@@ -68,3 +68,19 @@ tabella sopra), colonna obbligatoria `ref`; separatore `;` o `,`, campi tra virg
 5.000 righe. Ogni riga si inserisce o aggiorna da sola: le righe con errori sono nel rapporto
 `errors: [{row, ref, error}]` e non fermano le altre. Risposta: `rows`, `created`, `updated`,
 `with_warnings`, `errors`.
+
+## Meteo (fase 4)
+
+Con il modulo **Meteo operativo** attivo, chi porta le previsioni (l'agente Youco) usa una chiave con
+il permesso *Pianificare*: `PUT /api/integration/weather/zones/{codice}` `{name, lat, lon}` per le
+zone e `POST /api/integration/weather/slots` `{zone, source, issued_at, slots:[{from, to, rain_mm,
+rain_prob, wind_kmh, gust_kmh, temp_c, condition}]}` per le fasce orarie (fino a 2000 per invio; una
+nuova emissione sostituisce le fasce con lo stesso inizio). Esempio:
+
+```
+curl -X POST https://<tenant>/api/integration/weather/slots -H "Authorization: Bearer ywk_…"   -H "content-type: application/json" -d '{"zone":"MI-CN","source":"Youco","issued_at":"2026-11-26T06:00:00Z",
+  "slots":[{"from":"2026-12-02T07:00:00Z","to":"2026-12-02T10:00:00Z","rain_mm":4.5,"rain_prob":90,
+  "wind_kmh":22,"gust_kmh":48,"temp_c":6,"condition":"pioggia"}]}'
+```
+
+Dettaglio, limiti e avvisi in [meteo-operativo.md](meteo-operativo.md).

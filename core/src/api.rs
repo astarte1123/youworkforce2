@@ -7,6 +7,7 @@ use uuid::Uuid;
 use futures::stream::Stream;
 use crate::state::{AppState, Session, TenantEvent};
 use crate::{auth, db};
+pub(crate) use crate::weather::*; // Fase 4: meteo operativo
 pub(crate) use crate::analytics::*; // Fase 3: analisi e stime
 pub(crate) use crate::integrations::*; // Fase 2: chiavi di integrazione, codici esterni, import, modifiche
 pub(crate) use crate::constraints::*; // Fase 1 Lavoro sul campo: tipi di attività, mezzi, scadenziario, vincoli dell'intervento
