@@ -66,7 +66,7 @@ pub async fn superadmin_login(State(st): State<AppState>, h: HeaderMap, Json(b):
                 let csrf = auth::new_token();
                 let full = setup_reason.is_none();
                 let sess = Session { user_id: id, tenant_id: None, email: b.email.clone(),
-                    role: if full { "superadmin".into() } else { "superadmin_setup".into() }, is_super: full, impersonator: None, caps: vec![] };
+                    role: if full { "superadmin".into() } else { "superadmin_setup".into() }, is_super: full, impersonator: None, caps: vec![], via_key: None };
                 persist_session(&st, &tok, &sess).await;
                 (StatusCode::OK, set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"role":sess.role,"csrf":csrf,
                     "mfa_setup_required": setup_reason == Some("mfa_da_attivare"), "secrets_locked": setup_reason == Some("chiave_bloccata")}))).into_response()
@@ -1071,7 +1071,7 @@ pub async fn super_impersonate(State(st): State<AppState>, h: HeaderMap, Path(ti
     let sess = Session {
         user_id: u.get("user_id"), tenant_id: Some(tid), email: u.get("email"),
         role: "tenant_admin".into(), is_super: false, impersonator: Some(s.email.clone()),
-        caps: effective_caps_user(&st, tid, "tenant_admin", u.get("user_id")).await,
+        caps: effective_caps_user(&st, tid, "tenant_admin", u.get("user_id")).await, via_key: None,
     };
     let tok = auth::new_token(); let csrf = auth::new_token();
     persist_session(&st, &tok, &sess).await;
@@ -1088,7 +1088,7 @@ pub async fn impersonate_stop(State(st): State<AppState>, h: HeaderMap) -> impl 
     let Some(sa) = sa else { return err(StatusCode::FORBIDDEN, "impersonator non valido").into_response(); };
     if let Some(t) = get_cookie(&h, "yw_session") { let _ = sqlx::query("DELETE FROM app.sessions WHERE token=$1").bind(&t).execute(&st.owner_pool).await; }
     // SA-7: la sessione superadmin ripristinata porta l'id del SUPERADMIN, non quello dell'utente impersonato.
-    let sess = Session { user_id: sa.get("id"), tenant_id: None, email: imp.clone(), role: "superadmin".into(), is_super: true, impersonator: None, caps: vec![] };
+    let sess = Session { user_id: sa.get("id"), tenant_id: None, email: imp.clone(), role: "superadmin".into(), is_super: true, impersonator: None, caps: vec![], via_key: None };
     let tok = auth::new_token(); let csrf = auth::new_token();
     persist_session(&st, &tok, &sess).await;
     if let Some(tid) = s.tenant_id {

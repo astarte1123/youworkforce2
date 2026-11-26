@@ -30,6 +30,9 @@ pub struct Session {
     pub impersonator: Option<String>, // super email when this is an impersonation session
     #[allow(dead_code)]
     pub caps: Vec<String>,            // capability effettive (default ruolo ± override tenant) — Fase 2
+    /// Fase 2 integrazioni: nome della chiave di integrazione quando la richiesta arriva da un
+    /// sistema esterno (Authorization: Bearer ywk_…). None = sessione di una persona.
+    pub via_key: Option<String>,
 }
 
 #[derive(Clone, Debug)]

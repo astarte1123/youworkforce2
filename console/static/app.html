@@ -148,6 +148,7 @@ const NAV = [
   {k:'connettori',t:'Collegamento dispositivi', ico:'sliders', roles:['tenant_admin'], cap:'devices.admin', mod:['gps','iot','loneworker'], grp:'cfg'},
   {k:'utenti-ruoli',t:'Persone e permessi', ico:'shield', roles:['tenant_admin'], cap:'users.manage', grp:'cfg'},
   {k:'anagrafiche',t:'Sedi e asset', ico:'receipt', roles:['tenant_admin','pianificatore'], cap:['sites.manage','users.manage'], grp:'cfg'},
+  {k:'integrazioni',t:'Integrazioni', ico:'sliders', roles:['tenant_admin'], cap:'settings.manage', grp:'cfg'},
   {k:'privacy-audit',t:'Privacy e audit', ico:'shield', roles:['tenant_admin'], cap:['gdpr.manage','audit.view'], grp:'cfg'},
   {hidden:true, k:'ai',        t:'AI · youworker.ai', ico:'sliders', roles:['tenant_admin'], cap:'settings.manage', mod:['assistant'], grp:'cfg'},
   {hidden:true, k:'moduli-base',    t:'Moduli', ico:'sliders', roles:['tenant_admin'], cap:'settings.manage', grp:'cfg'},
@@ -538,7 +539,7 @@ function renderPage(k, v){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,'centrale-tutti':vCentrale,'iot-monitor':vIotMonitor,'iot-alerts':vIotAlerts,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,
-    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,ore:vOre,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,'regole-sensori':vRegoleSensori,'moduli-base':vModuli,'piantine-campo':vPiantine,clienti:vClienti,listino:vListino,attivita:vAttivita,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,'mappa-allarmi':vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,ore:vOre,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,'regole-sensori':vRegoleSensori,'moduli-base':vModuli,'piantine-campo':vPiantine,clienti:vClienti,listino:vListino,attivita:vAttivita,integrazioni:vIntegrazioni,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,'mappa-allarmi':vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- Export unificato (CSV / Excel / PDF / Markdown) ----------------
@@ -2327,6 +2328,68 @@ async function schSave(){ const m=$('.cfg-msg'); let mask=''; for(let i=0;i<7;i+
 async function schToggle(id,on){ try{ await api('/patrol-schedules/'+id,{method:'POST',body:JSON.stringify({active:on})});
   toast(on?'Piano riattivato: le ronde dovute ripartono da adesso':'Piano sospeso: nessuna ronda dovuta né allarme di ronda mancata','ok'); route(); }catch(e){ toast(e,'bad'); } }
 async function schDel(id){ if(!await askConfirm('Eliminare il piano?'))return; try{await api('/patrol-schedules/'+id,{method:'DELETE'}); toast('Eliminato','ok'); route();}catch(e){toast(e,'bad');} }
+// ===== Fase 2: integrazioni (gestionale/ERP, software turni, agente Youco) =====
+const IMPORT_ENT={clients:'Clienti',sites:'Sedi',commesse:'Commesse',orders:'Interventi'};
+const IMPORT_COLS={clients:'ref; name; vat; address; phone; email; pec; sdi; payment_terms; notes',
+  sites:'ref; name; address; lat; lon; access_notes',
+  commesse:'ref; name; code; client_ref; site_ref; start_date; end_date; budget_amount; status; note',
+  orders:'ref; title; site_ref; client_ref; activity_type; team; assignee_email; quantity; scheduled_start; scheduled_end; priority; instructions'};
+async function vIntegrazioni(v){
+  const K=await api('/integration/keys').catch(loadFail); if(isLoadFail(K)) return pageLoadError(v,'Integrazioni',K);
+  v._scopes=K.scopes;
+  const sl=Object.fromEntries(K.scopes.map(x=>[x.code,x.label]));
+  const dt=t=>t?new Date(t).toLocaleString(UI_LOCALE(),{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
+  v.innerHTML=`<div class="page-h"><div><h1>Integrazioni</h1><div class="mut">collega il gestionale (ERP), il software turni o un agente: sono loro a chiamare YouWorkforce, con una chiave</div></div>
+    <button class="btn" onclick="keyNew()">+ Nuova chiave</button></div>
+  <div class="card"><div class="card-h"><h2>Chiavi di integrazione (${K.keys.length})</h2></div>
+    <table class="table" data-export="chiavi-integrazione"><thead><tr><th>Nome</th><th>Permessi</th><th>Creata da</th><th>Ultimo uso</th><th>Scade</th><th>Stato</th><th></th></tr></thead>
+    <tbody>${K.keys.map(k=>`<tr><td><b>${esc(k.name)}</b><div class="small mut mono">ywk_${esc(k.prefix)}_…</div></td>
+      <td class="small">${k.scopes.map(c=>`<span class="chip">${esc(sl[c]||capLabel(c))}</span>`).join(' ')}</td><td class="small">${esc(k.owner||'—')}</td>
+      <td class="small">${dt(k.last_used_at)}</td><td class="small">${k.expires_at?dt(k.expires_at):'mai'}</td>
+      <td><span class="chip" style="color:${k.status==='attiva'?'var(--ok,#16a34a)':'var(--mut)'}">${esc(k.status)}</span></td>
+      <td style="text-align:right">${k.status==='attiva'?`<button class="btn ghost small" onclick="keyRevoke('${k.id}')">Revoca</button>`:''}</td></tr>`).join('')
+      ||emptyRow(7, ICON.sliders, 'Nessuna chiave', 'Crea una chiave per il gestionale: la usa nelle sue chiamate al posto di utente e password.', {fn:'keyNew()',label:'+ Nuova chiave'})}</tbody></table></div>
+  <div class="card pad" style="margin-top:var(--s-16)"><h2>Importa da file CSV</h2>
+    <div class="small mut" style="margin:var(--s-4) 0 var(--s-10)">Prima riga con i nomi delle colonne; separatore «;» o «,». La colonna <b>ref</b> è il codice del gestionale: con lo stesso codice la riga aggiorna invece di creare un doppione. Le righe con errori non fermano le altre e sono elencate nel rapporto.</div>
+    <div class="row" style="gap:var(--s-8);flex-wrap:wrap;align-items:flex-end">
+      <label class="small mut">Cosa importi<select id="impEnt" style="width:auto" onchange="$('#impCols').textContent=IMPORT_COLS[this.value]">${Object.entries(IMPORT_ENT).map(([k,l])=>`<option value="${k}">${l}</option>`).join('')}</select></label>
+      <input type="file" id="impFile" accept=".csv,text/csv" style="width:auto"><button class="btn" onclick="impRun()">Importa</button></div>
+    <div class="small mut" style="margin-top:var(--s-8)">Colonne: <span id="impCols" class="mono">${IMPORT_COLS.clients}</span></div>
+    <div id="impOut" style="margin-top:var(--s-10)"></div></div>
+  <div class="card pad" style="margin-top:var(--s-16)"><h2>Come si collega un gestionale</h2>
+    <ol class="small" style="margin:var(--s-6) 0 0 var(--s-16);line-height:1.6">
+      <li>Crea una chiave con i soli permessi che servono (es. <i>Pianificare</i> per mandare clienti, commesse e interventi; <i>Leggere tutti gli interventi</i> per riprenderne l'esito).</li>
+      <li>Il gestionale chiama le API con l'intestazione <span class="mono">Authorization: Bearer ywk_…</span>.</li>
+      <li>Invio per codice: <span class="mono">PUT /api/integration/clients/{codice}</span>, <span class="mono">…/sites/{codice}</span>, <span class="mono">…/commesse/{codice}</span>, <span class="mono">…/orders/{codice}</span>. Gli interventi rispettano gli stessi vincoli della console (orari, patentini, mezzi).</li>
+      <li>Ritorno verso il gestionale: <span class="mono">GET /api/integration/changes?since=…</span> restituisce interventi e consuntivi cambiati; il valore <span class="mono">until</span> è il prossimo «since».</li>
+    </ol><div class="small mut" style="margin-top:var(--s-6)">Le azioni fatte con una chiave compaiono nel registro attività con il nome della chiave. Una chiave revocata smette di funzionare subito.</div></div>`;
+}
+function keyNew(){ const sc=$('#view')._scopes||[];
+  drawer('Nuova chiave di integrazione',`<div class="col" style="gap:var(--s-10)">
+    <label class="small mut">Nome<input id="kName" placeholder="Gestionale ERP, Software turni, Agente Youco…"></label>
+    <div><div class="small mut">Permessi (solo quelli che hai anche tu)</div>${sc.map(x=>`<label class="row small" style="gap:var(--s-6)"><input type="checkbox" class="kSc" value="${x.code}" ${x.code==='plan'?'checked':''}> ${esc(x.label)}</label>`).join('')}</div>
+    <label class="small mut">Scade dopo (giorni, 0 = mai)<input id="kExp" type="number" min="0" max="730" value="365"></label>
+    <button class="btn" onclick="keySave()">Crea chiave</button><div class="cfg-msg small"></div><div id="kOut"></div></div>`); }
+async function keySave(){ const m=$('.cfg-msg'); const name=$('#kName').value.trim(); const scopes=[...document.querySelectorAll('.kSc:checked')].map(x=>x.value);
+  if(!name){ m.textContent='nome richiesto'; m.style.color='var(--bad)'; return; }
+  try{ const r=await api('/integration/keys',{method:'POST',body:JSON.stringify({name,scopes,expires_days:+$('#kExp').value||0})});
+    $('#kOut').innerHTML=`<div class="card pad" style="border-color:var(--warn,#b8860b)"><b>Copia la chiave adesso: non verrà più mostrata.</b>
+      <div class="mono small" style="word-break:break-all;margin:var(--s-6) 0" id="kVal">${esc(r.key)}</div>
+      <button class="btn ghost small" onclick="navigator.clipboard&&navigator.clipboard.writeText($('#kVal').textContent).then(()=>toast('Copiata','ok'))">Copia</button></div>`;
+    $('.cfg-msg').textContent=''; document.querySelector('#drawer .btn[onclick="keySave()"]').disabled=true;
+    setTimeout(()=>{ const v=$('#view'); if(v&&location.hash.includes('integrazioni')) vIntegrazioni(v); },300);
+  }catch(e){ m.textContent=friendlyError(e); m.style.color='var(--bad)'; } }
+async function keyRevoke(id){ if(!await askConfirm('Revocare la chiave? Il sistema che la usa smette subito di funzionare.'))return;
+  try{ await api('/integration/keys/'+id,{method:'DELETE'}); toast('Chiave revocata','ok'); route(); }catch(e){ toast(e,'bad'); } }
+async function impRun(){ const f=$('#impFile').files[0]; const out=$('#impOut'); if(!f) return toast('scegli il file CSV','warn');
+  if(f.size>5e6) return toast('File troppo grande (max 5 MB)','bad');
+  out.innerHTML='<div class="small mut">Importo…</div>';
+  try{ const txt=await f.text(); const ent=$('#impEnt').value;
+    const r=await fetch('/api/integration/import/'+ent,{method:'POST',credentials:'include',headers:{'content-type':'text/csv','x-tenant-slug':store.slug,'x-csrf-token':csrfToken()},body:txt});
+    const d=await r.json().catch(()=>null); if(!r.ok) throw new Error((d&&d.error)||('HTTP '+r.status));
+    out.innerHTML=`<div class="card pad"><b>${IMPORT_ENT[ent]}: ${d.rows} righe</b> · <span style="color:var(--ok,#16a34a)">${d.created} nuove</span> · ${d.updated} aggiornate${d.with_warnings?` · ${d.with_warnings} con avvisi`:''} · <span style="color:${d.errors.length?'var(--bad)':'inherit'}">${d.errors.length} con errori</span>
+      ${d.errors.length?`<table class="table" style="margin-top:var(--s-8)"><thead><tr><th>Riga</th><th>Codice</th><th>Errore</th></tr></thead><tbody>${d.errors.slice(0,200).map(e=>`<tr><td>${e.row}</td><td class="mono small">${esc(e.ref||'')}</td><td class="small">${esc(e.error)}</td></tr>`).join('')}</tbody></table>`:''}</div>`;
+  }catch(e){ out.innerHTML='<div class="small" style="color:var(--bad)">'+esc(friendlyError(e))+'</div>'; } }
 // ===== Fase 1: catalogo dei tipi di attività =====
 async function vAttivita(v){
   const [R,quals]=await Promise.all([api('/activity-types').catch(loadFail),ACTIVE_MODS.has('qualifiche')?api('/qualifications').catch(()=>[]):Promise.resolve([])]);

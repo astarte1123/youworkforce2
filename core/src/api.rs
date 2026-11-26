@@ -7,6 +7,7 @@ use uuid::Uuid;
 use futures::stream::Stream;
 use crate::state::{AppState, Session, TenantEvent};
 use crate::{auth, db};
+pub(crate) use crate::integrations::*; // Fase 2: chiavi di integrazione, codici esterni, import, modifiche
 pub(crate) use crate::constraints::*; // Fase 1 Lavoro sul campo: tipi di attività, mezzi, scadenziario, vincoli dell'intervento
 pub(crate) use crate::catalogs::*; // SL-15/SA-10: cataloghi tipi di evento e pacchetti
 pub(crate) use crate::superadmin::*; // split: Piano di controllo (superadmin): tenant, moduli, monitoraggio di sistema, chiave dei segreti, canali di consegna, account e MFA, impersonazione
@@ -133,6 +134,12 @@ pub(crate) fn get_cookie(h: &HeaderMap, name: &str) -> Option<String> {
 }
 
 pub(crate) async fn session_of(state: &AppState, h: &HeaderMap) -> Option<Session> {
+    // Fase 2: sistemi esterni con chiave di integrazione (nessun cookie, quindi niente CSRF)
+    if get_cookie(h, "yw_session").is_none() {
+        if let Some(k) = h.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")) {
+            if k.starts_with("ywk_") { return crate::integrations::session_from_key(state, k.trim()).await; }
+        }
+    }
     let tok = get_cookie(h, "yw_session")?;
     // persistent sessions: survive core restarts; expired rows are ignored.
     let r = sqlx::query(
@@ -161,7 +168,7 @@ pub(crate) async fn session_of(state: &AppState, h: &HeaderMap) -> Option<Sessio
         role,
         is_super: r.get("is_super"),
         impersonator: r.try_get::<Option<String>, _>("impersonator").ok().flatten(),
-        caps,
+        caps, via_key: None,
     })
 }
 
@@ -398,7 +405,7 @@ pub async fn super_mfa_enable(State(st): State<AppState>, h: HeaderMap, Json(b):
     if s.is_super { return Json(json!({"ok":true})).into_response(); }
     // sessione di attivazione -> nuova sessione completa (password + codice verificati)
     let (tok, csrf) = (auth::new_token(), auth::new_token());
-    let sess = Session { user_id: s.user_id, tenant_id: None, email: s.email.clone(), role: "superadmin".into(), is_super: true, impersonator: None, caps: vec![] };
+    let sess = Session { user_id: s.user_id, tenant_id: None, email: s.email.clone(), role: "superadmin".into(), is_super: true, impersonator: None, caps: vec![], via_key: None };
     if let Some(old) = get_cookie(&h, "yw_session") { let _ = sqlx::query("DELETE FROM app.sessions WHERE token=$1").bind(old).execute(&st.owner_pool).await; }
     persist_session(&st, &tok, &sess).await;
     (StatusCode::OK, set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"csrf":csrf}))).into_response()
@@ -510,7 +517,7 @@ pub async fn tenant_login(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
                 }
             }
             let csrf = auth::new_token();
-            let sess = Session { user_id: uid, tenant_id: Some(tid), email: b.email.clone(), role: role.clone(), is_super: false, impersonator: None, caps: effective_caps_user(&st, tid, &role, uid).await };
+            let sess = Session { user_id: uid, tenant_id: Some(tid), email: b.email.clone(), role: role.clone(), is_super: false, impersonator: None, caps: effective_caps_user(&st, tid, &role, uid).await, via_key: None };
             persist_session(&st, &tok, &sess).await;
             (StatusCode::OK, set_cookie_header(&tok, &csrf), Json(json!({"ok":true,"role":role,"tenant":slug,"csrf":csrf}))).into_response()
         }

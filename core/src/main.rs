@@ -14,6 +14,7 @@ mod mqtt; // broker MQTT nativo (IoT): ingest telemetria + downlink comandi su T
 mod dashboard; // servizio core: dashboard unica configurabile (widget + layout per-tenant)
 mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
 mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
+mod integrations; // Fase 2: chiavi di integrazione (ERP, software turni, Youco/MCP), codici esterni, import CSV, elenco modifiche
 mod constraints; // Fase 1 Lavoro sul campo: tipi di attività, mezzi e prenotazioni, scadenziario, vincoli dell'intervento
 mod catalogs; // cataloghi di prodotto nel DB gestiti dal superadmin: tipi di evento (SL-15), pacchetti (SA-10)
 mod sites; // servizio core: sedi e asset/mezzi condivisi
@@ -554,6 +555,15 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/assets/:id/deadlines", get(api::asset_deadlines).post(api::create_deadline))
         .route("/api/asset-deadlines/:id", post(api::update_deadline).delete(api::delete_deadline))
         .route("/api/deadlines", get(api::list_deadlines))
+        // Fase 2 integrazioni: chiavi, inserimento/aggiornamento per codice esterno, modifiche, import CSV
+        .route("/api/integration/keys", get(api::list_keys).post(api::create_key))
+        .route("/api/integration/keys/:id", axum::routing::delete(api::revoke_key))
+        .route("/api/integration/clients/:ref", axum::routing::put(api::put_client))
+        .route("/api/integration/sites/:ref", axum::routing::put(api::put_site))
+        .route("/api/integration/commesse/:ref", axum::routing::put(api::put_commessa))
+        .route("/api/integration/orders/:ref", axum::routing::put(api::put_order))
+        .route("/api/integration/changes", get(api::changes))
+        .route("/api/integration/import/:entity", post(api::import_csv))
         .route("/api/orders/:id/edit", post(api::edit_order))
         .route("/api/orders/:id/assign", post(api::order_assign))
         .route("/api/orders/:id/assign-group", post(api::order_assign_group))

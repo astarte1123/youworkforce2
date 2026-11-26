@@ -81,3 +81,9 @@ POST   /api/commesse/:id/attachments    perm  # regole nel gestore: costi per fa
 POST   /api/users/:id/invite            module  # nuovo link di accesso (users.manage nel gestore)
 POST   /api/me/password                 module  # cambio della propria password
 GET    /api/event-types                 module  # nomi dei tipi di evento (catalogo di prodotto, sola lettura)
+
+# --- Fase 2 integrazioni: funzione di piattaforma, non di un modulo (permesso settings.manage / plan nel gestore;
+#     import_csv controlla il modulo di ogni entità nelle funzioni di inserimento) ---
+GET    /api/integration/keys            module  # chiavi di integrazione (settings.manage, solo da persona)
+POST   /api/integration/keys            module  # chiavi di integrazione (settings.manage, solo da persona)
+POST   /api/integration/import/:entity  module  # import CSV: modulo controllato per entità in upsert_*

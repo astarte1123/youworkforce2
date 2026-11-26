@@ -598,6 +598,13 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   una sola punzonatura per punto la permanenza non si misura). Il tempo di ogni step di escalation
   nella cronologia (`fired_at`) è quello del core, come lo stato dell'escalation. e2e
   `qa/patrol-schedule-suspend-e2e.sh`.
+- **Fase 2 Integrazioni (mig `0166`).** Chiavi di integrazione per gestionale, software turni o agente
+  (Youco/MCP): agiscono per conto di chi le crea con i permessi scelti, si mostrano una volta, si
+  revocano; codice esterno (`external_ref`) su clienti, sedi, commesse, interventi, persone, mezzi,
+  tipi di attività e gruppi con `PUT /api/integration/{entità}/{ref}` idempotente (interventi con il
+  controllo dei vincoli); `GET /api/integration/changes` per riportare esiti e consuntivi; import CSV.
+  Pagina **Configurazione → Integrazioni**. Dettaglio in [integrazioni.md](integrazioni.md); e2e
+  `qa/integrations-e2e.sh`.
 - **Fase 1 Lavoro sul campo: tipi di attività, mezzi, qualifiche e vincoli (mig `0165`).** Catalogo dei
   tipi di attività (durata base + per unità, persone, qualifiche e mezzi richiesti), finestre orarie
   delle sedi, nuovo modulo **Mezzi e attrezzature** (stato, scadenze, prenotazioni senza

@@ -1204,6 +1204,17 @@ Menu **Configurazione → Sedi e asset**.
 Sedi, persone e asset collegati ad altri dati (allarmi, ordini…) non si possono eliminare finché
 sono in uso. Un dispositivo invece si può eliminare del tutto.
 
+### Integrazioni
+Menu **Configurazione → Integrazioni** (permesso «Impostazioni»; di default l'amministratore).
+
+- **Chiavi di integrazione**: servono a collegare il gestionale (ERP), il software turni o un agente.
+  **+ Nuova chiave**: nome, permessi (solo quelli che hai anche tu), scadenza. La chiave si mostra
+  **una volta sola**: copiala e consegnala a chi configura il collegamento. **Revoca** la disattiva
+  subito. Le azioni fatte con una chiave compaiono nel registro attività con il suo nome.
+- **Importa da file CSV**: clienti, sedi, commesse o interventi da un file esportato dal gestionale. La
+  colonna **ref** è il codice del gestionale: reimportando lo stesso file si aggiorna, senza doppioni.
+  Il rapporto indica le righe nuove, aggiornate e quelle con errori (con il motivo).
+
 ### Privacy e audit
 Menu **Configurazione → Privacy e audit** (permessi «Privacy (GDPR)» o «Audit · Registro
 attività»; di default l'amministratore).
