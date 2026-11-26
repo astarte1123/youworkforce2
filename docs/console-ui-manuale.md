@@ -333,8 +333,8 @@ stessa cosa sono diventate **schede** di una sola voce (barra sotto il titolo, `
   icona con un nome, campi senza etichetta con il nome dal segnaposto; gli avvisi sono annunciati
   (`role=status`).
 - **Lingua (FE-14).** Tutte le voci del menu hanno la traduzione inglese; date e ore seguono la
-  lingua scelta (`UI_LOCALE()`: it-IT / en-GB). Il resto delle pagine resta in italiano con la
-  traduzione automatica delle frasi più comuni.
+  lingua scelta (`UI_LOCALE()`: it-IT / en-GB). Dal 26/11/2026 tutta l'interfaccia è tradotta
+  (vedi § 7).
 - **Superadmin e app del lavoratore.** Stessi criteri anche lì: niente px e colori scritti a mano
   (classi sui token), schede vere con tastiera (frecce, Home/Fine), dialoghi accessibili (focus,
   Esc), tutti i campi con etichetta, pulsanti di almeno 44 px nell'app, nessuno scorrimento

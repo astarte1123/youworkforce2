@@ -436,7 +436,7 @@ glossario "vietato" in UI (controllo automatico in CI); onboarding GH-5200 → l
 - Documentazione: README riscritto, manuale dispositivi `dispositivi-gps.md`, documenti storici
   spostati in `docs/archivio/`.
 
-**Step 1b — Correzioni dalla code review di b904493 (fatto, non ancora committato).**
+**Step 1b — Correzioni dalla code review di b904493 (fatto, commit `fbe89eb`).**
 
 La review ha trovato 9 rilievi, tutti verificati (7 confermati, 2 parziali) più un difetto
 preesistente di isolamento. Correzioni:
@@ -461,7 +461,7 @@ preesistente di isolamento. Correzioni:
   in console). **Scheda dispositivo**: "in linea" con la soglia reale del tenant.
 - Test: `gps-isolation-e2e.sh` (36), `upgrade-0127-check.sh` (21), 7 nuovi unit test.
 
-**Step 1c — Verifica finale e correzioni (fatto, non committato).**
+**Step 1c — Verifica finale e correzioni (fatto, commit `fbe89eb`).**
 
 - **Stato di servizio esplicito dei badge** (mig 0128): l'assegnazione non vale più come messa in
   servizio. Il conteggio del silenzio parte dalla *messa in servizio* (azione esplicita) e riparte
@@ -474,3 +474,32 @@ preesistente di isolamento. Correzioni:
 - **Controlli in sola lettura** per gli ambienti di destinazione: `qa/sql/check-imei-contesi.sql`,
   `qa/sql/check-escalation-0127.sql`, `qa/sql/check-badge-0128.sql` (stato dopo 0128 e azione per il
   responsabile operativo). Scheda di collaudo staging: `docs/collaudo-staging-gps.md`.
+
+**Dal 24 al 26/11 — registro errori e decisioni del PO (fatto, pubblicato su GitHub il 26/11).**
+
+Il lavoro è proseguito sul registro «Stato dello sviluppo e registro errori» (123 errori in 7 aree:
+superadmin, tenant, sicurezza lavoratore, lavoro sul campo, IoT/AI, console, architettura). Il
+registro ha una sezione «Avanzamento al 26/11/2026» con stato e commit di ogni errore: **121
+corretti, 2 in parte** (TA-16 `iam-refactor-plan.md` da riallineare; SL-21 commenti del codice di
+escalation). Ultimo commit `f508fa3`, migrazioni fino alla `0164`. In sintesi:
+
+- **Fase 1 (struttura)**: `api.rs` diviso in moduli (`superadmin`, `devices`, `iot`, `field`,
+  `oncall`, `ai`, `catalogs`); controlli statici in regressione e CI (`handler-guards`,
+  `owner-pool-audit`, `console-syntax`, `glossary-check`); trigger `yw_same_tenant` su 88 tabelle.
+- **Sicurezza**: rete di ultima istanza per gli allarmi senza destinatari, immobilità configurabile,
+  SOS non duplicati, verifica in due passaggi obbligatoria per il superadmin, segreti cifrati con
+  chiave sigillata dal server, limiti di accesso per account e IP.
+- **Permessi**: deleghe controllate (non si concede ciò che non si ha), menu e widget per
+  permesso, nuovi permessi `sites.manage` e `work.own`, inviti con link monouso.
+- **Prodotto**: pacchetti e tipi di evento in database gestiti dal superadmin, un solo diario,
+  manutenzioni ricorrenti automatiche, ore lavorate, listino in centesimi con qualifiche, scenari
+  IoT con telemetria e comandi veri, ronde mancate come allarmi.
+- **Console (Fase 2 e 4)**: menu ridotto a ~27 voci con schede, accessibilità e telefono,
+  glossario unico, **interfaccia inglese completa** (`console/static/i18n.js` + dizionario
+  generato, vedi `console/tools/i18n/README.md`; supera il piano `it.json`/`en.json` per vista
+  descritto sopra).
+- **Regressione**: `qa/run-all.sh` 137/138 all'ultimo giro completo; il fallimento era un bug vero
+  (piano di ronda «dalle = alle»), corretto in `f508fa3`.
+
+Resta: prova reale con il badge GH-5200, build di release e deploy, rilettura madrelingua delle
+traduzioni.
