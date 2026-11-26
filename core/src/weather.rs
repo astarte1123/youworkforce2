@@ -88,6 +88,55 @@ pub(crate) async fn weather_warnings(st: &AppState, tid: Uuid, at: Option<Uuid>,
 }
 
 // =============================================================================================
+// Valutazione in memoria (pianificazione automatica: migliaia di tentativi senza una query ciascuno)
+// =============================================================================================
+#[derive(Clone, Debug)]
+pub(crate) struct WSlot { pub from: DateTime<Utc>, pub to: DateTime<Utc>, pub rain: Option<f64>, pub wind: Option<f64>, pub temp: Option<f64> }
+#[derive(Clone, Debug, Default)]
+pub(crate) struct WLimits { pub rain_max: Option<f64>, pub wind_max: Option<f64>, pub tmin: Option<f64>, pub tmax: Option<f64>, pub dry_h: Option<i64> }
+impl WLimits { pub fn any(&self) -> bool { self.rain_max.is_some() || self.wind_max.is_some() || self.tmin.is_some() || self.tmax.is_some() || self.dry_h.map(|h| h > 0).unwrap_or(false) } }
+
+/// Stessa regola di `weather_warnings`: primo limite superato nella fascia [a,z) (pioggia in proporzione,
+/// vento = massimo tra vento e raffiche, temperature, pioggia nelle ore dopo). None = va bene o niente
+/// previsione per quella fascia.
+pub(crate) fn weather_issue(slots: &[WSlot], lim: &WLimits, a: DateTime<Utc>, z: DateTime<Utc>) -> Option<&'static str> {
+    let over: Vec<&WSlot> = slots.iter().filter(|s| s.from < z && s.to > a).collect();
+    let prorate = |set: &[&WSlot], a: DateTime<Utc>, z: DateTime<Utc>| -> Option<f64> {
+        let mut tot = None;
+        for s in set { if let Some(r) = s.rain {
+            let ov = (s.to.min(z) - s.from.max(a)).num_seconds() as f64; let len = (s.to - s.from).num_seconds() as f64;
+            if len > 0.0 { *tot.get_or_insert(0.0) += r * ov / len; } } }
+        tot };
+    if !over.is_empty() {
+        if let (Some(mx), Some(r)) = (lim.rain_max, prorate(&over, a, z)) { if r > mx { return Some("weather_rain"); } }
+        if let Some(mx) = lim.wind_max { if over.iter().filter_map(|s| s.wind).fold(None, |m: Option<f64>, w| Some(m.map_or(w, |m| m.max(w)))).map(|w| w > mx).unwrap_or(false) { return Some("weather_wind"); } }
+        if let Some(mn) = lim.tmin { if over.iter().filter_map(|s| s.temp).any(|t| t < mn) { return Some("weather_cold"); } }
+        if let Some(mx) = lim.tmax { if over.iter().filter_map(|s| s.temp).any(|t| t > mx) { return Some("weather_heat"); } }
+    }
+    if let Some(h) = lim.dry_h.filter(|h| *h > 0) {
+        let z2 = z + chrono::Duration::hours(h);
+        let after: Vec<&WSlot> = slots.iter().filter(|s| s.from < z2 && s.to > z).collect();
+        if prorate(&after, z, z2).map(|r| r >= 0.5).unwrap_or(false) { return Some("weather_dry_after"); }
+    }
+    None
+}
+
+/// Fasce di previsione per zona nel periodo e zona di ogni sede (fissata o più vicina).
+pub(crate) async fn load_weather(st: &AppState, tid: Uuid, from: DateTime<Utc>, to: DateTime<Utc>)
+    -> Result<(std::collections::HashMap<Uuid, Vec<WSlot>>, std::collections::HashMap<Uuid, Uuid>), (StatusCode, String)> {
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT zone_id, valid_from, valid_to, rain_mm::float8 AS rain, GREATEST(wind_kmh, gust_kmh)::float8 AS wind, temp_c::float8 AS temp
+         FROM app.weather_slots WHERE kind='previsione' AND valid_to > $1 AND valid_from < $2 ORDER BY valid_from").bind(from).bind(to).fetch_all(&mut *tx).await.map_err(ise)?;
+    let sites = sqlx::query("SELECT s.id, COALESCE(s.weather_zone_id, (SELECT z2.id FROM app.weather_zones z2 WHERE s.lat IS NOT NULL AND s.lon IS NOT NULL
+              ORDER BY (z2.lat - s.lat)^2 + ((z2.lon - s.lon) * cos(radians(s.lat)))^2 LIMIT 1)) AS zone_id FROM app.sites s").fetch_all(&mut *tx).await.map_err(ise)?;
+    tx.commit().await.map_err(ise)?;
+    let mut z: std::collections::HashMap<Uuid, Vec<WSlot>> = Default::default();
+    for r in &rows { z.entry(r.get("zone_id")).or_default().push(WSlot { from: r.get("valid_from"), to: r.get("valid_to"), rain: num(r, "rain"), wind: num(r, "wind"), temp: num(r, "temp") }); }
+    let m = sites.iter().filter_map(|r| r.try_get::<Option<Uuid>,_>("zone_id").ok().flatten().map(|zid| (r.get::<Uuid,_>("id"), zid))).collect();
+    Ok((z, m))
+}
+
+// =============================================================================================
 // Scrittura da Youco / sistemi autorizzati (chiave di integrazione) e dalla console
 // =============================================================================================
 #[derive(Deserialize)]
@@ -257,5 +306,17 @@ pub async fn weather_at_risk(State(st): State<AppState>, h: HeaderMap, Query(q):
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     #[test] fn italian_numbers() { assert_eq!(super::it(6.0), "6"); assert_eq!(super::it(2.5), "2,5"); }
+    #[test] fn in_memory_rules() {
+        let t = |h: i64| DateTime::parse_from_rfc3339("2026-12-02T00:00:00Z").unwrap().with_timezone(&Utc) + chrono::Duration::hours(h);
+        let sl = vec![WSlot { from: t(8), to: t(11), rain: Some(4.0), wind: Some(48.0), temp: Some(5.0) }, WSlot { from: t(11), to: t(14), rain: Some(0.0), wind: Some(10.0), temp: Some(9.0) }];
+        let rain = WLimits { rain_max: Some(2.0), ..Default::default() };
+        assert_eq!(weather_issue(&sl, &rain, t(8), t(10)), Some("weather_rain"));      // 2,67 mm
+        assert_eq!(weather_issue(&sl, &rain, t(10), t(12)), None);                     // 1,33 mm
+        assert_eq!(weather_issue(&sl, &WLimits { wind_max: Some(40.0), ..Default::default() }, t(9), t(10)), Some("weather_wind"));
+        assert_eq!(weather_issue(&sl, &WLimits { tmin: Some(6.0), ..Default::default() }, t(12), t(13)), None);
+        assert_eq!(weather_issue(&sl, &WLimits { dry_h: Some(3), ..Default::default() }, t(6), t(8)), Some("weather_dry_after"));
+        assert_eq!(weather_issue(&sl, &rain, t(20), t(22)), None);                     // nessuna previsione
+    }
 }

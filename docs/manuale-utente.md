@@ -48,7 +48,7 @@ Aggiornato al 25/11/2026. I nomi di pagine e menu sono quelli del menu attuale (
    - [Listino](#cap6-listino)
    - [Cantieri e presenze](#cap6-cantieri)
    - [Ronde e cruscotto vigilanza](#cap6-ronde)
-   - [Pianificazione: calendario, agenda tecnici, turni](#cap6-pianificazione)
+   - [Pianificazione: calendario, agenda tecnici, automatica, turni](#cap6-pianificazione)
    - [Consuntivi](#cap6-consuntivi)
    - [Ore lavorate](#cap6-ore)
 7. [Persone e permessi, sedi e asset, privacy e audit](#cap7)
@@ -1093,9 +1093,9 @@ tentativi e motivo dell'ultimo fallito.
 mancato ha il simbolo di avviso e apre l'allarme.
 
 <a id="cap6-pianificazione"></a>
-### Pianificazione: calendario, agenda tecnici, turni
+### Pianificazione: calendario, agenda tecnici, automatica, turni
 
-Menu **Lavoro sul campo → Pianificazione**, con tre schede.
+Menu **Lavoro sul campo → Pianificazione**, con quattro schede.
 
 - **Calendario**: turni, interventi, ronde e cantieri in un'unica vista. Con molte persone si usa
   **Mostra** per vedere una sola squadra (i suoi interventi e i turni dei suoi membri) e le caselle
@@ -1106,6 +1106,23 @@ Menu **Lavoro sul campo → Pianificazione**, con tre schede.
   passare al giorno o alla settimana prima e dopo. Si assegnano persona o squadra e orario. In testa
   quanti interventi della settimana non rispettano un vincolo; su ogni intervento ⛔ o ⚠ con il motivo
   passando il mouse, e i mezzi prenotati (🚜).
+- **Automatica** (modulo Pianificazione automatica): YouWorkforce propone il piano della settimana
+  e tu lo rivedi.
+  - **Proponi**: scegli il giorno di inizio e quanti giorni. Senza «ripianifica» il motore sistema
+    solo gli interventi senza data o senza squadra; con «ripianifica» rifà anche quelli già assegnati,
+    tranne i **fissati** (📌 nel dettaglio dell'intervento) e quelli avviati.
+  - **Cosa rispetta**: patentini validi, persone presenti, mezzi liberi, orari delle sedi e della
+    giornata. Evita il meteo sfavorevole e riduce gli spostamenti.
+  - **La proposta** mostra:
+    - interventi pianificati e non pianificati, con il motivo;
+    - vincoli non rispettati (devono essere 0);
+    - chilometri di spostamento confrontati con il piano attuale;
+    - per ogni squadra e giorno, l'ordine delle visite: orario, spostamento, mezzi, avvisi e com'era
+      prima.
+  - **Applica i selezionati**: ogni intervento si ricontrolla al momento. Se è cambiato nel frattempo
+    o viola un vincolo non si applica, e il motivo compare accanto. **Scarta** lascia l'agenda com'è.
+  - **Impostazioni**: deposito (anche per squadra), orari e giorni di lavoro, straordinario ammesso,
+    velocità media, fattore di percorso, minuti di sistemazione, meteo.
 - **Turni** (modulo Forza lavoro e turni):
   - **Turni pianificati**: **+ Pianifica turno**, anche collegato a un intervento o a un cantiere;
     il lavoratore li vede e li conferma dall'app;

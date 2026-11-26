@@ -131,6 +131,7 @@ const NAV = [
   {k:'meteo',     t:'Meteo', ico:'sun', roles:['pianificatore','tenant_admin','responsabile','auditor'], cap:['plan','orders.view_all'], mod:['meteo'], grp:'work'},
   {k:'attivita',  t:'Tipi di attività', ico:'sliders', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'listino',   t:'Listino', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi','consuntivi'], grp:'work'},
+  {hidden:true, k:'autoplan',  t:'Pianificazione automatica', ico:'calendar', roles:['pianificatore','tenant_admin','responsabile','auditor'], cap:['plan','orders.view_all'], mod:['pianificazione'], grp:'work'},
   {hidden:true, k:'dispatch',  t:'Agenda tecnici', ico:'calendar', roles:['pianificatore','tenant_admin'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'richieste', t:'Richieste', ico:'clipboard', roles:['pianificatore','tenant_admin','operatore','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
   {k:'contratti', t:'Contratti', ico:'receipt', roles:['pianificatore','tenant_admin','auditor'], cap:'plan', mod:['interventi'], grp:'work'},
@@ -143,7 +144,7 @@ const NAV = [
   {k:'ore',       t:'Ore lavorate', ico:'clock', roles:['lavoratore','responsabile','pianificatore','tenant_admin','auditor'], cap:['approve','timesheets.view_all','plan'], mod:['consuntivi','workforce','cantieri','giri','interventi'], grp:'work'},
   {hidden:true, k:'turni',     t:'Turni', ico:'clipboard', roles:['pianificatore','tenant_admin','lavoratore','reperibile','auditor'], cap:'plan', mod:['workforce'], grp:'work'},
   // FE-9: pianificazione in un posto solo, con viste
-  {k:'pianificazione', t:'Pianificazione', ico:'calendar', grp:'work', hub:[['calendario','Calendario','calendario'],['agenda','Agenda tecnici','dispatch'],['turni','Turni','turni']]},
+  {k:'pianificazione', t:'Pianificazione', ico:'calendar', grp:'work', hub:[['calendario','Calendario','calendario'],['agenda','Agenda tecnici','dispatch'],['automatica','Automatica','autoplan'],['turni','Turni','turni']]},
   {k:'setup',     t:'Configurazione guidata', ico:'check', roles:['tenant_admin'], cap:'settings.manage', grp:'cfg'},
   {k:'agente',    t:'Agente AI', ico:'sliders', roles:['operatore','tenant_admin','pianificatore','responsabile','lavoratore'], mod:['assistant'], aiFeat:'agent', grp:'op'},
   // --- Configurazione generale (non specifica del perimetro sicurezza) ---
@@ -541,7 +542,7 @@ function renderPage(k, v){
   // voci dinamiche cruscotto: k = 'scn_<code>' -> dashboard del singolo ambiente
   if(k.startsWith('scn_')){ vScenarioOne(v, k.slice(4)); return; }
   ({dashboard:vDashboard,'centrale-tutti':vCentrale,'iot-monitor':vIotMonitor,'iot-alerts':vIotAlerts,'miei-allarmi':vMieiAllarmi,ordini:vOrdini,consuntivi:vConsuntivi,
-    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,ore:vOre,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,'regole-sensori':vRegoleSensori,'moduli-base':vModuli,'piantine-campo':vPiantine,clienti:vClienti,listino:vListino,attivita:vAttivita,analisi:vAnalisi,meteo:vMeteo,integrazioni:vIntegrazioni,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,'mappa-allarmi':vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
+    setup:vSetup,dispositivi:vDispositivi,trigger:vTrigger,profili:vProfili,gruppi:vGruppi,anagrafiche:vAnagrafiche,'utenti-ruoli':vUtentiRuoli,'privacy-audit':vPrivacyAudit,turni:vTurni,ronde:vRonde,ore:vOre,vigilanza:vVigilanza,cantieri:vCantieri,'mappa-cantieri':vMappaCantieri,'regole-sensori':vRegoleSensori,'moduli-base':vModuli,'piantine-campo':vPiantine,clienti:vClienti,listino:vListino,attivita:vAttivita,analisi:vAnalisi,autoplan:vAutoplan,meteo:vMeteo,integrazioni:vIntegrazioni,dispatch:vDispatch,richieste:vRichieste,contratti:vContratti,calendario:vCalendario,connettori:vConnettori,'mappa-allarmi':vMappa,'mappa-dispositivi':vMappaDispositivi,piantine:vPiantine,'piantine-safety':vPiantine,report:vReport,ai:vAI,agente:vAgente}[k]||vDashboard)(v);
 }
 
 // ---------------- Export unificato (CSV / Excel / PDF / Markdown) ----------------
@@ -2377,6 +2378,108 @@ async function vAnalisi(v){
     <tbody>${PV.weeks.map(w=>`<tr><td>${esc(w.week)}</td><td>${w.scheduled}</td><td>${w.completed}</td><td>${w.cancelled}</td><td style="color:${w.open_overdue?'var(--bad)':'inherit'}">${w.open_overdue}</td>
       <td>${fmtMin(w.planned_minutes)}</td><td><b>${fmtMin(w.worked_minutes)}</b></td><td>${w.on_day_pct}%</td></tr>`).join('')||emptyRow(8,null,'Nessun intervento nelle ultime settimane','',null)}</tbody></table></div>`;
 }
+// ===== Fase 5: pianificazione automatica (motore di base YW o motore esterno; bozza da applicare) =====
+async function ordLock(id,locked){ try{ await api('/orders/'+id+'/plan-lock',{method:'POST',body:JSON.stringify({locked})}); toast(locked?'Intervento fissato':'Intervento sbloccato','ok'); closeDrawer(); route(); }catch(e){ toast(e,'bad'); } }
+function apNextMonday(){ const d=new Date(); d.setHours(0,0,0,0); const k=(8-d.getDay())%7||7; d.setDate(d.getDate()+k); return ymdLocal(d); }
+async function vAutoplan(v){
+  const [RUNS,SET]=await Promise.all([api('/planning/runs').catch(loadFail),api('/planning/settings').catch(()=>null)]);
+  if(isLoadFail(RUNS)) return pageLoadError(v,'Pianificazione automatica',RUNS);
+  const canEdit=can(['pianificatore','tenant_admin'],'plan');
+  if(!v._apFrom) v._apFrom=apNextMonday();
+  if(v._apRun===undefined) v._apRun=(RUNS.find(r=>r.status==='bozza')||{}).id||null;
+  const R=v._apRun?await api('/planning/runs/'+v._apRun).catch(()=>null):null;
+  const dt=t=>t?new Date(t).toLocaleString(UI_LOCALE(),{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
+  const dd=t=>new Date(t).toLocaleDateString(UI_LOCALE(),{day:'2-digit',month:'2-digit'});
+  const STAT={bozza:'bozza',applicato:'applicata',scartato:'scartata'};
+  const noDepot=SET&&!SET.depot_site_id&&!(SET.teams||[]).some(t=>t.depot_site_id);
+  v.innerHTML=`<div class="page-h"><div><h1>Pianificazione automatica</h1><div class="mut">il motore propone il piano del periodo (squadra, giorno, ora, ordine delle visite, mezzi); tu lo rivedi e lo applichi</div></div>
+    ${SET&&canEdit?'<button class="btn ghost" onclick="apSettings()">Impostazioni</button>':''}</div>
+  ${noDepot?`<div class="card pad" style="margin-bottom:var(--s-12);border-color:var(--warn,#b8860b)"><b>Manca il deposito</b><div class="small mut">Indica nelle impostazioni la sede da cui partono le squadre: serve per stimare gli spostamenti del primo e dell'ultimo intervento.</div></div>`:''}
+  ${canEdit?`<div class="card pad"><h2>Nuova proposta</h2>
+    <div class="row" style="gap:var(--s-10);flex-wrap:wrap;align-items:flex-end;margin-top:var(--s-8)">
+      <label class="small mut">Settimana dal<input type="date" id="apFrom" value="${v._apFrom}" style="width:auto" onchange="$('#view')._apFrom=this.value"></label>
+      <label class="small mut">Giorni<select id="apDays" style="width:auto">${[5,7,14].map(n=>`<option value="${n}">${n}</option>`).join('')}</select></label>
+      <label class="row small" style="gap:var(--s-6)"><input type="checkbox" id="apReplan"> Ripianifica anche gli interventi già assegnati (non fissati né avviati)</label>
+      <button class="btn" onclick="apRun(this)">Proponi</button></div>
+    <div class="small mut" style="margin-top:var(--s-8)">Senza «ripianifica» il motore sistema solo gli interventi senza data o senza squadra, attorno a quelli già pianificati. Rispetta patentini, persone presenti, mezzi liberi, orari delle sedi e della giornata; evita il meteo sfavorevole; riduce gli spostamenti. Niente cambia finché non applichi.</div></div>`:''}
+  ${R?apRunHtml(R,canEdit):''}
+  <div class="card" style="margin-top:var(--s-16)"><div class="card-h"><h2>Proposte recenti</h2></div>
+    <table class="table"><thead><tr><th>Creata</th><th>Periodo</th><th>Motore</th><th>Pianificati</th><th>Spostamenti</th><th>Stato</th></tr></thead>
+    <tbody>${RUNS.map(r=>`<tr class="clk" onclick="$('#view')._apRun='${r.id}';route()"><td class="small">${dt(r.created_at)}<div class="mut">${esc((r.created_by||'').split('@')[0])}</div></td>
+      <td class="small">${dd(r.from)} – ${dd(new Date(new Date(r.to)-1))}</td><td class="small">${r.source==='nativo'?'Motore di base':'Esterno: '+esc(r.engine)}</td>
+      <td class="small">${r.summary.planned??'—'} / ${r.summary.orders??'—'}</td><td class="small">${r.summary.travel_km!=null?String(r.summary.travel_km).replace('.',',')+' km':'—'}</td>
+      <td><span class="chip">${esc(STAT[r.status]||r.status)}</span></td></tr>`).join('')
+      ||emptyRow(6,ICON.calendar,'Nessuna proposta','Scegli la settimana e premi «Proponi»: il piano proposto resta una bozza finché non lo applichi.',null)}</tbody></table></div>`;
+}
+function apRunHtml(R,canEdit){
+  const S=R.summary||{}; const t=x=>new Date(x).toLocaleTimeString(UI_LOCALE(),{hour:'2-digit',minute:'2-digit'});
+  const day=x=>new Date(x).toLocaleDateString(UI_LOCALE(),{weekday:'long',day:'2-digit',month:'2-digit'});
+  const km=x=>x==null?'—':String(Math.round(x*10)/10).replace('.',',');
+  const dPct=S.current_travel_km?Math.round(100*(S.travel_km-S.current_travel_km)/S.current_travel_km):null;
+  const draft=R.status==='bozza'&&canEdit;
+  const planned=R.items.filter(i=>i.start); const un=R.items.filter(i=>!i.start);
+  const byTeam={}; planned.forEach(i=>{ (byTeam[i.team||'—']=byTeam[i.team||'—']||[]).push(i); });
+  const changed=i=>{ const p=i.previous||{}; if(!p.start) return '<span class="chip">nuovo in agenda</span>';
+    const moved=new Date(p.start).getTime()!==new Date(i.start).getTime(); const team=p.group_id&&p.group_id!==i.group_id;
+    return (moved?`<span class="small mut">era ${new Date(p.start).toLocaleString(UI_LOCALE(),{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>`:'')+(team?` <span class="small mut">· era ${esc(i.prev_team||'altra squadra')}</span>`:'')||'<span class="small mut">invariato</span>'; };
+  const teams=Object.keys(byTeam).sort().map(tn=>{ const list=byTeam[tn].sort((a,b)=>new Date(a.start)-new Date(b.start));
+    const days={}; list.forEach(i=>{ const k=ymdLocal(i.start); (days[k]=days[k]||[]).push(i); });
+    const km_=list.reduce((s,i)=>s+(i.travel_km||0),0);
+    return `<details class="card pad" style="margin-top:var(--s-8)"><summary><b>👥 ${esc(tn)}</b> <span class="small mut">${list.length} interventi · ${km(km_)} km di spostamento</span>${list.some(i=>(i.violations||[]).length)?' '+vioBadge(list.flatMap(i=>i.violations||[])):''}</summary>
+      ${Object.keys(days).sort().map(k=>`<div style="margin-top:var(--s-8)"><b class="small">${day(days[k][0].start)}</b>
+        <table class="table" style="margin-top:var(--s-4)"><tbody>${days[k].map(i=>`<tr>${draft?`<td style="width:24px"><input type="checkbox" class="apSel" value="${i.order_id}" ${i.applied?'disabled':'checked'}></td>`:''}
+          <td class="small" style="white-space:nowrap"><b>${t(i.start)}–${t(i.end)}</b>${i.travel_minutes?`<div class="mut">🚐 ${i.travel_minutes} min</div>`:''}</td>
+          <td class="small"><b>${esc(i.title)}</b>${i.assets.length?`<div class="mut">🚜 ${i.assets.map(esc).join(', ')}</div>`:''}${(i.violations||[]).length?vioHtml(i.violations,true):''}${i.stale?'<div class="small" style="color:var(--warn,#b8860b)">⚠ intervento modificato dopo la proposta</div>':''}${i.apply_error?`<div class="small" style="color:var(--bad)">⛔ ${esc(i.apply_error)}</div>`:''}</td>
+          <td class="small">${changed(i)}${i.applied?' <span class="chip" style="color:var(--ok,#16a34a)">applicato</span>':''}</td></tr>`).join('')}</tbody></table></div>`).join('')}</details>`; }).join('');
+  return `<div class="card pad" style="margin-top:var(--s-16)">
+    <div class="spread"><h2>Proposta ${R.source==='nativo'?'del motore di base':'del motore esterno «'+esc(R.engine)+'»'} · ${new Date(R.from).toLocaleDateString(UI_LOCALE(),{day:'2-digit',month:'2-digit'})} – ${new Date(new Date(R.to)-1).toLocaleDateString(UI_LOCALE(),{day:'2-digit',month:'2-digit'})}</h2>
+      <span class="chip">${R.status==='bozza'?'bozza da rivedere':R.status==='applicato'?'applicata':'scartata'}</span></div>
+    <div class="grid g4" style="margin-top:var(--s-10)">
+      ${kpi('calendar','Pianificati',`${S.planned} / ${S.orders}`)}
+      ${kpi('alert','Non pianificati',S.unplanned,S.unplanned?'warn':'')}
+      ${kpi('x','Vincoli non rispettati',S.hard,S.hard?'bad':'')}
+      ${kpi('map','Spostamenti',`${km(S.travel_km)} km`)}</div>
+    <div class="small mut" style="margin-top:var(--s-8)">Piano attuale degli stessi giorni: ${km(S.current_travel_km)} km (${Math.round((S.current_travel_minutes||0)/60)} h di viaggio); proposta: ${km(S.travel_km)} km (${Math.round((S.travel_minutes||0)/60)} h)${dPct!=null?` · <b>${dPct<=0?dPct:'+'+dPct}%</b>`:''}. ${S.fixed?`${S.fixed} interventi restano dove sono (fissati, avviati o già assegnati). `:''}${S.warnings?`${S.warnings} con avvisi (⚠). `:''}Spostamenti stimati in linea d'aria × ${String(S.travel_model?.detour_factor??1.3).replace('.',',')} a ${S.travel_model?.kmh??25} km/h + ${S.travel_model?.setup_minutes??5} min.</div>
+    ${un.length?`<div style="margin-top:var(--s-12)"><b class="small">Non pianificati (${un.length})</b><table class="table" style="margin-top:var(--s-4)"><tbody>${un.map(i=>`<tr><td class="small"><b>${esc(i.title)}</b><div class="mut">${esc(i.site||'')}</div></td><td class="small">${esc(i.reason||'')}</td></tr>`).join('')}</tbody></table></div>`:''}
+    ${teams}
+    ${draft?`<div class="row" style="gap:var(--s-8);margin-top:var(--s-14);flex-wrap:wrap"><button class="btn" onclick="apApply('${R.id}',false,this)">Applica i selezionati</button><button class="btn ghost" onclick="apDiscard('${R.id}')">Scarta la proposta</button>
+      <span class="small mut">Ogni intervento si ricontrolla al momento: se è cambiato nel frattempo o viola un vincolo non viene applicato e te lo dico.</span></div>`:''}</div>`;
+}
+async function apRun(btn){ const from=$('#apFrom').value; if(!from) return toast('scegli la data di inizio','warn');
+  const a=new Date(from+'T00:00:00'); const z=new Date(a); z.setDate(a.getDate()+(+$('#apDays').value||5));
+  btn.disabled=true; btn.textContent='Calcolo…';
+  try{ const r=await api('/planning/runs',{method:'POST',body:JSON.stringify({from:a.toISOString(),to:z.toISOString(),replan:$('#apReplan').checked})});
+    $('#view')._apRun=r.id; toast(`Proposta pronta: ${r.summary.planned} interventi pianificati su ${r.summary.orders}`,'ok'); route(); }
+  catch(e){ toast(e,'bad'); btn.disabled=false; btn.textContent='Proponi'; } }
+async function apApply(id,force,btn){ const ids=[...document.querySelectorAll('.apSel:checked')].map(x=>x.value);
+  if(!ids.length) return toast('nessun intervento selezionato','warn');
+  if(!await askConfirm(`Applicare la proposta a ${ids.length} interventi? Orari, squadre e mezzi cambiano in agenda e nell'app delle squadre.`)) return;
+  btn.disabled=true;
+  try{ const r=await api('/planning/runs/'+id+'/apply',{method:'POST',body:JSON.stringify({order_ids:ids,force})});
+    toast(`Applicati ${r.applied}`+(r.errors.length?` · non applicati ${r.errors.length} (motivo accanto all'intervento)`:''), r.errors.length?'warn':'ok'); route(); }
+  catch(e){ toast(e,'bad'); btn.disabled=false; } }
+async function apDiscard(id){ if(!await askConfirm('Scartare la proposta? L’agenda non cambia.')) return;
+  try{ await api('/planning/runs/'+id,{method:'DELETE'}); toast('Proposta scartata','ok'); route(); }catch(e){ toast(e,'bad'); } }
+async function apSettings(){ const [S,sites]=await Promise.all([api('/planning/settings'),api('/sites').catch(()=>[])]);
+  const opt=sel=>`<option value="">—</option>`+sites.map(x=>`<option value="${x.id}" ${x.id===sel?'selected':''}>${esc(x.name)}</option>`).join('');
+  const DN=['lun','mar','mer','gio','ven','sab','dom'];
+  drawer('Impostazioni della pianificazione automatica',`<div class="col" style="gap:var(--s-10)">
+    <label class="small mut">Deposito (da dove partono e dove tornano le squadre)<select id="psDepot">${opt(S.depot_site_id)}</select></label>
+    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Inizio giornata<input id="psA" type="time" value="${S.day_start}"></label><label class="small mut grow">Fine giornata<input id="psZ" type="time" value="${S.day_end}"></label>
+      <label class="small mut grow">Straordinario ammesso (min)<input id="psOt" type="number" min="0" max="240" value="${S.max_overtime_minutes}"></label></div>
+    <div><div class="small mut">Giorni lavorativi</div><div class="row" style="gap:var(--s-8);flex-wrap:wrap">${DN.map((d,i)=>`<label class="row small" style="gap:var(--s-4)"><input type="checkbox" class="psWd" ${S.workdays[i]==='1'?'checked':''}> ${d}</label>`).join('')}</div></div>
+    <div class="row" style="gap:var(--s-8)"><label class="small mut grow">Velocità media (km/h)<input id="psKmh" type="number" min="5" max="120" value="${S.travel_kmh}"></label>
+      <label class="small mut grow">Fattore di percorso<input id="psDet" type="number" min="1" max="3" step="0.05" value="${S.detour_factor}" title="strada reale rispetto alla linea d'aria"></label>
+      <label class="small mut grow">Minuti di sistemazione<input id="psSet" type="number" min="0" max="60" value="${S.setup_minutes}" title="parcheggio, scarico attrezzi"></label></div>
+    <label class="small mut">Meteo sfavorevole<select id="psW"><option value="evita" ${S.weather_policy==='evita'?'selected':''}>evitalo (sposta di ora o di giorno)</option><option value="ignora" ${S.weather_policy==='ignora'?'selected':''}>ignoralo</option></select></label>
+    ${(S.teams||[]).length?`<div><div class="small mut">Deposito per squadra (vuoto = quello generale)</div>${S.teams.map(t=>`<label class="row small" style="gap:var(--s-6);margin:2px 0"><span style="min-width:150px">${esc(t.name)}</span><select class="psTeam" data-g="${t.id}">${opt(t.depot_site_id)}</select></label>`).join('')}</div>`:''}
+    <button class="btn" onclick="apSettingsSave()">Salva</button><div class="cfg-msg small"></div></div>`); }
+async function apSettingsSave(){ const m=$('.cfg-msg');
+  const b={depot_site_id:$('#psDepot').value||null,day_start:$('#psA').value,day_end:$('#psZ').value,workdays:[...document.querySelectorAll('.psWd')].map(x=>x.checked?'1':'0').join(''),
+    travel_kmh:+$('#psKmh').value,detour_factor:parseFloat($('#psDet').value),setup_minutes:+$('#psSet').value,max_overtime_minutes:+$('#psOt').value,weather_policy:$('#psW').value,
+    team_depots:[...document.querySelectorAll('.psTeam')].map(x=>({group_id:x.dataset.g,depot_site_id:x.value||null}))};
+  try{ await api('/planning/settings',{method:'PUT',body:JSON.stringify(b)}); toast('Impostazioni salvate','ok'); closeDrawer(); route(); }
+  catch(e){ m.textContent=friendlyError(e); m.style.color='var(--bad)'; } }
 // ===== Fase 4: meteo operativo (previsioni scritte da Youco o da un sistema autorizzato) =====
 const WX_ICO={sereno:'☀️',poco_nuvoloso:'🌤️',nuvoloso:'☁️',coperto:'☁️',pioggia:'🌧️',pioggia_debole:'🌦️',temporale:'⛈️',neve:'❄️',nebbia:'🌫️',vento:'💨'};
 const WX_LAB={sereno:'sereno',poco_nuvoloso:'poco nuvoloso',nuvoloso:'nuvoloso',coperto:'coperto',pioggia:'pioggia',pioggia_debole:'pioggia debole',temporale:'temporale',neve:'neve',nebbia:'nebbia',vento:'vento forte'};
@@ -3556,7 +3659,8 @@ async function openOrder(id){
   if((mine||planner)&&o.state==='in_corso') acts+=`<button class="btn ok block" onclick="ordComplete('${id}',${o.version})">${ICON.check} Completa</button>`;
   if(planner&&['bozza','assegnato','in_corso'].includes(o.state)) acts+=`<button class="btn ghost block" onclick="ordCancel('${id}',${o.version})">Annulla</button>`;
   const editBtn = (planner && o.state!=='completato' && o.state!=='annullato')
-    ? `<button class="btn ghost block" onclick='editOrder(${jattr(o)})'>✎ Modifica / ripianifica</button>` : '';
+    ? `<button class="btn ghost block" onclick='editOrder(${jattr(o)})'>✎ Modifica / ripianifica</button>`
+      +(ACTIVE_MODS.has('pianificazione')?`<button class="btn ghost block" onclick="ordLock('${id}',${!o.plan_locked})">${o.plan_locked?'📌 Fissato: la pianificazione automatica non lo sposta · sblocca':'📌 Fissa (la pianificazione automatica non lo sposta)'}</button>`:'') : '';
   drawer('Ordine · '+esc(o.title), `
     <div class="row" style="margin-bottom:var(--s-14)">${chip(o.state)}${o.is_extra?'<span class="chip" style="color:var(--warn,#b8860b)">extra</span>':''}${o.origin&&o.origin!=='manuale'?`<span class="chip">${esc(ORIGIN_LAB[o.origin]||o.origin)}</span>`:''}${o.client_name?`<span class="chip">👤 ${esc(o.client_name)}</span>`:''}<span class="chip">${esc(o.site||'—')}</span>${priBadge(o.priority)}<span class="chip">v${o.version}</span></div>
     <div class="small mut">Assegnatario</div><div style="margin-bottom:var(--s-12)">${o.assignee?esc(o.assignee):o.group_name?'👥 '+esc(o.group_name):'non assegnato'}</div>

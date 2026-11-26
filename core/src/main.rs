@@ -15,6 +15,7 @@ mod dashboard; // servizio core: dashboard unica configurabile (widget + layout 
 mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
 mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
 mod metno; // Fase 4b: previsioni da MET Norway (fonte scelta per tenant, unica connessione esterna oltre all'AI)
+mod planning; // Fase 5: pianificazione automatica (contratto dati, motore di base nativo, validazione, bozza da applicare)
 mod weather; // Fase 4: meteo operativo (zone, previsioni scritte da Youco via chiave, avvisi sugli interventi)
 mod analytics; // Fase 3: durate reali, stima dallo storico, precisione, ricorrenze, extra, piano contro realtà
 mod integrations; // Fase 2: chiavi di integrazione (ERP, software turni, Youco/MCP), codici esterni, import CSV, elenco modifiche
@@ -568,6 +569,15 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/integration/orders/:ref", axum::routing::put(api::put_order))
         .route("/api/integration/changes", get(api::changes))
         .route("/api/integration/import/:entity", post(api::import_csv))
+        // Fase 5 pianificazione automatica
+        .route("/api/planning/settings", get(api::planning_settings).put(api::put_planning_settings))
+        .route("/api/planning/problem", get(api::planning_problem))
+        .route("/api/planning/runs", get(api::planning_runs).post(api::planning_run))
+        .route("/api/planning/runs/external", post(api::planning_external))
+        .route("/api/planning/backtest", post(api::planning_backtest))
+        .route("/api/planning/runs/:id", get(api::planning_run_get).delete(api::planning_run_discard))
+        .route("/api/planning/runs/:id/apply", post(api::planning_apply))
+        .route("/api/orders/:id/plan-lock", post(api::order_plan_lock))
         // Fase 4 meteo operativo
         .route("/api/integration/weather/zones/:code", axum::routing::put(api::put_weather_zone))
         .route("/api/integration/weather/slots", post(api::post_weather_slots))

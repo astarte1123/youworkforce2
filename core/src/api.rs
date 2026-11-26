@@ -8,6 +8,7 @@ use futures::stream::Stream;
 use crate::state::{AppState, Session, TenantEvent};
 use crate::{auth, db};
 pub(crate) use crate::weather::*;
+pub(crate) use crate::planning::{planning_run, planning_runs, planning_run_get, planning_run_discard, planning_apply, planning_external, planning_problem, planning_settings, put_planning_settings, order_plan_lock, planning_backtest};
 pub(crate) use crate::metno::{weather_settings, put_weather_settings, weather_refresh}; // Fase 4: meteo operativo
 pub(crate) use crate::analytics::*; // Fase 3: analisi e stime
 pub(crate) use crate::integrations::*; // Fase 2: chiavi di integrazione, codici esterni, import, modifiche
@@ -2942,7 +2943,7 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap, axum::extract
     let cols="o.id,o.title,o.state,o.version,o.outcome,o.instructions,o.site_id,o.assigned_user,o.assigned_group,o.scheduled_start,o.scheduled_end,o.priority,s.name AS site,u.email AS assignee,g.name AS group_name,\
         o.arrived_at,o.work_started_at,o.work_minutes,o.materials,o.checklist,o.outcome_kind,o.report,o.signed_by,o.signed_at,\
         s.address AS site_address,s.lat AS site_lat,s.lon AS site_lon,s.access_notes AS site_access,o.client_id,cl.name AS client_name,\
-        o.activity_type_id,at.name AS activity_type,o.quantity::float8 AS quantity,o.estimated_minutes,o.origin,o.is_extra,\
+        o.activity_type_id,at.name AS activity_type,o.quantity::float8 AS quantity,o.estimated_minutes,o.origin,o.is_extra,o.plan_locked,\
         (SELECT json_agg(json_build_object('id',a.id,'name',a.name,'kind',a.kind) ORDER BY a.name) FROM app.asset_bookings ab JOIN app.assets a ON a.id=ab.asset_id WHERE ab.work_order_id=o.id) AS assets";
     let joins="FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user LEFT JOIN app.user_groups g ON g.id=o.assigned_group LEFT JOIN app.clients cl ON cl.id=o.client_id LEFT JOIN app.activity_types at ON at.id=o.activity_type_id";
     // CA-10: tutti gli ordini solo a chi pianifica o ha `orders.view_all` (prima: chiunque non si
@@ -2973,7 +2974,7 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap, axum::extract
         "assignee": r.try_get::<String,_>("assignee").ok(), "outcome": r.try_get::<String,_>("outcome").ok(),
         "activity_type_id": r.try_get::<Uuid,_>("activity_type_id").ok(), "activity_type": r.try_get::<String,_>("activity_type").ok(),
         "quantity": r.try_get::<f64,_>("quantity").ok(), "estimated_minutes": r.try_get::<i32,_>("estimated_minutes").ok(),
-        "origin": r.try_get::<String,_>("origin").ok(), "is_extra": r.try_get::<bool,_>("is_extra").unwrap_or(false),
+        "origin": r.try_get::<String,_>("origin").ok(), "is_extra": r.try_get::<bool,_>("is_extra").unwrap_or(false), "plan_locked": r.try_get::<bool,_>("plan_locked").unwrap_or(false),
         "assets": r.try_get::<Value,_>("assets").ok().filter(|x| !x.is_null()).unwrap_or(json!([])),
         "scheduled_start": r.try_get::<chrono::DateTime<chrono::Utc>,_>("scheduled_start").ok(),
         "scheduled_end": r.try_get::<chrono::DateTime<chrono::Utc>,_>("scheduled_end").ok(),

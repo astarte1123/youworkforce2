@@ -84,3 +84,12 @@ curl -X POST https://<tenant>/api/integration/weather/slots -H "Authorization: B
 ```
 
 Dettaglio, limiti e avvisi in [meteo-operativo.md](meteo-operativo.md).
+
+## Pianificazione (fase 5)
+
+Con il modulo **Pianificazione automatica** un motore esterno (Youco) legge il problema con
+`GET /api/planning/problem?from&to` (contratto `yw-planning/1`: squadre, persone con patentini e
+assenze, interventi con posizione, finestre, durata, requisiti e giorni di meteo sfavorevole, mezzi con
+prenotazioni). Consegna la proposta con `POST /api/planning/runs/external`. YW la valida con i propri
+vincoli e la tiene come bozza da rivedere e applicare in console. Dettaglio in
+[pianificazione-automatica.md](pianificazione-automatica.md).

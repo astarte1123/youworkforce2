@@ -598,6 +598,19 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   una sola punzonatura per punto la permanenza non si misura). Il tempo di ogni step di escalation
   nella cronologia (`fired_at`) è quello del core, come lo stato dell'escalation. e2e
   `qa/patrol-schedule-suspend-e2e.sh`.
+- **Fase 5 Pianificazione automatica (mig `0170`, modulo `pianificazione`).**
+  - **Motore di base nativo** `yw-base-1`: inserimento al costo minimo per squadra × giorno ×
+    posizione, poi miglioramento togli-e-reinserisci. Rispetta patentini, persone presenti, mezzi
+    liberi, finestre delle sedi, giornata e straordinario; evita il meteo; riduce gli spostamenti
+    (linea d'aria × fattore / velocità).
+  - **Bozza da rivedere e applicare**, con ricontrollo di ogni voce: versione cambiata, vincolo
+    rigido, mezzi riprenotati insieme.
+  - **Interventi fissati** e **contratto dati** `yw-planning/1` per motori esterni (Youco), con la
+    loro proposta validata uguale.
+  - **Prova sullo storico** in sola lettura. Idealverde, 4 settimane: 0 vincoli violati contro 35,
+    spostamenti −18,5%, straordinario 249 contro 3.356 min.
+  - Pagina **Pianificazione → Automatica**. Dettaglio in
+    [pianificazione-automatica.md](pianificazione-automatica.md); e2e `qa/planning-e2e.sh`.
 - **Fase 4b Meteo da MET Norway (mig `0169`).** Fonte delle previsioni scelta per tenant: sistema
   collegato (chiave di integrazione) o **MET Norway** (api.met.no, gratuito, CC BY 4.0), scaricato da
   YW per zona ogni ~3 ore con cache, 304 e User-Agent come da termini di servizio (`YW_METNO_CONTACT`);
