@@ -1,13 +1,12 @@
-# YouWorkforce — Manuale utente
+# YouWorkforce — Registro delle funzioni e delle decisioni
 
-> **Manuale per chi usa YW ogni giorno: [manuale-utente.md](manuale-utente.md).** Questo file resta il registro dettagliato delle funzioni e delle modifiche, per gli sviluppatori.
-
-Guida unica alle funzionalità della piattaforma. Pubblico: **amministratori di tenant**, **operatori
-di centrale**, **pianificatori**, **responsabili**, **tecnici/guardie sul campo**. Per i dettagli
-tecnici di ogni area ci sono i manuali specifici, richiamati di volta in volta.
-
-> Accesso: console web del tenant (es. `http://localhost:8081`), app operatore (PWA) su `/worker/`,
-> console superadmin per la gestione multi-tenant.
+> **Non è un manuale da leggere dall'inizio.** È il registro, in ordine di arrivo, di ogni funzione,
+> decisione del PO e correzione, con migrazioni, file e test. Serve agli sviluppatori e a chi
+> ricostruisce perché una cosa funziona così.
+>
+> - Per **installare, configurare e consegnare** un'azienda: [manuale-tecnico.md](manuale-tecnico.md).
+> - Per **usare** YouWorkforce: [manuale-utente.md](manuale-utente.md).
+> - Indice di tutta la documentazione: [README.md](README.md).
 
 ---
 

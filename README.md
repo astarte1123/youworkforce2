@@ -5,8 +5,14 @@ il lavoro sul campo, l'IoT e i consuntivi. Core **Rust** (Axum/SQLx), console **
 **PostgreSQL 18** con Row Level Security.
 
 YouWorkforce è **self-contained**: non dipende da server esterni. Escalation e reperibilità,
-decodifica dei dispositivi GPS/badge e piattaforma IoT sono motori nativi. L'unico servizio
-esterno opzionale è il provider AI scelto dal cliente.
+decodifica dei dispositivi GPS/badge, piattaforma IoT, meteo e pianificazione sono motori nativi.
+Connessioni esterne facoltative:
+- canali di consegna degli allarmi (Twilio, Slack, email);
+- fornitore AI;
+- previsioni MET Norway, se il tenant sceglie quella fonte;
+- login con Autentika (YouCo), in prova.
+
+Elenco completo nel [manuale tecnico](docs/manuale-tecnico.md#cap1).
 
 Stato e piano di miglioramento: [`docs/analisi-miglioramento-yw.md`](docs/analisi-miglioramento-yw.md).
 
@@ -18,6 +24,7 @@ Stato e piano di miglioramento: [`docs/analisi-miglioramento-yw.md`](docs/analis
 | | `gps` | Dispositivi GPS e badge: Teltonika (TCP nativo), smartphone (OsmAnd), JSON HTTP. SOS, caduta, immobilità, silenzio del dispositivo → incidenti |
 | IoT | `iot` | Telemetria, regole e soglie, monitoraggio, scenari attivabili (IoT Dashboard) |
 | Lavoro sul campo | `interventi`, `cantieri`, `giri`, `workforce`, `consuntivi` | Ordini di lavoro, cantieri, ronde, turni, consuntivi |
+| | `mezzi`, `meteo`, `analisi`, `pianificazione` | Mezzi e prenotazioni, meteo operativo, stime dallo storico, pianificazione automatica (richiedono `interventi`) |
 | Trasversali | `assistant`, `qualifiche`, `prevenzione` | Agente AI, qualifiche e scadenze, checklist |
 
 I servizi core (utenti, gruppi, sedi, permessi, privacy, dashboard) sono sempre attivi.
@@ -31,6 +38,8 @@ Un dispositivo assegnato che smette di trasmettere apre un incidente **Perdita d
 (soglia configurabile per tenant, default 10 minuti).
 
 ## Documentazione
+Indice completo per pubblico: [`docs/README.md`](docs/README.md).
+- [`docs/manuale-tecnico.md`](docs/manuale-tecnico.md) — **installazione, configurazione e consegna delle aziende clienti** (checklist, collaudo, passaggio di consegne)
 - [`docs/manuale-utente.md`](docs/manuale-utente.md) — manuale utente completo (per ruolo, compiti quotidiani, superadmin)
 - [`docs/manuale.md`](docs/manuale.md) — registro dettagliato delle funzioni e delle modifiche (sviluppatori)
 - [`docs/console-ui-manuale.md`](docs/console-ui-manuale.md) — console: ricerca, filtri, mappe, Centrale, allarme live

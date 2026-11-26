@@ -5,10 +5,12 @@ dell'azienda, operatori della centrale allarmi, reperibili, responsabili, pianif
 sul campo e auditor. L'ultima parte è per il superadmin della piattaforma. In fondo c'è una breve
 appendice tecnica per chi installa e gestisce il server.
 
-Aggiornato al 25/11/2026. I nomi di pagine e menu sono quelli del menu attuale (27 voci con schede).
+Aggiornato al 26/11/2026. I nomi di pagine e menu sono quelli del menu attuale.
 
-> Per gli sviluppatori il registro dettagliato delle modifiche resta [manuale.md](manuale.md);
-> i manuali di area sono elencati in [Per saperne di più](#per-saperne-di-piu).
+> **Installazione, configurazione e consegna delle aziende:** [manuale tecnico](manuale-tecnico.md).
+> Registro delle modifiche per gli sviluppatori: [manuale.md](manuale.md). Indice completo della
+> documentazione: [README.md](README.md). I manuali di area sono elencati in
+> [Per saperne di più](#per-saperne-di-piu).
 
 ---
 
@@ -1553,8 +1555,8 @@ Rimuovendo uno scenario da un'azienda si elimina solo la sua sede demo, se vuota
 <a id="appendice"></a>
 ## Appendice tecnica
 
-Per chi installa e gestisce il server. I dettagli completi sono nel [README](../README.md) e nei
-manuali di area.
+Riferimento rapido per chi gestisce il server. La procedura completa (checklist di un ambiente di
+produzione, rilascio di un'azienda, collaudo, consegna) è nel [manuale tecnico](manuale-tecnico.md).
 
 ### Componenti e porte
 - **Core** (Rust): API, motori nativi (escalation, ricezione dispositivi, IoT), migrazioni
@@ -1613,7 +1615,11 @@ Avvio rapido: `docker compose up -d --build` (console su `:8081`, core su `:8080
 
 | Area | Documento |
 |---|---|
+| Installazione, configurazione e consegna | [manuale-tecnico.md](manuale-tecnico.md) |
 | Registro dettagliato delle modifiche | [manuale.md](manuale.md) |
+| Meteo, analisi, pianificazione automatica | [meteo-operativo.md](meteo-operativo.md) · [analisi-stime.md](analisi-stime.md) · [pianificazione-automatica.md](pianificazione-automatica.md) |
+| App dell'operaio | [app-operaio.md](app-operaio.md) |
+| Integrazioni e Autentika | [integrazioni.md](integrazioni.md) · [autentika-integrazione.md](autentika-integrazione.md) |
 | Interfaccia della console | [console-ui-manuale.md](console-ui-manuale.md) |
 | Escalation e reperibilità | [escalation-manuale.md](escalation-manuale.md) |
 | Dispositivi GPS e badge | [dispositivi-gps.md](dispositivi-gps.md) |
