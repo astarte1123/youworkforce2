@@ -598,6 +598,14 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   una sola punzonatura per punto la permanenza non si misura). Il tempo di ogni step di escalation
   nella cronologia (`fired_at`) è quello del core, come lo stato dell'escalation. e2e
   `qa/patrol-schedule-suspend-e2e.sh`.
+- **Login con Autentika (mig `0172`), accanto al login con password.**
+  - Per tenant, dal superadmin: issuer, client e segreto cifrato, indirizzo di ritorno, ruoli.
+  - Flusso Authorization Code + PKCE S256 con YW come BFF; verifica ES256 dell'id_token.
+  - Utente per `(tenant, sub)`: collegato per email verificata o creato al primo accesso.
+  - Back-channel logout e logout verso Autentika. Bottone «Login con Autentika» sulla pagina di
+    accesso.
+  - Dettaglio in [autentika-integrazione.md](autentika-integrazione.md); e2e
+    `qa/autentika-login-e2e.sh` con finto Autentika `qa/oidc_mock.py`.
 - **Fase 6 Pilota della pianificazione automatica (mig `0171`).**
   - Squadre, inizio, settimane e confronto con le settimane prima.
   - Misure del piano: accettati senza modifiche, spostamenti per intervento, straordinario, extra entro

@@ -8,6 +8,7 @@ use futures::stream::Stream;
 use crate::state::{AppState, Session, TenantEvent};
 use crate::{auth, db};
 pub(crate) use crate::weather::*;
+pub(crate) use crate::autentika::{auth_providers, oidc_start, oidc_callback, backchannel_logout, super_get_autentika, super_set_autentika, super_verify_autentika};
 pub(crate) use crate::planning::{planning_run, planning_runs, planning_run_get, planning_run_discard, planning_apply, planning_external, planning_problem, planning_settings, put_planning_settings, order_plan_lock, planning_backtest};
 pub(crate) use crate::pilot::{pilot_get, pilot_create, pilot_update, pilot_week, pilot_close};
 pub(crate) use crate::metno::{weather_settings, put_weather_settings, weather_refresh}; // Fase 4: meteo operativo
@@ -225,7 +226,7 @@ pub async fn csrf_guard(req: axum::extract::Request, next: axum::middleware::Nex
     let path = req.uri().path().to_string();
     let exempt = safe
         || path == "/api/login" || path == "/api/superadmin/login" || path == "/api/logout"
-        || path == "/api/invite/accept"
+        || path == "/api/invite/accept" || path == "/api/auth/backchannel-logout"
         || path == "/api/events" || path.starts_with("/api/ingress/")
         // SA-15: tutti gli endpoint di test allo stesso modo (rispondono 403 se TEST_CLOCK è spento)
         || path.starts_with("/api/_test/") || path == "/health";
@@ -554,7 +555,13 @@ pub async fn me(State(st): State<AppState>, h: HeaderMap) -> R {
 
 pub async fn logout(State(st): State<AppState>, h: HeaderMap) -> impl IntoResponse {
     if let Some(tok) = get_cookie(&h, "yw_session") {
-        let _ = sqlx::query("DELETE FROM app.sessions WHERE token=$1").bind(&tok).execute(&st.owner_pool).await;
+        // sessione nata da Autentika: chiude anche quella di Autentika (best effort, non blocca il logout)
+        let r = sqlx::query("DELETE FROM app.sessions WHERE token=$1 RETURNING tenant_id, auth_id_token").bind(&tok).fetch_optional(&st.owner_pool).await.ok().flatten();
+        if let Some(r) = r {
+            if let (Some(tid), Some(idt)) = (r.try_get::<Option<Uuid>,_>("tenant_id").ok().flatten(), r.try_get::<Option<String>,_>("auth_id_token").ok().flatten()) {
+                let st2 = st.clone(); tokio::spawn(async move { crate::autentika::end_remote_session(&st2, tid, &idt).await; });
+            }
+        }
     }
     let mut m = HeaderMap::new();
     let sec = cookie_secure();

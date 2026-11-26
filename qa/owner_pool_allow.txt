@@ -39,3 +39,5 @@ purge_retention:incidents # ritenzione GDPR di sistema su tutti i tenant
 purge_retention:events,incidents # ritenzione GDPR di sistema su tutti i tenant
 purge_retention:audit_log # ritenzione GDPR di sistema su tutti i tenant
 drain_outbox:outbox # riga appena presa in carico dal worker
+oidc_start:oidc_pending # pulizia dei login in corso scaduti di tutti i tenant
+finish_login:sessions # sessione appena creata, identificata dal proprio token

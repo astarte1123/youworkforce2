@@ -87,3 +87,9 @@ GET    /api/event-types                 module  # nomi dei tipi di evento (catal
 GET    /api/integration/keys            module  # chiavi di integrazione (settings.manage, solo da persona)
 POST   /api/integration/keys            module  # chiavi di integrazione (settings.manage, solo da persona)
 POST   /api/integration/import/:entity  module  # import CSV: modulo controllato per entità in upsert_*
+
+# --- login con Autentika (IdP OIDC di YouCo), affiancato al login con password ---
+GET    /api/auth/providers              auth,module  # pubblico: la pagina di accesso sa se mostrare «Login con Autentika»
+GET    /api/auth/oidc/start             auth,module  # avvio del login: nessuna sessione ancora (state + PKCE sul server)
+GET    /api/auth/oidc/callback          auth,module  # ritorno da Autentika: lo state monouso identifica il login
+POST   /api/auth/backchannel-logout     auth,module,perm  # chiamata server-server di Autentika: logout_token firmato e verificato

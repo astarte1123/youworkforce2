@@ -173,7 +173,7 @@ function allNav(){ return NAV.concat(scenarioNavItems()); }
 const I18N={ en:{
   app_subtitle:"Client console", lang:"Language", logout:"Sign out",
   login_tenant:"Tenant", login_tenant_host:"(from domain)", login_email:"Email",
-  login_password:"Password", login_signin:"Sign in", login_quick:"Quick demo access (password <b>demo</b>):",
+  login_password:"Password", login_signin:"Sign in", login_autentika:"Sign in with Autentika", login_quick:"Quick demo access (password <b>demo</b>):",
   grp_op:"Operations", grp_safety:"Worker Safety", grp_iot:"IoT Dashboard", grp_work:"Field work", grp_cfg:"Configuration",
   "nav_dashboard":"Dashboard","nav_centrale":"Alarm center","nav_miei-allarmi":"My alarms",
   "nav_mappa":"Alarm map","nav_mappa-dispositivi":"Device map","nav_piantine":"Floor plans","nav_cruscotti":"IoT dashboards","nav_report":"Reports","nav_iot-alerts":"IoT alerts","nav_iot-monitor":"IoT monitoring",
@@ -374,6 +374,7 @@ function renderLogin(){
           <div class="field"><label>${t('login_email','Email')}</label><input id="email" type="email" autocomplete="username" placeholder="nome@azienda.it"></div>
           <div class="field"><label>${t('login_password','Password')}</label><input id="pw" type="password" autocomplete="current-password"></div>
           <button class="btn block lg" id="go">${t('login_signin','Accedi')}</button>
+          <button class="btn ghost block lg" id="goAut" style="display:none" title="Accesso con l'account YouCo (Autentika)">${t('login_autentika','Login con Autentika')}</button>
           <div class="small" id="msg" style="color:var(--bad);min-height:18px"></div>
           <div class="row" style="justify-content:flex-end;margin-top:var(--s-4)">${langSelect()}</div>
         </div>
@@ -388,6 +389,10 @@ function renderLogin(){
     </div>
   </div>`;
   $('#go').onclick=doLogin;
+  $('#goAut').onclick=loginAutentika;
+  autentikaCheck(); $('#slug').addEventListener('change',autentikaCheck);
+  // ritorno da Autentika con un errore: lo si mostra e si pulisce l'indirizzo
+  try{ const ae=new URLSearchParams(location.search).get('auth_error'); if(ae){ $('#msg').textContent=ae; history.replaceState(null,'',location.pathname+location.hash); } }catch(e){}
   $('#pw').onkeydown=e=>{if(e.key==='Enter')doLogin();};
   startI18n();
   // FE-12: password precompilata, etichetta DEMO e accessi rapidi SOLO in ambiente demo/dev.
@@ -397,6 +402,12 @@ function renderLogin(){
     if(tg) tg.style.display=''; if(q) q.style.display='';
     if(pw&&!pw.value) pw.value='demo'; if(em) em.placeholder='operatore@acme.loneworker.eu'; });
 }
+// Login con Autentika (IdP OIDC di YouCo): affiancato al login con password, visibile se attivo per l'azienda
+async function autentikaCheck(){ const b=$('#goAut'); if(!b) return; const slug=($('#slug').value||'').trim().toLowerCase();
+  try{ const r=await fetch('/api/auth/providers?tenant='+encodeURIComponent(slug),{credentials:'omit'}); const j=r.ok?await r.json():{};
+    b.style.display=j.autentika?'':'none'; }catch(e){ b.style.display='none'; } }
+function loginAutentika(){ const slug=($('#slug').value||'').trim().toLowerCase(); if(!slug){ $('#msg').textContent='Indica il nome dell’azienda'; return; }
+  store.slug=slug; location.href='/api/auth/oidc/start?tenant='+encodeURIComponent(slug)+'&return_to='+encodeURIComponent(location.pathname||'/'); }
 function quick(u){ $('#email').value = u+'@acme.loneworker.eu'; $('#pw').value='demo'; doLogin(); }
 async function doLogin(){
   const want=$('#slug').value.trim().toLowerCase();

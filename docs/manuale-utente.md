@@ -251,6 +251,12 @@ Ogni cosa ha un solo nome in tutta YW (elenco completo in [glossario](glossario.
   dell'indirizzo. Per entrare in un'altra azienda scrivi il suo nome nel campo **Tenant** e premi
   **Accedi**: si apre l'indirizzo di quell'azienda. In un ambiente locale senza sottodominio
   (`localhost`) l'azienda si scrive nel campo e resta ricordata.
+- **Login con Autentika**: se l'azienda lo ha attivo, sotto **Accedi** compare **Login con
+  Autentika**. Porta all'accesso con l'account YouCo e poi torna nella console. Il login con email e
+  password resta disponibile.
+  - Al primo accesso l'utente viene collegato a quello già presente con la stessa email (solo se
+    Autentika l'ha verificata), oppure creato con il ruolo indicato da Autentika.
+  - Uscendo dalla console si esce anche da Autentika; uscendo da Autentika si chiude anche la console.
 - Il **primo amministratore** riceve dal superadmin un **link di attivazione** (valido 7 giorni,
   usabile una volta): lo apre, sceglie la propria password (almeno 10 caratteri) e accede. Nessuno
   conosce la sua password.
@@ -1402,6 +1408,13 @@ sospeso»), filtri rapidi e ricerca. Un clic espande la riga.
 - **Strumenti per modulo**: le impostazioni dei moduli dell'azienda.
 - **Scenari IoT (casi d'uso)**: attiva o rimuove gli ambienti IoT sull'azienda.
 - **Visibilità mappe**: quali mappe (esterne, interne) l'azienda vede.
+- **Login con Autentika**: accesso con l'account YouCo, accanto a quello con password.
+  - Si impostano issuer del tenant Autentika, client e segreto (cifrato) e indirizzo di ritorno, da
+    registrare identico in Autentika.
+  - Opzioni: provider preferito, risorsa per i ruoli, creazione dell'utente al primo accesso,
+    collegamento per email verificata, ruolo predefinito e corrispondenza dei ruoli.
+  - **Verifica collegamento** controlla issuer, chiavi, PKCE e credenziali; **Attivo** mostra il
+    bottone sulla pagina di accesso.
 - **Connessione AI**: fornitore (youworker.ai, OpenAI, DeepSeek, Anthropic, personalizzato),
   indirizzo, modello e chiave (salvata cifrata). Dopo il salvataggio YW verifica che il fornitore
   risponda.

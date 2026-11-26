@@ -58,5 +58,8 @@ jobs:
         run: |
           ./core/target/release/yw-core &
           for i in $(seq 1 30); do curl -sf http://localhost:8080/health && break; sleep 1; done
+      - name: test dependencies (finto Autentika: firme ES256)
+        run: python3 -m pip install --quiet cryptography
+
       - name: run core suites
         run: MODE=core bash qa/run-all.sh

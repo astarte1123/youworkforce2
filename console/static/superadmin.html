@@ -876,7 +876,8 @@ function tenantDetailHtml(t,mods){
         <button class="btn ghost t-bad" onclick="delTenant('${t.id}',${jattr(t.slug)})">🗑 Elimina</button></div>
       <div class="small mut sec-lbl mt-12 mb-5">Integrazioni</div>
       <div class="small mut mb-6">YouWorkforce funziona <b>in autonomia</b>: escalation e reperibilità, localizzazione di GPS e badge (ricezione diretta da dispositivi Teltonika e app OsmAnd) e sensori IoT sono gestiti <b>dalla piattaforma stessa</b>, senza collegarsi a servizi esterni di tracciamento, allarmistica o IoT. L’unica integrazione esterna, facoltativa, è il fornitore di intelligenza artificiale: richiede la chiave del cliente.</div>
-      <div class="row gap-8"><button class="btn ghost cfgbtn" onclick="aiConn('${t.id}',this)">Connessione AI</button></div>
+      <div class="row gap-8"><button class="btn ghost cfgbtn" onclick="aiConn('${t.id}',this)">Connessione AI</button>
+        <button class="btn ghost cfgbtn" onclick="autConn('${t.id}',${jattr(t.slug)},this)">Login con Autentika</button></div>
     </div>
     <div id="admin_${t.id}" class="mt-8"></div>
     <div id="tools_${t.id}" class="mt-8"></div>
@@ -1071,6 +1072,49 @@ async function aiVerify(tid){
     toast(r.reachable?'Provider AI collegato':'Salvata, ma provider non raggiungibile', r.reachable?'ok':'warn');
   }catch(e){ if(msg)msg.textContent=friendlyError(e); toast(e,'bad'); }
 }
+// Login con Autentika (IdP OIDC di YouCo) per il tenant: affiancato al login con password.
+async function autConn(tid,slug,btn){
+  const box=document.getElementById('cfg_'+tid);
+  if(box.dataset.open==='aut'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
+  box.dataset.open='aut'; cfgExclusive(btn); btnOn(btn,true); box.innerHTML='<div class="small mut">carico…</div>';
+  let c; try{ c=await api('/superadmin/tenants/'+tid+'/autentika'); }catch(e){ box.innerHTML='<div class="small t-bad">'+esc(friendlyError(e))+'</div>'; return; }
+  const rest=location.host.split('.').slice(1).join('.')||location.host;
+  const defRedirect=location.protocol+'//'+slug+'.'+rest+'/api/auth/oidc/callback';
+  const RM=c.role_map||{};
+  box.innerHTML=`<div class="card sa-panel tight">
+    <div class="small mut mb-8">Accesso con l'account YouCo tramite <b>Autentika</b> (OpenID Connect). Si <b>affianca</b> al login con email e password: sulla pagina di accesso del tenant compare «Login con Autentika» quando è attivo. In Autentika il tenant deve avere un client <i>web</i> con questo indirizzo di ritorno, PKCE S256 e scope <code>openid profile email groups</code>. Il segreto del client è cifrato a riposo.</div>
+    <label class="small mut blk my-4">Issuer del tenant Autentika<input id="au_iss_${tid}" placeholder="https://${esc(slug)}.autentika.youco.cloud" value="${esc(c.issuer||'')}"></label>
+    <div class="row gap-8"><label class="small mut grow">Client ID<input id="au_cid_${tid}" value="${esc(c.client_id||'')}" placeholder="youworkforce-web"></label>
+      <label class="small mut grow">Segreto del client${c.has_secret?' <span class="small">(impostato — vuoto per non cambiarlo)</span>':''}<input id="au_sec_${tid}" type="password" placeholder="${c.has_secret?'•••••• invariato':''}"></label></div>
+    <label class="small mut blk my-4">Indirizzo di ritorno (da registrare identico in Autentika)<input id="au_red_${tid}" value="${esc(c.redirect_uri||defRedirect)}"></label>
+    <div class="row gap-8"><label class="small mut grow">Scope<input id="au_scope_${tid}" value="${esc(c.scope||'openid profile email groups')}"></label>
+      <label class="small mut grow">Provider preferito (idp_hint, facoltativo)<input id="au_hint_${tid}" value="${esc(c.idp_hint||'')}" placeholder="google"></label>
+      <label class="small mut grow">Risorsa per i ruoli (facoltativa)<input id="au_res_${tid}" value="${esc(c.resource||'')}" placeholder="youworkforce-web"></label></div>
+    <div class="row gap-12 mt-6" style="flex-wrap:wrap">
+      <label class="small row gap-6"><input type="checkbox" id="au_on_${tid}" ${c.enabled?'checked':''}> Attivo (mostra il bottone)</label>
+      <label class="small row gap-6"><input type="checkbox" id="au_jit_${tid}" ${c.jit!==false?'checked':''}> Crea l'utente al primo accesso</label>
+      <label class="small row gap-6"><input type="checkbox" id="au_link_${tid}" ${c.link_by_email!==false?'checked':''}> Collega l'utente esistente con la stessa email verificata</label></div>
+    <div class="row gap-8 mt-6"><label class="small mut">Ruolo per i nuovi utenti senza ruolo riconosciuto<select id="au_role_${tid}">${['lavoratore','reperibile','operatore','pianificatore','responsabile','auditor','tenant_admin'].map(r=>`<option value="${r}" ${r===(c.default_role||'lavoratore')?'selected':''}>${r}</option>`).join('')}</select></label></div>
+    <label class="small mut blk my-4">Corrispondenza dei ruoli (ruolo del prodotto in Autentika → ruolo YouWorkforce, JSON)<textarea id="au_map_${tid}" rows="2" style="width:100%;font-family:monospace">${esc(JSON.stringify(RM))}</textarea></label>
+    <div class="row gap-8 mt-6"><button class="btn" onclick="autSave('${tid}')">Salva</button><button class="btn ghost" onclick="autVerify('${tid}')">Verifica collegamento</button>
+      ${c.configured?(c.enabled?'<span class="chip s-attivo">attivo</span>':'<span class="chip">configurato, non attivo</span>'):'<span class="chip">assente</span>'}
+      <span class="small mut">${c.linked_users||0} utenti collegati</span></div>
+    <div id="au_msg_${tid}" class="small mut mt-6" role="status" aria-live="polite"></div></div>`;
+}
+async function autSave(tid){ const g=x=>document.getElementById(x+tid); const msg=g('au_msg_');
+  let rm; try{ rm=JSON.parse(g('au_map_').value||'{}'); }catch(e){ msg.innerHTML='<span class="t-bad">Corrispondenza dei ruoli: JSON non valido</span>'; return; }
+  const body={issuer:g('au_iss_').value.trim(),client_id:g('au_cid_').value.trim(),redirect_uri:g('au_red_').value.trim(),scope:g('au_scope_').value.trim(),
+    idp_hint:g('au_hint_').value.trim(),resource:g('au_res_').value.trim(),enabled:g('au_on_').checked,jit:g('au_jit_').checked,link_by_email:g('au_link_').checked,
+    default_role:g('au_role_').value,role_map:rm};
+  if(g('au_sec_').value) body.client_secret=g('au_sec_').value;
+  try{ await api('/superadmin/tenants/'+tid+'/autentika',{method:'POST',body:JSON.stringify(body)}); toast('Login con Autentika salvato','ok'); msg.innerHTML='<span class="s-attivo">salvato</span> — verifico…'; autVerify(tid); }
+  catch(e){ msg.textContent=friendlyError(e); toast(e,'bad'); } }
+async function autVerify(tid){ const msg=document.getElementById('au_msg_'+tid);
+  try{ const r=await api('/superadmin/tenants/'+tid+'/autentika/verify',{method:'POST'});
+    const L={discovery:'Discovery dell’issuer',jwks:'Chiavi di firma (JWKS)',pkce_s256:'PKCE S256',client:'Client e segreto'};
+    msg.innerHTML=r.checks.map(c=>`<div>${c.ok?'<span class="s-attivo">✓</span>':'<span class="t-bad">✗</span>'} ${esc(L[c.check]||c.check)}${c.detail?' · '+esc(typeof c.detail==='string'?c.detail:JSON.stringify(c.detail)):''}</div>`).join('');
+    toast(r.ok?'Autentika collegato':'Autentika: controlla i punti segnati', r.ok?'ok':'warn'); }
+  catch(e){ msg.textContent=friendlyError(e); } }
 async function scnOpen(tid,btn){
   const box=document.getElementById('cfg_'+tid);
   if(box.dataset.open==='scn'){ box.innerHTML=''; box.dataset.open=''; btnOn(btn,false); return; }
