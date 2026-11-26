@@ -27,6 +27,7 @@ pub const DASHBOARD_WIDGETS: &[(&str, &[&str], &[&str], &str)] = &[
     ("timesheets", &["consuntivi"], &["approve","timesheets.view_all","work.own"], "half"),
     ("rounds",     &["giri"], &["plan","config.view","work.own"], "half"),
     ("shifts",     &["workforce"], &["plan","config.view","work.own","incidents.handle"], "half"),
+    ("deadlines",  &["qualifiche","mezzi"], &["plan","users.manage","sites.manage"], "half"),
     ("role",       &[], &[], "half"),
 ];
 

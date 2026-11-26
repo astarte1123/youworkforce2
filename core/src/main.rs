@@ -14,6 +14,7 @@ mod mqtt; // broker MQTT nativo (IoT): ingest telemetria + downlink comandi su T
 mod dashboard; // servizio core: dashboard unica configurabile (widget + layout per-tenant)
 mod privacy; // servizio core: GDPR, elenco utenti, ritenzione, registro attività (audit)
 mod groups; // servizio core: gruppi di persone condivisi (CRUD + membri)
+mod constraints; // Fase 1 Lavoro sul campo: tipi di attività, mezzi e prenotazioni, scadenziario, vincoli dell'intervento
 mod catalogs; // cataloghi di prodotto nel DB gestiti dal superadmin: tipi di evento (SL-15), pacchetti (SA-10)
 mod sites; // servizio core: sedi e asset/mezzi condivisi
 mod iam; // servizio core: permessi (capability) e ruoli personalizzati
@@ -543,6 +544,16 @@ async fn run() -> anyhow::Result<()> {
         .route("/api/diary", post(api::diary_create).get(api::diary_list))
         // Prompt 9: ordini
         .route("/api/orders", post(api::create_order).get(api::list_orders))
+        // Fase 1 Lavoro sul campo: tipi di attività, vincoli dell'intervento, mezzi, scadenziario
+        .route("/api/orders/check", post(api::order_check))
+        .route("/api/orders/checks", get(api::order_checks))
+        .route("/api/activity-types", get(api::list_activity_types).post(api::create_activity_type))
+        .route("/api/activity-types/:id", post(api::update_activity_type).delete(api::delete_activity_type))
+        .route("/api/asset-bookings", get(api::list_bookings).post(api::create_booking))
+        .route("/api/asset-bookings/:id", axum::routing::delete(api::delete_booking))
+        .route("/api/assets/:id/deadlines", get(api::asset_deadlines).post(api::create_deadline))
+        .route("/api/asset-deadlines/:id", post(api::update_deadline).delete(api::delete_deadline))
+        .route("/api/deadlines", get(api::list_deadlines))
         .route("/api/orders/:id/edit", post(api::edit_order))
         .route("/api/orders/:id/assign", post(api::order_assign))
         .route("/api/orders/:id/assign-group", post(api::order_assign_group))

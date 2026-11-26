@@ -351,12 +351,17 @@ pub async fn delete_contract(State(st): State<AppState>, h: HeaderMap, Path(id):
 pub struct PlanReq { pub title: String, #[serde(default)] pub client_id: Option<Uuid>, #[serde(default)] pub site_id: Option<Uuid>,
     #[serde(default)] pub contract_id: Option<Uuid>, #[serde(default)] pub every_days: Option<i32>, #[serde(default)] pub next_date: Option<String>,
     #[serde(default)] pub active: Option<bool>,
-    #[serde(default)] pub auto_generate: Option<bool>, #[serde(default)] pub lead_days: Option<i32> }
+    #[serde(default)] pub auto_generate: Option<bool>, #[serde(default)] pub lead_days: Option<i32>,
+    /// Fase 1: tipo di attività e quantità dell'intervento generato (""/assente = invariato)
+    #[serde(default)] pub activity_type_id: Option<Uuid>, #[serde(default)] pub quantity: Option<f64> }
 pub async fn list_plans(State(st): State<AppState>, h: HeaderMap) -> R {
     let s = require_tenant(&st, &h).await?; let tid = s.tenant_id.unwrap();
     require_module(&st, tid, "interventi").await?;
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
-    let rows = sqlx::query("SELECT p.id,p.title,p.every_days,p.next_date,p.active,p.auto_generate,p.lead_days,p.last_order,p.last_generated_at,p.client_id,cl.name AS client_name,p.site_id,si.name AS site FROM app.maintenance_plans p LEFT JOIN app.clients cl ON cl.id=p.client_id LEFT JOIN app.sites si ON si.id=p.site_id ORDER BY p.active DESC,p.next_date").fetch_all(&mut *tx).await.map_err(ise)?;
+    let rows = sqlx::query("SELECT p.id,p.title,p.every_days,p.next_date,p.active,p.auto_generate,p.lead_days,p.last_order,p.last_generated_at,p.client_id,cl.name AS client_name,p.site_id,si.name AS site,
+            p.activity_type_id,at.name AS activity_type,p.quantity::float8 AS quantity
+         FROM app.maintenance_plans p LEFT JOIN app.clients cl ON cl.id=p.client_id LEFT JOIN app.sites si ON si.id=p.site_id LEFT JOIN app.activity_types at ON at.id=p.activity_type_id
+         ORDER BY p.active DESC,p.next_date").fetch_all(&mut *tx).await.map_err(ise)?;
     tx.commit().await.map_err(ise)?;
     let out: Vec<Value> = rows.iter().map(|r| json!({
         "id":r.get::<Uuid,_>("id"),"title":r.get::<String,_>("title"),"every_days":r.get::<i32,_>("every_days"),
@@ -365,7 +370,9 @@ pub async fn list_plans(State(st): State<AppState>, h: HeaderMap) -> R {
         "last_order":r.try_get::<Option<Uuid>,_>("last_order").ok().flatten(),
         "last_generated_at":r.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_generated_at").ok().flatten(),
         "client_id":r.try_get::<Uuid,_>("client_id").ok(),"client_name":r.try_get::<String,_>("client_name").ok(),
-        "site_id":r.try_get::<Uuid,_>("site_id").ok(),"site":r.try_get::<String,_>("site").ok() })).collect();
+        "site_id":r.try_get::<Uuid,_>("site_id").ok(),"site":r.try_get::<String,_>("site").ok(),
+        "activity_type_id":r.try_get::<Uuid,_>("activity_type_id").ok(),"activity_type":r.try_get::<String,_>("activity_type").ok(),
+        "quantity":r.try_get::<f64,_>("quantity").ok() })).collect();
     Ok(Json(json!(out)))
 }
 pub async fn create_plan(State(st): State<AppState>, h: HeaderMap, Json(b): Json<PlanReq>) -> R {
@@ -377,9 +384,10 @@ pub async fn create_plan(State(st): State<AppState>, h: HeaderMap, Json(b): Json
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let lead = b.lead_days.unwrap_or(7);
     if !(0..=90).contains(&lead) { return Err(err(StatusCode::BAD_REQUEST, "anticipo da 0 a 90 giorni")); }
-    let id: Uuid = sqlx::query_scalar("INSERT INTO app.maintenance_plans(tenant_id,client_id,site_id,contract_id,title,every_days,next_date,auto_generate,lead_days) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id")
+    let id: Uuid = sqlx::query_scalar("INSERT INTO app.maintenance_plans(tenant_id,client_id,site_id,contract_id,title,every_days,next_date,auto_generate,lead_days,activity_type_id,quantity) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::numeric) RETURNING id")
         .bind(tid).bind(b.client_id).bind(b.site_id).bind(b.contract_id).bind(b.title.trim()).bind(ev).bind(nd).bind(b.auto_generate.unwrap_or(true)).bind(lead)
-        .fetch_one(&mut *tx).await.map_err(ise)?;
+        .bind(b.activity_type_id).bind(b.quantity)
+        .fetch_one(&mut *tx).await.map_err(|e| conflict_or(e, "dati del piano non validi"))?;
     tx.commit().await.map_err(ise)?;
     Ok(Json(json!({"id":id})))
 }
@@ -391,10 +399,11 @@ pub async fn update_plan(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     if b.lead_days.map(|l| !(0..=90).contains(&l)).unwrap_or(false) { return Err(err(StatusCode::BAD_REQUEST, "anticipo da 0 a 90 giorni")); }
     let n = sqlx::query("UPDATE app.maintenance_plans SET title=$2,client_id=$3,site_id=$4,contract_id=$5,every_days=$6,next_date=COALESCE($7,next_date),active=COALESCE($8,active),
-            auto_generate=COALESCE($9,auto_generate),lead_days=COALESCE($10,lead_days) WHERE id=$1")
+            auto_generate=COALESCE($9,auto_generate),lead_days=COALESCE($10,lead_days),
+            activity_type_id=COALESCE($11,activity_type_id),quantity=COALESCE($12::numeric,quantity) WHERE id=$1")
         .bind(id).bind(b.title.trim()).bind(b.client_id).bind(b.site_id).bind(b.contract_id).bind(ev).bind(parse_date_opt(&b.next_date)).bind(b.active)
-        .bind(b.auto_generate).bind(b.lead_days)
-        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+        .bind(b.auto_generate).bind(b.lead_days).bind(b.activity_type_id).bind(b.quantity)
+        .execute(&mut *tx).await.map_err(|e| conflict_or(e, "dati del piano non validi"))?.rows_affected();
     tx.commit().await.map_err(ise)?;
     if n==0 { return Err(err(StatusCode::NOT_FOUND, "piano non trovato")); }
     Ok(Json(json!({"ok":true})))
@@ -414,17 +423,25 @@ pub async fn delete_plan(State(st): State<AppState>, h: HeaderMap, Path(id): Pat
 pub(crate) async fn plan_generate_one(tx: &mut sqlx::PgConnection, tid: Uuid, plan_id: Uuid, actor: Option<Uuid>,
     today: chrono::NaiveDate, tz: chrono_tz::Tz) -> Result<Option<(Uuid, chrono::NaiveDate)>, (StatusCode, String)> {
     use chrono::TimeZone as _;
-    let p = sqlx::query("SELECT title,client_id,site_id,contract_id,every_days,next_date FROM app.maintenance_plans WHERE id=$1 AND tenant_id=$2 FOR UPDATE")
+    let p = sqlx::query("SELECT p.title,p.client_id,p.site_id,p.contract_id,p.every_days,p.next_date,p.activity_type_id,p.quantity::float8 AS qty,
+            a.base_minutes,a.minutes_per_unit::float8 AS mpu
+         FROM app.maintenance_plans p LEFT JOIN app.activity_types a ON a.id=p.activity_type_id WHERE p.id=$1 AND p.tenant_id=$2 FOR UPDATE OF p")
         .bind(plan_id).bind(tid).fetch_optional(&mut *tx).await.map_err(ise)?;
     let Some(p) = p else { return Ok(None) };
     let nd: chrono::NaiveDate = p.get("next_date");
     let start = tz.from_local_datetime(&nd.and_hms_opt(9,0,0).unwrap()).earliest()
         .map(|x| x.with_timezone(&chrono::Utc)).unwrap_or_else(|| chrono::Utc.from_utc_datetime(&nd.and_hms_opt(9,0,0).unwrap()));
+    // Fase 1: l'intervento eredita tipo di attività e quantità; la fine segue la durata stimata
+    let qty: Option<f64> = p.try_get::<Option<f64>,_>("qty").ok().flatten();
+    let est: Option<i32> = p.try_get::<Option<i32>,_>("base_minutes").ok().flatten()
+        .map(|b| crate::constraints::estimate_minutes(b, p.try_get::<Option<f64>,_>("mpu").ok().flatten().unwrap_or(0.0), qty));
+    let end = est.map(|m| start + chrono::Duration::minutes(m as i64));
     let oid: Uuid = sqlx::query_scalar(
-        "INSERT INTO app.work_orders(tenant_id,site_id,title,state,created_by,scheduled_start,priority,client_id,contract_id)
-         VALUES($1,$2,$3,'bozza',$4,$5,2,$6,$7) RETURNING id")
+        "INSERT INTO app.work_orders(tenant_id,site_id,title,state,created_by,scheduled_start,scheduled_end,priority,client_id,contract_id,activity_type_id,quantity,estimated_minutes)
+         VALUES($1,$2,$3,'bozza',$4,$5,$6,2,$7,$8,$9,$10::numeric,$11) RETURNING id")
         .bind(tid).bind(p.try_get::<Uuid,_>("site_id").ok()).bind(format!("{} (manutenzione)", p.get::<String,_>("title"))).bind(actor)
-        .bind(start).bind(p.try_get::<Uuid,_>("client_id").ok()).bind(p.try_get::<Uuid,_>("contract_id").ok())
+        .bind(start).bind(end).bind(p.try_get::<Uuid,_>("client_id").ok()).bind(p.try_get::<Uuid,_>("contract_id").ok())
+        .bind(p.try_get::<Uuid,_>("activity_type_id").ok()).bind(qty).bind(est)
         .fetch_one(&mut *tx).await.map_err(ise)?;
     let ev = (p.get::<i32,_>("every_days").max(1)) as i64;
     let mut next = nd + chrono::Duration::days(ev);
@@ -591,10 +608,22 @@ pub(crate) async fn order_transition(st: &AppState, s: &Session, iid: Uuid, b: &
     Ok(Json(json!({"ok":true,"state":to})))
 }
 
+/// Fase 1: vincoli dell'intervento con il nuovo assegnatario (persona o squadra).
+async fn assign_check(st: &AppState, tid: Uuid, id: Uuid, user: Option<Uuid>, group: Option<Uuid>) -> Result<Vec<crate::scheduling::Violation>, (StatusCode, String)> {
+    let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+    let r = sqlx::query("SELECT site_id,activity_type_id,scheduled_start,scheduled_end FROM app.work_orders WHERE id=$1").bind(id)
+        .fetch_optional(&mut *tx).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "intervento inesistente"))?;
+    tx.commit().await.map_err(ise)?;
+    let p = crate::constraints::OrderPlan { order_id: Some(id), site_id: r.try_get("site_id").ok(), activity_type_id: r.try_get("activity_type_id").ok(),
+        start: r.try_get("scheduled_start").ok(), end: r.try_get("scheduled_end").ok(), user, group, asset_ids: None };
+    crate::constraints::check_order(st, tid, &p).await
+}
 pub async fn order_assign(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<OrderAction>) -> R {
     let s = require_tenant(&st, &h).await?;
     if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
     let uid = b.user_id.ok_or_else(|| err(StatusCode::BAD_REQUEST, "user_id richiesto"))?;
+    let vs = assign_check(&st, s.tenant_id.unwrap(), id, Some(uid), None).await?;
+    crate::constraints::enforce(&vs, crate::constraints::force(&h))?;
     order_transition(&st, &s, id, &b, "assegnato",
         Some("assigned_user"), Some(SetVal::Id(uid)), &["bozza","assegnato"]).await
 }
@@ -612,6 +641,8 @@ pub async fn order_assign_group(State(st): State<AppState>, h: HeaderMap, Path(i
         .fetch_optional(&st.owner_pool).await.map_err(ise)?.is_none() {
         return Err(err(StatusCode::NOT_FOUND, "gruppo inesistente"));
     }
+    let vs = assign_check(&st, tid, id, None, Some(gid)).await?;
+    crate::constraints::enforce(&vs, crate::constraints::force(&h))?;
     order_transition(&st, &s, id, &b, "assegnato",
         Some("assigned_group"), Some(SetVal::Id(gid)), &["bozza","assegnato"]).await
 }

@@ -598,6 +598,12 @@ attivazioni. **Filtri rapidi** (Tutti / Operativi / Da configurare / Sospesi) + 
   una sola punzonatura per punto la permanenza non si misura). Il tempo di ogni step di escalation
   nella cronologia (`fired_at`) è quello del core, come lo stato dell'escalation. e2e
   `qa/patrol-schedule-suspend-e2e.sh`.
+- **Fase 1 Lavoro sul campo: tipi di attività, mezzi, qualifiche e vincoli (mig `0165`).** Catalogo dei
+  tipi di attività (durata base + per unità, persone, qualifiche e mezzi richiesti), finestre orarie
+  delle sedi, nuovo modulo **Mezzi e attrezzature** (stato, scadenze, prenotazioni senza
+  sovrapposizioni), scadenziario di qualifiche e mezzi, controllo dei vincoli su creazione, modifica e
+  assegnazione degli interventi (duri = 409 salvo «Forza»). Dettaglio in
+  [lavoro-campo-fase1.md](lavoro-campo-fase1.md); e2e `qa/field-constraints-e2e.sh`.
 - **Interventi in quantità (caso reale Idealverde: 60+ giardinieri in squadre).** `GET /api/orders`
   accetta filtri lato server: `state=open|closed`, `from`/`to` (inizio programmato, RFC 3339), `id`,
   `limit` (1..5000); senza parametri l'elenco resta completo. La console carica gli aperti

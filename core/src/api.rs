@@ -7,6 +7,7 @@ use uuid::Uuid;
 use futures::stream::Stream;
 use crate::state::{AppState, Session, TenantEvent};
 use crate::{auth, db};
+pub(crate) use crate::constraints::*; // Fase 1 Lavoro sul campo: tipi di attività, mezzi, scadenziario, vincoli dell'intervento
 pub(crate) use crate::catalogs::*; // SL-15/SA-10: cataloghi tipi di evento e pacchetti
 pub(crate) use crate::superadmin::*; // split: Piano di controllo (superadmin): tenant, moduli, monitoraggio di sistema, chiave dei segreti, canali di consegna, account e MFA, impersonazione
 pub(crate) use crate::devices::*; // split: Dispositivi e localizzazione: ingest nativo (GPS, OsmAnd, Teltonika, JSON), comandi, geofence, report, mappe, beacon e piantine, catalogo, onboarding
@@ -2766,7 +2767,10 @@ pub async fn super_set_tool(State(st): State<AppState>, h: HeaderMap, Path(tid):
 pub struct NewOrder { pub title: String, pub site_id: Option<Uuid>, pub instructions: Option<String>, pub assigned_user: Option<Uuid>,
     #[serde(default)] pub assigned_group: Option<Uuid>, #[serde(default)] pub client_id: Option<Uuid>,
     pub scheduled_start: Option<String>, pub scheduled_end: Option<String>, pub priority: Option<i32>,
-    #[serde(default)] pub checklist: Option<Vec<String>> }
+    #[serde(default)] pub checklist: Option<Vec<String>>,
+    /// Fase 1: tipo di attività, quantità (unità del tipo), mezzi da prenotare nell'orario dell'intervento
+    #[serde(default)] pub activity_type_id: Option<Uuid>, #[serde(default)] pub quantity: Option<f64>,
+    #[serde(default)] pub asset_ids: Option<Vec<Uuid>> }
 
 /// Tappa 3: l'utente è membro del gruppo di persone condiviso? (owner_pool: check additivo di ACL).
 pub(crate) async fn user_in_group(st: &AppState, user_id: Uuid, group_id: Uuid) -> bool {
@@ -2779,8 +2783,22 @@ pub async fn create_order(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     if !is_planner(&s) { return Err(err(StatusCode::FORBIDDEN, "solo pianificatore")); }
     if !module_active(&st, tid, "interventi").await { return Err(err(StatusCode::FORBIDDEN, "modulo interventi non abilitato")); }
     let ss = b.scheduled_start.as_deref().map(parse_ts).transpose()?;
-    let se = b.scheduled_end.as_deref().map(parse_ts).transpose()?;
+    let mut se = b.scheduled_end.as_deref().map(parse_ts).transpose()?;
     if let (Some(a),Some(z))=(ss,se) { if z<=a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); } }
+    if b.quantity.map(|q| q < 0.0).unwrap_or(false) { return Err(err(StatusCode::BAD_REQUEST, "quantità non negativa")); }
+    // Fase 1: durata stimata dal tipo di attività; senza fine indicata la fine è inizio + stima
+    let est = activity_estimate(&st, tid, b.activity_type_id, b.quantity).await?;
+    if se.is_none() { if let (Some(a), Some(m)) = (ss, est) { se = Some(a + chrono::Duration::minutes(m as i64)); } }
+    let assets = b.asset_ids.clone().unwrap_or_default();
+    if !assets.is_empty() {
+        require_module(&st, tid, "mezzi").await?;
+        if ss.is_none() || se.is_none() { return Err(err(StatusCode::BAD_REQUEST, "per prenotare i mezzi l'intervento deve avere inizio e fine")); }
+    }
+    // vincoli (sede, qualifiche, persone, mezzi): duri = 409 salvo «Forza»
+    let plan = OrderPlan { order_id: None, site_id: b.site_id, activity_type_id: b.activity_type_id, start: ss, end: se,
+        user: b.assigned_user, group: b.assigned_group, asset_ids: Some(assets.clone()) };
+    let vs = check_order(&st, tid, &plan).await?;
+    enforce(&vs, force(&h))?;
     let pri = b.priority.unwrap_or(2).clamp(1,3);
     // assegnato se c'è un assegnatario (utente o gruppo)
     let state = if b.assigned_user.is_some() || b.assigned_group.is_some() { "assegnato" } else { "bozza" };
@@ -2788,13 +2806,16 @@ pub async fn create_order(State(st): State<AppState>, h: HeaderMap, Json(b): Jso
     let checklist = json!(b.checklist.clone().unwrap_or_default().into_iter().map(|l| json!({"label":l,"done":false})).collect::<Vec<_>>());
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     let row = sqlx::query(
-        "INSERT INTO app.work_orders(tenant_id,site_id,title,instructions,assigned_user,assigned_group,state,created_by,scheduled_start,scheduled_end,priority,checklist,client_id)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id")
+        "INSERT INTO app.work_orders(tenant_id,site_id,title,instructions,assigned_user,assigned_group,state,created_by,scheduled_start,scheduled_end,priority,checklist,client_id,
+                                     activity_type_id,quantity,estimated_minutes)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::numeric,$16) RETURNING id")
         .bind(tid).bind(b.site_id).bind(&b.title).bind(&b.instructions).bind(b.assigned_user).bind(b.assigned_group).bind(state).bind(s.user_id)
-        .bind(ss).bind(se).bind(pri).bind(&checklist).bind(b.client_id)
-        .fetch_one(&mut *tx).await.map_err(ise)?;
+        .bind(ss).bind(se).bind(pri).bind(&checklist).bind(b.client_id).bind(b.activity_type_id).bind(b.quantity).bind(est)
+        .fetch_one(&mut *tx).await.map_err(|e| conflict_or(e, "dati dell'intervento non validi"))?;
+    let id: Uuid = row.get("id");
+    if !assets.is_empty() { book_order_assets(&mut tx, tid, id, &assets, ss.unwrap(), se.unwrap(), Some(s.user_id)).await?; }
     tx.commit().await.map_err(ise)?;
-    Ok(Json(json!({"id":row.get::<Uuid,_>("id"),"state":state})))
+    Ok(Json(json!({"id":id,"state":state,"estimated_minutes":est,"warnings":vjson(&vs)})))
 }
 
 #[derive(Deserialize)]
@@ -2802,7 +2823,10 @@ pub struct EditOrder { pub version: i32, pub title: Option<String>, pub site_id:
     pub assigned_user: Option<Uuid>, #[serde(default)] pub assigned_group: Option<Uuid>, #[serde(default)] pub clear_group: Option<bool>,
     #[serde(default)] pub client_id: Option<Uuid>,
     pub scheduled_start: Option<String>, pub scheduled_end: Option<String>, pub priority: Option<i32>,
-    pub clear_schedule: Option<bool> }
+    pub clear_schedule: Option<bool>,
+    /// Fase 1: tipo di attività (""/clear_activity = togli), quantità, mezzi (sostituisce le prenotazioni)
+    #[serde(default)] pub activity_type_id: Option<Uuid>, #[serde(default)] pub clear_activity: Option<bool>,
+    #[serde(default)] pub quantity: Option<f64>, #[serde(default)] pub asset_ids: Option<Vec<Uuid>> }
 /// Modifica dell'ordine (pianificatore) con concorrenza ottimistica. Non cambia lo stato
 /// (eccetto bozza->assegnato se si assegna). Finestra, priorita', sede, istruzioni modificabili.
 pub async fn edit_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>, Json(b): Json<EditOrder>) -> R {
@@ -2815,7 +2839,36 @@ pub async fn edit_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path
     if let (Some(a),Some(z))=(ss,se) { if z<=a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); } }
     let clear = b.clear_schedule.unwrap_or(false);
     let clear_g = b.clear_group.unwrap_or(false);
+    let clear_a = b.clear_activity.unwrap_or(false);
     let pri = b.priority.map(|p| p.clamp(1,3));
+    if b.quantity.map(|q| q < 0.0).unwrap_or(false) { return Err(err(StatusCode::BAD_REQUEST, "quantità non negativa")); }
+    // Fase 1: l'intervento come sarà dopo la modifica, per il controllo dei vincoli
+    let cur = {
+        let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
+        let r = sqlx::query("SELECT site_id,activity_type_id,quantity::float8 AS qty,scheduled_start,scheduled_end,assigned_user,assigned_group FROM app.work_orders WHERE id=$1")
+            .bind(id).fetch_optional(&mut *tx).await.map_err(ise)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "intervento inesistente"))?;
+        tx.commit().await.map_err(ise)?; r };
+    let at = if clear_a { None } else { b.activity_type_id.or(cur.try_get("activity_type_id").ok()) };
+    let qty = b.quantity.or(cur.try_get::<Option<f64>,_>("qty").ok().flatten());
+    let est = activity_estimate(&st, tid, at, qty).await?;
+    let new_start = if clear { None } else { ss.or(cur.try_get("scheduled_start").ok()) };
+    let mut new_end = if clear { None } else { se.or(cur.try_get("scheduled_end").ok()) };
+    // cambia il tipo/quantità o l'inizio senza una fine indicata: la fine segue la stima
+    if se.is_none() && !clear && (b.activity_type_id.is_some() || b.quantity.is_some() || ss.is_some()) {
+        if let (Some(a), Some(m)) = (new_start, est) { if b.activity_type_id.is_some() || b.quantity.is_some() || new_end.map(|z| z <= a).unwrap_or(true) {
+            new_end = Some(a + chrono::Duration::minutes(m as i64)); } }
+    }
+    if let (Some(a), Some(z)) = (new_start, new_end) { if z <= a { return Err(err(StatusCode::BAD_REQUEST, "fine deve essere dopo inizio")); } }
+    if b.asset_ids.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
+        require_module(&st, tid, "mezzi").await?;
+        if new_start.is_none() || new_end.is_none() { return Err(err(StatusCode::BAD_REQUEST, "per prenotare i mezzi l'intervento deve avere inizio e fine")); }
+    }
+    let plan = OrderPlan { order_id: Some(id), site_id: b.site_id.or(cur.try_get("site_id").ok()), activity_type_id: at, start: new_start, end: new_end,
+        user: b.assigned_user.or(cur.try_get("assigned_user").ok()),
+        group: if clear_g { None } else { b.assigned_group.or(cur.try_get("assigned_group").ok()) }, asset_ids: b.asset_ids.clone() };
+    let vs = check_order(&st, tid, &plan).await?;
+    enforce(&vs, force(&h))?;
+    let se = if se.is_none() && new_end != cur.try_get::<Option<chrono::DateTime<chrono::Utc>>,_>("scheduled_end").ok().flatten() { new_end } else { se };
     let mut tx = db::begin_tenant(&st.rt_pool, tid).await.map_err(ise)?;
     // COALESCE mantiene i valori esistenti quando il campo non è passato; clear_schedule/clear_group azzerano.
     let n = sqlx::query(
@@ -2829,16 +2882,27 @@ pub async fn edit_order(State(st): State<AppState>, h: HeaderMap, Path(id): Path
            scheduled_end=CASE WHEN $7 THEN NULL ELSE COALESCE($9,scheduled_end) END,
            priority=COALESCE($10,priority),
            client_id=COALESCE($13,client_id),
+           activity_type_id=CASE WHEN $14 THEN NULL ELSE COALESCE($15,activity_type_id) END,
+           quantity=COALESCE($16::numeric,quantity),
+           estimated_minutes=$17,
            state=CASE WHEN state='bozza' AND ($6 IS NOT NULL OR $12 IS NOT NULL) THEN 'assegnato' ELSE state END,
            version=version+1, updated_at=now()
          WHERE id=$1 AND version=$2")
         .bind(id).bind(b.version).bind(&b.title).bind(&b.instructions).bind(b.site_id).bind(b.assigned_user)
         .bind(clear).bind(ss).bind(se).bind(pri).bind(clear_g).bind(b.assigned_group).bind(b.client_id)
-        .execute(&mut *tx).await.map_err(ise)?.rows_affected();
+        .bind(clear_a).bind(b.activity_type_id).bind(b.quantity).bind(est)
+        .execute(&mut *tx).await.map_err(|e| conflict_or(e, "dati dell'intervento non validi"))?.rows_affected();
+    if n==0 { let _ = tx.rollback().await; return Err(err(StatusCode::CONFLICT, "versione superata o ordine inesistente")); }
+    // mezzi: sostituiti se indicati, altrimenti seguono il nuovo orario (senza orario si liberano)
+    match (&b.asset_ids, new_start, new_end) {
+        (Some(a), Some(x), Some(z)) => book_order_assets(&mut tx, tid, id, a, x, z, Some(s.user_id)).await?,
+        (Some(_), _, _) => { sqlx::query("DELETE FROM app.asset_bookings WHERE work_order_id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?; }
+        (None, Some(x), Some(z)) => move_order_bookings(&mut tx, id, x, z).await?,
+        (None, _, _) => { sqlx::query("DELETE FROM app.asset_bookings WHERE work_order_id=$1").bind(id).execute(&mut *tx).await.map_err(ise)?; }
+    }
     tx.commit().await.map_err(ise)?;
-    if n==0 { return Err(err(StatusCode::CONFLICT, "versione superata o ordine inesistente")); }
     audit(&st, tid, &s.email, "edit_order", json!({"id":id})).await;
-    Ok(Json(json!({"ok":true})))
+    Ok(Json(json!({"ok":true,"estimated_minutes":est,"warnings":vjson(&vs)})))
 }
 
 /// Filtri di `GET /api/orders` (tutti facoltativi: senza parametri l'elenco completo, come prima).
@@ -2864,8 +2928,10 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap, axum::extract
     // technician sees only own; planner/admin/auditor see all (RLS already scopes to tenant)
     let cols="o.id,o.title,o.state,o.version,o.outcome,o.instructions,o.site_id,o.assigned_user,o.assigned_group,o.scheduled_start,o.scheduled_end,o.priority,s.name AS site,u.email AS assignee,g.name AS group_name,\
         o.arrived_at,o.work_started_at,o.work_minutes,o.materials,o.checklist,o.outcome_kind,o.report,o.signed_by,o.signed_at,\
-        s.address AS site_address,s.lat AS site_lat,s.lon AS site_lon,s.access_notes AS site_access,o.client_id,cl.name AS client_name";
-    let joins="FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user LEFT JOIN app.user_groups g ON g.id=o.assigned_group LEFT JOIN app.clients cl ON cl.id=o.client_id";
+        s.address AS site_address,s.lat AS site_lat,s.lon AS site_lon,s.access_notes AS site_access,o.client_id,cl.name AS client_name,\
+        o.activity_type_id,at.name AS activity_type,o.quantity::float8 AS quantity,o.estimated_minutes,\
+        (SELECT json_agg(json_build_object('id',a.id,'name',a.name,'kind',a.kind) ORDER BY a.name) FROM app.asset_bookings ab JOIN app.assets a ON a.id=ab.asset_id WHERE ab.work_order_id=o.id) AS assets";
+    let joins="FROM app.work_orders o LEFT JOIN app.sites s ON s.id=o.site_id LEFT JOIN app.users u ON u.id=o.assigned_user LEFT JOIN app.user_groups g ON g.id=o.assigned_group LEFT JOIN app.clients cl ON cl.id=o.client_id LEFT JOIN app.activity_types at ON at.id=o.activity_type_id";
     // CA-10: tutti gli ordini solo a chi pianifica o ha `orders.view_all` (prima: chiunque non si
     // chiamasse «lavoratore», compresi i ruoli custom); in ogni caso filtrati per sedi consentite.
     let see_all = is_planner(&s) || has_cap(&s, "orders.view_all");
@@ -2892,6 +2958,9 @@ pub async fn list_orders(State(st): State<AppState>, h: HeaderMap, axum::extract
         "site_id": r.try_get::<Uuid,_>("site_id").ok(), "assigned_user": r.try_get::<Uuid,_>("assigned_user").ok(),
         "assigned_group": r.try_get::<Uuid,_>("assigned_group").ok(), "group_name": r.try_get::<String,_>("group_name").ok(),
         "assignee": r.try_get::<String,_>("assignee").ok(), "outcome": r.try_get::<String,_>("outcome").ok(),
+        "activity_type_id": r.try_get::<Uuid,_>("activity_type_id").ok(), "activity_type": r.try_get::<String,_>("activity_type").ok(),
+        "quantity": r.try_get::<f64,_>("quantity").ok(), "estimated_minutes": r.try_get::<i32,_>("estimated_minutes").ok(),
+        "assets": r.try_get::<Value,_>("assets").ok().filter(|x| !x.is_null()).unwrap_or(json!([])),
         "scheduled_start": r.try_get::<chrono::DateTime<chrono::Utc>,_>("scheduled_start").ok(),
         "scheduled_end": r.try_get::<chrono::DateTime<chrono::Utc>,_>("scheduled_end").ok(),
         "priority": r.get::<i32,_>("priority"),
